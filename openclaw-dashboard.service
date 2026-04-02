@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenClaw Agent Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/repos/agent-dashboard
+ExecStart=/root/.nvm/versions/node/v22.22.0/bin/node server.js
+EnvironmentFile=/root/repos/agent-dashboard/.env
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

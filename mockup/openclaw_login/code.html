@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>OpenClaw Dashboard | Login</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&amp;family=Inter:wght@300;400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "secondary-dim": "#a09da1",
+              "on-error-container": "#ff97a3",
+              "surface-dim": "#0e0e0e",
+              "on-tertiary-container": "#4c4c67",
+              "on-background": "#e7e5e4",
+              "surface-container": "#191a1a",
+              "surface-bright": "#2c2c2c",
+              "secondary-fixed": "#e6e1e6",
+              "inverse-on-surface": "#565554",
+              "tertiary-container": "#dbdafb",
+              "on-error": "#490013",
+              "inverse-primary": "#6e3bd7",
+              "error-dim": "#b95463",
+              "primary-container": "#5516be",
+              "secondary-fixed-dim": "#d8d3d8",
+              "on-secondary-fixed-variant": "#5d5a5f",
+              "surface-container-lowest": "#000000",
+              "surface-container-highest": "#252626",
+              "error": "#ec7c8a",
+              "on-secondary": "#211f23",
+              "tertiary-fixed": "#dbdafb",
+              "primary": "#d0bcff",
+              "secondary": "#a09da1",
+              "surface-variant": "#252626",
+              "on-tertiary-fixed": "#393953",
+              "tertiary-fixed-dim": "#cdccec",
+              "on-primary": "#4e03b8",
+              "on-primary-fixed-variant": "#6a37d4",
+              "on-surface-variant": "#acabaa",
+              "on-surface": "#e7e5e4",
+              "secondary-container": "#3d3b3e",
+              "background": "#0e0e0e",
+              "surface-container-low": "#131313",
+              "primary-fixed-dim": "#ddcdff",
+              "on-secondary-fixed": "#413e42",
+              "on-primary-fixed": "#4d00b7",
+              "on-secondary-container": "#c2bec2",
+              "surface-container-high": "#1f2020",
+              "on-primary-container": "#d9c8ff",
+              "on-tertiary-fixed-variant": "#555571",
+              "primary-dim": "#c4acff",
+              "outline": "#767575",
+              "tertiary-dim": "#cdccec",
+              "on-tertiary": "#54546f",
+              "surface": "#0e0e0e",
+              "error-container": "#7f2737",
+              "primary-fixed": "#e9ddff",
+              "tertiary": "#ebe9ff",
+              "surface-tint": "#d0bcff",
+              "outline-variant": "#484848",
+              "inverse-surface": "#fcf8f8"
+            },
+            fontFamily: {
+              "headline": ["Manrope"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-panel {
+            background: rgba(19, 19, 19, 0.7);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+        .ai-pulse {
+            box-shadow: 0 0 8px rgba(208, 188, 255, 0.4);
+        }
+        @keyframes pulse-ring {
+            0% { transform: scale(.8); opacity: 0.5; }
+            50% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(.8); opacity: 0.5; }
+        }
+        .animate-ai-pulse {
+            animation: pulse-ring 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body min-h-screen flex flex-col items-center justify-center overflow-hidden selection:bg-primary/30">
+<!-- Background Decoration (The Digital Curator Atmosphere) -->
+<div class="fixed inset-0 z-0 overflow-hidden pointer-events-none">
+<div class="absolute -top-[10%] -left-[5%] w-[40%] h-[40%] bg-primary/5 blur-[120px] rounded-full"></div>
+<div class="absolute -bottom-[10%] -right-[5%] w-[40%] h-[40%] bg-primary-container/5 blur-[120px] rounded-full"></div>
+</div>
+<!-- Main Content Canvas -->
+<main class="relative z-10 w-full max-w-md px-6 flex flex-col items-center">
+<!-- Identity Section -->
+<div class="mb-10 text-center space-y-3">
+<div class="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-surface-container-high border border-outline-variant/10 mb-2">
+<span class="material-symbols-outlined text-primary text-3xl" data-icon="hub">hub</span>
+</div>
+<h1 class="font-headline font-extrabold text-3xl tracking-tighter text-on-surface">OpenClaw</h1>
+<p class="font-body text-on-surface-variant text-sm tracking-wide">Agent Orchestration Monitor</p>
+</div>
+<!-- Centered Login Card -->
+<div class="glass-panel w-full p-10 rounded-xl border border-outline-variant/10 shadow-2xl space-y-8">
+<div class="space-y-6">
+<!-- Input Field Group -->
+<div class="space-y-2">
+<label class="block font-label text-[11px] font-semibold uppercase tracking-widest text-on-surface-variant ml-1" for="token">Access Credentials</label>
+<div class="relative group">
+<div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-on-surface-variant group-focus-within:text-primary transition-colors text-[20px]" data-icon="key">key</span>
+</div>
+<input class="block w-full pl-12 pr-4 py-4 bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary/40 transition-all font-body text-sm" id="token" placeholder="Enter access token" type="password"/>
+</div>
+</div>
+<!-- Action CTA -->
+<button class="w-full py-4 bg-primary-container hover:bg-primary transition-all duration-300 rounded-lg flex items-center justify-center group">
+<span class="font-headline font-bold text-on-primary-container group-hover:text-on-primary text-sm tracking-tight flex items-center gap-2">
+                        Connect
+                        <span class="material-symbols-outlined text-[18px]" data-icon="arrow_forward">arrow_forward</span>
+</span>
+</button>
+</div>
+<!-- Footer Meta within Card -->
+<div class="pt-2">
+<div class="flex flex-col gap-3">
+<div class="flex items-center gap-3 py-2 px-3 bg-surface-container-low rounded-lg">
+<div class="w-2 h-2 rounded-full bg-primary animate-ai-pulse ai-pulse"></div>
+<span class="font-label text-[11px] uppercase tracking-widest text-on-surface-variant font-medium">System Online</span>
+</div>
+</div>
+</div>
+</div>
+<!-- External Status Indicators -->
+<div class="mt-12 flex items-center gap-8">
+<div class="flex items-center gap-2 opacity-60 hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant" data-icon="shield">shield</span>
+<span class="font-label text-[10px] uppercase tracking-[0.15em] text-on-surface-variant">Secured Access</span>
+</div>
+<div class="flex items-center gap-2 opacity-60 hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant" data-icon="visibility">visibility</span>
+<span class="font-label text-[10px] uppercase tracking-[0.15em] text-on-surface-variant">Read-only Monitoring</span>
+</div>
+</div>
+</main>
+<!-- Shared Component: Footer (Suppressed for focused login task per context rules, but using layout tokens for placement) -->
+<footer class="fixed bottom-0 w-full flex justify-center space-x-6 pb-8 z-10">
+<a class="font-inter text-[12px] tracking-wide uppercase text-gray-600 dark:text-gray-500 hover:text-gray-300 transition-all opacity-80 hover:opacity-100" href="#">Privacy Policy</a>
+<a class="font-inter text-[12px] tracking-wide uppercase text-gray-600 dark:text-gray-500 hover:text-gray-300 transition-all opacity-80 hover:opacity-100" href="#">Terms of Service</a>
+<a class="font-inter text-[12px] tracking-wide uppercase text-gray-600 dark:text-gray-500 hover:text-gray-300 transition-all opacity-80 hover:opacity-100" href="#">System Status</a>
+</footer>
+<!-- Decorative Image Layer (Low Contrast Subtle Texture) -->
+<div class="fixed inset-0 -z-10 opacity-[0.03] grayscale pointer-events-none">
+<img class="w-full h-full object-cover" data-alt="Abstract network of interconnected geometric lines and dots on a deep black background representing complex data neural connections" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCgg0oE-Sj5CVPh3GiVH3s-WoAoyrHthS8gHZEKwUlFR0sRNCaHLmk_3kQcBH1Qm_xwvTi3N6KdU7WHcRzn1VNmi3SCNBdlanG8xPADSWHwrDcE2TkC7Rz7htGLJwtN6bcu2eMoknkpeUx7Jd8vTG7NZVIdsuwhTWR2D76iOaphzsj66XxWBL_HJ77ng6O7DXgEl0D_-wrWzsE9AWVV5g8UITyXxdvNrr_jrp2AopShIkqlIxJszC5q91QoUaj5b7JYK1QIlekwWA"/>
+</div>
+</body></html>

@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Manrope:wght@600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "on-tertiary": "#54546f",
+                        "primary-fixed-dim": "#ddcdff",
+                        "secondary": "#a09da1",
+                        "error": "#ec7c8a",
+                        "on-tertiary-container": "#4c4c67",
+                        "primary-container": "#5516be",
+                        "on-secondary-container": "#c2bec2",
+                        "inverse-surface": "#fcf8f8",
+                        "primary-fixed": "#e9ddff",
+                        "on-primary-container": "#d9c8ff",
+                        "background": "#0e0e0e",
+                        "on-secondary-fixed-variant": "#5d5a5f",
+                        "surface-container-lowest": "#000000",
+                        "inverse-primary": "#6e3bd7",
+                        "on-surface-variant": "#acabaa",
+                        "surface-variant": "#252626",
+                        "surface-dim": "#0e0e0e",
+                        "outline": "#767575",
+                        "tertiary-fixed": "#dbdafb",
+                        "on-primary-fixed-variant": "#6a37d4",
+                        "surface-tint": "#d0bcff",
+                        "secondary-container": "#3d3b3e",
+                        "secondary-fixed-dim": "#d8d3d8",
+                        "secondary-fixed": "#e6e1e6",
+                        "on-tertiary-fixed": "#393953",
+                        "inverse-on-surface": "#565554",
+                        "on-primary-fixed": "#4d00b7",
+                        "on-secondary": "#211f23",
+                        "secondary-dim": "#a09da1",
+                        "outline-variant": "#484848",
+                        "on-error-container": "#ff97a3",
+                        "tertiary-fixed-dim": "#cdccec",
+                        "surface-container-highest": "#252626",
+                        "surface-bright": "#2c2c2c",
+                        "primary": "#d0bcff",
+                        "tertiary": "#ebe9ff",
+                        "primary-dim": "#c4acff",
+                        "on-primary": "#4e03b8",
+                        "surface-container": "#191a1a",
+                        "on-surface": "#e7e5e4",
+                        "surface": "#0e0e0e",
+                        "on-secondary-fixed": "#413e42",
+                        "error-container": "#7f2737",
+                        "on-error": "#490013",
+                        "on-background": "#e7e5e4",
+                        "tertiary-dim": "#cdccec",
+                        "on-tertiary-fixed-variant": "#555571",
+                        "tertiary-container": "#dbdafb",
+                        "surface-container-high": "#1f2020",
+                        "surface-container-low": "#131313",
+                        "error-dim": "#b95463"
+                    },
+                    fontFamily: {
+                        "headline": ["Manrope"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            background-color: #0e0e0e;
+            color: #e7e5e4;
+            font-family: 'Inter', sans-serif;
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-header {
+            background: rgba(14, 14, 14, 0.7);
+            backdrop-filter: blur(20px);
+        }
+        .ghost-border {
+            border: 1px solid rgba(72, 72, 72, 0.15);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface selection:bg-primary-container selection:text-on-primary-container">
+<!-- TopNavBar Navigation Shell -->
+<header class="fixed top-0 w-full z-50 flex justify-between items-center px-8 py-4 w-full bg-[#0e0e0e]/70 backdrop-blur-md">
+<div class="flex items-center gap-8">
+<span class="text-xl font-bold text-[#e7e5e4] tracking-tighter font-headline">The Ethereal Observer</span>
+<nav class="hidden md:flex items-center gap-6">
+<a class="font-manrope font-semibold tracking-tight text-lg text-[#d0bcff] border-b-2 border-[#d0bcff] pb-1" href="#">Agents</a>
+<a class="font-manrope font-semibold tracking-tight text-lg text-[#acabaa] hover:text-[#e7e5e4] transition-colors" href="#">Logs</a>
+<a class="font-manrope font-semibold tracking-tight text-lg text-[#acabaa] hover:text-[#e7e5e4] transition-colors" href="#">Settings</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative flex items-center bg-surface-container-highest px-4 py-2 rounded-lg group">
+<span class="material-symbols-outlined text-on-surface-variant text-sm mr-2">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-sm text-on-surface placeholder-on-surface-variant/50 w-48" placeholder="Search registry..." type="text"/>
+</div>
+<button class="p-2 text-on-surface-variant hover:bg-[#1f2020] rounded-lg transition-all active:scale-95 duration-200">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-[#1f2020] rounded-lg transition-all active:scale-95 duration-200">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full overflow-hidden ml-2 bg-surface-container">
+<img alt="User avatar" data-alt="close-up portrait of a professional user avatar in a sleek digital environment with purple rim lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCbdIoqi1PQdFxc5agMx4MxMc6KAV56u_CQvA1Zp2D043ilvmrOaVI_PK4rujE-fZlholV0E6Z7hInxIAtbi-uP-3_ULnbQPkCXnMXN_RWvrLLJNVIDNqndB8aOkW0Oz9bMk7x7osUpXqkwpgGkXghhAJVCYF5Nky61t4rS1Rei2x-HpfgKFbvmTtH3WW2LoEm3xVzkuCCbK5BFpMI6szAaF2qM_90rTZFia6Xevs__VQkHEePp4cBpAujwHOFov2AjCnxwOBKj5w"/>
+</div>
+</div>
+</header>
+<!-- SideNavBar (Hidden on desktop as per Shell Visibility rules for this specific Task focus, but defined in JSON) -->
+<aside class="h-screen w-64 fixed left-0 top-0 hidden lg:flex flex-col bg-[#0e0e0e] z-40 border-r border-outline-variant/10">
+<div class="flex flex-col h-full p-6 pt-24">
+<div class="flex items-center gap-3 mb-10 px-2">
+<div class="w-10 h-10 rounded-xl bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">psychology</span>
+</div>
+<div>
+<h3 class="text-[#d0bcff] font-manrope font-black text-sm">System Alpha</h3>
+<p class="text-[10px] text-on-surface-variant uppercase tracking-widest">Active Observer</p>
+</div>
+</div>
+<nav class="space-y-1 flex-1">
+<a class="flex items-center gap-3 px-4 py-3 bg-[#191a1a] text-[#d0bcff] border-r-2 border-[#d0bcff] font-inter text-sm font-medium active:translate-x-1 transition-transform" href="#">
+<span class="material-symbols-outlined">grid_view</span>
+                    Registry
+                </a>
+<a class="flex items-center gap-3 px-4 py-3 text-[#acabaa] hover:text-[#e7e5e4] hover:bg-[#131313] transition-all font-inter text-sm font-medium active:translate-x-1 transition-transform" href="#">
+<span class="material-symbols-outlined">analytics</span>
+                    Monitor
+                </a>
+<a class="flex items-center gap-3 px-4 py-3 text-[#acabaa] hover:text-[#e7e5e4] hover:bg-[#131313] transition-all font-inter text-sm font-medium active:translate-x-1 transition-transform" href="#">
+<span class="material-symbols-outlined">psychology</span>
+                    Intelligence
+                </a>
+<a class="flex items-center gap-3 px-4 py-3 text-[#acabaa] hover:text-[#e7e5e4] hover:bg-[#131313] transition-all font-inter text-sm font-medium active:translate-x-1 transition-transform" href="#">
+<span class="material-symbols-outlined">rocket_launch</span>
+                    Deployment
+                </a>
+</nav>
+<div class="mt-auto space-y-4">
+<button class="w-full py-3 bg-primary-container text-on-primary-container rounded-lg font-headline font-bold text-sm hover:opacity-90 transition-opacity">
+                    New Agent
+                </button>
+<div class="pt-4 border-t border-outline-variant/10">
+<a class="flex items-center gap-3 px-4 py-2 text-[#acabaa] hover:text-[#e7e5e4] font-inter text-sm" href="#">
+<span class="material-symbols-outlined">help</span>
+                        Help
+                    </a>
+<a class="flex items-center gap-3 px-4 py-2 text-[#acabaa] hover:text-[#e7e5e4] font-inter text-sm" href="#">
+<span class="material-symbols-outlined">sensors</span>
+                        Status
+                    </a>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="lg:pl-64 pt-24 min-h-screen bg-background pb-20">
+<div class="max-w-7xl mx-auto px-8 py-10">
+<!-- Header Section -->
+<div class="flex justify-between items-end mb-12">
+<div>
+<h1 class="text-4xl font-headline font-extrabold tracking-tight mb-2 text-on-surface">Agent Registry</h1>
+<p class="text-on-surface-variant font-body">Manage and monitor your active autonomous observers.</p>
+</div>
+<div class="flex gap-3">
+<button class="px-5 py-2.5 rounded-lg font-body font-medium text-sm bg-surface-container hover:bg-surface-container-high transition-colors ghost-border flex items-center gap-2">
+<span class="material-symbols-outlined text-lg">filter_list</span>
+                        Filter
+                    </button>
+<button class="px-5 py-2.5 rounded-lg font-body font-medium text-sm bg-primary-container text-on-primary-container hover:opacity-90 transition-opacity flex items-center gap-2">
+<span class="material-symbols-outlined text-lg">add</span>
+                        Provision Agent
+                    </button>
+</div>
+</div>
+<!-- Agent Grid (3x3) -->
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+<!-- Agent Card 1 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer relative overflow-hidden">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">🌌</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Active</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Echo-01</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Sentiment Analyst</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">GPT-4o-mini</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: AC-8821</span>
+</div>
+</div>
+<!-- Agent Card 2 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">🦉</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Active</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Nocturnal</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Log Monitor</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">Claude 3.5 Sonnet</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: NT-4412</span>
+</div>
+</div>
+<!-- Agent Card 3 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">🛰️</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-outline-variant"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Idle</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Vanguard</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Security Auditor</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">Llama 3 70B</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: VG-0919</span>
+</div>
+</div>
+<!-- Agent Card 4 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">🧠</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Active</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Synthesis</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Context Manager</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">GPT-4 Turbo</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: SN-1225</span>
+</div>
+</div>
+<!-- Agent Card 5 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">🐺</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Active</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Fenris</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Threat Hunter</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">Mistral Large</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: FN-7731</span>
+</div>
+</div>
+<!-- Agent Card 6 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">💠</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-outline-variant"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Idle</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Prism</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Data Visualizer</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">Gemini 1.5 Pro</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: PR-3301</span>
+</div>
+</div>
+<!-- Agent Card 7 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">⚔️</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Active</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Aegis</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Protocol Enforcer</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">GPT-4o</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: AG-5512</span>
+</div>
+</div>
+<!-- Agent Card 8 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">🗝️</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-outline-variant"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Idle</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Cipher</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Encryption Specialist</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">Custom LLM</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: CP-9001</span>
+</div>
+</div>
+<!-- Agent Card 9 -->
+<div class="bg-surface-container-low p-6 rounded-xl ghost-border hover:bg-surface-container transition-all group cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div class="text-4xl">🕊️</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 bg-surface-container-highest rounded-full">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Active</span>
+</div>
+</div>
+<h3 class="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">Oracle</h3>
+<p class="text-on-surface font-medium text-sm mb-4">Predictive Forecaster</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/5">
+<span class="text-xs text-on-surface-variant font-body">Claude 3 Opus</span>
+<span class="text-[10px] font-mono text-on-surface-variant/50">ID: OR-6623</span>
+</div>
+</div>
+</div>
+<!-- Live Feed Section (Collapsible Layout) -->
+<section class="mt-16">
+<div class="flex items-center justify-between mb-4 px-2">
+<div class="flex items-center gap-3">
+<div class="w-2 h-2 rounded-full bg-primary shadow-[0_0_10px_rgba(208,188,255,0.5)]"></div>
+<h2 class="text-lg font-headline font-bold">Live Feed</h2>
+</div>
+<button class="text-xs font-bold text-on-surface-variant hover:text-on-surface flex items-center gap-1 uppercase tracking-widest">
+                        Minimize
+                        <span class="material-symbols-outlined text-sm">expand_more</span>
+</button>
+</div>
+<div class="bg-surface-container-lowest rounded-xl p-4 font-mono text-[13px] leading-relaxed max-h-64 overflow-y-auto ghost-border">
+<div class="space-y-1 text-on-surface-variant/80">
+<div class="flex gap-4">
+<span class="text-outline-variant">[14:02:15]</span>
+<span class="text-emerald-400 font-bold">Agent Echo-01:</span>
+<span class="text-on-surface">Task Completed - Sentiment Analysis Batch #4492 finalized.</span>
+</div>
+<div class="flex gap-4">
+<span class="text-outline-variant">[14:02:10]</span>
+<span class="text-primary font-bold">System Alpha:</span>
+<span class="text-on-surface">Allocating additional compute to Nocturnal for log parsing.</span>
+</div>
+<div class="flex gap-4">
+<span class="text-outline-variant">[14:01:58]</span>
+<span class="text-emerald-400 font-bold">Agent Fenris:</span>
+<span class="text-on-surface">No malicious patterns detected in ingress traffic.</span>
+</div>
+<div class="flex gap-4">
+<span class="text-outline-variant">[14:01:42]</span>
+<span class="text-amber-400 font-bold">Agent Aegis:</span>
+<span class="text-on-surface">Rate limiting applied to external API call from user_993.</span>
+</div>
+<div class="flex gap-4">
+<span class="text-outline-variant">[14:01:30]</span>
+<span class="text-on-surface-variant">Agent Vanguard:</span>
+<span class="italic">Entering power-save/idle state...</span>
+</div>
+<div class="flex gap-4">
+<span class="text-outline-variant">[14:00:55]</span>
+<span class="text-emerald-400 font-bold">Agent Synthesis:</span>
+<span class="text-on-surface">Cross-model context bridge successfully established.</span>
+</div>
+<div class="flex gap-4">
+<span class="text-outline-variant">[14:00:12]</span>
+<span class="text-primary font-bold">System Alpha:</span>
+<span class="text-on-surface">Agent Registry updated. 9 instances currently registered.</span>
+</div>
+<div class="flex gap-4">
+<span class="text-outline-variant">[13:59:45]</span>
+<span class="text-error font-bold">System Error:</span>
+<span class="text-on-error-container">Failed to handshake with Agent Cipher. Retrying...</span>
+</div>
+</div>
+</div>
+</section>
+</div>
+</main>
+<!-- FAB for Task context (provisioning) -->
+<button class="fixed bottom-8 right-8 w-14 h-14 bg-primary text-on-primary rounded-full shadow-2xl flex items-center justify-center active:scale-95 transition-all md:hidden">
+<span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'FILL' 1;">add</span>
+</button>
+</body></html>

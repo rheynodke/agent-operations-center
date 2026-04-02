@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Task Board | Observer v1</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Manrope:wght@500;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "inverse-surface": "#fcf8f8",
+              "outline-variant": "#484848",
+              "surface-tint": "#d0bcff",
+              "tertiary": "#ebe9ff",
+              "primary-fixed": "#e9ddff",
+              "error-container": "#7f2737",
+              "surface": "#0e0e0e",
+              "on-tertiary": "#54546f",
+              "tertiary-dim": "#cdccec",
+              "outline": "#767575",
+              "primary-dim": "#c4acff",
+              "on-tertiary-fixed-variant": "#555571",
+              "on-primary-container": "#d9c8ff",
+              "surface-container-high": "#1f2020",
+              "on-secondary-container": "#c2bec2",
+              "on-secondary-fixed": "#413e42",
+              "on-primary-fixed": "#4d00b7",
+              "primary-fixed-dim": "#ddcdff",
+              "surface-container-low": "#131313",
+              "background": "#0e0e0e",
+              "secondary-container": "#3d3b3e",
+              "on-surface": "#e7e5e4",
+              "on-surface-variant": "#acabaa",
+              "on-primary-fixed-variant": "#6a37d4",
+              "on-primary": "#4e03b8",
+              "tertiary-fixed-dim": "#cdccec",
+              "surface-variant": "#252626",
+              "on-tertiary-fixed": "#393953",
+              "secondary": "#a09da1",
+              "primary": "#d0bcff",
+              "tertiary-fixed": "#dbdafb",
+              "on-secondary": "#211f23",
+              "surface-container-highest": "#252626",
+              "error": "#ec7c8a",
+              "surface-container-lowest": "#000000",
+              "on-secondary-fixed-variant": "#5d5a5f",
+              "secondary-fixed-dim": "#d8d3d8",
+              "primary-container": "#5516be",
+              "error-dim": "#b95463",
+              "on-error": "#490013",
+              "inverse-primary": "#6e3bd7",
+              "tertiary-container": "#dbdafb",
+              "secondary-fixed": "#e6e1e6",
+              "inverse-on-surface": "#565554",
+              "surface-bright": "#2c2c2c",
+              "surface-container": "#191a1a",
+              "on-background": "#e7e5e4",
+              "surface-dim": "#0e0e0e",
+              "on-tertiary-container": "#4c4c67",
+              "on-error-container": "#ff97a3",
+              "secondary-dim": "#a09da1"
+            },
+            fontFamily: {
+              "headline": ["Manrope"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        body {
+            background-color: #0e0e0e;
+            color: #e7e5e4;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #252626;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="font-body selection:bg-primary/30">
+<!-- TopNavBar Execution -->
+<nav class="fixed top-0 w-full z-50 bg-[#0e0e0e]/70 backdrop-blur-md flex justify-between items-center px-8 h-16 w-full">
+<div class="flex items-center gap-8">
+<span class="text-xl font-bold text-[#e7e5e4] font-headline tracking-tight">Task Board</span>
+<div class="hidden md:flex gap-6 items-center">
+<a class="font-['Manrope'] font-medium tracking-tight text-[#acabaa] hover:text-[#e7e5e4] transition-colors" href="#">Dashboard</a>
+<a class="font-['Manrope'] font-medium tracking-tight text-[#d0bcff] border-b-2 border-[#d0bcff] pb-1" href="#">Task Board</a>
+<a class="font-['Manrope'] font-medium tracking-tight text-[#acabaa] hover:text-[#e7e5e4] transition-colors" href="#">Agents</a>
+<a class="font-['Manrope'] font-medium tracking-tight text-[#acabaa] hover:text-[#e7e5e4] transition-colors" href="#">Logs</a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="p-2 text-[#acabaa] hover:bg-[#1f2020] rounded-lg active:scale-95 transition-all">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 text-[#acabaa] hover:bg-[#1f2020] rounded-lg active:scale-95 transition-all">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<div class="h-8 w-8 rounded-full overflow-hidden ml-2 bg-surface-container-highest">
+<img alt="AI Agent Avatar" class="w-full h-full object-cover" data-alt="minimalist 3D rendered avatar icon of an AI agent with glowing purple elements on a dark matte background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDPVhezVcMNEUf0cv9G7zbA4wez4CXFVNAB0-NTX_yMc-WMF_Xq-cyPtxPpL_iGtLz3RejH68shV6mTX11bF3fmD03oJcEE1fbQNpegeuXA97tU8If8FNemAeLO8kH6xxFeByG_IWxalwK5Ou9XzqptdCo--uHXJL9IXy-bGnrPdfaS1Rm-lWTrkDxgISu4zj7ICOKNKCGsmwvC7A_hcCuI503qRqHwO5SI_DZ1r_0UfFCiE1RaLOkNR8copWfuo7h5p_dNp3Cz0w"/>
+</div>
+</div>
+</nav>
+<!-- SideNavBar Execution -->
+<aside class="fixed left-0 top-0 h-full w-64 z-40 bg-[#131313] shadow-2xl shadow-black/40 flex flex-col p-6 space-y-4 hidden lg:flex">
+<div class="mb-8 pt-16">
+<div class="flex items-center gap-3">
+<div class="w-2 h-2 rounded-full bg-primary shadow-[0_0_10px_rgba(208,188,255,0.5)]"></div>
+<div>
+<h2 class="font-['Manrope'] font-bold text-[#d0bcff] text-lg leading-none">Observer v1</h2>
+<span class="text-[10px] uppercase tracking-widest text-on-surface-variant font-bold">Active Monitoring</span>
+</div>
+</div>
+</div>
+<nav class="flex-1 space-y-2">
+<a class="flex items-center gap-3 px-4 py-3 font-['Inter'] text-sm font-medium text-[#acabaa] hover:bg-[#191a1a] rounded-lg hover:text-[#e7e5e4] hover:translate-x-1 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+                Dashboard
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 font-['Inter'] text-sm font-medium bg-[#5516be] text-[#e7e5e4] rounded-lg hover:translate-x-1 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">view_kanban</span>
+                Task Board
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 font-['Inter'] text-sm font-medium text-[#acabaa] hover:bg-[#191a1a] rounded-lg hover:text-[#e7e5e4] hover:translate-x-1 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">smart_toy</span>
+                Agents
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 font-['Inter'] text-sm font-medium text-[#acabaa] hover:bg-[#191a1a] rounded-lg hover:text-[#e7e5e4] hover:translate-x-1 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">terminal</span>
+                Logs
+            </a>
+</nav>
+<div class="pt-4 border-t border-outline-variant/10 space-y-2">
+<button class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-3 rounded-lg flex items-center justify-center gap-2 active:scale-95 transition-transform mb-4">
+<span class="material-symbols-outlined text-sm">add</span>
+                New Task
+            </button>
+<a class="flex items-center gap-3 px-4 py-2 font-['Inter'] text-sm font-medium text-[#acabaa] hover:text-[#e7e5e4] transition-colors" href="#">
+<span class="material-symbols-outlined">settings</span>
+                Settings
+            </a>
+<a class="flex items-center gap-3 px-4 py-2 font-['Inter'] text-sm font-medium text-[#acabaa] hover:text-[#e7e5e4] transition-colors" href="#">
+<span class="material-symbols-outlined">help</span>
+                Support
+            </a>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="lg:ml-64 pt-24 min-h-screen px-8 pb-12 overflow-x-auto">
+<div class="flex gap-6 min-w-max h-[calc(100vh-160px)]">
+<!-- COLUMN: Queued -->
+<div class="flex flex-col w-80 space-y-4">
+<div class="flex items-center justify-between px-2">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-6 rounded-full bg-outline-variant"></span>
+<h3 class="font-headline font-bold text-on-surface">Queued</h3>
+<span class="text-xs font-mono text-on-surface-variant bg-surface-container px-2 py-0.5 rounded-full">2</span>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined">more_horiz</span></button>
+</div>
+<div class="flex-1 space-y-3 custom-scrollbar overflow-y-auto pr-1">
+<!-- Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-sm border border-outline-variant/5 hover:bg-surface-container transition-colors group">
+<div class="flex justify-between items-start mb-3">
+<span class="bg-surface-container-highest text-[10px] text-on-surface-variant px-2 py-1 rounded font-bold uppercase tracking-wider">Agent-01</span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-4 leading-tight">Data Scraping: Financial Sector Analysis</h4>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-sm">schedule</span> 12m</div>
+<div class="flex items-center gap-1.5 font-mono text-primary-dim"><span class="material-symbols-outlined text-sm">payments</span> $0.042</div>
+</div>
+</div>
+<!-- Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-sm border border-outline-variant/5 hover:bg-surface-container transition-colors">
+<div class="flex justify-between items-start mb-3">
+<span class="bg-surface-container-highest text-[10px] text-on-surface-variant px-2 py-1 rounded font-bold uppercase tracking-wider">Agent-04</span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-4 leading-tight">Sentiment Mapping: Q3 Social Trends</h4>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-sm">schedule</span> 45m</div>
+<div class="flex items-center gap-1.5 font-mono text-primary-dim"><span class="material-symbols-outlined text-sm">payments</span> $0.118</div>
+</div>
+</div>
+</div>
+</div>
+<!-- COLUMN: Running -->
+<div class="flex flex-col w-80 space-y-4">
+<div class="flex items-center justify-between px-2">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-6 rounded-full bg-primary"></span>
+<h3 class="font-headline font-bold text-on-surface">Running</h3>
+<span class="text-xs font-mono text-on-surface-variant bg-surface-container px-2 py-0.5 rounded-full">1</span>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined">more_horiz</span></button>
+</div>
+<div class="flex-1 space-y-3 custom-scrollbar overflow-y-auto pr-1">
+<!-- Active Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-md border border-primary/20 relative overflow-hidden group">
+<div class="absolute top-0 left-0 w-full h-[2px] bg-surface-variant">
+<div class="h-full bg-primary w-[64%]"></div>
+</div>
+<div class="flex justify-between items-start mt-1 mb-3">
+<span class="bg-primary-container text-[10px] text-on-primary-container px-2 py-1 rounded font-bold uppercase tracking-wider flex items-center gap-1.5">
+<span class="w-1 h-1 rounded-full bg-on-primary-container animate-pulse"></span>
+                                Agent-09
+                            </span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-4 leading-tight">Vector Database Indexing: Alpha Cluster</h4>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5 text-primary"><span class="material-symbols-outlined text-sm">sync</span> Processing...</div>
+<div class="flex items-center gap-1.5 font-mono text-primary-dim"><span class="material-symbols-outlined text-sm">payments</span> $0.840</div>
+</div>
+</div>
+</div>
+</div>
+<!-- COLUMN: Completed -->
+<div class="flex flex-col w-80 space-y-4">
+<div class="flex items-center justify-between px-2">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-6 rounded-full bg-emerald-500/50"></span>
+<h3 class="font-headline font-bold text-on-surface">Completed</h3>
+<span class="text-xs font-mono text-on-surface-variant bg-surface-container px-2 py-0.5 rounded-full">4</span>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined">more_horiz</span></button>
+</div>
+<div class="flex-1 space-y-3 custom-scrollbar overflow-y-auto pr-1">
+<!-- Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-sm border border-outline-variant/5 opacity-80 hover:opacity-100 transition-all">
+<div class="flex justify-between items-start mb-3">
+<span class="bg-surface-container-highest text-[10px] text-on-surface-variant px-2 py-1 rounded font-bold uppercase tracking-wider">Agent-02</span>
+<span class="material-symbols-outlined text-emerald-500 text-base">check_circle</span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-4 leading-tight">SEO Optimization: Main Landing Page</h4>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-sm">done_all</span> 2m 4s</div>
+<div class="flex items-center gap-1.5 font-mono"><span class="material-symbols-outlined text-sm">payments</span> $0.005</div>
+</div>
+</div>
+<!-- Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-sm border border-outline-variant/5 opacity-80 hover:opacity-100 transition-all">
+<div class="flex justify-between items-start mb-3">
+<span class="bg-surface-container-highest text-[10px] text-on-surface-variant px-2 py-1 rounded font-bold uppercase tracking-wider">Agent-05</span>
+<span class="material-symbols-outlined text-emerald-500 text-base">check_circle</span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-4 leading-tight">Email Automation: Re-engagement Flow</h4>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-sm">done_all</span> 15s</div>
+<div class="flex items-center gap-1.5 font-mono"><span class="material-symbols-outlined text-sm">payments</span> $0.001</div>
+</div>
+</div>
+<!-- Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-sm border border-outline-variant/5 opacity-80 hover:opacity-100 transition-all">
+<div class="flex justify-between items-start mb-3">
+<span class="bg-surface-container-highest text-[10px] text-on-surface-variant px-2 py-1 rounded font-bold uppercase tracking-wider">Agent-01</span>
+<span class="material-symbols-outlined text-emerald-500 text-base">check_circle</span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-4 leading-tight">Asset Generation: UI Mockup Set A</h4>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-sm">done_all</span> 5m 12s</div>
+<div class="flex items-center gap-1.5 font-mono"><span class="material-symbols-outlined text-sm">payments</span> $0.450</div>
+</div>
+</div>
+<!-- Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-sm border border-outline-variant/5 opacity-80 hover:opacity-100 transition-all">
+<div class="flex justify-between items-start mb-3">
+<span class="bg-surface-container-highest text-[10px] text-on-surface-variant px-2 py-1 rounded font-bold uppercase tracking-wider">Agent-03</span>
+<span class="material-symbols-outlined text-emerald-500 text-base">check_circle</span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-4 leading-tight">API Documentation: Schema Validator</h4>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-sm">done_all</span> 1m 20s</div>
+<div class="flex items-center gap-1.5 font-mono"><span class="material-symbols-outlined text-sm">payments</span> $0.012</div>
+</div>
+</div>
+</div>
+</div>
+<!-- COLUMN: Failed -->
+<div class="flex flex-col w-80 space-y-4">
+<div class="flex items-center justify-between px-2">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-6 rounded-full bg-error"></span>
+<h3 class="font-headline font-bold text-on-surface">Failed</h3>
+<span class="text-xs font-mono text-on-surface-variant bg-surface-container px-2 py-0.5 rounded-full">1</span>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined">more_horiz</span></button>
+</div>
+<div class="flex-1 space-y-3 custom-scrollbar overflow-y-auto pr-1">
+<!-- Failed Task Card -->
+<div class="bg-surface-container-low p-4 rounded-xl shadow-sm border border-error/10 hover:bg-surface-container transition-colors">
+<div class="flex justify-between items-start mb-3">
+<span class="bg-error-container/20 text-[10px] text-error px-2 py-1 rounded font-bold uppercase tracking-wider">Agent-07</span>
+<span class="material-symbols-outlined text-error text-base">error</span>
+</div>
+<h4 class="font-headline font-bold text-on-surface mb-2 leading-tight">Cloud Migration: Legacy DB Sync</h4>
+<p class="text-[10px] text-error/80 mb-3 font-medium bg-error-container/10 p-2 rounded">Runtime Error: Connection timeout at shard-01</p>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-sm">history</span> 42s elapsed</div>
+<button class="text-primary text-[10px] font-bold uppercase tracking-wider hover:underline">Retry</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- FAB (Suppressed based on context of sub-screen or detailed view, but shown for main Task Board action) -->
+<button class="fixed bottom-8 right-8 h-14 w-14 bg-primary text-on-primary rounded-full shadow-2xl flex items-center justify-center active:scale-90 transition-transform lg:hidden">
+<span class="material-symbols-outlined">add</span>
+</button>
+</body></html>
