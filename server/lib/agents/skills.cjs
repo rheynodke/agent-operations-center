@@ -1,0 +1,425 @@
+'use strict';
+const fs   = require('fs');
+const path = require('path');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
+
+// ── Frontmatter + dir scanning ───────────────────────────────────────────────
+
+/**
+ * Parse SKILL.md frontmatter (YAML between --- lines).
+ * Returns { name, description, metadata } or null.
+ */
+function parseSkillFrontmatter(content) {
+  if (!content) return null;
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!match) return null;
+
+  const fm = match[1];
+  const result = { name: '', description: '', metadata: null };
+
+  const nameMatch = fm.match(/^name:\s*(.+)$/m);
+  if (nameMatch) result.name = nameMatch[1].trim();
+
+  const descMatch = fm.match(/^description:\s*(.+)$/m);
+  if (descMatch) result.description = descMatch[1].trim();
+
+  const metaMatch = fm.match(/^metadata:\s*(\{[\s\S]*?\})$/m);
+  if (metaMatch) {
+    try { result.metadata = JSON.parse(metaMatch[1]); } catch {}
+  }
+
+  return result;
+}
+
+/**
+ * Scan a directory for skill folders (each must contain SKILL.md).
+ */
+function scanSkillDir(dirPath) {
+  const skills = [];
+  if (!dirPath || !fs.existsSync(dirPath)) return skills;
+
+  let entries;
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return skills; }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillMdPath = path.join(dirPath, entry.name, 'SKILL.md');
+    if (!fs.existsSync(skillMdPath)) continue;
+
+    try {
+      const content = fs.readFileSync(skillMdPath, 'utf-8');
+      const fm = parseSkillFrontmatter(content);
+      skills.push({
+        slug: entry.name,
+        name: fm?.name || entry.name,
+        description: fm?.description || '',
+        metadata: fm?.metadata || null,
+        path: path.join(dirPath, entry.name),
+        skillMdPath,
+      });
+    } catch {}
+  }
+  return skills;
+}
+
+// ── Agent skill queries ───────────────────────────────────────────────────────
+
+/**
+ * Get all skills visible to an agent, from all 6 source levels.
+ */
+function getAgentSkills(agentId) {
+  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+
+  const agentList   = config.agents?.list || [];
+  const agentConfig = agentList.find(a => a.id === agentId);
+  if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
+
+  const agentWorkspace   = agentConfig.workspace || OPENCLAW_WORKSPACE;
+  const skillEntries     = config.skills?.entries || {};
+  const extraDirs        = config.skills?.load?.extraDirs || [];
+
+  const agentAllowlist    = agentConfig.skills;
+  const defaultAllowlist  = config.agents?.defaults?.skills;
+  const effectiveAllowlist = agentAllowlist !== undefined ? agentAllowlist : defaultAllowlist;
+  const hasAllowlist       = agentAllowlist !== undefined;
+
+  const sources = [
+    { id: 'workspace',     label: 'Workspace',     dir: path.join(agentWorkspace, 'skills') },
+    { id: 'project-agent', label: 'Project Agent', dir: path.join(agentWorkspace, '.agents', 'skills') },
+    { id: 'personal',      label: 'Personal',      dir: path.join(process.env.HOME || '~', '.agents', 'skills') },
+    { id: 'managed',       label: 'Managed',       dir: path.join(OPENCLAW_HOME, 'skills') },
+    ...extraDirs.map((d, i) => ({
+      id:    `extra-${i}`,
+      label: `Extra (${path.basename(d)})`,
+      dir:   d.replace(/^~/, process.env.HOME || '~'),
+    })),
+  ];
+
+  const seen = new Set();
+  const allSkills = [];
+
+  for (const source of sources) {
+    const skills = scanSkillDir(source.dir);
+    for (const skill of skills) {
+      if (seen.has(skill.name)) continue;
+      seen.add(skill.name);
+
+      const entry          = skillEntries[skill.name] || skillEntries[skill.slug] || {};
+      const globallyEnabled = entry.enabled !== false;
+
+      let inAllowlist = true;
+      if (Array.isArray(effectiveAllowlist)) {
+        inAllowlist = effectiveAllowlist.includes(skill.name) || effectiveAllowlist.includes(skill.slug);
+      }
+
+      const emoji = skill.metadata?.openclaw?.emoji || null;
+
+      allSkills.push({
+        name: skill.name,
+        slug: skill.slug,
+        description: skill.description,
+        source: source.id,
+        sourceLabel: source.label,
+        path: skill.path,
+        enabled: globallyEnabled && inAllowlist,
+        globallyEnabled,
+        inAllowlist,
+        hasAllowlist,
+        allowed: inAllowlist,
+        emoji,
+        hasApiKey: !!(entry.apiKey),
+        hasEnv: !!(entry.env && Object.keys(entry.env).length > 0),
+        editable: ['workspace', 'project-agent', 'personal', 'managed'].includes(source.id),
+      });
+    }
+  }
+
+  return allSkills;
+}
+
+/**
+ * Read a skill's SKILL.md content.
+ */
+function getSkillFile(agentId, skillName) {
+  const skills = getAgentSkills(agentId);
+  const skill  = skills.find(s => s.name === skillName || s.slug === skillName);
+  if (!skill) throw new Error(`Skill "${skillName}" not found for agent "${agentId}"`);
+
+  const skillMdPath = path.join(skill.path, 'SKILL.md');
+  let content = '';
+  try { content = fs.readFileSync(skillMdPath, 'utf-8'); } catch {}
+
+  return { name: skill.name, slug: skill.slug, content, path: skillMdPath, source: skill.source, editable: skill.editable };
+}
+
+/**
+ * Save/overwrite a skill's SKILL.md content.
+ */
+function saveSkillFile(agentId, skillName, content) {
+  const skills = getAgentSkills(agentId);
+  const skill  = skills.find(s => s.name === skillName || s.slug === skillName);
+  if (!skill) throw new Error(`Skill "${skillName}" not found`);
+  if (!skill.editable) throw new Error(`Skill "${skillName}" is not editable (source: ${skill.source})`);
+
+  const skillMdPath = path.join(skill.path, 'SKILL.md');
+  fs.writeFileSync(skillMdPath, content, 'utf-8');
+
+  return { name: skill.name, slug: skill.slug, path: skillMdPath };
+}
+
+/**
+ * Create a new skill folder + SKILL.md.
+ * scope: 'workspace' | 'agent' | 'global'
+ */
+function createSkill(agentId, skillSlug, scope, content) {
+  const config      = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const agentConfig = (config.agents?.list || []).find(a => a.id === agentId);
+  if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
+
+  const agentWorkspace = agentConfig.workspace || OPENCLAW_WORKSPACE;
+
+  let targetDir;
+  switch (scope) {
+    case 'workspace': targetDir = path.join(agentWorkspace, 'skills', skillSlug); break;
+    case 'agent':     targetDir = path.join(agentWorkspace, '.agents', 'skills', skillSlug); break;
+    case 'global':    targetDir = path.join(OPENCLAW_HOME, 'skills', skillSlug); break;
+    default:          throw new Error(`Invalid scope: ${scope}`);
+  }
+
+  if (fs.existsSync(targetDir)) throw new Error(`Skill folder already exists: ${targetDir}`);
+
+  fs.mkdirSync(targetDir, { recursive: true });
+  const skillMdPath = path.join(targetDir, 'SKILL.md');
+  fs.writeFileSync(skillMdPath, content, 'utf-8');
+
+  return { slug: skillSlug, path: targetDir, skillMdPath, scope };
+}
+
+/**
+ * Toggle a skill ON or OFF for a specific agent.
+ * Controls ONLY the agents.list[].skills allowlist (SKILL.md context injection).
+ */
+function toggleAgentSkill(agentId, skillName, enabled) {
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config) throw new Error('Cannot read openclaw.json');
+
+  if (!config.agents) config.agents = {};
+  if (!config.agents.list) config.agents.list = [];
+
+  const agentIdx = config.agents.list.findIndex(a => a.id === agentId);
+  if (agentIdx === -1) throw new Error(`Agent "${agentId}" not found`);
+
+  const agentConfig       = config.agents.list[agentIdx];
+  const currentAllowlist  = agentConfig.skills;
+
+  if (enabled) {
+    if (Array.isArray(currentAllowlist)) {
+      if (!currentAllowlist.includes(skillName)) agentConfig.skills = [...currentAllowlist, skillName];
+    }
+    // If no allowlist: skill was never restricted → already enabled, no-op
+  } else {
+    if (Array.isArray(currentAllowlist)) {
+      agentConfig.skills = currentAllowlist.filter(s => s !== skillName);
+    } else {
+      // No allowlist yet → agent was unrestricted → build explicit allowlist without this skill
+      const allSkills = getAgentSkills(agentId);
+      agentConfig.skills = allSkills
+        .filter(s => s.globallyEnabled && s.name !== skillName && s.slug !== skillName)
+        .map(s => s.name);
+    }
+  }
+
+  config.agents.list[agentIdx] = agentConfig;
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+  return { agentId, skillName, enabled, allowlist: agentConfig.skills };
+}
+
+/**
+ * Get all skills across all scopes and agents, with per-agent assignment info.
+ * Used by the global Skills Library page.
+ */
+function getAllSkills() {
+  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const agentList = config.agents?.list || [];
+  const skillEntries = config.skills?.entries || {};
+  const extraDirs = config.skills?.load?.extraDirs || [];
+
+  // Collect unique source directories across all agents' workspaces
+  const processedDirKeys = new Set();
+  const sources = [];
+
+  function addSource(id, label, dir) {
+    const resolved = (dir || '').replace(/^~/, process.env.HOME || '~');
+    if (!resolved) return;
+    const key = `${id}::${resolved}`;
+    if (processedDirKeys.has(key)) return;
+    processedDirKeys.add(key);
+    sources.push({ id, label, dir: resolved });
+  }
+
+  // Scan each agent's workspace dirs
+  for (const agent of agentList) {
+    const ws = agent.workspace || OPENCLAW_WORKSPACE;
+    if (ws) {
+      addSource('workspace', 'Workspace', path.join(ws, 'skills'));
+      addSource('project-agent', 'Project Agent', path.join(ws, '.agents', 'skills'));
+    }
+  }
+  // Always include default workspace
+  if (OPENCLAW_WORKSPACE) {
+    addSource('workspace', 'Workspace', path.join(OPENCLAW_WORKSPACE, 'skills'));
+    addSource('project-agent', 'Project Agent', path.join(OPENCLAW_WORKSPACE, '.agents', 'skills'));
+  }
+  addSource('personal', 'Personal', path.join(process.env.HOME || '~', '.agents', 'skills'));
+  addSource('managed', 'Managed', path.join(OPENCLAW_HOME, 'skills'));
+  for (const [i, d] of extraDirs.entries()) {
+    addSource(`extra-${i}`, `Extra (${path.basename(d)})`, d);
+  }
+
+  // Scan all dirs, deduplicate by NAME (same logic as getAgentSkills)
+  // We use name-based dedup so that per-agent lookups (which may return
+  // the same skill from a different workspace path) still match correctly.
+  const seenNames = new Set();
+  const skillsByName = new Map();
+
+  for (const source of sources) {
+    const skills = scanSkillDir(source.dir);
+    for (const skill of skills) {
+      const key = skill.name || skill.slug;
+      if (seenNames.has(key)) continue;
+      seenNames.add(key);
+
+      const entry = skillEntries[skill.name] || skillEntries[skill.slug] || {};
+      const emoji = skill.metadata?.openclaw?.emoji || null;
+      skillsByName.set(key, {
+        name: skill.name,
+        slug: skill.slug,
+        description: skill.description,
+        source: source.id,
+        sourceLabel: source.label,
+        path: skill.path,
+        emoji,
+        hasApiKey: !!(entry.apiKey),
+        hasEnv: !!(entry.env && Object.keys(entry.env).length > 0),
+        editable: ['workspace', 'project-agent', 'personal', 'managed'].includes(source.id),
+        globallyEnabled: entry.enabled !== false,
+        agentAssignments: [],
+      });
+    }
+  }
+
+  // Build agents summary — resolve name/emoji from identity field same as detail.cjs
+  const agents = agentList.map(a => ({
+    id: a.id,
+    name: a.identity?.name || a.name || a.id,
+    emoji: a.identity?.emoji || (a.id === 'main' ? '🤡' : '🤖'),
+  }));
+
+  // Compute per-agent assignments, matched by skill name (not path)
+  for (const agentDef of agentList) {
+    const agentName = agentDef.identity?.name || agentDef.name || agentDef.id;
+    const agentEmoji = agentDef.identity?.emoji || (agentDef.id === 'main' ? '🤡' : '🤖');
+    try {
+      const agentSkills = getAgentSkills(agentDef.id);
+      for (const skill of agentSkills) {
+        const key = skill.name || skill.slug;
+        const skillData = skillsByName.get(key);
+        if (skillData) {
+          skillData.agentAssignments.push({
+            agentId: agentDef.id,
+            agentName,
+            agentEmoji,
+            enabled: skill.enabled,
+            inAllowlist: skill.inAllowlist,
+            hasAllowlist: skill.hasAllowlist,
+          });
+        }
+      }
+    } catch {}
+  }
+
+  return { skills: Array.from(skillsByName.values()), agents };
+}
+
+/**
+ * Read a skill's SKILL.md directly by slug, without requiring an agent context.
+ * Used by the global Skills Library page editor.
+ */
+function getSkillFileBySlug(slug) {
+  const { skills } = getAllSkills();
+  const skill = skills.find(s => s.slug === slug || s.name === slug);
+  if (!skill) throw new Error(`Skill "${slug}" not found`);
+  const skillMdPath = path.join(skill.path, 'SKILL.md');
+  let content = '';
+  try { content = fs.readFileSync(skillMdPath, 'utf-8'); } catch {}
+  return {
+    name: skill.name,
+    slug: skill.slug,
+    content,
+    path: skillMdPath,
+    source: skill.source,
+    sourceLabel: skill.sourceLabel,
+    editable: skill.editable,
+  };
+}
+
+/**
+ * Save a skill's SKILL.md directly by slug, without requiring an agent context.
+ */
+function saveSkillFileBySlug(slug, content) {
+  const { skills } = getAllSkills();
+  const skill = skills.find(s => s.slug === slug || s.name === slug);
+  if (!skill) throw new Error(`Skill "${slug}" not found`);
+  if (!skill.editable) throw new Error(`Skill "${slug}" is not editable (source: ${skill.source})`);
+  const skillMdPath = path.join(skill.path, 'SKILL.md');
+  fs.writeFileSync(skillMdPath, content, 'utf-8');
+  return { name: skill.name, slug: skill.slug, path: skillMdPath };
+}
+
+/**
+ * Create a new skill globally, using the first available agent's workspace
+ * or the managed (openclaw home) dir for global scope.
+ * scope: 'workspace' | 'agent' | 'global'
+ */
+function createGlobalSkill(skillSlug, scope, content) {
+  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const agentList = config.agents?.list || [];
+
+  // Use defaults.workspace or first agent's workspace for workspace/agent scope
+  const defaultWorkspace = config.agents?.defaults?.workspace || OPENCLAW_WORKSPACE;
+  const firstAgentWorkspace = agentList[0]
+    ? (agentList[0].workspace || defaultWorkspace)
+    : defaultWorkspace;
+
+  let targetDir;
+  switch (scope) {
+    case 'workspace': targetDir = path.join(firstAgentWorkspace, 'skills', skillSlug); break;
+    case 'agent':     targetDir = path.join(firstAgentWorkspace, '.agents', 'skills', skillSlug); break;
+    case 'global':    targetDir = path.join(OPENCLAW_HOME, 'skills', skillSlug); break;
+    default:          throw new Error(`Invalid scope: ${scope}`);
+  }
+
+  if (fs.existsSync(targetDir)) throw new Error(`Skill folder already exists: ${targetDir}`);
+
+  fs.mkdirSync(targetDir, { recursive: true });
+  const skillMdPath = path.join(targetDir, 'SKILL.md');
+  fs.writeFileSync(skillMdPath, content, 'utf-8');
+
+  return { slug: skillSlug, path: targetDir, skillMdPath, scope };
+}
+
+module.exports = {
+  parseSkillFrontmatter,
+  scanSkillDir,
+  getAgentSkills,
+  getAllSkills,
+  getSkillFile,
+  getSkillFileBySlug,
+  saveSkillFile,
+  saveSkillFileBySlug,
+  createSkill,
+  createGlobalSkill,
+  toggleAgentSkill,
+};

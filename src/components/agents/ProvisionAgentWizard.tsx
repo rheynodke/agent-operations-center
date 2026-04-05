@@ -1,0 +1,867 @@
+import { useState, useCallback, useEffect } from "react"
+import { useNavigate } from "react-router-dom"
+import {
+  X, ChevronRight, ChevronLeft, Check, Bot, Zap, Plus, Trash2,
+  MessageCircle, Phone, Eye, EyeOff, Loader2, AlertCircle,
+  Sparkles, Copy, Terminal, Info
+} from "lucide-react"
+import { api } from "@/lib/api"
+import { useAgentStore } from "@/stores"
+import { cn } from "@/lib/utils"
+import type { ChannelBinding, ProvisionAgentOpts } from "@/types"
+import { AvatarPicker } from "@/components/agents/AvatarPicker"
+import { AVATAR_PRESETS } from "@/lib/avatarPresets"
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const EMOJI_PRESETS = [
+  "🤖","✨","🧠","🔮","⚡","🛸","🦾","🎯","🚀","💎",
+  "🐉","🦅","🐺","🦊","🦁","🐻","🤡","🕵️","🧙","👾",
+  "⚙️","🔧","🛡️","⚔️","🗡️","🎪","🌊","🔥","❄️","🌟",
+]
+
+const COLOR_PRESETS = [
+  { label: "Emerald",  value: "#10b981" },
+  { label: "Violet",  value: "#8b5cf6" },
+  { label: "Amber",   value: "#f59e0b" },
+  { label: "Sky",     value: "#0ea5e9" },
+  { label: "Rose",    value: "#f43f5e" },
+  { label: "Teal",    value: "#14b8a6" },
+  { label: "Orange",  value: "#f97316" },
+  { label: "Indigo",  value: "#6366f1" },
+]
+
+const STEPS = [
+  { id: 1, label: "Identity",    icon: Bot },
+  { id: 2, label: "Personality", icon: Sparkles },
+  { id: 3, label: "Channels",    icon: MessageCircle },
+  { id: 4, label: "Review",      icon: Check },
+]
+
+// ── Helper ─────────────────────────────────────────────────────────────────────
+
+function slugify(str: string) {
+  return str.toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 30) || ""
+}
+
+// ── Sub-components ─────────────────────────────────────────────────────────────
+
+function StepIndicator({ current }: { current: number }) {
+  return (
+    <div className="flex items-center gap-0 mb-8">
+      {STEPS.map((step, idx) => {
+        const done = current > step.id
+        const active = current === step.id
+        const Icon = step.icon
+        return (
+          <div key={step.id} className="flex items-center">
+            <div className="flex flex-col items-center gap-1.5">
+              <div className={cn(
+                "w-9 h-9 rounded-full flex items-center justify-center border-2 transition-all duration-300",
+                done  && "bg-emerald-500 border-emerald-500 text-white",
+                active && "bg-white/5 border-emerald-500 text-emerald-400",
+                !done && !active && "bg-white/3 border-white/10 text-white/30"
+              )}>
+                {done ? <Check className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
+              </div>
+              <span className={cn(
+                "text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                active ? "text-emerald-400" : done ? "text-emerald-400/60" : "text-white/20"
+              )}>{step.label}</span>
+            </div>
+            {idx < STEPS.length - 1 && (
+              <div className={cn(
+                "h-px w-16 mx-2 mb-5 transition-colors",
+                done ? "bg-emerald-500/50" : "bg-white/10"
+              )} />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function FieldLabel({ children, required }: { children: React.ReactNode; required?: boolean }) {
+  return (
+    <label className="block text-xs font-semibold text-white/60 uppercase tracking-wider mb-2">
+      {children} {required && <span className="text-rose-400">*</span>}
+    </label>
+  )
+}
+
+function WizardInput({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { className?: string }) {
+  return (
+    <input
+      {...props}
+      className={cn(
+        "w-full bg-black/30 border border-white/10 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder:text-white/25",
+        "focus:outline-none focus:border-emerald-500/60 focus:bg-black/40 transition-all",
+        className
+      )}
+    />
+  )
+}
+
+function WizardTextarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { className?: string }) {
+  return (
+    <textarea
+      {...props}
+      className={cn(
+        "w-full bg-black/30 border border-white/10 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder:text-white/25",
+        "focus:outline-none focus:border-emerald-500/60 focus:bg-black/40 transition-all resize-none",
+        className
+      )}
+    />
+  )
+}
+
+function WizardSelect({ className, ...props }: React.SelectHTMLAttributes<HTMLSelectElement> & { className?: string }) {
+  return (
+    <select
+      {...props}
+      className={cn(
+        "w-full bg-black/30 border border-white/10 rounded-lg px-3.5 py-2.5 text-sm text-white",
+        "focus:outline-none focus:border-emerald-500/60 transition-all appearance-none",
+        className
+      )}
+    />
+  )
+}
+
+// ── Step 1: Identity ──────────────────────────────────────────────────────────
+
+function Step1Identity({
+  form, setForm, models, defaultModel
+}: {
+  form: Partial<ProvisionAgentOpts>
+  setForm: (f: Partial<ProvisionAgentOpts>) => void
+  models: { id: string; name: string }[]
+  defaultModel: string
+}) {
+  const [idManuallySet, setIdManuallySet] = useState(false)
+
+  const handleNameChange = (val: string) => {
+    const updates: Partial<ProvisionAgentOpts> = { name: val }
+    if (!idManuallySet) updates.id = slugify(val)
+    setForm({ ...form, ...updates })
+  }
+
+  const handleIdChange = (val: string) => {
+    const cleaned = val.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 30)
+    setIdManuallySet(true)
+    setForm({ ...form, id: cleaned })
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Name */}
+      <div>
+        <FieldLabel required>Display Name</FieldLabel>
+        <WizardInput
+          id="agent-name"
+          placeholder="e.g. Tadaki, Sales Bot, Code Reviewer…"
+          value={form.name || ""}
+          onChange={e => handleNameChange(e.target.value)}
+          autoFocus
+        />
+      </div>
+
+      {/* ID */}
+      <div>
+        <FieldLabel required>Agent ID</FieldLabel>
+        <div className="relative">
+          <WizardInput
+            id="agent-id"
+            placeholder="e.g. tadaki, sales-bot…"
+            value={form.id || ""}
+            onChange={e => handleIdChange(e.target.value)}
+            className="font-mono"
+          />
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-white/25 font-mono">
+            {(form.id || "").length}/30
+          </span>
+        </div>
+        <p className="text-[10px] text-white/30 mt-1.5">Lowercase letters, numbers, hyphens. Cannot be changed later.</p>
+      </div>
+
+      {/* Avatar / Mascot Picker */}
+      <div>
+        <FieldLabel>Mascot Character</FieldLabel>
+        <AvatarPicker
+          value={form.avatarPresetId || null}
+          onChange={preset => setForm({
+            ...form,
+            avatarPresetId: preset.id,
+            color: preset.color,
+            emoji: "🤖",
+          })}
+        />
+        {form.avatarPresetId && (() => {
+          const preset = AVATAR_PRESETS.find(p => p.id === form.avatarPresetId)
+          return preset ? (
+            <p className="text-[10px] text-white/30 mt-2">
+              Selected: <span className="font-semibold" style={{ color: preset.color }}>{preset.name}</span>
+              {" · "}<span className="italic">{preset.vibe}</span>
+            </p>
+          ) : null
+        })()}
+      </div>
+
+      {/* Theme */}
+      <div>
+        <FieldLabel>Theme / Vibe</FieldLabel>
+        <WizardInput
+          id="agent-theme"
+          placeholder="e.g. operator strategist, creative assistant, data analyst…"
+          value={form.theme || ""}
+          onChange={e => setForm({ ...form, theme: e.target.value })}
+        />
+        <p className="text-[10px] text-white/30 mt-1.5">Becomes agent's identity theme in the config.</p>
+      </div>
+
+      {/* Description */}
+      <div>
+        <FieldLabel>Description</FieldLabel>
+        <WizardInput
+          id="agent-description"
+          placeholder="What does this agent do?"
+          value={form.description || ""}
+          onChange={e => setForm({ ...form, description: e.target.value })}
+        />
+        <p className="text-[10px] text-white/30 mt-1.5">Shown in the dashboard. Saved to local SQLite profile.</p>
+      </div>
+    </div>
+  )
+}
+
+// ── Step 2: Personality ───────────────────────────────────────────────────────
+
+function Step2Personality({
+  form, setForm, models, defaultModel
+}: {
+  form: Partial<ProvisionAgentOpts>
+  setForm: (f: Partial<ProvisionAgentOpts>) => void
+  models: { id: string; name: string }[]
+  defaultModel: string
+}) {
+  return (
+    <div className="space-y-5">
+      {/* Model */}
+      <div>
+        <FieldLabel>AI Model</FieldLabel>
+        <div className="relative">
+          <WizardSelect
+            id="agent-model"
+            value={form.model || defaultModel}
+            onChange={e => setForm({ ...form, model: e.target.value })}
+          >
+            {defaultModel && (
+              <option value={defaultModel}>{defaultModel} (default)</option>
+            )}
+            {models.filter(m => m.id !== defaultModel).map(m => (
+              <option key={m.id} value={m.id}>{m.name || m.id}</option>
+            ))}
+          </WizardSelect>
+          <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/30">
+            <ChevronRight className="w-4 h-4 rotate-90" />
+          </div>
+        </div>
+        <p className="text-[10px] text-white/30 mt-1.5">
+          Default: <span className="text-white/50 font-mono">{defaultModel || "not set"}</span>
+        </p>
+      </div>
+
+      {/* Soul Content */}
+      <div>
+        <FieldLabel>Persona / Soul</FieldLabel>
+        <WizardTextarea
+          id="agent-soul"
+          rows={7}
+          placeholder={`Describe the agent's personality and style...\n\nExample:\n_A sharp, no-nonsense strategist who cuts to the point._\n\n**Decisive.** Acts on incomplete information.\n**Efficient.** No fluff, maximum impact.\n**Resourceful.** Finds solutions where others see walls.`}
+          value={form.soulContent || ""}
+          onChange={e => setForm({ ...form, soulContent: e.target.value })}
+        />
+        <p className="text-[10px] text-white/30 mt-1.5">
+          This becomes <span className="text-white/50 font-mono">SOUL.md</span> in the agent's workspace. Leave blank for a default template.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ── Step 3: Channels ──────────────────────────────────────────────────────────
+
+function TelegramBinding({
+  binding, onChange, onRemove
+}: {
+  binding: ChannelBinding
+  onChange: (b: ChannelBinding) => void
+  onRemove: () => void
+}) {
+  const [showToken, setShowToken] = useState(false)
+
+  return (
+    <div className="bg-sky-500/5 border border-sky-500/20 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-sky-500/20 flex items-center justify-center">
+            <Zap className="w-3.5 h-3.5 text-sky-400" />
+          </div>
+          <span className="text-sm font-bold text-sky-300">Telegram</span>
+        </div>
+        <button onClick={onRemove} className="text-white/30 hover:text-rose-400 transition-colors">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div>
+        <FieldLabel required>Bot Token</FieldLabel>
+        <div className="relative">
+          <WizardInput
+            type={showToken ? "text" : "password"}
+            placeholder="123456789:AABBccdd..."
+            value={binding.botToken || ""}
+            onChange={e => onChange({ ...binding, botToken: e.target.value })}
+            className="pr-9 font-mono text-xs"
+          />
+          <button
+            type="button"
+            onClick={() => setShowToken(!showToken)}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors"
+          >
+            {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+        <p className="text-[10px] text-white/30 mt-1.5">Get from <span className="text-sky-400">@BotFather</span> on Telegram.</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <FieldLabel>DM Policy</FieldLabel>
+          <WizardSelect
+            value={binding.dmPolicy || "pairing"}
+            onChange={e => onChange({ ...binding, dmPolicy: e.target.value as ChannelBinding["dmPolicy"] })}
+          >
+            <option value="pairing">pairing</option>
+            <option value="allowlist">allowlist</option>
+            <option value="open">open</option>
+            <option value="disabled">disabled</option>
+          </WizardSelect>
+        </div>
+        <div>
+          <FieldLabel>Streaming</FieldLabel>
+          <WizardSelect
+            value={binding.streaming || "partial"}
+            onChange={e => onChange({ ...binding, streaming: e.target.value as ChannelBinding["streaming"] })}
+          >
+            <option value="partial">partial</option>
+            <option value="full">full</option>
+            <option value="off">off</option>
+          </WizardSelect>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WhatsAppBinding({
+  binding, onChange, onRemove
+}: {
+  binding: ChannelBinding
+  onChange: (b: ChannelBinding) => void
+  onRemove: () => void
+}) {
+  const [allowFromText, setAllowFromText] = useState(
+    (binding.allowFrom || []).join(", ")
+  )
+
+  const handleAllowFromChange = (val: string) => {
+    setAllowFromText(val)
+    const list = val.split(/[,\n]/).map(s => s.trim()).filter(Boolean)
+    onChange({ ...binding, allowFrom: list })
+  }
+
+  return (
+    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-emerald-500/20 flex items-center justify-center">
+            <Phone className="w-3.5 h-3.5 text-emerald-400" />
+          </div>
+          <span className="text-sm font-bold text-emerald-300">WhatsApp</span>
+        </div>
+        <button onClick={onRemove} className="text-white/30 hover:text-rose-400 transition-colors">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* QR notice */}
+      <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+        <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+        <p className="text-[11px] text-amber-300/80">
+          <strong>QR pairing required</strong> after provisioning. Run <span className="font-mono text-amber-200">openclaw channels login --channel whatsapp --account {"{agentId}"}</span> to link your WhatsApp number.
+        </p>
+      </div>
+
+      <div>
+        <FieldLabel>DM Policy</FieldLabel>
+        <WizardSelect
+          value={binding.dmPolicy || "pairing"}
+          onChange={e => onChange({ ...binding, dmPolicy: e.target.value as ChannelBinding["dmPolicy"] })}
+        >
+          <option value="pairing">pairing</option>
+          <option value="allowlist">allowlist</option>
+          <option value="open">open</option>
+          <option value="disabled">disabled</option>
+        </WizardSelect>
+      </div>
+
+      <div>
+        <FieldLabel>Allow From (phone numbers)</FieldLabel>
+        <WizardInput
+          placeholder="+15551234567, +628123456789…"
+          value={allowFromText}
+          onChange={e => handleAllowFromChange(e.target.value)}
+        />
+        <p className="text-[10px] text-white/30 mt-1.5">Comma-separated. Leave blank to allow based on DM policy.</p>
+      </div>
+    </div>
+  )
+}
+
+function Step3Channels({
+  form, setForm
+}: {
+  form: Partial<ProvisionAgentOpts>
+  setForm: (f: Partial<ProvisionAgentOpts>) => void
+}) {
+  const channels = form.channels || []
+
+  const hasTelegram = channels.some(c => c.type === "telegram")
+  const hasWhatsApp = channels.some(c => c.type === "whatsapp")
+
+  const addTelegram = () => {
+    if (hasTelegram) return
+    setForm({ ...form, channels: [...channels, { type: "telegram", dmPolicy: "pairing", streaming: "partial" }] })
+  }
+
+  const addWhatsApp = () => {
+    if (hasWhatsApp) return
+    setForm({ ...form, channels: [...channels, { type: "whatsapp", dmPolicy: "pairing", allowFrom: [] }] })
+  }
+
+  const updateChannel = (idx: number, binding: ChannelBinding) => {
+    const updated = [...channels]
+    updated[idx] = binding
+    setForm({ ...form, channels: updated })
+  }
+
+  const removeChannel = (idx: number) => {
+    setForm({ ...form, channels: channels.filter((_, i) => i !== idx) })
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[11px] text-white/40">
+        Bind this agent to one or more communication channels. At least <strong className="text-white/60">one channel</strong> is required.
+      </p>
+
+      {/* Existing bindings */}
+      {channels.map((ch, idx) => (
+        ch.type === "telegram"
+          ? <TelegramBinding key={idx} binding={ch} onChange={b => updateChannel(idx, b)} onRemove={() => removeChannel(idx)} />
+          : <WhatsAppBinding key={idx} binding={ch} onChange={b => updateChannel(idx, b)} onRemove={() => removeChannel(idx)} />
+      ))}
+
+      {/* Add buttons */}
+      <div className="flex gap-2">
+        {!hasTelegram && (
+          <button
+            type="button"
+            onClick={addTelegram}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400 text-xs font-semibold hover:bg-sky-500/20 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add Telegram
+          </button>
+        )}
+        {!hasWhatsApp && (
+          <button
+            type="button"
+            onClick={addWhatsApp}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/20 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add WhatsApp
+          </button>
+        )}
+      </div>
+
+      {channels.length === 0 && (
+        <div className="flex items-center gap-2 text-amber-400/60 text-[11px] mt-2">
+          <AlertCircle className="w-3.5 h-3.5" />
+          Add at least one channel to continue.
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Step 4: Review ────────────────────────────────────────────────────────────
+
+function ReviewRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex justify-between items-start gap-4 py-2 border-b border-white/4">
+      <span className="text-[11px] text-white/40 font-medium shrink-0">{label}</span>
+      <span className={cn("text-[11px] text-right", mono ? "font-mono text-white/70" : "text-white/70")}>{value || "—"}</span>
+    </div>
+  )
+}
+
+function Step4Review({
+  form, restartGateway, setRestartGateway
+}: {
+  form: Partial<ProvisionAgentOpts>
+  restartGateway: boolean
+  setRestartGateway: (v: boolean) => void
+}) {
+  const workspacePath = `~/.openclaw/workspaces/${form.id}`
+  const agentDirPath  = `~/.openclaw/agents/${form.id}/agent`
+
+  const channels = form.channels || []
+  const hasWhatsApp = channels.some(c => c.type === "whatsapp")
+
+  return (
+    <div className="space-y-5">
+      {/* Summary card */}
+      <div className="bg-white/2 rounded-xl border border-white/6 overflow-hidden">
+        <div className="px-4 py-3 bg-white/2 border-b border-white/4">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">{form.emoji || "🤖"}</span>
+            <div>
+              <p className="text-sm font-bold text-white/90">{form.name}</p>
+              <p className="text-[10px] font-mono text-white/30">{form.id}</p>
+            </div>
+            {form.color && (
+              <div className="ml-auto w-4 h-4 rounded-full border border-white/20" style={{ backgroundColor: form.color }} />
+            )}
+          </div>
+        </div>
+
+        <div className="px-4 py-1">
+          <ReviewRow label="Model" value={form.model || "default"} mono />
+          <ReviewRow label="Theme" value={form.theme || ""} />
+          <ReviewRow label="Description" value={form.description || ""} />
+          <ReviewRow label="Workspace" value={workspacePath} mono />
+          <ReviewRow label="Agent Dir" value={agentDirPath} mono />
+          <ReviewRow label="Channels" value={channels.map(c => c.type).join(", ")} />
+        </div>
+      </div>
+
+      {/* Files to create */}
+      <div>
+        <p className="text-[10px] text-white/40 font-semibold uppercase tracking-wider mb-2">Files that will be created</p>
+        <div className="flex flex-wrap gap-1.5">
+          {["IDENTITY.md", "SOUL.md", "AGENTS.md", "TOOLS.md", "USER.md"].map(f => (
+            <span key={f} className="px-2 py-1 bg-white/3 border border-white/10 rounded text-[10px] font-mono text-white/50">{f}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* WhatsApp pairing notice */}
+      {hasWhatsApp && (
+        <div className="bg-amber-500/8 border border-amber-500/20 rounded-xl p-4">
+          <div className="flex items-start gap-2 mb-3">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-xs font-bold text-amber-300 mb-1">WhatsApp QR Pairing Required</p>
+              <p className="text-[11px] text-amber-300/60">After provisioning, run this command in your terminal to link the WhatsApp number:</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 bg-black/40 rounded-lg px-3 py-2.5">
+            <Terminal className="w-3.5 h-3.5 text-white/30 shrink-0" />
+            <code className="text-[11px] font-mono text-emerald-300 flex-1">
+              openclaw channels login --channel whatsapp --account {form.id}
+            </code>
+            <button
+              type="button"
+              onClick={() => navigator.clipboard?.writeText(`openclaw channels login --channel whatsapp --account ${form.id}`)}
+              className="text-white/30 hover:text-white/60 transition-colors"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Restart gateway toggle */}
+      <label className="flex items-center gap-3 cursor-pointer group">
+        <div
+          onClick={() => setRestartGateway(!restartGateway)}
+          className={cn(
+            "w-9 h-5 rounded-full relative transition-colors duration-200",
+            restartGateway ? "bg-emerald-500" : "bg-white/10"
+          )}
+        >
+          <div className={cn(
+            "w-4 h-4 rounded-full bg-white absolute top-0.5 transition-transform duration-200 shadow",
+            restartGateway ? "translate-x-4" : "translate-x-0.5"
+          )} />
+        </div>
+        <div>
+          <span className="text-sm font-medium text-white/70 group-hover:text-white transition-colors">
+            Restart gateway after provisioning
+          </span>
+          <p className="text-[10px] text-white/30">Required for the new agent to start receiving messages.</p>
+        </div>
+      </label>
+    </div>
+  )
+}
+
+// ── Main Wizard ───────────────────────────────────────────────────────────────
+
+interface Props {
+  onClose: () => void
+}
+
+export function ProvisionAgentWizard({ onClose }: Props) {
+  const navigate = useNavigate()
+  const setAgents = useAgentStore(s => s.setAgents)
+
+  const [step, setStep] = useState(1)
+  const [form, setForm] = useState<Partial<ProvisionAgentOpts>>({
+    emoji: "🤖",
+    channels: [],
+    model: "",
+  })
+  const [restartGateway, setRestartGateway] = useState(true)
+  const [models, setModels] = useState<{ id: string; name: string }[]>([])
+  const [defaultModel, setDefaultModel] = useState("")
+  const [errors, setErrors] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const [done, setDone] = useState<{ agentId: string; whatsappPairingRequired: boolean } | null>(null)
+
+  // Load models from first agent detail (has availableModels)
+  useEffect(() => {
+    api.getAgentDetail("main").then(d => {
+      const ms = (d as any).availableModels || []
+      setModels(ms.map((m: any) => ({ id: m.id || m, name: m.name || m.id || m })))
+      const primary = (d as any).config?.model || ""
+      setDefaultModel(primary)
+      setForm(f => ({ ...f, model: f.model || primary }))
+    }).catch(() => {})
+  }, [])
+
+  // ── Validation per step ────────────────────────────────────────────────────
+
+  const validateStep = useCallback(() => {
+    const errs: string[] = []
+    if (step === 1) {
+      if (!form.name?.trim()) errs.push("Display name is required")
+      if (!form.id?.trim()) errs.push("Agent ID is required")
+      if (form.id && !/^[a-z0-9][a-z0-9-]{0,29}$/.test(form.id)) {
+        errs.push("Agent ID must start with a letter/number and contain only lowercase letters, numbers, hyphens (max 30)")
+      }
+    }
+    if (step === 3) {
+      if (!form.channels || form.channels.length === 0) {
+        errs.push("At least one channel binding is required")
+      }
+      for (const ch of form.channels || []) {
+        if (ch.type === "telegram" && !ch.botToken?.trim()) {
+          errs.push("Telegram bot token is required")
+        }
+        if (ch.type === "telegram" && ch.botToken && !/^\d+:[A-Za-z0-9_-]+$/.test(ch.botToken.trim())) {
+          errs.push("Telegram bot token format is invalid")
+        }
+      }
+    }
+    setErrors(errs)
+    return errs.length === 0
+  }, [step, form])
+
+  const handleNext = () => {
+    if (!validateStep()) return
+    setStep(s => Math.min(s + 1, 4))
+  }
+
+  const handleBack = () => {
+    setErrors([])
+    setStep(s => Math.max(s - 1, 1))
+  }
+
+  // ── Provision ─────────────────────────────────────────────────────────────
+
+  const handleProvision = async () => {
+    if (!validateStep()) return
+    setLoading(true)
+    setErrors([])
+    try {
+      const opts: ProvisionAgentOpts = {
+        id: form.id!.trim(),
+        name: form.name!.trim(),
+        emoji: form.emoji || "🤖",
+        model: form.model || defaultModel || undefined,
+        theme: form.theme?.trim() || undefined,
+        description: form.description?.trim() || undefined,
+        color: form.color || undefined,
+        soulContent: form.soulContent?.trim() || undefined,
+        channels: form.channels || [],
+      }
+
+      const result = await api.provisionAgent(opts)
+
+      if (restartGateway) {
+        try { await api.restartGateway() } catch {}
+      }
+
+      // Refresh agent list
+      try {
+        const data = await api.getAgents() as any
+        setAgents(data.agents || [])
+      } catch {}
+      setDone({ agentId: result.agentId, whatsappPairingRequired: result.whatsappPairingRequired })
+    } catch (err: any) {
+      setErrors([err.message || "Provisioning failed"])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Success screen ─────────────────────────────────────────────────────────
+
+  if (done) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(16px)" }}>
+        <div className="bg-[#12141A] border border-white/10 rounded-2xl p-8 w-full max-w-md text-center">
+          <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 flex items-center justify-center mx-auto mb-4">
+            <Check className="w-8 h-8 text-emerald-400" />
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">Agent Provisioned!</h2>
+          <p className="text-sm text-white/50 mb-1">
+            <span className="font-mono text-white/70">{done.agentId}</span> is ready.
+          </p>
+          {restartGateway && (
+            <p className="text-xs text-emerald-400/60 mb-2">Gateway restarted ✓</p>
+          )}
+          {done.whatsappPairingRequired && (
+            <div className="my-4 bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-left">
+              <p className="text-xs font-bold text-amber-300 mb-2">Complete WhatsApp pairing</p>
+              <div className="flex items-center gap-2 bg-black/40 rounded-lg px-3 py-2">
+                <code className="text-[11px] font-mono text-emerald-300 flex-1">
+                  openclaw channels login --channel whatsapp --account {done.agentId}
+                </code>
+                <button onClick={() => navigator.clipboard?.writeText(`openclaw channels login --channel whatsapp --account ${done.agentId}`)} className="text-white/30 hover:text-white/60">
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex gap-3 mt-6">
+            <button
+              onClick={onClose}
+              className="flex-1 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-white/60 text-sm hover:bg-white/10 transition-colors"
+            >
+              Close
+            </button>
+            <button
+              onClick={() => { navigate(`/agents/${done.agentId}`); onClose() }}
+              className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600 transition-colors"
+            >
+              Open Agent →
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Wizard layout ──────────────────────────────────────────────────────────
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(16px)" }}>
+      <div className="bg-[#12141A] border border-white/10 rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/6 shrink-0">
+          <div>
+            <h2 className="text-base font-bold text-white">Provision Agent</h2>
+            <p className="text-[11px] text-white/40">Configure and deploy a new autonomous agent.</p>
+          </div>
+          <button onClick={onClose} className="text-white/30 hover:text-white/70 transition-colors p-1.5 rounded-lg hover:bg-white/5">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Step indicator */}
+        <div className="px-6 pt-5 shrink-0">
+          <StepIndicator current={step} />
+        </div>
+
+        {/* Step content */}
+        <div className="flex-1 overflow-y-auto px-6 pb-4">
+          {step === 1 && <Step1Identity form={form} setForm={setForm} models={models} defaultModel={defaultModel} />}
+          {step === 2 && <Step2Personality form={form} setForm={setForm} models={models} defaultModel={defaultModel} />}
+          {step === 3 && <Step3Channels form={form} setForm={setForm} />}
+          {step === 4 && <Step4Review form={form} restartGateway={restartGateway} setRestartGateway={setRestartGateway} />}
+        </div>
+
+        {/* Errors */}
+        {errors.length > 0 && (
+          <div className="mx-6 mb-3 shrink-0">
+            <div className="bg-rose-500/10 border border-rose-500/20 rounded-lg px-4 py-3 space-y-1">
+              {errors.map((e, i) => (
+                <p key={i} className="text-xs text-rose-400 flex items-center gap-2">
+                  <AlertCircle className="w-3 h-3 shrink-0" />
+                  {e}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Footer nav */}
+        <div className="flex items-center justify-between px-6 py-4 border-t border-white/6 shrink-0">
+          <button
+            onClick={handleBack}
+            disabled={step === 1}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white/50 hover:text-white hover:bg-white/5 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Back
+          </button>
+
+          <span className="text-[10px] text-white/25 font-mono">Step {step} of 4</span>
+
+          {step < 4 ? (
+            <button
+              onClick={handleNext}
+              className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm font-semibold hover:bg-emerald-500/20 transition-all"
+            >
+              Next
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={handleProvision}
+              disabled={loading}
+              className="flex items-center gap-2 px-5 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {loading ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Provisioning…</>
+              ) : (
+                <><Zap className="w-4 h-4" /> Provision Agent</>
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

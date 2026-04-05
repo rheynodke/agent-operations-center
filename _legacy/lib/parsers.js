@@ -239,8 +239,6 @@ function parseGatewaySessions() {
         let messageCount = 0;
         let totalCost = 0;
         let toolCalls = 0;
-        let sessionModel = '';
-        let sessionTotalTokens = 0;
 
         if (hasLog) {
           try {
@@ -275,12 +273,6 @@ function parseGatewaySessions() {
                   lastRole = entry.message.role || '';
                   if (entry.message.usage?.cost?.total) {
                     totalCost += entry.message.usage.cost.total;
-                  }
-                  if (entry.message.model && !sessionModel) {
-                    sessionModel = entry.message.model;
-                  }
-                  if (entry.message.usage?.totalTokens) {
-                    sessionTotalTokens += entry.message.usage.totalTokens;
                   }
                   if (entry.message.content) {
                     if (Array.isArray(entry.message.content)) {
@@ -328,8 +320,6 @@ function parseGatewaySessions() {
           channelId,
           messageCount,
           toolCalls,
-          model: sessionModel,
-          totalTokens: sessionTotalTokens,
           cost: Math.round(totalCost * 10000) / 10000,
           lastMessage: lastMessage.replace(/\n/g, ' ').trim(),
           lastRole,
@@ -357,7 +347,7 @@ function parseGatewaySessions() {
  *   <actual user message here>
  */
 function cleanUserMessage(text, role) {
-  if (role !== 'user') return text;
+  if (role !== 'user') return text.slice(0, 500);
 
   // Try to extract text after metadata blocks
   // The actual user message comes after the last ``` block
@@ -365,7 +355,7 @@ function cleanUserMessage(text, role) {
   if (parts.length >= 5) {
     // Format: prefix```json1```middle```json2```actual_message
     const msg = parts.slice(4).join('```').trim();
-    if (msg.length > 0) return msg;
+    if (msg.length > 0) return msg.slice(0, 500);
   }
 
   // Fallback: remove everything before the last metadata section
@@ -375,11 +365,11 @@ function cleanUserMessage(text, role) {
     const endBlock = afterSender.indexOf('```', afterSender.indexOf('```') + 3);
     if (endBlock >= 0) {
       const msg = afterSender.slice(endBlock + 3).trim();
-      if (msg.length > 0) return msg;
+      if (msg.length > 0) return msg.slice(0, 500);
     }
   }
 
-  return text;
+  return text.slice(0, 500);
 }
 
 /**
@@ -401,7 +391,7 @@ function extractSender(text, role) {
   return null;
 }
 
-function parseGatewaySessionEvents(sessionId, limit = 500) {
+function parseGatewaySessionEvents(sessionId, limit = 100) {
   if (!fs.existsSync(AGENTS_DIR)) return [];
 
   // Find the JSONL file across all agents
@@ -423,22 +413,6 @@ function parseGatewaySessionEvents(sessionId, limit = 500) {
     const lines = content.trim().split('\n').filter(Boolean);
     const events = [];
 
-    // First pass: build a map of toolCallId → toolName from toolCall parts
-    // so we can label toolResult entries with the correct tool name
-    const toolCallNames = new Map();
-    for (const line of lines.slice(-limit)) {
-      try {
-        const entry = JSON.parse(line);
-        const msg = entry.message;
-        if (!msg || !Array.isArray(msg.content)) continue;
-        for (const part of msg.content) {
-          if (part.type === 'toolCall' && part.id && part.name) {
-            toolCallNames.set(part.id, part.name);
-          }
-        }
-      } catch {}
-    }
-
     for (const line of lines.slice(-limit)) {
       try {
         const entry = JSON.parse(line);
@@ -449,67 +423,20 @@ function parseGatewaySessionEvents(sessionId, limit = 500) {
         let tools = [];
         let thinking = '';
 
-        // Handle role="toolResult" entries (separate from assistant messages)
-        if (msg.role === 'toolResult') {
-          const toolName = msg.toolName || toolCallNames.get(msg.toolCallId) || 'tool';
-          let output = '';
-          if (Array.isArray(msg.content)) {
-            output = msg.content.map(c => {
-              if (typeof c === 'string') return c;
-              if (c.type === 'text') return c.text || '';
-              return JSON.stringify(c, null, 2);
-            }).join('\n');
-          } else if (typeof msg.content === 'string') {
-            output = msg.content;
-          } else {
-            output = JSON.stringify(msg.content || '', null, 2);
-          }
-
-          events.push({
-            id: entry.id || msg.toolCallId,
-            role: 'toolResult',
-            text: '',
-            sender: null,
-            thinking: '',
-            tools: [{
-              name: toolName,
-              output: output,
-            }],
-            model: '',
-            cost: 0,
-            tokens: null,
-            timestamp: entry.timestamp || (msg.timestamp ? new Date(msg.timestamp).toISOString() : null),
-            stopReason: null,
-            isError: msg.isError || false,
-          });
-          continue;
-        }
-
         if (Array.isArray(msg.content)) {
           for (const part of msg.content) {
             if (part.type === 'text') text += part.text || '';
-            if (part.type === 'thinking') thinking = part.thinking || '';
-            // Handle toolCall (camelCase) — OpenClaw gateway format
-            if (part.type === 'toolCall') {
-              tools.push({
-                name: part.name || 'unknown',
-                input: typeof part.arguments === 'string'
-                  ? part.arguments
-                  : JSON.stringify(part.arguments || {}, null, 2),
-                toolCallId: part.id || null,
-              });
-            }
-            // Handle tool_use / tool_call — Anthropic / OpenAI format (fallback)
+            if (part.type === 'thinking') thinking = (part.thinking || '').slice(0, 200);
             if (part.type === 'tool_use' || part.type === 'tool_call') {
               tools.push({
                 name: part.name || part.function?.name || 'unknown',
-                input: JSON.stringify(part.input || part.function?.arguments || {}, null, 2),
+                input: JSON.stringify(part.input || part.function?.arguments || {}).slice(0, 200),
               });
             }
             if (part.type === 'tool_result') {
               tools.push({
                 name: 'result',
-                output: typeof part.content === 'string' ? part.content : JSON.stringify(part.content || '', null, 2),
+                output: (typeof part.content === 'string' ? part.content : JSON.stringify(part.content || '')).slice(0, 200),
               });
             }
           }
@@ -524,7 +451,7 @@ function parseGatewaySessionEvents(sessionId, limit = 500) {
           sender: extractSender(text, msg.role),
           thinking: thinking,
           tools,
-          model: msg.model || (msg.provider ? `${msg.provider}/${msg.model || ''}` : ''),
+          model: msg.model || `${msg.provider || ''}/${msg.model || ''}`,
           cost: msg.usage?.cost?.total || 0,
           tokens: msg.usage ? {
             input: msg.usage.input || 0,

@@ -1,0 +1,327 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ─── Obsidian Claw Design System — Mapped to shadcn/ui CSS vars ─── */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Obsidian Claw custom surface tokens */
+  --color-surface: var(--surface);
+  --color-surface-low: var(--surface-low);
+  --color-surface-high: var(--surface-high);
+  --color-surface-highest: var(--surface-highest);
+  --color-surface-bright: var(--surface-bright);
+
+  /* Status color tokens */
+  --color-status-active-bg: var(--status-active-bg);
+  --color-status-active-text: var(--status-active-text);
+  --color-status-idle-bg: var(--status-idle-bg);
+  --color-status-idle-text: var(--status-idle-text);
+  --color-status-paused-bg: var(--status-paused-bg);
+  --color-status-paused-text: var(--status-paused-text);
+  --color-status-error-bg: var(--status-error-bg);
+  --color-status-error-text: var(--status-error-text);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+
+  --font-sans: 'Inter', sans-serif;
+  --font-display: 'Manrope', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* ─── Light Mode ─── */
+:root {
+  --radius: 0.75rem;
+
+  /* Obsidian Claw Surface Hierarchy (Light) */
+  --surface:          #ffffff;
+  --surface-low:      #fdfdfd;
+  --surface-container:#f8fafc;
+  --surface-high:     #f1f5f9;
+  --surface-highest:  #e2e8f0;
+  --surface-bright:   #ffffff;
+
+  /* shadcn tokens → Obsidian Claw mapping (Light) */
+  --background:               #f8fafc;
+  --foreground:               #020617;
+  --card:                     #ffffff;
+  --card-foreground:          #0f172a;
+  --popover:                  #ffffff;
+  --popover-foreground:       #0f172a;
+  --primary:                  #7e22ce;
+  --primary-foreground:       #ffffff;
+  --secondary:                #f1f5f9;
+  --secondary-foreground:     #0f172a;
+  --muted:                    #f1f5f9;
+  --muted-foreground:         #64748b;
+  --accent:                   #f3e8ff;
+  --accent-foreground:        #581c87;
+  --destructive:              oklch(0.604 0.191 22.216);
+  --border:                   rgba(0, 0, 0, 0.1);
+  --input:                    #f1f5f9;
+  --ring:                     rgba(126, 34, 206, 0.4);
+
+  /* Sidebar (Matches light card/bg) */
+  --sidebar:                  #ffffff;
+  --sidebar-foreground:       #0f172a;
+  --sidebar-primary:          #7e22ce;
+  --sidebar-primary-foreground:#ffffff;
+  --sidebar-accent:           #f8fafc;
+  --sidebar-accent-foreground:#0f172a;
+  --sidebar-border:           rgba(0, 0, 0, 0.1);
+  --sidebar-ring:             rgba(126, 34, 206, 0.4);
+
+  /* Status Chips */
+  --status-active-bg:   rgba(76, 175, 80, 0.15);
+  --status-active-text: #2e7d32;
+  --status-idle-bg:     rgba(0, 0, 0, 0.05);
+  --status-idle-text:   #475569;
+  --status-paused-bg:   rgba(255, 152, 0, 0.15);
+  --status-paused-text: #ef6c00;
+  --status-error-bg:    rgba(239, 83, 80, 0.15);
+  --status-error-text:  #c62828;
+
+  /* Logo tokens */
+  --logo-bg-from:     #f3e8ff;
+  --logo-bg-to:       #ede5ff;
+  --logo-bg-stroke:   #d8b4fe;
+  --logo-node:        #7e22ce;
+  --logo-node-to:     #9333ea;
+  --logo-center:      #6b21a8;
+  --logo-center-to:   #7e22ce;
+  --logo-line:        #a855f7;
+  --logo-glow:        rgba(126, 34, 206, 0.1);
+
+  /* Glass effect */
+  --glass-bg:    rgba(255, 255, 255, 0.75);
+  --glass-blur:  20px;
+  --shadow-elevated: 0 10px 30px rgba(0, 0, 0, 0.1);
+  --shadow-glow: 0 0 0 1px rgba(126, 34, 206, 0.2);
+}
+
+/* ─── Obsidian Claw: Dark Mode ─── */
+.dark {
+  /* Obsidian Claw Surface Hierarchy */
+  --surface:          #0e0e0e;
+  --surface-low:      #131313;
+  --surface-container:#191a1a;
+  --surface-high:     #1f2020;
+  --surface-highest:  #252626;
+  --surface-bright:   #2c2c2c;
+
+  /* shadcn tokens → Obsidian Claw mapping */
+  --background:               #0e0e0e;
+  --foreground:               #e7e5e4;
+  --card:                     #131313;
+  --card-foreground:          #e7e5e4;
+  --popover:                  #1f2020;
+  --popover-foreground:       #e7e5e4;
+  --primary:                  #d0bcff;
+  --primary-foreground:       #1a0950;
+  --secondary:                #191a1a;
+  --secondary-foreground:     #e7e5e4;
+  --muted:                    #191a1a;
+  --muted-foreground:         #acabaa;
+  --accent:                   #5516be;
+  --accent-foreground:        #d9c8ff;
+  --destructive:              oklch(0.704 0.191 22.216);
+  --border:                   rgba(72, 72, 72, 0.15);
+  --input:                    #252626;
+  --ring:                     rgba(208, 188, 255, 0.4);
+
+  /* Sidebar (matches surface-low) */
+  --sidebar:                  #0e0e0e;
+  --sidebar-foreground:       #e7e5e4;
+  --sidebar-primary:          #d0bcff;
+  --sidebar-primary-foreground:#1a0950;
+  --sidebar-accent:           #191a1a;
+  --sidebar-accent-foreground:#e7e5e4;
+  --sidebar-border:           rgba(72, 72, 72, 0.15);
+  --sidebar-ring:             rgba(208, 188, 255, 0.4);
+
+  /* Status Chips — muted */
+  --status-active-bg:   rgba(76, 175, 80, 0.15);
+  --status-active-text: #81c784;
+  --status-idle-bg:     rgba(255, 255, 255, 0.06);
+  --status-idle-text:   #acabaa;
+  --status-paused-bg:   rgba(255, 152, 0, 0.15);
+  --status-paused-text: #ffb74d;
+  --status-error-bg:    rgba(239, 83, 80, 0.15);
+  --status-error-text:  #ef9a9a;
+
+  /* Logo tokens */
+  --logo-bg-from:     #2a2040;
+  --logo-bg-to:       #151020;
+  --logo-bg-stroke:   #3b2d5e;
+  --logo-node:        #ddd6fe;
+  --logo-node-to:     #b197fc;
+  --logo-center:      #e9d5ff;
+  --logo-center-to:   #c4b5fd;
+  --logo-line:        #c4b5fd;
+  --logo-glow:        rgba(196, 181, 253, 0.12);
+
+  /* Glass effect */
+  --glass-bg:    rgba(14, 14, 14, 0.75);
+  --glass-blur:  20px;
+  --shadow-elevated: 0 20px 40px rgba(0, 0, 0, 0.45);
+  --shadow-glow: 0 0 0 1px rgba(208, 188, 255, 0.15);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(208, 188, 255, 0.2);
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(208, 188, 255, 0.4);
+  }
+
+  /* Display / headline font */
+  h1, h2, h3 {
+    font-family: var(--font-display);
+  }
+
+  /* Mono elements */
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+@layer utilities {
+  /* Surface hierarchy utilities */
+  .surface          { background-color: var(--surface); }
+  .surface-low      { background-color: var(--surface-low); }
+  .surface-container{ background-color: var(--surface-container); }
+  .surface-high     { background-color: var(--surface-high); }
+  .surface-highest  { background-color: var(--surface-highest); }
+  .surface-bright   { background-color: var(--surface-bright); }
+
+  /* Glass utility */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+  }
+
+  /* AI Pulse animation */
+  .pulse-dot {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(208, 188, 255, 0.4); }
+    50% { opacity: 0.7; transform: scale(1.15); box-shadow: 0 0 0 4px rgba(208, 188, 255, 0); }
+  }
+
+  /* Status chip utilities */
+  .status-active  { background-color: var(--status-active-bg); color: var(--status-active-text); }
+  .status-idle    { background-color: var(--status-idle-bg); color: var(--status-idle-text); }
+  .status-paused  { background-color: var(--status-paused-bg); color: var(--status-paused-text); }
+  .status-error   { background-color: var(--status-error-bg); color: var(--status-error-text); }
+
+  /* Ghost border (accessibility, 15% opacity) */
+  .ghost-border {
+    box-shadow: 0 0 0 1px rgba(72, 72, 72, 0.15);
+  }
+
+  /* Glow border on focus/hover */
+  .glow-border {
+    box-shadow: var(--shadow-glow);
+  }
+
+  /* Fade in animation */
+  .animate-fade-in {
+    animation: fadeIn 0.2s ease-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Slide in from left */
+  .animate-slide-in {
+    animation: slideIn 0.25s ease-out;
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-8px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  /* Text color utilities */
+  .text-on-surface         { color: #e7e5e4; }
+  .text-on-surface-variant { color: #acabaa; }
+  .text-primary-dim        { color: #c4acff; }
+}
+
+/* ─── Agent Character ────────────────────────────────────── */
+
+.agent-character {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: agent-float 4s ease-in-out infinite;
+}
+
+.agent-logo-float {
+  animation: agent-float 4s ease-in-out infinite;
+}
+
+@keyframes agent-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-8px); }
+}

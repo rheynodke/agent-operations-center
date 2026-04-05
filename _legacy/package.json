@@ -1,0 +1,24 @@
+{
+  "name": "openclaw-dashboard",
+  "version": "1.0.0",
+  "description": "OpenClaw Agent Orchestration Dashboard — Real-time monitoring for AI agent tasks, sessions, and system health",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "generate-token": "node -e \"const c=require('crypto');console.log(c.randomBytes(32).toString('hex'))\""
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.2",
+    "chokidar": "^4.0.3",
+    "helmet": "^8.1.0",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^7.5.0",
+    "dotenv": "^16.5.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "private": true
+}
