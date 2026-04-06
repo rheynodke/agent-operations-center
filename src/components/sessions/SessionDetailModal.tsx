@@ -5,7 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Loader2, ChevronDown, Wrench, User, Zap, Hash, DollarSign, Coins } from "lucide-react"
-import { useSessionStore, useSessionLiveStore, useAgentStore } from "@/stores"
+import { useSessionStore, useSessionLiveStore, useAgentStore, useAuthStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import type { Session } from "@/types"
 
@@ -103,6 +103,7 @@ interface Props {
 
 export function SessionDetailModal({ session, onClose }: Props) {
   // Enrich session agent avatar from the agent store (already merged with DB data)
+  const authUser = useAuthStore(s => s.user)
   const storeAgents = useAgentStore(s => s.agents)
   const agentInfo = useMemo(() => {
     const found = storeAgents.find(a => a.id === session.agentId || a.name === session.agentName)
@@ -209,11 +210,14 @@ export function SessionDetailModal({ session, onClose }: Props) {
   }, [events.length])
 
   /* ── Flatten events — chronological order (oldest → newest) ── */
+  const dashboardUserName = authUser?.displayName || authUser?.username || "User"
+
   const flatEvents = useMemo(() => {
     const arr: FlatEvent[] = []
     events.forEach((e, idx) => {
       const baseId = e.id || String(idx)
-      const senderName = getSenderName(e.sender)
+      const rawSender = getSenderName(e.sender)
+      const senderName = rawSender === "cli" ? dashboardUserName : rawSender
 
       if (e.role === "human" || e.role === "user") {
         arr.push({ id: `${baseId}-user`, timestamp: e.timestamp, cost: 0, tokens: 0, type: "user", title: senderName, content: e.text || "<Empty Message>" })
@@ -245,7 +249,7 @@ export function SessionDetailModal({ session, onClose }: Props) {
       }
     })
     return arr // chronological — no reverse
-  }, [events])
+  }, [events, dashboardUserName])
 
   const toolCallCount = events.reduce((sum, e) => sum + (e.tools?.filter(t => t.input).length || 0), 0)
   const totalCost = events.reduce((sum, e) => sum + (e.cost || 0), 0) || session.totalCost || 0

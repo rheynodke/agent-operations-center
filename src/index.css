@@ -325,3 +325,33 @@
   0%, 100% { transform: translateY(0); }
   50%      { transform: translateY(-8px); }
 }
+
+/* ─── Chat Animations ─────────────────────────────────────── */
+
+/* Horizontal shimmer sweep (for thinking & tool call overlays) */
+.shimmer-horizontal {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(var(--primary) / 0.08) 30%,
+    hsl(var(--primary) / 0.18) 50%,
+    hsl(var(--primary) / 0.08) 70%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmerHorizontal 1.8s ease-in-out infinite;
+}
+
+@keyframes shimmerHorizontal {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+/* Thoughtpulse — subtle pulse for thinking block */
+@keyframes thoughtpulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 hsl(var(--primary) / 0); }
+  50%       { opacity: 0.85; box-shadow: 0 0 12px 2px hsl(262, 84%, 70%, 0.12); }
+}
+.animate-thoughtpulse {
+  animation: thoughtpulse 2.4s ease-in-out infinite;
+}

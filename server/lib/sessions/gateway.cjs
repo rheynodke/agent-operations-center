@@ -5,6 +5,38 @@ const { OPENCLAW_HOME, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
 const { parseAgentRegistry } = require('./opencode.cjs');
 
 /**
+ * Parse text-encoded tool call markers into structured tool calls and clean text.
+ * Handles: <|tool_calls_section_begin|> <|tool_call_begin|> funcname:id <|tool_call_argument_begin|> {...} <|tool_call_end|> <|tool_calls_section_end|>
+ */
+function parseTextToolCalls(text) {
+  if (!text || !text.includes('<|tool_calls_section_begin|>')) {
+    return { cleanText: text, toolCalls: [] };
+  }
+  const toolCalls = [];
+  let cleanText = text;
+  const sectionRe = /<\|tool_calls_section_begin\|>([\s\S]*?)<\|tool_calls_section_end\|>/g;
+  let sectionMatch;
+  while ((sectionMatch = sectionRe.exec(text)) !== null) {
+    const section = sectionMatch[1];
+    const tcRe = /<\|tool_call_begin\|>\s*([\w.:/-]+)\s*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
+    let tcMatch;
+    while ((tcMatch = tcRe.exec(section)) !== null) {
+      const [, nameWithId, argsRaw] = tcMatch;
+      const colonIdx = nameWithId.lastIndexOf(':');
+      const name = colonIdx > 0
+        ? nameWithId.slice(0, colonIdx).replace(/^functions\./, '')
+        : nameWithId.replace(/^functions\./, '');
+      let input;
+      try { input = JSON.stringify(JSON.parse(argsRaw.trim()), null, 2); }
+      catch { input = argsRaw.trim(); }
+      toolCalls.push({ name, input });
+    }
+    cleanText = cleanText.replace(sectionMatch[0], '');
+  }
+  return { cleanText: cleanText.trim(), toolCalls };
+}
+
+/**
  * Strip metadata blocks from user messages to get actual text.
  * Gateway user messages have format:
  *   Conversation info (untrusted metadata): ```json {...} ```
@@ -29,6 +61,11 @@ function cleanUserMessage(text, role) {
       if (msg.length > 0) return msg;
     }
   }
+
+  // Strip gateway-injected timestamp prefix: "[Day DD Mon YYYY HH:MM TZ] message"
+  // e.g. "[Sun 2026-04-05 22:36 GMT+7] hello" → "hello"
+  const tsMatch = text.match(/^\[[^\]]{5,50}\]\s+(.+)$/s);
+  if (tsMatch) return tsMatch[1].trim();
 
   return text;
 }
@@ -277,7 +314,13 @@ function parseGatewaySessionEvents(sessionId, limit = 500) {
 
         if (Array.isArray(msg.content)) {
           for (const part of msg.content) {
-            if (part.type === 'text') text += part.text || '';
+            if (part.type === 'text') {
+              const rawPartText = part.text || '';
+              // Parse inline tool call markers embedded in text parts
+              const { cleanText: partClean, toolCalls: partTools } = parseTextToolCalls(rawPartText);
+              text += partClean;
+              tools.push(...partTools);
+            }
             if (part.type === 'thinking') thinking = part.thinking || '';
             if (part.type === 'toolCall') {
               tools.push({
@@ -300,7 +343,10 @@ function parseGatewaySessionEvents(sessionId, limit = 500) {
             }
           }
         } else if (typeof msg.content === 'string') {
-          text = msg.content;
+          // Parse inline tool call markers in plain string content
+          const { cleanText: strClean, toolCalls: strTools } = parseTextToolCalls(msg.content);
+          text = strClean;
+          tools.push(...strTools);
         }
 
         let evtModel = '';
@@ -382,7 +428,12 @@ function parseSingleGatewayEntry(jsonLine) {
 
     if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if (part.type === 'text') text += part.text || '';
+        if (part.type === 'text') {
+          const rawPartText = part.text || '';
+          const { cleanText: partClean, toolCalls: partTools } = parseTextToolCalls(rawPartText);
+          text += partClean;
+          tools.push(...partTools);
+        }
         if (part.type === 'thinking') thinking = part.thinking || '';
         if (part.type === 'toolCall') {
           tools.push({
@@ -405,7 +456,9 @@ function parseSingleGatewayEntry(jsonLine) {
         }
       }
     } else if (typeof msg.content === 'string') {
-      text = msg.content;
+      const { cleanText: strClean, toolCalls: strTools } = parseTextToolCalls(msg.content);
+      text = strClean;
+      tools.push(...strTools);
     }
 
     let evtModel = '';
@@ -439,6 +492,7 @@ function parseSingleGatewayEntry(jsonLine) {
 }
 
 module.exports = {
+  parseTextToolCalls,
   cleanUserMessage,
   extractSender,
   parseGatewaySessions,

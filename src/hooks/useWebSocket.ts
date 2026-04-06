@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react"
 import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore } from "@/stores"
+import { useChatStore } from "@/stores/useChatStore"
 import { api } from "@/lib/api"
 import type { WsMessage } from "@/types"
 
@@ -72,10 +73,52 @@ export function useWebSocket() {
 
         // Individual parsed event streamed from a gateway session JSONL tail
         case "session:live-event": {
-          // Watcher events are flat: { type, sessionId, event, agent, timestamp }
-          const raw = msg as unknown as { sessionId?: string; event?: Record<string, unknown> }
+          // Watcher events are flat: { type, sessionId, sessionKey, event, agent, timestamp }
+          const raw = msg as unknown as { sessionId?: string; sessionKey?: string; event?: Record<string, unknown> }
           if (raw.sessionId && raw.event) {
             useSessionLiveStore.getState().push(raw.sessionId, raw.event)
+          }
+          // Also update the live chat store for sessions we have messages for
+          const chatStore = useChatStore.getState()
+          const sessionKey = raw.sessionKey
+          if (sessionKey && chatStore.messages[sessionKey]?.length) {
+            const evt = raw.event as { role?: string; text?: string; thinking?: string; stopReason?: string; tools?: Array<{name: string; output?: string; input?: string}> } | undefined
+            if (evt) {
+              if (evt.role === 'assistant' && evt.text) {
+                // JSONL entries are written AFTER the response completes — always treat as final
+                chatStore.updateLastAgentMessage(sessionKey, (m) => {
+                  if (m.role !== 'agent') return m
+                  return { ...m, phase: "done" as const, responseText: evt.text!, responseDone: true, isStreaming: false }
+                })
+                chatStore.setAgentRunning(sessionKey, false)
+              }
+
+              if (evt.role === 'assistant' && evt.thinking) {
+                chatStore.updateLastAgentMessage(sessionKey, (m) => {
+                  if (m.role !== 'agent') return m
+                  return { ...m, thinkingText: evt.thinking!, thinkingDone: true }
+                })
+              }
+
+              // Tool results from JSONL — mark matching running tool as done
+              if (evt.role === 'toolResult' && evt.tools?.length) {
+                for (const tool of evt.tools) {
+                  if (tool.output) {
+                    chatStore.updateLastAgentMessage(sessionKey, (m) => {
+                      if (m.role !== 'agent') return m
+                      return {
+                        ...m,
+                        toolCalls: (m.toolCalls ?? []).map(tc =>
+                          tc.toolName === tool.name && tc.status === 'running'
+                            ? { ...tc, result: tool.output!, status: 'done' as const }
+                            : tc
+                        ),
+                      }
+                    })
+                  }
+                }
+              }
+            }
           }
           // Also schedule a reload so the session list stays in sync
           scheduleReload()
@@ -83,10 +126,49 @@ export function useWebSocket() {
         }
 
         // These are the events the watcher broadcasts when session files change
-        case "session:update":
+        case "session:update": {
+          // processing_end fires when the JSONL lock file is removed (agent finished)
+          const su = msg as unknown as { action?: string; sessionKey?: string }
+          if (su.action === 'processing_end' && su.sessionKey) {
+            const chatStore = useChatStore.getState()
+            if (chatStore.agentRunning[su.sessionKey]) {
+              const msgs = chatStore.messages[su.sessionKey] ?? []
+              const lastAgent = [...msgs].reverse().find(m => m.role === 'agent')
+              if (lastAgent?.responseText) {
+                // Response already in store — finalize immediately
+                chatStore.setAgentRunning(su.sessionKey, false)
+                chatStore.updateLastAgentMessage(su.sessionKey, (m) => {
+                  if (m.role !== 'agent') return m
+                  return { ...m, phase: 'done' as const, isStreaming: false, responseDone: true }
+                })
+              } else {
+                // Lock file gone but JSONL final response not yet polled (~2s lag)
+                // Keep "analyzing" indicator alive, force-clear after 5s
+                chatStore.updateLastAgentMessage(su.sessionKey, (m) => {
+                  if (m.role !== 'agent') return m
+                  const toolCalls = (m.toolCalls ?? []).map(tc =>
+                    tc.status === 'running' ? { ...tc, status: 'done' as const } : tc
+                  )
+                  return { ...m, phase: 'analyzing' as const, isStreaming: true, toolCalls }
+                })
+                setTimeout(() => {
+                  const store = useChatStore.getState()
+                  if (store.agentRunning[su.sessionKey!]) {
+                    store.setAgentRunning(su.sessionKey!, false)
+                    store.updateLastAgentMessage(su.sessionKey!, (m) => {
+                      if (m.role !== 'agent') return m
+                      return { ...m, phase: 'done' as const, isStreaming: false, responseDone: true }
+                    })
+                  }
+                }, 5000)
+              }
+            }
+          }
+          scheduleReload()
+          break
+        }
         case "opencode:event":
         case "subagent:update": {
-          // A session was updated — debounce reload sessions + agents
           scheduleReload()
           break
         }
@@ -146,9 +228,131 @@ export function useWebSocket() {
         }
 
         default: {
-          // Unknown event type — might be a new watcher event, schedule a reload
-          console.debug("[WS] Unhandled event type:", msg.type)
-          scheduleReload()
+          // ── Gateway & Chat events (forwarded from gateway-ws.cjs) ──────────
+          const chatStore = useChatStore.getState()
+          if (msg.type === "gateway:connected") {
+            chatStore.setGatewayConnected(true)
+          } else if (msg.type === "gateway:disconnected") {
+            chatStore.setGatewayConnected(false)
+          } else if (msg.type === "chat:message") {
+            const { sessionKey, role, text, thinking, done, toolName, toolInput, toolResult, toolCallId } = (msg.payload ?? {}) as Record<string, unknown>
+            if (sessionKey) {
+              const sk = sessionKey as string
+              const isThinking = role === "thinking" || !!thinking
+              if (role === "assistant" || role === "thinking") {
+                const hasText = !!(text as string)?.trim()
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  if (isThinking) {
+                    return { ...m, phase: "thinking" as const, thinkingText: (m.thinkingText ?? "") + ((thinking ?? text ?? "") as string), thinkingDone: !!done, isStreaming: true }
+                  }
+                  const newText = (text as string | undefined) ?? ""
+                  const hasContent = !!(newText || m.responseText)
+                  const reallyDone = !!done && hasContent
+                  return {
+                    ...m,
+                    phase: reallyDone ? "done" as const : "responding" as const,
+                    responseText: newText ? (m.responseText ?? "") + newText : m.responseText,
+                    responseDone: reallyDone,
+                    isStreaming: !reallyDone,
+                  }
+                })
+                if (done && hasText) chatStore.setAgentRunning(sk, false)
+              } else if (role === "tool_start") {
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  const id = (toolCallId ?? toolName ?? String(Date.now())) as string
+                  return { ...m, phase: "tool_running" as const, toolCalls: [...(m.toolCalls ?? []), { id, toolName: (toolName as string) ?? "tool", input: toolInput as string|Record<string,unknown>, status: "running" as const }] }
+                })
+              } else if (role === "tool_result") {
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  return { ...m, toolCalls: (m.toolCalls ?? []).map((tc) => tc.id === ((toolCallId ?? toolName) as string) ? { ...tc, result: toolResult as string|Record<string,unknown>, status: "done" as const } : tc) }
+                })
+              }
+            }
+          } else if (msg.type === "chat:tool") {
+            const { sessionKey, toolName, toolInput, toolResult, toolCallId, status } = (msg.payload ?? {}) as Record<string, unknown>
+            if (sessionKey) {
+              const sk = sessionKey as string
+              if (status === "start") {
+                chatStore.setAgentRunning(sk, true)
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  const existing = m.toolCalls?.find((tc) => tc.id === ((toolCallId ?? toolName) as string))
+                  if (existing) return m
+                  const id = (toolCallId ?? toolName ?? String(Date.now())) as string
+                  return { ...m, phase: "tool_running" as const, isStreaming: true, toolCalls: [...(m.toolCalls ?? []), { id, toolName: (toolName as string) ?? "tool", input: toolInput as string|Record<string,unknown>, status: "running" as const }] }
+                })
+              } else {
+                // Tool done — check if all tools complete → move to "analyzing" phase
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  const updatedTools = (m.toolCalls ?? []).map((tc) =>
+                    tc.id === ((toolCallId ?? toolName) as string)
+                      ? { ...tc, result: toolResult as string|Record<string,unknown>, status: (status as "done"|"error") ?? "done" }
+                      : tc
+                  )
+                  const stillRunning = updatedTools.some(tc => tc.status === "running")
+                  return {
+                    ...m,
+                    phase: stillRunning ? "tool_running" as const : "analyzing" as const,
+                    isStreaming: true,
+                    toolCalls: updatedTools,
+                  }
+                })
+              }
+            }
+          } else if (msg.type === "chat:done") {
+            // Gateway signals the run is over. Delay clearing so JSONL polling
+            // (2s interval) can deliver the final response first.
+            const { sessionKey } = (msg.payload ?? {}) as Record<string, unknown>
+            if (sessionKey) {
+              const sk = sessionKey as string
+              // If response already arrived (from streaming), clear immediately
+              const lastAgent = [...(chatStore.messages[sk] ?? [])].reverse().find(m => m.role === "agent")
+              if (lastAgent?.responseText) {
+                // Response already here — finalize immediately
+                chatStore.setAgentRunning(sk, false)
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  const toolCalls = (m.toolCalls ?? []).map(tc =>
+                    tc.status === "running" ? { ...tc, status: "done" as const } : tc
+                  )
+                  return { ...m, phase: "done" as const, responseDone: true, isStreaming: false, toolCalls }
+                })
+              } else {
+                // No response yet — keep "analyzing" phase while waiting for JSONL (2s poll)
+                // Force-clear after 6s as safety fallback
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  return { ...m, phase: "analyzing" as const, isStreaming: true }
+                })
+                setTimeout(() => {
+                  const store = useChatStore.getState()
+                  if (store.agentRunning[sk]) {
+                    store.setAgentRunning(sk, false)
+                    store.updateLastAgentMessage(sk, (m) => {
+                      if (m.role !== "agent") return m
+                      const toolCalls = (m.toolCalls ?? []).map(tc =>
+                        tc.status === "running" ? { ...tc, status: "done" as const } : tc
+                      )
+                      return { ...m, phase: "done" as const, responseDone: true, isStreaming: false, toolCalls }
+                    })
+                  }
+                }, 6000)
+              }
+            }
+          } else if (msg.type === "chat:sessions-changed") {
+            // refresh list
+            import("@/lib/chat-api").then(({ chatApi }) => {
+              chatApi.getSessions().then((r) => { if (r.sessions) chatStore.setSessions(r.sessions) }).catch(() => {})
+            })
+          } else {
+            // Unknown event type — might be a new watcher event, schedule a reload
+            console.debug("[WS] Unhandled event type:", msg.type)
+            scheduleReload()
+          }
           break
         }
       }

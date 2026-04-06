@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   BookOpen,
+  MessageSquare,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAlertStore, useWsStore } from "@/stores"
@@ -28,6 +29,7 @@ const navGroups = [
     items: [
       { to: "/agents", label: "Agents", icon: Bot },
       { to: "/sessions", label: "Sessions", icon: Activity },
+      { to: "/chat", label: "Chat", icon: MessageSquare },
       { to: "/board", label: "Task Board", icon: ListChecks },
     ],
   },

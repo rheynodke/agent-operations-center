@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom"
 import { useEffect, useState } from "react"
 import { Sidebar } from "@/components/layout/Sidebar"
 import { TopBar } from "@/components/layout/TopBar"
@@ -21,17 +21,20 @@ import { CronPage } from "@/pages/CronPage"
 import { RoutingPage } from "@/pages/RoutingPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 import { SkillsPage } from "@/pages/SkillsPage"
+import { ChatPage } from "@/pages/ChatPage"
 
 function DashboardShell() {
   useWebSocket()
   useDataLoader()
+  const location = useLocation()
+  const isChatPage = location.pathname === "/chat"
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
       <Sidebar />
-      <div className="flex flex-col flex-1 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className={isChatPage ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"}>
           <Routes>
             {/* Dashboard valid routes */}
             <Route path="/" element={<OverviewPage />} />
@@ -43,6 +46,7 @@ function DashboardShell() {
             <Route path="/routing" element={<RoutingPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/chat" element={<ChatPage />} />
             {/* If authenticated user goes to login or setup, redirect them to dashboard root */}
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/setup" element={<Navigate to="/" replace />} />

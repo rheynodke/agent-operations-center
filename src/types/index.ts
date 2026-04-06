@@ -245,6 +245,13 @@ export type WsEventType =
   | "subagent:update"
   | "progress:update"
   | "progress:step"
+  | "gateway:connected"
+  | "gateway:disconnected"
+  | "chat:message"
+  | "chat:tool"
+  | "chat:event"
+  | "chat:sessions-changed"
+  | "chat:done"
 
 export interface WsMessage {
   type: WsEventType

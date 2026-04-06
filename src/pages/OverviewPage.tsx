@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from "react"
+import { useNavigate } from "react-router-dom"
 import {
   Bot,
   Activity,
@@ -287,17 +288,19 @@ function SessionActivityEntry({
 /*  LIVE AGENT CARD                                                    */
 /* ─────────────────────────────────────────────────────────────────── */
 
-function LiveAgentCard({ agent, isProcessing, activeSessions }: {
+function LiveAgentCard({ agent, isProcessing, activeSessions, onClick }: {
   agent: Agent
   isProcessing: boolean
   activeSessions: number
+  onClick?: () => void
 }) {
   const Icon = getAgentIcon(agent.name)
 
   return (
     <div
+      onClick={onClick}
       className={cn(
-        "bg-surface-container p-4 rounded-xl border transition-all relative overflow-hidden",
+        "bg-surface-container p-4 rounded-xl border transition-all relative overflow-hidden cursor-pointer",
         isProcessing
           ? "border-amber-500/30 shadow-[0_0_20px_rgba(245,158,11,0.08)]"
           : "border-[rgba(72,72,72,0.1)] hover:border-primary/20"
@@ -356,6 +359,7 @@ export function OverviewPage() {
   const sessions = useSessionStore((s) => s.sessions)
   const overviewData = useOverviewStore((s) => s.overview)
   const wsStatus = useWsStore((s) => s.status)
+  const navigate = useNavigate()
   const [selectedSession, setSelectedSession] = useState<Session | null>(null)
 
   // Auto-refresh tick every 10s to update relative timestamps & active states
@@ -368,7 +372,7 @@ export function OverviewPage() {
   // Cast sessions to our internal SessionEntry format
   const sessionEntries = useMemo(() => {
     return (sessions as unknown as SessionEntry[])
-      .slice(0, 50)
+      .slice(0, 10)
       .sort((a, b) => {
         const ta = typeof a.updatedAt === "number" ? a.updatedAt : new Date(a.updatedAt || 0).getTime()
         const tb = typeof b.updatedAt === "number" ? b.updatedAt : new Date(b.updatedAt || 0).getTime()
@@ -500,7 +504,7 @@ export function OverviewPage() {
                 </p>
               </div>
             ) : (
-              <ScrollArea className="max-h-[600px]">
+              <ScrollArea className="h-[520px]">
                 {sessionEntries.map((session) => {
                   const agentObj = agents.find((a) => a.name === session.agent || a.id === session.agent)
                   
@@ -544,11 +548,19 @@ export function OverviewPage() {
 
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-display font-bold text-foreground">Live Agents</h3>
-            <div className="flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                {onlineCount} Online
-              </span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                  {onlineCount} Online
+                </span>
+              </div>
+              <button
+                onClick={() => navigate("/agents")}
+                className="text-[11px] font-medium text-primary/70 hover:text-primary transition-colors hover:underline"
+              >
+                See all →
+              </button>
             </div>
           </div>
 
@@ -565,7 +577,14 @@ export function OverviewPage() {
           ) : (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {agents.map((agent) => {
+                {[...agents]
+                  .sort((a, b) => {
+                    const aActive = agentProcessingMap.get(a.name) || agentProcessingMap.get(a.id) || 0
+                    const bActive = agentProcessingMap.get(b.name) || agentProcessingMap.get(b.id) || 0
+                    return bActive - aActive
+                  })
+                  .slice(0, 4)
+                  .map((agent) => {
                   const activeCount = agentProcessingMap.get(agent.name) || agentProcessingMap.get(agent.id) || 0
                   return (
                     <LiveAgentCard
@@ -573,10 +592,19 @@ export function OverviewPage() {
                       agent={agent}
                       isProcessing={activeCount > 0}
                       activeSessions={activeCount}
+                      onClick={() => navigate(`/agents/${agent.id}`)}
                     />
                   )
                 })}
               </div>
+              {agents.length > 4 && (
+                <button
+                  onClick={() => navigate("/agents")}
+                  className="w-full py-2 text-xs font-medium text-muted-foreground hover:text-foreground border border-dashed border-white/8 hover:border-white/20 rounded-xl transition-all"
+                >
+                  +{agents.length - 4} more agents — See all
+                </button>
+              )}
 
               {/* System Status */}
               <div className="mt-4 bg-linear-to-br from-accent/20 to-transparent p-6 rounded-2xl border border-primary/10 relative overflow-hidden group">

@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//proc/94804/**)",
+      "Bash(ps -p 94804 -o lstart=,command=)",
+      "Bash(node -e ':*)",
+      "Bash(ps -p 94804 -o lstart=)",
+      "Bash(kill 94804)",
+      "Bash(echo \"Started new server, PID=$!\")",
+      "Bash(curl -s -X POST http://localhost:18800/api/auth/login -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"adminadmin\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK - content length:', len\\(d.get\\('content',''\\)\\),'editable:',d.get\\('editable'\\)\\)\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK content_len:', len\\(d.get\\('content',''\\)\\), 'editable:', d.get\\('editable'\\), 'error:', d.get\\('error','none'\\)\\)\")",
+      "WebFetch(domain:docs.openclaw.ai)",
+      "Bash(curl -s -X POST http://localhost:18800/api/auth/login -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"adminadmin\"}')",
+      "Bash(curl -s -H \"Authorization: Bearer $\\(curl -s -X POST http://localhost:18800/api/auth/login -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"adminadmin\"}')",
+      "Bash(python3 -c 'import sys,json; d=json.load\\(sys.stdin\\); [print\\(f\"{k}: {v}\"\\) for k,v in d.items\\(\\) if k not in \\(\"privateKeyPem\",\"publicKeyPem\"\\)]')",
+      "Bash(python3 -c 'import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d, indent=2, default=str\\)[:2000]\\)')",
+      "Bash(openclaw --version)",
+      "Read(//usr/local/**)",
+      "Bash(npm list:*)",
+      "Bash(brew --prefix openclaw)",
+      "Read(//opt/homebrew/lib/node_modules/openclaw/**)",
+      "Bash(grep -o 'minProtocol.\\\\{0,500\\\\}' /opt/homebrew/lib/node_modules/openclaw/dist/control-ui/assets/index-Bx1QDj3a.js)",
+      "Bash(grep -o 'connect\\\\.challenge.\\\\{0,300\\\\}' /opt/homebrew/lib/node_modules/openclaw/dist/control-ui/assets/index-Bx1QDj3a.js)",
+      "Bash(grep -oE 'minProtocol.{0,500}' /opt/homebrew/lib/node_modules/openclaw/dist/control-ui/assets/index-Bx1QDj3a.js)",
+      "Bash(grep -oP 'connect\\\\.challenge.{0,500}' /opt/homebrew/lib/node_modules/openclaw/dist/control-ui/assets/index-Bx1QDj3a.js)",
+      "Bash(python3 -c \" import re with open\\('/opt/homebrew/lib/node_modules/openclaw/dist/control-ui/assets/index-Bx1QDj3a.js'\\) as f: content = f.read\\(\\) for m in re.finditer\\(r'minProtocol.{0,500}', content\\): print\\(m.group\\(\\)\\) print\\('---'\\) \")",
+      "Bash(python3 -c \" import re with open\\('/opt/homebrew/lib/node_modules/openclaw/dist/control-ui/assets/index-Bx1QDj3a.js'\\) as f: content = f.read\\(\\) for m in re.finditer\\(r'buildConnectPlan.{0,2000}', content\\): print\\(m.group\\(\\)[:2000]\\) print\\('---'\\) \")",
+      "Bash(grep -l \"ChatHistory\\\\|chat.history\\\\|ChatSend\\\\|chat.send\\\\|ChatAbort\\\\|chat.abort\" /opt/homebrew/lib/node_modules/openclaw/dist/plugin-sdk/src/gateway/protocol/schema/*.d.ts)",
+      "Bash(python3 -c 'import sys,json; d=json.load\\(sys.stdin\\); sessions=d.get\\(\"sessions\",d.get\\(\"entries\",[]\\)\\); print\\(\"top keys:\",list\\(d.keys\\(\\)\\)\\); print\\(\"count:\",len\\(sessions\\)\\); print\\(\"first:\",json.dumps\\(sessions[0],indent=2\\)[:600]\\) if sessions else print\\(\"empty\"\\)')"
+    ]
+  }
+}

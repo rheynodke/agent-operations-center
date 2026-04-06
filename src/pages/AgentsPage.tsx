@@ -57,7 +57,7 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
     <div
       onClick={onClick}
       className={cn(
-        "cursor-pointer bg-[#1A1C21]/60 hover:bg-[#22252C] border border-white/5 rounded-xl transition-all duration-300 hover:border-white/10 group flex flex-col p-5 relative overflow-hidden",
+        "cursor-pointer bg-card hover:bg-foreground/3 border border-border rounded-xl transition-all duration-300 hover:border-foreground/15 group flex flex-col p-5 relative overflow-hidden shadow-sm",
         isProcessing && "border-amber-500/20 shadow-[0_0_20px_rgba(245,158,11,0.06)]"
       )}
     >
@@ -80,14 +80,14 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
               <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400">Active</span>
             </div>
           ) : agent.status === "active" || agent.status === "idle" ? (
-            <div className="flex items-center gap-1.5 px-2 bg-black/40 py-1 border border-white/5 rounded-full">
+            <div className="flex items-center gap-1.5 px-2 bg-foreground/5 py-1 border border-border rounded-full">
               <span className={cn(
                 "w-1.5 h-1.5 rounded-full",
-                agent.status === "active" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-white/20"
+                agent.status === "active" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-foreground/20"
               )} />
               <span className={cn(
                 "text-[9px] font-bold uppercase tracking-wider",
-                agent.status === "active" ? "text-emerald-400" : "text-white/40"
+                agent.status === "active" ? "text-emerald-500" : "text-muted-foreground/60"
               )}>
                 {agent.status === "active" ? "Active" : "Idle"}
               </span>
@@ -102,8 +102,8 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
 
         {/* Name & Role */}
         <div className="mb-4">
-          <h3 className="font-bold text-white/90 text-base tracking-tight leading-none mb-1.5">{agent.name}</h3>
-          <p className="text-[11px] text-white/40 font-medium leading-snug">
+          <h3 className="font-bold text-foreground text-base tracking-tight leading-none mb-1.5">{agent.name}</h3>
+          <p className="text-[11px] text-muted-foreground font-medium leading-snug">
             {agent.description || "Autonomous Agent"}
           </p>
         </div>
@@ -122,11 +122,11 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
         )}
 
         {/* Footer: Model & ID */}
-        <div className="flex items-center justify-between pt-3 border-t border-white/[0.04]">
-          <span className="text-[10px] font-medium text-white/30 truncate max-w-[60%]">
+        <div className="flex items-center justify-between pt-3 border-t border-border/50">
+          <span className="text-[10px] font-medium text-muted-foreground/60 truncate max-w-[60%]">
             {agent.model || "Default Model"}
           </span>
-          <span className="text-[10px] font-mono text-white/20 tracking-widest uppercase">
+          <span className="text-[10px] font-mono text-muted-foreground/40 tracking-widest uppercase">
             ID: {agent.id.slice(0, 4).toUpperCase()}
           </span>
         </div>
@@ -150,23 +150,23 @@ interface FeedEntry {
 
 function LiveFeedEntry({ entry }: { entry: FeedEntry }) {
   const colors: Record<string, string> = {
-    activity: "text-emerald-400",
+    activity: "text-emerald-500",
     error: "text-red-400",
-    idle: "text-white/30",
+    idle: "text-muted-foreground/40",
     system: "text-primary",
   }
 
   return (
-    <div className="flex gap-3 py-1.5 px-4 hover:bg-white/[0.02] transition-colors text-xs font-mono leading-relaxed">
-      <span className="shrink-0 text-white/25 tabular-nums">
+    <div className="flex gap-3 py-1.5 px-4 hover:bg-foreground/2 transition-colors text-xs font-mono leading-relaxed">
+      <span className="shrink-0 text-muted-foreground/40 tabular-nums">
         [{fmtTime(entry.timestamp)}]
       </span>
-      <span className={cn("shrink-0 font-bold", colors[entry.type] || "text-white/50")}>
+      <span className={cn("shrink-0 font-bold", colors[entry.type] || "text-muted-foreground/60")}>
         {entry.agentEmoji} {entry.agentName}:
       </span>
       <span className={cn(
         "flex-1",
-        entry.type === "idle" ? "text-white/30 italic" : "text-white/60"
+        entry.type === "idle" ? "text-muted-foreground/50 italic" : "text-foreground/70"
       )}>
         {entry.message}
       </span>
@@ -379,11 +379,11 @@ export function AgentsPage() {
       </div>
 
       {/* ── Live Feed ── */}
-      <div className="shrink-0 bg-[#0D0E11] rounded-xl border border-white/5 overflow-hidden">
+      <div className="shrink-0 bg-card rounded-xl border border-border overflow-hidden">
         {/* Feed header */}
         <button
           onClick={() => setFeedMinimized(!feedMinimized)}
-          className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.02] transition-colors"
+          className="w-full flex items-center justify-between px-4 py-3 hover:bg-foreground/2 transition-colors"
         >
           <div className="flex items-center gap-2.5">
             <span className="relative flex h-2 w-2">
@@ -393,13 +393,13 @@ export function AgentsPage() {
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                 </>
               ) : (
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-white/20" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-foreground/20" />
               )}
             </span>
-            <span className="text-sm font-bold text-white/80">Live Feed</span>
-            <span className="text-[10px] text-white/25 font-mono">{feedEntries.length} entries</span>
+            <span className="text-sm font-bold text-foreground/80">Live Feed</span>
+            <span className="text-[10px] text-muted-foreground/40 font-mono">{feedEntries.length} entries</span>
           </div>
-          <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-white/30">
+          <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/50">
             {feedMinimized ? "Expand" : "Minimize"}
             {feedMinimized ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </div>
@@ -407,10 +407,10 @@ export function AgentsPage() {
 
         {/* Feed content */}
         {!feedMinimized && (
-          <div className="border-t border-white/5">
+          <div className="border-t border-border">
             <ScrollArea className="h-[200px]">
               {feedEntries.length === 0 ? (
-                <div className="flex items-center justify-center h-[180px] text-xs text-white/20 font-mono">
+                <div className="flex items-center justify-center h-[180px] text-xs text-muted-foreground/40 font-mono">
                   Waiting for agent activity…
                 </div>
               ) : (

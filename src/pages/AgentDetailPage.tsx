@@ -3,11 +3,13 @@ import { useParams, useNavigate } from "react-router-dom"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
+import { chatApi } from "@/lib/chat-api"
+import { useChatStore } from "@/stores/useChatStore"
 import type { SkillInfo, AgentTool, Session, SkillScript } from "@/types"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import {
   Loader2, RefreshCw, Zap, Save, X,
-  MessageSquare, Wrench, DollarSign, Hash,
+  MessageSquare, MessageSquarePlus, Wrench, DollarSign, Hash,
   Terminal, Globe, Database, Shield,
   Pencil, ArrowRight, ArrowLeft, FileText,
   RotateCcw, ChevronDown, Cpu, Radio,
@@ -155,7 +157,7 @@ function StatPill({ icon: Icon, label, value }: {
   icon: React.ElementType; label: string; value: string | number
 }) {
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/2 border border-white/5">
+    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-foreground/2 border border-border">
       <Icon className="h-3 w-3 text-muted-foreground/60 shrink-0" />
       <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-semibold">{label}</span>
       <span className="text-[11px] font-bold text-foreground tabular-nums">{value}</span>
@@ -238,7 +240,7 @@ function InlineFilePanel({
   return (
     <div className="flex flex-col h-full">
       {/* Panel header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5 shrink-0 bg-white/2">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0 bg-foreground/2">
         <div className="flex items-center gap-2.5 min-w-0">
           <span className="text-lg leading-none">{fileIcons[filename] || "📄"}</span>
           <div className="min-w-0">
@@ -273,7 +275,7 @@ function InlineFilePanel({
             <>
               <button
                 onClick={() => { setContent(originalContent); setEditMode(false) }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
               >
                 <X className="w-3 h-3" /> Cancel
               </button>
@@ -289,7 +291,7 @@ function InlineFilePanel({
           ) : (
             <button
               onClick={() => setEditMode(true)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
             >
               <Edit3 className="w-3 h-3" /> Edit
             </button>
@@ -322,7 +324,7 @@ function InlineFilePanel({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between px-4 py-1.5 border-t border-white/5 shrink-0 bg-white/1">
+      <div className="flex items-center justify-between px-4 py-1.5 border-t border-border shrink-0 bg-foreground/1">
         <span className="text-[10px] font-mono text-muted-foreground/50">
           {content.split("\n").length} lines · {content.length} chars
         </span>
@@ -501,7 +503,7 @@ function SkillScriptsPanel({
     <div className="flex flex-col h-full">
       {/* Path hint bar */}
       {pathInfo && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/5 bg-emerald-500/4 shrink-0">
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-emerald-500/4 shrink-0">
           <Code2 className="w-3 h-3 text-emerald-400/70 shrink-0" />
           <span className="text-[10px] font-mono text-emerald-400/80 truncate flex-1">
             {selected ? `${pathInfo.relPath}/${selected}` : pathInfo.relPath + '/'}
@@ -521,8 +523,8 @@ function SkillScriptsPanel({
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Script list sidebar */}
-        <div className="w-44 border-r border-white/5 shrink-0 flex flex-col">
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/5 bg-white/1">
+        <div className="w-44 border-r border-border shrink-0 flex flex-col">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-foreground/1">
             <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground/60">Scripts</span>
             <button
               onClick={() => setShowNewScript(true)}
@@ -534,18 +536,18 @@ function SkillScriptsPanel({
 
           {/* New script inline form */}
           {showNewScript && (
-            <div className="px-2 py-2 border-b border-white/5 bg-white/2">
+            <div className="px-2 py-2 border-b border-border bg-foreground/2">
               <input
                 autoFocus
                 value={newFilename}
                 onChange={e => setNewFilename(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleCreateScript()}
                 placeholder="deploy.sh"
-                className="w-full px-2 py-1 rounded bg-black/40 border border-white/10 text-[11px] font-mono text-foreground outline-none focus:border-primary/40 transition-colors"
+                className="w-full px-2 py-1 rounded bg-foreground/15 border border-foreground/10 text-[11px] font-mono text-foreground outline-none focus:border-primary/40 transition-colors"
               />
               {newError && <p className="text-[9px] text-red-400 mt-0.5">{newError}</p>}
               <div className="flex gap-1 mt-1">
-                <button onClick={() => { setShowNewScript(false); setNewFilename(""); setNewError("") }} className="flex-1 py-0.5 rounded text-[9px] border border-white/10 text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
+                <button onClick={() => { setShowNewScript(false); setNewFilename(""); setNewError("") }} className="flex-1 py-0.5 rounded text-[9px] border border-foreground/10 text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
                 <button onClick={handleCreateScript} disabled={creating} className="flex-1 py-0.5 rounded text-[9px] bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25 transition-colors disabled:opacity-40">
                   {creating ? '…' : 'Create'}
                 </button>
@@ -560,7 +562,7 @@ function SkillScriptsPanel({
               </div>
             ) : scripts.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 px-3 text-center">
-                <ScrollText className="w-5 h-5 text-white/10 mb-1.5" />
+                <ScrollText className="w-5 h-5 text-foreground/10 mb-1.5" />
                 <p className="text-[10px] text-muted-foreground/60">No scripts yet</p>
                 <button onClick={() => setShowNewScript(true)} className="text-[9px] text-primary hover:underline mt-1">Create one</button>
               </div>
@@ -573,7 +575,7 @@ function SkillScriptsPanel({
                     "w-full flex items-center gap-1.5 px-3 py-1.5 text-left transition-colors group",
                     selected === sc.name
                       ? "bg-primary/10 border-r-2 border-primary text-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-white/3"
+                      : "text-muted-foreground hover:text-foreground hover:bg-foreground/3"
                   )}
                 >
                   <span className="text-xs shrink-0">{getExtEmoji(sc.name)}</span>
@@ -591,21 +593,21 @@ function SkillScriptsPanel({
         <div className="flex-1 min-w-0 flex flex-col">
           {!selected ? (
             <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <Code2 className="w-8 h-8 text-white/8 mb-2" />
+              <Code2 className="w-8 h-8 text-foreground/8 mb-2" />
               <p className="text-sm text-muted-foreground/50">Select a script to edit</p>
               <p className="text-[10px] text-muted-foreground/30 mt-1">Scripts are run by the agent via exec tool</p>
             </div>
           ) : (
             <>
               {/* Editor toolbar */}
-              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/5 bg-white/1 shrink-0">
+              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-foreground/1 shrink-0">
                 <span className="text-[11px] font-mono font-bold text-foreground">{selected}</span>
                 {scripts.find(s => s.name === selected)?.executable && (
                   <span className="text-[8px] font-bold text-emerald-400 bg-emerald-400/10 px-1.5 py-0.5 rounded uppercase">exec</span>
                 )}
                 {saveMsg && <span className="text-[10px] text-emerald-400 ml-1">{saveMsg}</span>}
                 <div className="ml-auto flex items-center gap-1">
-                  <button onClick={handleDownload} title="Download script" className="p-1 rounded hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors">
+                  <button onClick={handleDownload} title="Download script" className="p-1 rounded hover:bg-foreground/5 text-muted-foreground hover:text-foreground transition-colors">
                     <Download className="w-3.5 h-3.5" />
                   </button>
                   <button onClick={handleDelete} disabled={deleting} title="Delete script" className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors">
@@ -613,7 +615,7 @@ function SkillScriptsPanel({
                   </button>
                   {isDirty && (
                     <>
-                      <button onClick={() => { setScriptContent(originalContent) }} className="flex items-center gap-0.5 px-2 py-0.5 rounded border border-white/10 text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+                      <button onClick={() => { setScriptContent(originalContent) }} className="flex items-center gap-0.5 px-2 py-0.5 rounded border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground transition-colors">
                         <X className="w-2.5 h-2.5" /> Discard
                       </button>
                       <button onClick={handleSave} disabled={saving} className="flex items-center gap-0.5 px-2 py-0.5 rounded bg-primary/20 border border-primary/30 text-[10px] text-primary font-bold hover:bg-primary/30 transition-colors disabled:opacity-40">
@@ -636,12 +638,12 @@ function SkillScriptsPanel({
                   value={scriptContent}
                   onChange={e => setScriptContent(e.target.value)}
                   spellCheck={false}
-                  className="flex-1 w-full resize-none bg-black/20 text-[12px] font-mono text-foreground/90 leading-relaxed p-3 outline-none caret-primary"
+                  className="flex-1 w-full resize-none bg-foreground/8 text-[12px] font-mono text-foreground/90 leading-relaxed p-3 outline-none caret-primary"
                   placeholder="#!/bin/bash\n# Your script here"
                 />
               )}
               {/* Footer */}
-              <div className="flex items-center justify-between px-3 py-1 border-t border-white/5 shrink-0 bg-white/1">
+              <div className="flex items-center justify-between px-3 py-1 border-t border-border shrink-0 bg-foreground/1">
                 <span className="text-[9px] font-mono text-muted-foreground/50">{scriptContent.split('\n').length} lines · {scriptContent.length} chars</span>
                 {isDirty && <span className="text-[9px] font-bold text-amber-400">● Unsaved changes</span>}
               </div>
@@ -726,12 +728,12 @@ function InlineSkillPanel({
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-white/5 shrink-0 bg-white/1">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0 bg-foreground/1">
         <span className="text-sm">{skill?.emoji || "⚡"}</span>
         <span className="text-[12px] font-bold text-foreground truncate">{skill?.name || skillSlug}</span>
 
         {/* Sub-tabs */}
-        <div className="flex items-center gap-0.5 rounded-md bg-black/30 border border-white/8 p-0.5 ml-2">
+        <div className="flex items-center gap-0.5 rounded-md bg-foreground/10 border border-border p-0.5 ml-2">
           <button
             onClick={() => setSkillTab('skillmd')}
             className={cn(
@@ -772,7 +774,7 @@ function InlineSkillPanel({
               <>
                 <button
                   onClick={() => { setContent(originalContent); setEditMode(false) }}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
                 >
                   <X className="w-3 h-3" /> Cancel
                 </button>
@@ -788,7 +790,7 @@ function InlineSkillPanel({
             ) : (
               <button
                 onClick={() => setEditMode(true)}
-                className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
               >
                 <Edit3 className="w-3 h-3" /> Edit
               </button>
@@ -799,7 +801,7 @@ function InlineSkillPanel({
 
       {/* Description */}
       {skill?.description && skillTab === 'skillmd' && (
-        <div className="px-4 py-2 border-b border-white/5 bg-white/1">
+        <div className="px-4 py-2 border-b border-border bg-foreground/1">
           <p className="text-[11px] text-muted-foreground leading-relaxed">{skill.description}</p>
           <div className="flex items-center gap-2 mt-1.5">
             <span className={cn(
@@ -807,7 +809,7 @@ function InlineSkillPanel({
               skill.source === 'workspace' ? "bg-blue-500/15 text-blue-400" :
               skill.source === 'managed' ? "bg-purple-500/15 text-purple-400" :
               skill.source === 'personal' ? "bg-green-500/15 text-green-400" :
-              "bg-white/5 text-muted-foreground/70"
+              "bg-foreground/5 text-muted-foreground/70"
             )}>
               {skill.sourceLabel}
             </span>
@@ -947,13 +949,13 @@ function CreateSkillDialog({
   ]
 
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-card border border-white/10 rounded-2xl shadow-2xl w-[460px] max-w-[95vw]" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-foreground/20 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-card border border-foreground/10 rounded-2xl shadow-2xl w-[460px] max-w-[95vw]" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center gap-2 px-5 py-4 border-b border-white/5">
+        <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
           <Sparkles className="w-4 h-4 text-primary" />
           <h2 className="text-sm font-display font-bold text-foreground">Create New Skill</h2>
-          <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors">
+          <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-foreground/5 text-muted-foreground hover:text-foreground transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -967,7 +969,7 @@ function CreateSkillDialog({
               onChange={e => { setName(e.target.value); setError("") }}
               onKeyDown={e => e.key === "Enter" && handleCreate()}
               placeholder="my-custom-skill"
-              className="bg-white/3 border-white/10 text-sm"
+              className="bg-foreground/3 border-foreground/10 text-sm"
               autoFocus
             />
             {slug && name !== slug && (
@@ -986,7 +988,7 @@ function CreateSkillDialog({
               value={description}
               onChange={e => setDescription(e.target.value)}
               placeholder="What does this skill do?"
-              className="bg-white/3 border-white/10 text-sm"
+              className="bg-foreground/3 border-foreground/10 text-sm"
             />
           </div>
 
@@ -1002,7 +1004,7 @@ function CreateSkillDialog({
                     "flex flex-col items-center gap-1.5 p-3 rounded-xl border transition-all text-center",
                     scope === opt.id
                       ? opt.colorClass
-                      : "bg-white/2 border-white/5 text-muted-foreground hover:border-white/10 hover:bg-white/4"
+                      : "bg-foreground/2 border-border text-muted-foreground hover:border-foreground/10 hover:bg-foreground/4"
                   )}
                 >
                   <span className="text-base leading-none">{opt.icon}</span>
@@ -1014,7 +1016,7 @@ function CreateSkillDialog({
 
             {/* Path preview */}
             {pathPreview && (
-              <div className="mt-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/3 border border-white/5">
+              <div className="mt-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-foreground/3 border border-border">
                 <FolderOpen className="w-3 h-3 text-muted-foreground/50 shrink-0" />
                 <code className="text-[10px] font-mono text-muted-foreground/70 truncate">{pathPreview}</code>
               </div>
@@ -1026,8 +1028,8 @@ function CreateSkillDialog({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-white/5">
-          <button onClick={onClose} className="px-4 py-1.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          <button onClick={onClose} className="px-4 py-1.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
             Cancel
           </button>
           <button
@@ -1196,9 +1198,9 @@ function EditConfigModal({
       style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(2px)" }}
       onClick={e => e.target === e.currentTarget && onClose()}
     >
-      <div className="w-full max-w-lg bg-[#0e0e14] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="w-full max-w-lg bg-card border border-foreground/10 rounded-2xl shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 bg-white/2">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-foreground/2">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-primary/15 border border-primary/20 flex items-center justify-center">
               <Pencil className="w-4 h-4 text-primary/70" />
@@ -1208,7 +1210,7 @@ function EditConfigModal({
               <p className="text-[11px] text-muted-foreground mt-0.5">Changes are written to openclaw.json</p>
             </div>
           </div>
-          <button onClick={onClose} className="w-7 h-7 rounded-lg border border-white/10 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+          <button onClick={onClose} className="w-7 h-7 rounded-lg border border-foreground/10 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -1218,7 +1220,7 @@ function EditConfigModal({
           <section>
             <div className="flex items-center gap-2 mb-3">
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">Identity</span>
-              <div className="flex-1 h-px bg-white/5" />
+              <div className="flex-1 h-px bg-foreground/5" />
             </div>
             <div className="grid grid-cols-[56px_1fr] gap-3 items-start">
               <div>
@@ -1241,7 +1243,7 @@ function EditConfigModal({
             <div className="flex items-center gap-2 mb-3">
               <ImagePlus className="w-3 h-3 text-muted-foreground/60" />
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">Profile Picture</span>
-              <div className="flex-1 h-px bg-white/5" />
+              <div className="flex-1 h-px bg-foreground/5" />
               {cfg.avatarPresetId && (
                 <button
                   onClick={() => setCfg(c => ({ ...c, avatarPresetId: "" }))}
@@ -1261,7 +1263,7 @@ function EditConfigModal({
           <section>
             <div className="flex items-center gap-2 mb-3">
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">AI Model</span>
-              <div className="flex-1 h-px bg-white/5" />
+              <div className="flex-1 h-px bg-foreground/5" />
             </div>
             {modelOptions.length > 0 ? (
               <>
@@ -1270,7 +1272,7 @@ function EditConfigModal({
                   const sel = detail.availableModels.find(m => m.value === cfg.model)
                   if (!sel) return null
                   return (
-                    <div className="mt-2 flex items-center gap-3 px-3 py-2 rounded-lg bg-white/2 border border-white/5">
+                    <div className="mt-2 flex items-center gap-3 px-3 py-2 rounded-lg bg-foreground/2 border border-border">
                       <span className="text-[10px] text-muted-foreground font-mono">{cfg.model}</span>
                       {sel.reasoning && <span className="text-[9px] font-bold uppercase tracking-wider text-violet-400 bg-violet-400/10 border border-violet-400/20 px-1.5 py-0.5 rounded">Reasoning</span>}
                       {sel.contextWindow > 0 && <span className="text-[9px] text-muted-foreground ml-auto">{sel.contextWindow >= 1_000_000 ? `${(sel.contextWindow / 1_000_000).toFixed(1)}M ctx` : `${Math.round(sel.contextWindow / 1000)}k ctx`}</span>}
@@ -1290,8 +1292,8 @@ function EditConfigModal({
           <section>
             <div className="flex items-center gap-2 mb-3">
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">Channel Binding</span>
-              <div className="flex-1 h-px bg-white/5" />
-              <span className="text-[9px] text-muted-foreground bg-white/5 px-1.5 py-0.5 rounded">Telegram</span>
+              <div className="flex-1 h-px bg-foreground/5" />
+              <span className="text-[9px] text-muted-foreground bg-foreground/5 px-1.5 py-0.5 rounded">Telegram</span>
             </div>
             <div className="space-y-3">
               {channelOptions.length > 1 && (
@@ -1311,10 +1313,10 @@ function EditConfigModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-5 py-4 border-t border-white/5 bg-white/1">
+        <div className="flex items-center justify-between px-5 py-4 border-t border-border bg-foreground/1">
           <p className="text-[10px] text-muted-foreground/50">Saved to ~/.openclaw/openclaw.json</p>
           <div className="flex items-center gap-2">
-            <button onClick={onClose} className="px-4 py-1.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
+            <button onClick={onClose} className="px-4 py-1.5 rounded-lg border border-foreground/10 text-sm text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
             <button onClick={handleSave} disabled={saving} className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-primary/20 border border-primary/30 text-sm text-primary font-semibold hover:bg-primary/30 transition-colors disabled:opacity-50">
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               {saving ? "Saving…" : "Save Changes"}
@@ -1346,7 +1348,7 @@ function RestartGatewayDialog({ onConfirm, onDismiss, reason }: {
 
   return (
     <div className="fixed inset-0 z-60 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}>
-      <div className="w-full max-w-sm bg-[#0e0e14] border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div className="w-full max-w-sm bg-card border border-foreground/10 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         <div className="h-1 bg-linear-to-r from-amber-500/80 via-orange-500/80 to-amber-500/80" />
         <div className="p-6">
           <div className="flex items-center gap-3 mb-4">
@@ -1365,7 +1367,7 @@ function RestartGatewayDialog({ onConfirm, onDismiss, reason }: {
             <div className="flex items-center justify-center gap-2 py-2 text-emerald-400 text-sm font-semibold">✓ Gateway restarting…</div>
           ) : (
             <div className="flex items-center gap-2">
-              <button onClick={onDismiss} className="flex-1 px-4 py-2 rounded-xl border border-white/10 text-sm text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">Later</button>
+              <button onClick={onDismiss} className="flex-1 px-4 py-2 rounded-xl border border-foreground/10 text-sm text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">Later</button>
               <button onClick={handleRestart} disabled={restarting} className="flex-1 px-4 py-2 rounded-xl bg-amber-500/20 border border-amber-500/30 text-sm text-amber-300 font-semibold hover:bg-amber-500/30 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
                 {restarting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
                 {restarting ? "Restarting…" : "Restart Now"}
@@ -1395,6 +1397,7 @@ export function AgentDetailPage() {
   const [showRestartDialog, setShowRestartDialog] = useState(false)
   const [restartReason, setRestartReason] = useState("")
   const [saveMsg, setSaveMsg] = useState("")
+  const [testingChat, setTestingChat] = useState(false)
 
   // File explorer
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -1418,6 +1421,26 @@ export function AgentDetailPage() {
 
   // Live session monitoring
   const [viewingSession, setViewingSession] = useState<Session | null>(null)
+
+  const handleTestChat = useCallback(async () => {
+    if (!id || testingChat) return
+    setTestingChat(true)
+    try {
+      const result = await chatApi.createSession(id) as Record<string, unknown>
+      const sessionKey = (result.key as string) ?? (result.sessionKey as string) ?? ((result.session as Record<string, unknown>)?.key as string)
+      if (!sessionKey) throw new Error("No session key returned")
+      const chatStore = useChatStore.getState()
+      const newSession = { sessionKey, agentId: id, channel: "webchat", createdAt: Date.now(), updatedAt: Date.now() }
+      chatStore.setSessions([newSession, ...chatStore.sessions])
+      await chatApi.subscribe(sessionKey)
+      chatStore.setActiveSessionKey(sessionKey)
+      navigate("/chat")
+    } catch (err) {
+      alert(`Failed to start test chat: ${err instanceof Error ? err.message : "Unknown error"}`)
+    } finally {
+      setTestingChat(false)
+    }
+  }, [id, testingChat, navigate])
 
   const loadDetail = useCallback(async () => {
     if (!id) return
@@ -1574,7 +1597,7 @@ export function AgentDetailPage() {
           </button>
 
           {/* ── Header Card ── */}
-          <div className="px-4 py-3 bg-white/1 border border-white/5 rounded-xl shrink-0 mb-3 shadow-sm">
+          <div className="px-4 py-3 bg-foreground/1 border border-border rounded-xl shrink-0 mb-3 shadow-sm">
             <div className="flex items-center gap-3">
               {/* Avatar */}
               <AgentAvatar
@@ -1586,12 +1609,12 @@ export function AgentDetailPage() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <h2 className="text-lg font-display font-bold text-foreground tracking-tight leading-none">{detail.identity.name}</h2>
-                  <span className="text-[10px] font-mono text-muted-foreground/60 bg-white/5 px-1.5 py-0.5 rounded border border-white/5 shrink-0">ID: {detail.id.toUpperCase()}</span>
+                  <span className="text-[10px] font-mono text-muted-foreground/60 bg-foreground/5 px-1.5 py-0.5 rounded border border-border shrink-0">ID: {detail.id.toUpperCase()}</span>
                   <span className={cn(
                     "text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border shrink-0 transition-all",
                     isProcessing
                       ? "text-emerald-400 bg-emerald-500/15 border-emerald-500/20 animate-pulse"
-                      : "text-muted-foreground bg-white/5 border-white/10"
+                      : "text-muted-foreground bg-foreground/5 border-foreground/10"
                   )}>
                     {isProcessing && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1 animate-pulse" />}
                     {isProcessing ? "LIVE" : detail.status}
@@ -1610,8 +1633,19 @@ export function AgentDetailPage() {
               {/* Actions */}
               <div className="flex items-center gap-1.5 shrink-0">
                 {saveMsg && <span className="text-xs font-medium text-emerald-400 mr-1">{saveMsg}</span>}
-                <button onClick={loadDetail} className="w-7 h-7 rounded-lg border border-white/10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+                <button onClick={loadDetail} className="w-7 h-7 rounded-lg border border-foreground/10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
                   <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={handleTestChat}
+                  disabled={testingChat}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/25 text-xs text-emerald-400 font-semibold hover:bg-emerald-500/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {testingChat
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <MessageSquarePlus className="w-3.5 h-3.5" />
+                  }
+                  {testingChat ? "Starting…" : "Test Chat"}
                 </button>
                 <button onClick={() => setEditing(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/20 border border-primary/30 text-xs text-primary font-semibold hover:bg-primary/30 transition-colors">
                   <Pencil className="w-3.5 h-3.5" /> Edit Configuration
@@ -1659,8 +1693,8 @@ export function AgentDetailPage() {
             <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-4">
 
               {/* ── AGENT FILES ── */}
-              <div className="flex-1 min-h-0 min-w-0 bg-white/1 border border-white/5 rounded-2xl overflow-hidden shadow-sm flex flex-col">
-                <div className="flex items-center gap-2 px-5 py-3 border-b border-white/5 bg-white/2 shrink-0">
+              <div className="flex-1 min-h-0 min-w-0 bg-foreground/1 border border-border rounded-2xl overflow-hidden shadow-sm flex flex-col">
+                <div className="flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
                   <FolderOpen className="w-4 h-4 text-primary/60" />
                   <h3 className="text-sm font-display font-bold text-foreground">Agent Files</h3>
                   {detail.workspace.hasCustomWorkspace && (
@@ -1669,7 +1703,7 @@ export function AgentDetailPage() {
                   <button
                     onClick={() => setFileSidebarCollapsed(c => !c)}
                     title={fileSidebarCollapsed ? "Expand file list" : "Collapse file list"}
-                    className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                    className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
                   >
                     {fileSidebarCollapsed
                       ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span>Expand</span></>
@@ -1681,7 +1715,7 @@ export function AgentDetailPage() {
                 <div className="flex flex-1 min-h-0 overflow-hidden">
                   {/* File list sidebar */}
                   {!fileSidebarCollapsed && (
-                    <div className="w-52 border-r border-white/5 shrink-0 py-1.5 overflow-y-auto">
+                    <div className="w-52 border-r border-border shrink-0 py-1.5 overflow-y-auto">
                       {WORKSPACE_FILES.map(file => {
                         const fileKey = file.replace(".md", "").toLowerCase()
                         const exists = !!detail.workspace.files[fileKey]
@@ -1696,8 +1730,8 @@ export function AgentDetailPage() {
                               isSelected
                                 ? "bg-primary/10 border-r-2 border-primary text-foreground"
                                 : exists
-                                  ? "text-foreground/70 hover:bg-white/3 hover:text-foreground"
-                                  : "text-white/15 cursor-not-allowed"
+                                  ? "text-foreground/70 hover:bg-foreground/3 hover:text-foreground"
+                                  : "text-foreground/15 cursor-not-allowed"
                             )}
                           >
                             <span className={cn("text-base leading-none", !exists && "grayscale opacity-30")}>
@@ -1710,7 +1744,7 @@ export function AgentDetailPage() {
                               </span>
                             </div>
                             {!exists && (
-                              <FilePlus className="w-3.5 h-3.5 text-white/10 shrink-0" />
+                              <FilePlus className="w-3.5 h-3.5 text-foreground/10 shrink-0" />
                             )}
                           </button>
                         )
@@ -1738,11 +1772,11 @@ export function AgentDetailPage() {
               </div>
 
               {/* ── SKILLS & TOOLS ── */}
-              <div className="flex-1 min-h-0 min-w-0 bg-white/1 rounded-2xl border border-white/5 overflow-hidden shadow-sm flex flex-col">
+              <div className="flex-1 min-h-0 min-w-0 bg-foreground/1 rounded-2xl border border-border overflow-hidden shadow-sm flex flex-col">
                 {/* Header with tab switcher */}
-                <div className="flex items-center gap-2 px-5 py-3 border-b border-white/5 bg-white/2 shrink-0">
+                <div className="flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
                   <Sparkles className="w-4 h-4 text-primary/60" />
-                  <div className="flex items-center gap-0.5 rounded-lg bg-black/30 border border-white/8 p-0.5">
+                  <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5">
                     <button
                       onClick={() => setActiveTab('skills')}
                       className={cn(
@@ -1753,19 +1787,19 @@ export function AgentDetailPage() {
                       )}
                     >
                       Skills
-                      <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'skills' ? "bg-primary/20 text-primary" : "bg-white/5 text-muted-foreground")}>{skills.length}</span>
+                      <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'skills' ? "bg-primary/20 text-primary" : "bg-foreground/5 text-muted-foreground")}>{skills.length}</span>
                     </button>
                     <button
                       onClick={() => setActiveTab('tools')}
                       className={cn(
                         "px-3 py-1 rounded text-[11px] font-bold transition-all",
                         activeTab === 'tools'
-                          ? "bg-violet-500/20 text-violet-300 border border-violet-500/30"
+                          ? "bg-violet-500/15 text-violet-600 dark:text-violet-300 border border-violet-500/30"
                           : "text-muted-foreground hover:text-foreground"
                       )}
                     >
                       Tools
-                      <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'tools' ? "bg-violet-500/20 text-violet-400" : "bg-white/5 text-muted-foreground")}>
+                      <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-400" : "bg-foreground/5 text-muted-foreground")}>
                         {tools.filter(t => !t.enabled).length > 0 ? `${tools.filter(t => !t.enabled).length} denied` : tools.length}
                       </span>
                     </button>
@@ -1775,7 +1809,7 @@ export function AgentDetailPage() {
                       <button
                         onClick={() => setSkillSidebarCollapsed(c => !c)}
                         title={skillSidebarCollapsed ? "Expand skill list" : "Collapse skill list"}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
                       >
                         {skillSidebarCollapsed
                           ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span>Expand</span></>
@@ -1799,14 +1833,14 @@ export function AgentDetailPage() {
                 {activeTab === 'skills' && (
                   <div className="flex flex-1 min-h-0 overflow-hidden">
                     {!skillSidebarCollapsed && (
-                      <div className="w-52 border-r border-white/5 shrink-0 py-1.5 overflow-y-auto">
+                      <div className="w-52 border-r border-border shrink-0 py-1.5 overflow-y-auto">
                         {skillsLoading ? (
                           <div className="flex items-center justify-center h-full">
                             <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                           </div>
                         ) : skills.length === 0 ? (
                           <div className="flex flex-col items-center justify-center h-full px-4 text-center">
-                            <Package className="w-6 h-6 text-white/10 mb-2" />
+                            <Package className="w-6 h-6 text-foreground/10 mb-2" />
                             <p className="text-[11px] text-muted-foreground">No skills installed</p>
                             <p className="text-[10px] text-muted-foreground/50 mt-1">Create one to get started</p>
                           </div>
@@ -1821,7 +1855,7 @@ export function AgentDetailPage() {
                                   "w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors group",
                                   isSelected
                                     ? "bg-primary/10 border-r-2 border-primary text-foreground"
-                                    : "text-muted-foreground hover:text-foreground hover:bg-white/3"
+                                    : "text-muted-foreground hover:text-foreground hover:bg-foreground/3"
                                 )}
                               >
                                 <span className="text-sm shrink-0">{skill.emoji || '⚡'}</span>
@@ -1833,7 +1867,7 @@ export function AgentDetailPage() {
                                       skill.source === 'workspace' ? "bg-blue-500/15 text-blue-400" :
                                       skill.source === 'managed' ? "bg-purple-500/15 text-purple-400" :
                                       skill.source === 'personal' ? "bg-green-500/15 text-green-400" :
-                                      "bg-white/5 text-muted-foreground/70"
+                                      "bg-foreground/5 text-muted-foreground/70"
                                     )}>{skill.sourceLabel}</span>
                                     {!skill.enabled && (
                                       <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded bg-amber-500/15 text-amber-400">Off</span>
@@ -1857,7 +1891,7 @@ export function AgentDetailPage() {
                         />
                       ) : (
                         <div className="flex flex-col items-center justify-center h-full text-center px-6">
-                          <Sparkles className="w-8 h-8 text-white/8 mb-3" />
+                          <Sparkles className="w-8 h-8 text-foreground/8 mb-3" />
                           <p className="text-sm text-muted-foreground/60">Select a skill to view or edit</p>
                           <p className="text-[11px] text-muted-foreground/40 mt-1">Skills inject SKILL.md instructions into the agent</p>
                         </div>
@@ -1880,21 +1914,21 @@ export function AgentDetailPage() {
                         groups[t.group].push(t)
                       })
                       const groupMeta: Record<string, { label: string; color: string }> = {
-                        runtime:    { label: '⚙️ Runtime',    color: 'text-orange-400' },
-                        fs:         { label: '📁 File System', color: 'text-yellow-400' },
-                        web:        { label: '🌐 Web',          color: 'text-sky-400' },
-                        memory:     { label: '🧠 Memory',       color: 'text-purple-400' },
-                        messaging:  { label: '💬 Messaging',    color: 'text-green-400' },
-                        sessions:   { label: '🤝 Sessions',     color: 'text-blue-400' },
-                        ui:         { label: '🎨 Media / UI',   color: 'text-pink-400' },
-                        automation: { label: '🔁 Automation',   color: 'text-amber-400' },
+                        runtime:    { label: '⚙️ Runtime',    color: 'text-orange-500' },
+                        fs:         { label: '📁 File System', color: 'text-yellow-600' },
+                        web:        { label: '🌐 Web',          color: 'text-sky-500' },
+                        memory:     { label: '🧠 Memory',       color: 'text-purple-500' },
+                        messaging:  { label: '💬 Messaging',    color: 'text-green-600' },
+                        sessions:   { label: '🤝 Sessions',     color: 'text-blue-500' },
+                        ui:         { label: '🎨 Media / UI',   color: 'text-pink-500' },
+                        automation: { label: '🔁 Automation',   color: 'text-amber-600' },
                       }
                       return (
                         <div className="px-4 py-3 space-y-4">
-                          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-violet-500/8 border border-violet-500/15">
-                            <Wrench className="w-3.5 h-3.5 text-violet-400 mt-0.5 shrink-0" />
-                            <p className="text-[11px] text-violet-300/80 leading-relaxed">
-                              These are <strong>built-in runtime tools</strong> independent of skills. Disabling here writes to <code className="font-mono bg-white/5 px-1 rounded">agents.list[].tools.deny</code> in openclaw.json.
+                          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-violet-500/8 border border-violet-500/20">
+                            <Wrench className="w-3.5 h-3.5 text-violet-500 mt-0.5 shrink-0" />
+                            <p className="text-[11px] text-violet-700 dark:text-violet-300/80 leading-relaxed">
+                              These are <strong>built-in runtime tools</strong> independent of skills. Disabling here writes to <code className="font-mono bg-foreground/5 px-1 rounded">agents.list[].tools.deny</code> in openclaw.json.
                             </p>
                           </div>
                           {Object.entries(groups).map(([group, groupTools]) => {
@@ -1918,7 +1952,7 @@ export function AgentDetailPage() {
                                       className={cn(
                                         "flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-left transition-all",
                                         tool.enabled
-                                          ? "bg-white/2 border-white/8 hover:bg-white/5 hover:border-white/15"
+                                          ? "bg-foreground/2 border-border hover:bg-foreground/5 hover:border-foreground/15"
                                           : "bg-red-500/5 border-red-500/20 opacity-75 hover:opacity-90",
                                         tool.deniedGlobally && "cursor-not-allowed"
                                       )}
@@ -1933,12 +1967,12 @@ export function AgentDetailPage() {
                                       </div>
                                       <div className={cn(
                                         "w-7 h-4 rounded-full shrink-0 flex items-center transition-colors",
-                                        tool.enabled ? "bg-emerald-500/40 justify-end" : "bg-red-500/30 justify-start",
+                                        tool.enabled ? "bg-emerald-500/60 justify-end" : "bg-red-500/40 justify-start",
                                         tool.deniedGlobally && "opacity-30"
                                       )}>
                                         <div className={cn(
                                           "w-3 h-3 rounded-full mx-0.5 transition-colors",
-                                          tool.enabled ? "bg-emerald-400" : "bg-red-400"
+                                          tool.enabled ? "bg-emerald-500" : "bg-red-500"
                                         )} />
                                       </div>
                                     </button>
@@ -1956,7 +1990,7 @@ export function AgentDetailPage() {
             </div>
 
             {/* ═══ Recent Sessions — compact horizontal strip ═══ */}
-            <div className="shrink-0 bg-white/1 rounded-xl border border-white/5 px-4 py-2.5 shadow-sm">
+            <div className="shrink-0 bg-foreground/1 rounded-xl border border-border px-4 py-2.5 shadow-sm">
               <div className="flex items-center gap-2 mb-2">
                 <MessageSquare className="w-3.5 h-3.5 text-primary/60 shrink-0" />
                 <h3 className="text-xs font-display font-bold text-foreground">Recent Sessions</h3>
@@ -1988,17 +2022,17 @@ export function AgentDetailPage() {
                           "flex flex-col gap-1 px-3 py-2 rounded-lg border text-left transition-all group shrink-0 w-52",
                           isActive
                             ? "bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/8"
-                            : "bg-white/2 border-white/8 hover:bg-white/4 hover:border-white/15"
+                            : "bg-foreground/2 border-border hover:bg-foreground/4 hover:border-foreground/15"
                         )}
                       >
                         <div className="flex items-center gap-1.5">
                           <span className={cn(
                             "w-1.5 h-1.5 rounded-full shrink-0",
-                            isActive ? "bg-emerald-400 animate-pulse" : "bg-white/20"
+                            isActive ? "bg-emerald-400 animate-pulse" : "bg-foreground/20"
                           )} />
                           <span className="text-[10px] font-mono text-muted-foreground/70">{fmtTime(sess.updatedAt)}</span>
                           {isActive && <span className="text-[8px] px-1 py-px bg-emerald-500/20 text-emerald-400 font-bold uppercase rounded animate-pulse ml-0.5">Live</span>}
-                          <ArrowRight className="w-2.5 h-2.5 text-white/0 group-hover:text-muted-foreground/50 ml-auto transition-colors" />
+                          <ArrowRight className="w-2.5 h-2.5 text-transparent group-hover:text-muted-foreground/50 ml-auto transition-colors" />
                         </div>
                         <p className="text-[11px] text-foreground/70 font-medium line-clamp-1 leading-tight group-hover:text-foreground transition-colors">
                           {sess.lastMessage || `${sess.name} — ${sess.messageCount} messages`}

@@ -2,6 +2,7 @@ const chokidar = require('chokidar');
 const fs = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, parseSingleGatewayEntry } = require('./index.cjs');
+const { readJsonSafe } = require('./config.cjs');
 
 class LiveFeedWatcher {
   constructor() {
@@ -59,11 +60,42 @@ class LiveFeedWatcher {
     console.log('[watchers] Live feed watchers started');
   }
 
+  _buildSessionIdMap(agentsDir) {
+    const map = new Map(); // sessionId (UUID) -> sessionKey (full key)
+    try {
+      const agentDirs = fs.readdirSync(agentsDir).filter(d => {
+        return fs.existsSync(path.join(agentsDir, d)) && fs.statSync(path.join(agentsDir, d)).isDirectory();
+      });
+      for (const agentId of agentDirs) {
+        const sessionsJsonPath = path.join(agentsDir, agentId, 'sessions', 'sessions.json');
+        const data = readJsonSafe(sessionsJsonPath);
+        if (data && typeof data === 'object') {
+          for (const [sessionKey, sessionInfo] of Object.entries(data)) {
+            const sessionId = sessionInfo?.sessionId;
+            if (sessionId) {
+              map.set(sessionId, sessionKey);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[watchers] _buildSessionIdMap error:', err.message);
+    }
+    return map;
+  }
+
   _startAgentPolling(agentsDir) {
     const fileSizes = new Map(); // filePath -> last known file size (for tailing)
     const activeLocks = new Set(); // track which .lock files we've already seen
+    let pollCount = 0;
+    this._sessionIdMap = this._buildSessionIdMap(agentsDir);
 
     const poll = () => {
+      pollCount++;
+      // Refresh the sessionId -> sessionKey map every 10 polls (~20s)
+      if (pollCount % 10 === 0) {
+        this._sessionIdMap = this._buildSessionIdMap(agentsDir);
+      }
       try {
         const agentDirs = fs.readdirSync(agentsDir).filter(d => {
           const p = path.join(agentsDir, d, 'sessions');
@@ -128,6 +160,7 @@ class LiveFeedWatcher {
                         type: 'session:live-event',
                         agent: agentId,
                         sessionId,
+                        sessionKey: this._sessionIdMap?.get(sessionId) || null,
                         event: parsed,
                       });
                     }
@@ -152,11 +185,13 @@ class LiveFeedWatcher {
           if (!currentLocks.has(lockPath)) {
             activeLocks.delete(lockPath);
             const agentId = path.basename(path.dirname(path.dirname(lockPath)));
+            const endSessionId = path.basename(lockPath).replace('.jsonl.lock', '').replace('.lock', '');
             this.broadcast({
               type: 'session:update',
               action: 'processing_end',
               agent: agentId,
               file: path.basename(lockPath).replace('.lock', ''),
+              sessionKey: this._sessionIdMap?.get(endSessionId) || null,
               source: 'gateway',
             });
           }

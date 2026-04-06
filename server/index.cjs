@@ -9,6 +9,7 @@ const path = require('path');
 const parsers = require('./lib/index.cjs'); // modular barrel — replaces parsers.cjs
 const { LiveFeedWatcher } = require('./lib/watchers.cjs');
 const db = require('./lib/db.cjs');
+const { gatewayProxy } = require('./lib/gateway-ws.cjs');
 
 const PORT = parseInt(process.env.PORT || '18800', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -837,6 +838,123 @@ app.get('/api/activity', db.authMiddleware, (req, res) => {
   }
 });
 
+// ─── Chat API (Gateway WebSocket Proxy) ──────────────────────────────────────
+
+// Get gateway connection status
+app.get('/api/chat/gateway/status', db.authMiddleware, (req, res) => {
+  res.json({ connected: gatewayProxy.isConnected });
+});
+
+// List chat sessions (from gateway)
+app.get('/api/chat/sessions', db.authMiddleware, async (req, res) => {
+  try {
+    if (!gatewayProxy.isConnected) {
+      return res.status(503).json({ error: 'Not connected to Gateway' });
+    }
+    const agentId = req.query.agentId;
+    const result = await gatewayProxy.sessionsList(agentId);
+    // Normalize: extract agentId from key pattern "agent:{agentId}:{channel}:{uuid}"
+    const sessions = (result.sessions || []).map(s => {
+      const parts = (s.key || '').split(':');
+      return {
+        ...s,
+        sessionKey: s.key,
+        agentId: s.agentId || (parts[0] === 'agent' ? parts[1] : undefined),
+        lastMessage: s.lastMessage || s.derivedTitle || undefined,
+      };
+    });
+    res.json({ sessions });
+  } catch (err) {
+    console.error('[api/chat/sessions]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new chat session
+app.post('/api/chat/sessions', db.authMiddleware, async (req, res) => {
+  try {
+    if (!gatewayProxy.isConnected) {
+      return res.status(503).json({ error: 'Not connected to Gateway' });
+    }
+    const { agentId } = req.body;
+    if (!agentId) return res.status(400).json({ error: 'agentId is required' });
+    const result = await gatewayProxy.sessionsCreate(agentId);
+    console.log('[api/chat/sessions/create] result:', JSON.stringify(result).slice(0, 500));
+    res.json(result);
+  } catch (err) {
+    console.error('[api/chat/sessions/create]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get chat history for a session
+app.get('/api/chat/history/:sessionKey', db.authMiddleware, async (req, res) => {
+  try {
+    if (!gatewayProxy.isConnected) {
+      return res.status(503).json({ error: 'Not connected to Gateway' });
+    }
+    const maxChars = parseInt(req.query.maxChars || '80000', 10);
+    const result = await gatewayProxy.chatHistory(req.params.sessionKey, maxChars);
+    // Also subscribe to real-time updates
+    gatewayProxy.sessionsMessagesSubscribe(req.params.sessionKey).catch(() => {});
+    res.json(result);
+  } catch (err) {
+    console.error('[api/chat/history]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send a message to an agent
+app.post('/api/chat/send', db.authMiddleware, async (req, res) => {
+  try {
+    if (!gatewayProxy.isConnected) {
+      return res.status(503).json({ error: 'Not connected to Gateway' });
+    }
+    const { sessionKey, text, agentId } = req.body;
+    if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
+    if (!text?.trim()) return res.status(400).json({ error: 'text is required' });
+    // Ensure we're subscribed
+    await gatewayProxy.sessionsMessagesSubscribe(sessionKey);
+    const result = await gatewayProxy.chatSend(sessionKey, text.trim(), agentId);
+    res.json(result || { ok: true });
+  } catch (err) {
+    console.error('[api/chat/send]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Abort an active agent run
+app.post('/api/chat/abort', db.authMiddleware, async (req, res) => {
+  try {
+    if (!gatewayProxy.isConnected) {
+      return res.status(503).json({ error: 'Not connected to Gateway' });
+    }
+    const { sessionKey } = req.body;
+    if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
+    const result = await gatewayProxy.chatAbort(sessionKey);
+    res.json(result || { ok: true });
+  } catch (err) {
+    console.error('[api/chat/abort]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Subscribe to a session's real-time events
+app.post('/api/chat/subscribe', db.authMiddleware, async (req, res) => {
+  try {
+    if (!gatewayProxy.isConnected) {
+      return res.status(503).json({ error: 'Not connected to Gateway' });
+    }
+    const { sessionKey } = req.body;
+    if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
+    await gatewayProxy.sessionsMessagesSubscribe(sessionKey);
+    res.json({ ok: true, subscribed: sessionKey });
+  } catch (err) {
+    console.error('[api/chat/subscribe]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Serve Vite build in prod ─────────────────────────────────────────────────
 const distDir = path.join(__dirname, '..', 'dist');
 app.use(express.static(distDir, { etag: false }));
@@ -880,11 +998,17 @@ wss.on('connection', (ws) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
   });
 
+  // Forward gateway real-time chat events to this dashboard WS client
+  const unsubGateway = gatewayProxy.addListener((event) => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+  });
+
   ws.on('close', () => {
     unsubscribe();
+    unsubGateway();
     console.log(`[ws] Client disconnected (${wss.clients.size} total)`);
   });
-  ws.on('error', () => unsubscribe());
+  ws.on('error', () => { unsubscribe(); unsubGateway(); });
 
   // Heartbeat
   ws.isAlive = true;
@@ -905,6 +1029,10 @@ wss.on('close', () => clearInterval(heartbeatInterval));
 async function start() {
   await db.initDatabase();
   feedWatcher.start();
+
+  // Connect to OpenClaw Gateway for real-time chat
+  gatewayProxy.connect();
+  console.log('[gateway-ws] Connecting to OpenClaw Gateway...');
 
   const hasUsers = db.hasAnyUsers();
   console.log(`[auth] Database ready. ${hasUsers ? 'Users exist.' : 'No users — setup required.'}`);
