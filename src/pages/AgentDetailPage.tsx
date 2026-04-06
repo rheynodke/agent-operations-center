@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import { chatApi } from "@/lib/chat-api"
 import { useChatStore } from "@/stores/useChatStore"
-import type { SkillInfo, AgentTool, Session, SkillScript } from "@/types"
+import type { SkillInfo, AgentTool, Session, SkillScript, AgentChannelTelegram, AgentChannelWhatsApp, AgentChannelsResult } from "@/types"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import {
   Loader2, RefreshCw, Zap, Save, X,
@@ -17,6 +17,7 @@ import {
   Plus, Package, Power, PowerOff, Sparkles,
   Activity, PanelLeftClose, PanelLeftOpen,
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
+  Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight,
 } from "lucide-react"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -1381,6 +1382,555 @@ function RestartGatewayDialog({ onConfirm, onDismiss, reason }: {
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/*  CHANNELS PANEL                                                     */
+/* ─────────────────────────────────────────────────────────────────── */
+
+type DmPolicy = "pairing" | "allowlist" | "open" | "disabled"
+type Streaming = "off" | "partial" | "full"
+
+const DM_POLICY_LABELS: Record<DmPolicy, string> = {
+  pairing: "Pairing (bot must /start first)",
+  allowlist: "Allowlist only",
+  open: "Open (anyone)",
+  disabled: "Disabled",
+}
+
+const STREAMING_LABELS: Record<Streaming, string> = {
+  off: "Off",
+  partial: "Partial (key messages)",
+  full: "Full (all tokens)",
+}
+
+function ChannelBadge({ type }: { type: "telegram" | "whatsapp" }) {
+  if (type === "telegram") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/12 text-sky-600 dark:text-sky-400 border border-sky-500/20">
+      <img src="/telegram.webp" className="w-3 h-3 rounded-full" alt="" /> Telegram
+    </span>
+  )
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/12 text-green-600 dark:text-green-400 border border-green-500/20">
+      <img src="/wa.png" className="w-3 h-3 rounded-full" alt="" /> WhatsApp
+    </span>
+  )
+}
+
+function TelegramChannelCard({
+  ch, agentId, onSaved, onRemove,
+}: {
+  ch: AgentChannelTelegram; agentId: string; onSaved: () => void; onRemove: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [dmPolicy, setDmPolicy] = useState<DmPolicy>(ch.dmPolicy)
+  const [streaming, setStreaming] = useState<Streaming>(ch.streaming)
+  const [botToken, setBotToken] = useState(ch.botToken)
+  const [err, setErr] = useState("")
+
+  async function handleSave() {
+    setSaving(true); setErr("")
+    try {
+      await api.updateAgentChannel(agentId, "telegram", ch.accountId, { botToken, dmPolicy, streaming })
+      setEditing(false)
+      onSaved()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally { setSaving(false) }
+  }
+
+  async function handleRemove() {
+    if (!confirm(`Remove Telegram binding for this agent? The bot token will be deleted from openclaw.json.`)) return
+    setRemoving(true)
+    try {
+      await api.removeAgentChannel(agentId, "telegram", ch.accountId)
+      onRemove()
+    } catch (e) {
+      setErr((e as Error).message)
+      setRemoving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-foreground/2">
+        <ChannelBadge type="telegram" />
+        <span className="text-[11px] font-mono text-muted-foreground/60 flex-1 truncate">
+          account: {ch.accountId}
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => { setEditing(e => !e); setErr("") }}
+            className="w-6 h-6 rounded flex items-center justify-center hover:bg-foreground/8 text-muted-foreground hover:text-foreground transition-colors"
+            title="Edit"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+          <button
+            onClick={handleRemove}
+            disabled={removing}
+            className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+            title="Remove binding"
+          >
+            {removing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Unlink className="w-3 h-3" />}
+          </button>
+        </div>
+      </div>
+
+      {editing ? (
+        <div className="px-4 py-3 space-y-3">
+          {err && <p className="text-[11px] text-red-500">{err}</p>}
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token</label>
+            <input
+              value={botToken}
+              onChange={e => setBotToken(e.target.value)}
+              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              placeholder="123456:ABC-DEF..."
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+              <select
+                value={dmPolicy}
+                onChange={e => setDmPolicy(e.target.value as DmPolicy)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+              >
+                {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
+                  <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Streaming</label>
+              <select
+                value={streaming}
+                onChange={e => setStreaming(e.target.value as Streaming)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+              >
+                {(Object.keys(STREAMING_LABELS) as Streaming[]).map(v => (
+                  <option key={v} value={v}>{STREAMING_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+              Save
+            </button>
+            <button onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 py-2.5 grid grid-cols-3 gap-3 text-[11px]">
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">DM Policy</span>
+            <span className="font-medium text-foreground/80">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Streaming</span>
+            <span className="font-medium text-foreground/80">{STREAMING_LABELS[ch.streaming] ?? ch.streaming}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Token</span>
+            <span className="font-mono text-foreground/60">{ch.botToken ? ch.botToken.slice(0, 8) + "…" : "—"}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WhatsAppChannelCard({
+  ch, agentId, onSaved, onRemove,
+}: {
+  ch: AgentChannelWhatsApp; agentId: string; onSaved: () => void; onRemove: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [dmPolicy, setDmPolicy] = useState<DmPolicy>(ch.dmPolicy)
+  const [allowFrom, setAllowFrom] = useState(ch.allowFrom.join(", "))
+  const [err, setErr] = useState("")
+
+  async function handleSave() {
+    setSaving(true); setErr("")
+    try {
+      const af = allowFrom.split(",").map(s => s.trim()).filter(Boolean)
+      await api.updateAgentChannel(agentId, "whatsapp", ch.accountId, { dmPolicy, allowFrom: af })
+      setEditing(false)
+      onSaved()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally { setSaving(false) }
+  }
+
+  async function handleRemove() {
+    if (!confirm(`Remove WhatsApp binding for this agent?`)) return
+    setRemoving(true)
+    try {
+      await api.removeAgentChannel(agentId, "whatsapp", ch.accountId)
+      onRemove()
+    } catch (e) {
+      setErr((e as Error).message)
+      setRemoving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-foreground/2">
+        <ChannelBadge type="whatsapp" />
+        <span className="text-[11px] font-mono text-muted-foreground/60 flex-1 truncate">
+          account: {ch.accountId}
+        </span>
+        {ch.pairingRequired && (
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20 uppercase tracking-wider">
+            Pairing needed
+          </span>
+        )}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => { setEditing(e => !e); setErr("") }}
+            className="w-6 h-6 rounded flex items-center justify-center hover:bg-foreground/8 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+          <button
+            onClick={handleRemove}
+            disabled={removing}
+            className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+          >
+            {removing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Unlink className="w-3 h-3" />}
+          </button>
+        </div>
+      </div>
+
+      {ch.pairingRequired && !editing && (
+        <div className="mx-4 mt-3 flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/6 border border-amber-500/15">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+          <div className="text-[11px] text-amber-700 dark:text-amber-300/80 leading-relaxed">
+            <strong>WhatsApp pairing required.</strong> Run this command to authenticate:
+            <code className="block mt-1 font-mono bg-foreground/6 px-2 py-1 rounded text-foreground/70 text-[10px] break-all">
+              openclaw channels login --channel whatsapp --account {ch.accountId}
+            </code>
+          </div>
+        </div>
+      )}
+
+      {editing ? (
+        <div className="px-4 py-3 space-y-3">
+          {err && <p className="text-[11px] text-red-500">{err}</p>}
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+            <select
+              value={dmPolicy}
+              onChange={e => setDmPolicy(e.target.value as DmPolicy)}
+              className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+            >
+              {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
+                <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">
+              Allow From <span className="text-muted-foreground/40 font-normal normal-case">(comma-separated phone numbers, leave empty for all)</span>
+            </label>
+            <input
+              value={allowFrom}
+              onChange={e => setAllowFrom(e.target.value)}
+              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              placeholder="+62812…, +62813…"
+            />
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+              Save
+            </button>
+            <button onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 py-2.5 grid grid-cols-2 gap-3 text-[11px]">
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">DM Policy</span>
+            <span className="font-medium text-foreground/80">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Allow From</span>
+            <span className="font-medium text-foreground/80">{ch.allowFrom.length > 0 ? ch.allowFrom.join(", ") : "Anyone"}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AddChannelForm({
+  agentId, existingTypes, onAdded, onCancel,
+}: {
+  agentId: string; existingTypes: string[]; onAdded: () => void; onCancel: () => void
+}) {
+  const telegramExists = existingTypes.includes("telegram")
+  const whatsappExists = existingTypes.includes("whatsapp")
+
+  // Default to the first available (non-bound) channel type
+  const defaultType: "telegram" | "whatsapp" = telegramExists ? "whatsapp" : "telegram"
+  const [type, setType] = useState<"telegram" | "whatsapp">(defaultType)
+  const [botToken, setBotToken] = useState("")
+  const [dmPolicy, setDmPolicy] = useState<DmPolicy>("pairing")
+  const [streaming, setStreaming] = useState<Streaming>("partial")
+  const [allowFrom, setAllowFrom] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState("")
+
+  async function handleAdd() {
+    setSaving(true); setErr("")
+    try {
+      const af = allowFrom.split(",").map(s => s.trim()).filter(Boolean)
+      await api.addAgentChannel(agentId, {
+        type,
+        ...(type === "telegram" ? { botToken, streaming } : { allowFrom: af }),
+        dmPolicy,
+      })
+      onAdded()
+    } catch (e) {
+      setErr((e as Error).message)
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-primary/20 bg-primary/4 p-4 space-y-3">
+      <p className="text-xs font-semibold text-foreground">Add Channel Binding</p>
+      {err && <p className="text-[11px] text-red-500">{err}</p>}
+      <div className="flex gap-2">
+        {(["telegram", "whatsapp"] as const).map(t => {
+          const alreadyBound = t === "telegram" ? telegramExists : whatsappExists
+          const isSelected = type === t
+          return (
+            <button
+              key={t}
+              onClick={() => !alreadyBound && setType(t)}
+              disabled={alreadyBound}
+              className={cn(
+                "flex-1 flex flex-col items-center gap-1 py-2.5 rounded-lg border text-xs font-semibold transition-all",
+                alreadyBound
+                  ? "border-border bg-foreground/3 text-muted-foreground/30 cursor-not-allowed"
+                  : isSelected
+                    ? "bg-primary/15 border-primary/30 text-primary"
+                    : "border-border text-muted-foreground hover:text-foreground hover:bg-foreground/4"
+              )}
+            >
+              <div className="flex items-center gap-1.5">
+                <img src={t === "telegram" ? "/telegram.webp" : "/wa.png"} className="w-3.5 h-3.5 rounded-full" alt="" />
+                {t === "telegram" ? "Telegram" : "WhatsApp"}
+              </div>
+              {alreadyBound && (
+                <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground/30">Already bound</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
+      {type === "telegram" && (
+        <>
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token <span className="text-red-400">*</span></label>
+            <input
+              value={botToken}
+              onChange={e => setBotToken(e.target.value)}
+              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              placeholder="123456:ABC-DEF..."
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+              <select value={dmPolicy} onChange={e => setDmPolicy(e.target.value as DmPolicy)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40">
+                {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
+                  <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Streaming</label>
+              <select value={streaming} onChange={e => setStreaming(e.target.value as Streaming)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40">
+                {(Object.keys(STREAMING_LABELS) as Streaming[]).map(v => (
+                  <option key={v} value={v}>{STREAMING_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </>
+      )}
+
+      {type === "whatsapp" && (
+        <>
+          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/6 border border-amber-500/15">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-amber-700 dark:text-amber-300/80">
+              After adding, you must run <code className="font-mono bg-foreground/6 px-1 rounded">openclaw channels login --channel whatsapp --account {agentId}</code> to complete WhatsApp pairing.
+            </p>
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+            <select value={dmPolicy} onChange={e => setDmPolicy(e.target.value as DmPolicy)}
+              className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40">
+              {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
+                <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">
+              Allow From <span className="text-muted-foreground/40 font-normal normal-case">(optional, comma-separated)</span>
+            </label>
+            <input
+              value={allowFrom}
+              onChange={e => setAllowFrom(e.target.value)}
+              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              placeholder="+62812…, +62813…"
+            />
+          </div>
+        </>
+      )}
+
+      <div className="flex gap-2 pt-1">
+        <button
+          onClick={handleAdd}
+          disabled={saving || (type === "telegram" ? telegramExists : whatsappExists)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link className="w-3 h-3" />}
+          Add Binding
+        </button>
+        <button onClick={onCancel} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
+  agentId: string; gatewayConnected: boolean; onRestart: () => void
+}) {
+  const [channels, setChannels] = useState<AgentChannelsResult | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [addingChannel, setAddingChannel] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await api.getAgentChannels(agentId)
+      setChannels(data)
+    } catch { setChannels({ telegram: [], whatsapp: [] }) }
+    finally { setLoading(false) }
+  }, [agentId])
+
+  useEffect(() => { load() }, [load])
+
+  const existingTypes = [
+    ...(channels?.telegram.length ? ["telegram"] : []),
+    ...(channels?.whatsapp.length ? ["whatsapp"] : []),
+  ]
+  const allBindings = [...(channels?.telegram ?? []), ...(channels?.whatsapp ?? [])]
+
+  function handleSaved() {
+    load()
+    onRestart()
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Gateway status bar */}
+      <div className={cn(
+        "flex items-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium",
+        gatewayConnected
+          ? "bg-emerald-500/6 border-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+          : "bg-amber-500/6 border-amber-500/15 text-amber-600 dark:text-amber-400"
+      )}>
+        {gatewayConnected
+          ? <><Send className="w-3.5 h-3.5 shrink-0" /> Gateway connected — Test Chat available</>
+          : <><WifiOff className="w-3.5 h-3.5 shrink-0" /> Gateway offline — start OpenClaw gateway to use Test Chat</>
+        }
+      </div>
+
+      {/* Channel cards */}
+      {loading ? (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {allBindings.length === 0 && !addingChannel && (
+            <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground/40">
+              <Globe className="w-7 h-7" />
+              <p className="text-sm">No channel bindings yet</p>
+              <p className="text-xs">Add Telegram or WhatsApp to receive messages</p>
+            </div>
+          )}
+
+          {channels?.telegram.map(ch => (
+            <TelegramChannelCard
+              key={ch.accountId}
+              ch={ch}
+              agentId={agentId}
+              onSaved={handleSaved}
+              onRemove={() => { load(); onRestart() }}
+            />
+          ))}
+          {channels?.whatsapp.map(ch => (
+            <WhatsAppChannelCard
+              key={ch.accountId}
+              ch={ch}
+              agentId={agentId}
+              onSaved={handleSaved}
+              onRemove={() => { load(); onRestart() }}
+            />
+          ))}
+
+          {addingChannel ? (
+            <AddChannelForm
+              agentId={agentId}
+              existingTypes={existingTypes}
+              onAdded={() => { setAddingChannel(false); handleSaved() }}
+              onCancel={() => setAddingChannel(false)}
+            />
+          ) : existingTypes.length < 2 && (
+            <button
+              onClick={() => setAddingChannel(true)}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-foreground/15 text-xs text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/4 transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Channel Binding
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 /*  MAIN PAGE                                                          */
 /* ─────────────────────────────────────────────────────────────────── */
 
@@ -1419,11 +1969,29 @@ export function AgentDetailPage() {
   const [fileSidebarCollapsed, setFileSidebarCollapsed] = useState(false)
   const [skillSidebarCollapsed, setSkillSidebarCollapsed] = useState(false)
 
+  // Main body tab
+  const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels'>('files')
+
   // Live session monitoring
   const [viewingSession, setViewingSession] = useState<Session | null>(null)
 
+  // Gateway connectivity (for ChannelsPanel status bar + Test Chat)
+  const [gatewayConnected, setGatewayConnected] = useState(false)
+  useEffect(() => {
+    api.getGatewayStatus().then(s => setGatewayConnected(!!s.portOpen)).catch(() => setGatewayConnected(false))
+    const t = setInterval(() => {
+      api.getGatewayStatus().then(s => setGatewayConnected(!!s.portOpen)).catch(() => setGatewayConnected(false))
+    }, 8000)
+    return () => clearInterval(t)
+  }, [])
+
   const handleTestChat = useCallback(async () => {
     if (!id || testingChat) return
+    if (!gatewayConnected) {
+      setRestartReason("Gateway is offline. Start the OpenClaw gateway first, then try Test Chat again.")
+      setShowRestartDialog(true)
+      return
+    }
     setTestingChat(true)
     try {
       const result = await chatApi.createSession(id) as Record<string, unknown>
@@ -1436,11 +2004,12 @@ export function AgentDetailPage() {
       chatStore.setActiveSessionKey(sessionKey)
       navigate("/chat")
     } catch (err) {
-      alert(`Failed to start test chat: ${err instanceof Error ? err.message : "Unknown error"}`)
+      setSaveMsg(`❌ ${err instanceof Error ? err.message : "Failed to start chat"}`)
+      setTimeout(() => setSaveMsg(""), 5000)
     } finally {
       setTestingChat(false)
     }
-  }, [id, testingChat, navigate])
+  }, [id, testingChat, gatewayConnected, navigate])
 
   const loadDetail = useCallback(async () => {
     if (!id) return
@@ -1639,11 +2208,19 @@ export function AgentDetailPage() {
                 <button
                   onClick={handleTestChat}
                   disabled={testingChat}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/25 text-xs text-emerald-400 font-semibold hover:bg-emerald-500/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!gatewayConnected ? "Gateway offline — cannot start chat" : undefined}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                    gatewayConnected
+                      ? "bg-emerald-500/15 border-emerald-500/25 text-emerald-500 hover:bg-emerald-500/25"
+                      : "bg-foreground/5 border-foreground/10 text-muted-foreground/50"
+                  )}
                 >
                   {testingChat
                     ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    : <MessageSquarePlus className="w-3.5 h-3.5" />
+                    : gatewayConnected
+                      ? <MessageSquarePlus className="w-3.5 h-3.5" />
+                      : <WifiOff className="w-3.5 h-3.5" />
                   }
                   {testingChat ? "Starting…" : "Test Chat"}
                 </button>
@@ -1686,19 +2263,49 @@ export function AgentDetailPage() {
             )}
           </div>
 
-          {/* ── Body ── */}
-          <div className="flex-1 min-h-0 flex flex-col gap-4">
+          {/* ── Body with tab navigation ── */}
+          <div className="flex-1 min-h-0 flex flex-col bg-foreground/1 border border-border rounded-2xl overflow-hidden shadow-sm">
 
-            {/* ═══ Main 2-column: Agent Files | Skills & Tools ═══ */}
-            <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-4">
+            {/* Tab bar */}
+            <div className="flex items-center gap-0 px-3 border-b border-border bg-foreground/2 shrink-0">
+              {([
+                { key: 'files',    label: 'Agent Files',    icon: FolderOpen },
+                { key: 'skills',   label: 'Skills & Tools', icon: Sparkles   },
+                { key: 'channels', label: 'Channels',       icon: Link       },
+              ] as const).map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setBodyTab(key)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-4 py-3 text-xs font-semibold border-b-2 transition-all",
+                    bodyTab === key
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground hover:border-foreground/20"
+                  )}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {label}
+                  {key === 'channels' && (
+                    <span className={cn(
+                      "ml-1 w-1.5 h-1.5 rounded-full shrink-0",
+                      gatewayConnected ? "bg-emerald-500" : "bg-foreground/20"
+                    )} />
+                  )}
+                </button>
+              ))}
+              <div className="ml-auto flex items-center gap-1.5 pr-2">
+                {detail.stats.totalSessions > 0 && (
+                  <span className="text-[10px] text-muted-foreground/40 font-mono">{detail.stats.totalSessions} sessions</span>
+                )}
+              </div>
+            </div>
 
-              {/* ── AGENT FILES ── */}
-              <div className="flex-1 min-h-0 min-w-0 bg-foreground/1 border border-border rounded-2xl overflow-hidden shadow-sm flex flex-col">
+            {/* ═══ FILES TAB ═══ */}
+            {bodyTab === 'files' && (
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                 <div className="flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
-                  <FolderOpen className="w-4 h-4 text-primary/60" />
-                  <h3 className="text-sm font-display font-bold text-foreground">Agent Files</h3>
                   {detail.workspace.hasCustomWorkspace && (
-                    <span className="text-[9px] font-bold text-amber-400 bg-amber-400/10 border border-amber-400/20 px-1.5 py-0.5 rounded uppercase tracking-wider ml-2">Custom Workspace</span>
+                    <span className="text-[9px] font-bold text-amber-400 bg-amber-400/10 border border-amber-400/20 px-1.5 py-0.5 rounded uppercase tracking-wider">Custom Workspace</span>
                   )}
                   <button
                     onClick={() => setFileSidebarCollapsed(c => !c)}
@@ -1711,9 +2318,7 @@ export function AgentDetailPage() {
                     }
                   </button>
                 </div>
-
                 <div className="flex flex-1 min-h-0 overflow-hidden">
-                  {/* File list sidebar */}
                   {!fileSidebarCollapsed && (
                     <div className="w-52 border-r border-border shrink-0 py-1.5 overflow-y-auto">
                       {WORKSPACE_FILES.map(file => {
@@ -1743,24 +2348,15 @@ export function AgentDetailPage() {
                                 {exists ? fileDescriptions[file] : "Not found"}
                               </span>
                             </div>
-                            {!exists && (
-                              <FilePlus className="w-3.5 h-3.5 text-foreground/10 shrink-0" />
-                            )}
+                            {!exists && <FilePlus className="w-3.5 h-3.5 text-foreground/10 shrink-0" />}
                           </button>
                         )
                       })}
                     </div>
                   )}
-
-                  {/* File content panel */}
                   <div className="flex-1 min-w-0 min-h-0 overflow-y-auto flex flex-col">
                     {selectedFile && id ? (
-                      <InlineFilePanel
-                        key={selectedFile}
-                        agentId={id}
-                        filename={selectedFile}
-                        onSaved={loadDetail}
-                      />
+                      <InlineFilePanel key={selectedFile} agentId={id} filename={selectedFile} onSaved={loadDetail} />
                     ) : (
                       <div className="flex flex-col items-center justify-center h-full text-muted-foreground/30">
                         <FileText className="w-10 h-10 mb-3 opacity-30" />
@@ -1770,33 +2366,26 @@ export function AgentDetailPage() {
                   </div>
                 </div>
               </div>
+            )}
 
-              {/* ── SKILLS & TOOLS ── */}
-              <div className="flex-1 min-h-0 min-w-0 bg-foreground/1 rounded-2xl border border-border overflow-hidden shadow-sm flex flex-col">
-                {/* Header with tab switcher */}
+            {/* ═══ SKILLS & TOOLS TAB ═══ */}
+            {bodyTab === 'skills' && (
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                 <div className="flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
                   <Sparkles className="w-4 h-4 text-primary/60" />
                   <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5">
                     <button
                       onClick={() => setActiveTab('skills')}
-                      className={cn(
-                        "px-3 py-1 rounded text-[11px] font-bold transition-all",
-                        activeTab === 'skills'
-                          ? "bg-primary/20 text-primary border border-primary/30"
-                          : "text-muted-foreground hover:text-foreground"
-                      )}
+                      className={cn("px-3 py-1 rounded text-[11px] font-bold transition-all",
+                        activeTab === 'skills' ? "bg-primary/20 text-primary border border-primary/30" : "text-muted-foreground hover:text-foreground")}
                     >
                       Skills
                       <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'skills' ? "bg-primary/20 text-primary" : "bg-foreground/5 text-muted-foreground")}>{skills.length}</span>
                     </button>
                     <button
                       onClick={() => setActiveTab('tools')}
-                      className={cn(
-                        "px-3 py-1 rounded text-[11px] font-bold transition-all",
-                        activeTab === 'tools'
-                          ? "bg-violet-500/15 text-violet-600 dark:text-violet-300 border border-violet-500/30"
-                          : "text-muted-foreground hover:text-foreground"
-                      )}
+                      className={cn("px-3 py-1 rounded text-[11px] font-bold transition-all",
+                        activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-300 border border-violet-500/30" : "text-muted-foreground hover:text-foreground")}
                     >
                       Tools
                       <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-400" : "bg-foreground/5 text-muted-foreground")}>
@@ -1806,20 +2395,12 @@ export function AgentDetailPage() {
                   </div>
                   {activeTab === 'skills' && (
                     <>
-                      <button
-                        onClick={() => setSkillSidebarCollapsed(c => !c)}
-                        title={skillSidebarCollapsed ? "Expand skill list" : "Collapse skill list"}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
-                      >
-                        {skillSidebarCollapsed
-                          ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span>Expand</span></>
-                          : <><PanelLeftClose className="w-3.5 h-3.5" /><span>Collapse</span></>
-                        }
+                      <button onClick={() => setSkillSidebarCollapsed(c => !c)}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
+                        {skillSidebarCollapsed ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span>Expand</span></> : <><PanelLeftClose className="w-3.5 h-3.5" /><span>Collapse</span></>}
                       </button>
-                      <button
-                        onClick={() => setShowCreateSkill(true)}
-                        className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 border border-primary/20 text-[11px] text-primary font-bold hover:bg-primary/20 transition-colors"
-                      >
+                      <button onClick={() => setShowCreateSkill(true)}
+                        className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 border border-primary/20 text-[11px] text-primary font-bold hover:bg-primary/20 transition-colors">
                         <Plus className="w-3 h-3" /> New Skill
                       </button>
                     </>
@@ -1829,66 +2410,47 @@ export function AgentDetailPage() {
                   )}
                 </div>
 
-                {/* ── SKILLS TAB ── */}
                 {activeTab === 'skills' && (
                   <div className="flex flex-1 min-h-0 overflow-hidden">
                     {!skillSidebarCollapsed && (
                       <div className="w-52 border-r border-border shrink-0 py-1.5 overflow-y-auto">
                         {skillsLoading ? (
-                          <div className="flex items-center justify-center h-full">
-                            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                          </div>
+                          <div className="flex items-center justify-center h-full"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
                         ) : skills.length === 0 ? (
                           <div className="flex flex-col items-center justify-center h-full px-4 text-center">
                             <Package className="w-6 h-6 text-foreground/10 mb-2" />
                             <p className="text-[11px] text-muted-foreground">No skills installed</p>
                             <p className="text-[10px] text-muted-foreground/50 mt-1">Create one to get started</p>
                           </div>
-                        ) : (
-                          skills.map(skill => {
-                            const isSelected = selectedSkill === skill.slug
-                            return (
-                              <button
-                                key={skill.slug}
-                                onClick={() => setSelectedSkill(skill.slug)}
-                                className={cn(
-                                  "w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors group",
-                                  isSelected
-                                    ? "bg-primary/10 border-r-2 border-primary text-foreground"
-                                    : "text-muted-foreground hover:text-foreground hover:bg-foreground/3"
-                                )}
-                              >
-                                <span className="text-sm shrink-0">{skill.emoji || '⚡'}</span>
-                                <div className="min-w-0 flex-1">
-                                  <span className="text-[12px] font-semibold block truncate">{skill.name}</span>
-                                  <div className="flex items-center gap-1.5 mt-0.5">
-                                    <span className={cn(
-                                      "text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded",
-                                      skill.source === 'workspace' ? "bg-blue-500/15 text-blue-400" :
-                                      skill.source === 'managed' ? "bg-purple-500/15 text-purple-400" :
-                                      skill.source === 'personal' ? "bg-green-500/15 text-green-400" :
-                                      "bg-foreground/5 text-muted-foreground/70"
-                                    )}>{skill.sourceLabel}</span>
-                                    {!skill.enabled && (
-                                      <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded bg-amber-500/15 text-amber-400">Off</span>
-                                    )}
-                                  </div>
+                        ) : skills.map(skill => {
+                          const isSelected = selectedSkill === skill.slug
+                          return (
+                            <button key={skill.slug} onClick={() => setSelectedSkill(skill.slug)}
+                              className={cn("w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors group",
+                                isSelected ? "bg-primary/10 border-r-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-foreground/3")}>
+                              <span className="text-sm shrink-0">{skill.emoji || '⚡'}</span>
+                              <div className="min-w-0 flex-1">
+                                <span className="text-[12px] font-semibold block truncate">{skill.name}</span>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className={cn("text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded",
+                                    skill.source === 'workspace' ? "bg-blue-500/15 text-blue-400" :
+                                    skill.source === 'managed' ? "bg-purple-500/15 text-purple-400" :
+                                    skill.source === 'personal' ? "bg-green-500/15 text-green-400" :
+                                    "bg-foreground/5 text-muted-foreground/70")}>{skill.sourceLabel}</span>
+                                  {!skill.enabled && <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded bg-amber-500/15 text-amber-400">Off</span>}
                                 </div>
-                              </button>
-                            )
-                          })
-                        )}
+                              </div>
+                            </button>
+                          )
+                        })}
                       </div>
                     )}
                     <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
                       {selectedSkill && id ? (
-                        <InlineSkillPanel
-                          agentId={id}
-                          skillSlug={selectedSkill}
+                        <InlineSkillPanel agentId={id} skillSlug={selectedSkill}
                           skill={skills.find(s => s.slug === selectedSkill) || null}
                           onToggle={() => { const s = skills.find(sk => sk.slug === selectedSkill); if (s) handleToggleSkill(s) }}
-                          onSaved={loadSkills}
-                        />
+                          onSaved={loadSkills} />
                       ) : (
                         <div className="flex flex-col items-center justify-center h-full text-center px-6">
                           <Sparkles className="w-8 h-8 text-foreground/8 mb-3" />
@@ -1900,28 +2462,22 @@ export function AgentDetailPage() {
                   </div>
                 )}
 
-                {/* ── TOOLS TAB ── */}
                 {activeTab === 'tools' && (
                   <div className="flex-1 overflow-y-auto min-h-0">
                     {toolsLoading ? (
-                      <div className="flex items-center justify-center h-full">
-                        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                      </div>
+                      <div className="flex items-center justify-center h-full"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
                     ) : (() => {
                       const groups: Record<string, AgentTool[]> = {}
-                      tools.forEach(t => {
-                        if (!groups[t.group]) groups[t.group] = []
-                        groups[t.group].push(t)
-                      })
+                      tools.forEach(t => { if (!groups[t.group]) groups[t.group] = []; groups[t.group].push(t) })
                       const groupMeta: Record<string, { label: string; color: string }> = {
                         runtime:    { label: '⚙️ Runtime',    color: 'text-orange-500' },
                         fs:         { label: '📁 File System', color: 'text-yellow-600' },
-                        web:        { label: '🌐 Web',          color: 'text-sky-500' },
-                        memory:     { label: '🧠 Memory',       color: 'text-purple-500' },
-                        messaging:  { label: '💬 Messaging',    color: 'text-green-600' },
-                        sessions:   { label: '🤝 Sessions',     color: 'text-blue-500' },
-                        ui:         { label: '🎨 Media / UI',   color: 'text-pink-500' },
-                        automation: { label: '🔁 Automation',   color: 'text-amber-600' },
+                        web:        { label: '🌐 Web',         color: 'text-sky-500' },
+                        memory:     { label: '🧠 Memory',      color: 'text-purple-500' },
+                        messaging:  { label: '💬 Messaging',   color: 'text-green-600' },
+                        sessions:   { label: '🤝 Sessions',    color: 'text-blue-500' },
+                        ui:         { label: '🎨 Media / UI',  color: 'text-pink-500' },
+                        automation: { label: '🔁 Automation',  color: 'text-amber-600' },
                       }
                       return (
                         <div className="px-4 py-3 space-y-4">
@@ -1938,42 +2494,25 @@ export function AgentDetailPage() {
                               <div key={group}>
                                 <div className="flex items-center gap-2 mb-2">
                                   <span className={cn("text-[11px] font-bold", meta.color)}>{meta.label}</span>
-                                  {deniedCount > 0 && (
-                                    <span className="text-[9px] font-bold px-1.5 py-px rounded bg-red-500/15 text-red-400 border border-red-500/20">{deniedCount} denied</span>
-                                  )}
+                                  {deniedCount > 0 && <span className="text-[9px] font-bold px-1.5 py-px rounded bg-red-500/15 text-red-400 border border-red-500/20">{deniedCount} denied</span>}
                                 </div>
                                 <div className="grid grid-cols-2 gap-1.5">
                                   {groupTools.map(tool => (
-                                    <button
-                                      key={tool.name}
+                                    <button key={tool.name}
                                       onClick={() => !tool.deniedGlobally && handleToggleTool(tool)}
                                       disabled={tool.deniedGlobally}
-                                      title={tool.deniedGlobally ? 'Denied globally — change in global tools config' : tool.description}
-                                      className={cn(
-                                        "flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-left transition-all",
-                                        tool.enabled
-                                          ? "bg-foreground/2 border-border hover:bg-foreground/5 hover:border-foreground/15"
-                                          : "bg-red-500/5 border-red-500/20 opacity-75 hover:opacity-90",
-                                        tool.deniedGlobally && "cursor-not-allowed"
-                                      )}
-                                    >
+                                      title={tool.deniedGlobally ? 'Denied globally' : tool.description}
+                                      className={cn("flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-left transition-all",
+                                        tool.enabled ? "bg-foreground/2 border-border hover:bg-foreground/5 hover:border-foreground/15" : "bg-red-500/5 border-red-500/20 opacity-75 hover:opacity-90",
+                                        tool.deniedGlobally && "cursor-not-allowed")}>
                                       <div className="min-w-0">
-                                        <span className={cn("text-[11px] font-mono font-semibold block", tool.enabled ? "text-foreground" : "text-red-400 line-through")}>
-                                          {tool.name}
-                                        </span>
-                                        {tool.deniedGlobally && (
-                                          <span className="text-[9px] text-muted-foreground">global deny</span>
-                                        )}
+                                        <span className={cn("text-[11px] font-mono font-semibold block", tool.enabled ? "text-foreground" : "text-red-400 line-through")}>{tool.name}</span>
+                                        {tool.deniedGlobally && <span className="text-[9px] text-muted-foreground">global deny</span>}
                                       </div>
-                                      <div className={cn(
-                                        "w-7 h-4 rounded-full shrink-0 flex items-center transition-colors",
+                                      <div className={cn("w-7 h-4 rounded-full shrink-0 flex items-center transition-colors",
                                         tool.enabled ? "bg-emerald-500/60 justify-end" : "bg-red-500/40 justify-start",
-                                        tool.deniedGlobally && "opacity-30"
-                                      )}>
-                                        <div className={cn(
-                                          "w-3 h-3 rounded-full mx-0.5 transition-colors",
-                                          tool.enabled ? "bg-emerald-500" : "bg-red-500"
-                                        )} />
+                                        tool.deniedGlobally && "opacity-30")}>
+                                        <div className={cn("w-3 h-3 rounded-full mx-0.5 transition-colors", tool.enabled ? "bg-emerald-500" : "bg-red-500")} />
                                       </div>
                                     </button>
                                   ))}
@@ -1987,67 +2526,67 @@ export function AgentDetailPage() {
                   </div>
                 )}
               </div>
-            </div>
+            )}
 
-            {/* ═══ Recent Sessions — compact horizontal strip ═══ */}
-            <div className="shrink-0 bg-foreground/1 rounded-xl border border-border px-4 py-2.5 shadow-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <MessageSquare className="w-3.5 h-3.5 text-primary/60 shrink-0" />
-                <h3 className="text-xs font-display font-bold text-foreground">Recent Sessions</h3>
-                <span className="text-[9px] text-muted-foreground/50 ml-auto">{detail.sessions.length} total</span>
+            {/* ═══ CHANNELS TAB ═══ */}
+            {bodyTab === 'channels' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <div className="px-4 py-4 space-y-4">
+                  {id && (
+                    <ChannelsPanel
+                      agentId={id}
+                      gatewayConnected={gatewayConnected}
+                      onRestart={() => {
+                        setRestartReason("Channel configuration changed. Restart the gateway for the new settings to take effect.")
+                        setTimeout(() => setShowRestartDialog(true), 200)
+                      }}
+                    />
+                  )}
+                  <div className="bg-foreground/2 rounded-xl border border-border px-4 py-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <MessageSquare className="w-3.5 h-3.5 text-primary/60 shrink-0" />
+                      <h3 className="text-xs font-display font-bold text-foreground">Recent Sessions</h3>
+                      <span className="text-[9px] text-muted-foreground/50 ml-auto">{detail.sessions.length} total</span>
+                    </div>
+                    {detail.sessions.length > 0 ? (
+                      <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
+                        {detail.sessions.slice(0, 8).map((sess) => {
+                          const isActive = sess.status === "active"
+                          const handleClick = () => {
+                            setViewingSession({
+                              id: sess.id, agentId: detail.id, agentName: detail.identity.name,
+                              status: sess.status, trigger: sess.type, model: detail.model,
+                              messageCount: sess.messageCount, totalTokens: 0, totalCost: 0,
+                            } as Session)
+                          }
+                          return (
+                            <button key={sess.id} onClick={handleClick}
+                              className={cn("flex flex-col gap-1 px-3 py-2 rounded-lg border text-left transition-all group shrink-0 w-52",
+                                isActive ? "bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/8" : "bg-foreground/2 border-border hover:bg-foreground/4 hover:border-foreground/15")}>
+                              <div className="flex items-center gap-1.5">
+                                <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", isActive ? "bg-emerald-400 animate-pulse" : "bg-foreground/20")} />
+                                <span className="text-[10px] font-mono text-muted-foreground/70">{fmtTime(sess.updatedAt)}</span>
+                                {isActive && <span className="text-[8px] px-1 py-px bg-emerald-500/20 text-emerald-400 font-bold uppercase rounded animate-pulse ml-0.5">Live</span>}
+                                <ArrowRight className="w-2.5 h-2.5 text-transparent group-hover:text-muted-foreground/50 ml-auto transition-colors" />
+                              </div>
+                              <p className="text-[11px] text-foreground/70 font-medium line-clamp-1 leading-tight group-hover:text-foreground transition-colors">
+                                {sess.lastMessage || `${sess.name} — ${sess.messageCount} messages`}
+                              </p>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 py-1 text-muted-foreground/40">
+                        <MessageSquare className="w-4 h-4" />
+                        <span className="text-xs">No recent activity</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
-              {detail.sessions.length > 0 ? (
-                <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
-                  {detail.sessions.slice(0, 8).map((sess) => {
-                    const isActive = sess.status === "active"
-                    const handleClick = () => {
-                      const sessionForModal: Session = {
-                        id: sess.id,
-                        agentId: detail.id,
-                        agentName: detail.identity.name,
-                        status: sess.status,
-                        trigger: sess.type,
-                        model: detail.model,
-                        messageCount: sess.messageCount,
-                        totalTokens: 0,
-                        totalCost: 0,
-                      } as Session
-                      setViewingSession(sessionForModal)
-                    }
-                    return (
-                      <button
-                        key={sess.id}
-                        onClick={handleClick}
-                        className={cn(
-                          "flex flex-col gap-1 px-3 py-2 rounded-lg border text-left transition-all group shrink-0 w-52",
-                          isActive
-                            ? "bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/8"
-                            : "bg-foreground/2 border-border hover:bg-foreground/4 hover:border-foreground/15"
-                        )}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span className={cn(
-                            "w-1.5 h-1.5 rounded-full shrink-0",
-                            isActive ? "bg-emerald-400 animate-pulse" : "bg-foreground/20"
-                          )} />
-                          <span className="text-[10px] font-mono text-muted-foreground/70">{fmtTime(sess.updatedAt)}</span>
-                          {isActive && <span className="text-[8px] px-1 py-px bg-emerald-500/20 text-emerald-400 font-bold uppercase rounded animate-pulse ml-0.5">Live</span>}
-                          <ArrowRight className="w-2.5 h-2.5 text-transparent group-hover:text-muted-foreground/50 ml-auto transition-colors" />
-                        </div>
-                        <p className="text-[11px] text-foreground/70 font-medium line-clamp-1 leading-tight group-hover:text-foreground transition-colors">
-                          {sess.lastMessage || `${sess.name} — ${sess.messageCount} messages`}
-                        </p>
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 py-1 text-muted-foreground/40">
-                  <MessageSquare className="w-4 h-4" />
-                  <span className="text-xs">No recent activity</span>
-                </div>
-              )}
-            </div>
+            )}
+
           </div>
         </div>
       ) : null}

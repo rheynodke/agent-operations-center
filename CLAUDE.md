@@ -29,22 +29,48 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
 ### Frontend (React 19 + TypeScript)
 
 - **Routing:** React Router v7 in `src/App.tsx`. Auth flow: Setup → Login → DashboardShell. Pages at `src/pages/`.
-- **State:** Zustand stores in `src/stores/index.ts` — one store per domain (agents, sessions, tasks, cron, routing, alerts, activity, live feed, auth, WebSocket status). No Redux.
+- **State:** Zustand stores in `src/stores/index.ts` — one store per domain (agents, sessions, tasks, cron, routing, alerts, activity, live feed, auth, WebSocket status). Chat state lives in `src/stores/useChatStore.ts` separately.
 - **Real-time:** `src/hooks/useWebSocket.ts` connects to `/ws`, dispatches typed events to Zustand stores. `src/hooks/useDataLoader.ts` handles initial REST data fetch.
-- **API client:** `src/lib/api.ts` — thin wrapper around `fetch` with auto-auth headers from `useAuthStore`. All endpoints under `/api`.
-- **Styling:** Tailwind CSS v4 via `@tailwindcss/vite` plugin. shadcn/ui components in `src/components/ui/`. Path alias `@/` maps to `src/`.
+- **API clients:** `src/lib/api.ts` — all standard REST endpoints. `src/lib/chat-api.ts` — gateway/chat-specific endpoints (`/api/chat/*`). Both use auto-auth headers from `useAuthStore`.
+- **Styling:** Tailwind CSS v4 via `@tailwindcss/vite` plugin. shadcn/ui components in `src/components/ui/`. Path alias `@/` maps to `src/`. Theme tokens defined in `src/index.css` — light and dark mode CSS vars. Always use semantic tokens (`bg-card`, `border-border`, `text-foreground`, `bg-foreground/X`) not `bg-white/X` or hardcoded hex colors, so both modes work.
 - **Types:** All shared types in `src/types/index.ts`.
 
 ### Backend (Node.js + Express 5, CommonJS)
 
 - **Entry:** `server/index.cjs` — Express app with JWT auth, Helmet, CORS, rate limiting.
-- **Parsers:** `server/lib/index.cjs` (barrel) — modules that read/parse OpenClaw filesystem data (`~/.openclaw/agents/`, `openclaw.json`, session JSONL files).
-- **Database:** `server/lib/db.cjs` — SQLite via `sql.js` (in-memory/file) for user auth, agent profiles, and dashboard-specific state.
-- **WebSocket:** Native `ws` library. Server broadcasts real-time events to connected clients. `server/lib/gateway-ws.cjs` proxies to OpenClaw gateway WebSocket.
-- **File watching:** `server/lib/watchers.cjs` uses `chokidar` to watch OpenClaw filesystem for changes and emit live feed events.
+- **Barrel:** `server/lib/index.cjs` — **explicit** named export list; adding a new function to any sub-module requires also adding it here. Does NOT use spread (`...agents`).
+- **Sub-modules:**
+  - `server/lib/agents/detail.cjs` — `getAgentDetail`, `updateAgent`, `getAgentChannels`, `addAgentChannel`, `updateAgentChannel`, `removeAgentChannel`
+  - `server/lib/agents/provision.cjs` — writes new agent to `openclaw.json` + scaffolds workspace
+  - `server/lib/agents/skills.cjs` / `tools.cjs` — toggle skill/tool state in `openclaw.json`
+  - `server/lib/sessions/gateway.cjs` — parses JSONL session files from `~/.openclaw/sessions/`
+  - `server/lib/gateway-ws.cjs` — persistent WebSocket proxy to OpenClaw Gateway (port 18789); handles Ed25519 challenge-response auth
+  - `server/lib/db.cjs` — SQLite via `sql.js` for user auth, agent profiles, avatars
+  - `server/lib/watchers.cjs` — chokidar file watchers; broadcasts `session:live-event` and `processing_end` WS events with `sessionKey`
+- **Config:** `server/lib/config.cjs` exports `OPENCLAW_HOME`, `OPENCLAW_WORKSPACE`, `AGENTS_DIR`, `readJsonSafe`.
 
 ### Data Flow
 
 OpenClaw filesystem → chokidar watchers → Express parsers → REST API + WebSocket broadcasts → Zustand stores → React UI
 
 The backend does NOT own agent data. It reads from OpenClaw's filesystem as the source of truth, and uses SQLite only for dashboard-specific data (user accounts, agent profiles/avatars, UI preferences).
+
+### Chat / Gateway Integration
+
+- Chat requires a running OpenClaw Gateway (default port 18789). All `/api/chat/*` routes return 503 if gateway is disconnected.
+- `chatApi.createSession()` → `POST /api/chat/sessions` → `gatewayProxy.sessionsCreate(agentId)` (RPC over WebSocket)
+- Real-time message streaming: gateway WS events → `server/lib/gateway-ws.cjs` → dashboard WS broadcast → `src/hooks/useWebSocket.ts` → `useChatStore`
+- JSONL poller in `watchers.cjs` serves as fallback for final responses when gateway lifecycle events arrive before the last message.
+- `useChatStore.ts` contains `gatewayMessagesToGroups()` for converting raw gateway history into `ChatMessageGroup[]` (handles thinking blocks, text-encoded tool call markers, structured tool_use blocks).
+
+### Channel Binding Architecture
+
+Channel bindings in `openclaw.json` use two patterns:
+1. **Explicit:** `config.bindings[].agentId === agentId` with `match.channel` + `match.accountId`
+2. **Convention:** Account key equals `agentId` (or `"default"` for the main agent) in `config.channels.telegram.accounts` / `config.channels.whatsapp.accounts`
+
+`getAgentChannels()` supports both patterns — always check both when discovering existing bindings.
+
+### Agent Detail Page Tab Structure
+
+`AgentDetailPage.tsx` uses a 3-tab body layout (`bodyTab` state): **Agent Files** | **Skills & Tools** | **Channels**. The Channels tab hosts `ChannelsPanel` (channel CRUD) and Recent Sessions. The inner Skills & Tools tab has its own `activeTab` state (`'skills'` | `'tools'`).

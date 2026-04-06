@@ -52,8 +52,8 @@ export interface ChatSession {
 }
 
 export interface GatewayMessage {
-  role: "user" | "assistant" | "system" | "tool"
-  content?: string
+  role: "user" | "assistant" | "system" | "tool" | "toolResult"
+  content?: string | Array<{ type: string; text?: string; content?: unknown }>
   text?: string
   timestamp?: number
   id?: string
@@ -61,8 +61,10 @@ export interface GatewayMessage {
   thinking?: string
   // tool use
   toolName?: string
+  toolCallId?: string          // links toolResult back to the assistant's tool_call
   toolInput?: string | Record<string, unknown>
   toolResult?: string | Record<string, unknown>
+  isError?: boolean
   // streaming state (client-side)
   streaming?: boolean
   isThinking?: boolean

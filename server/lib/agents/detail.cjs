@@ -251,4 +251,211 @@ function updateAgent(agentId, updates) {
   return { agentId, changed };
 }
 
-module.exports = { readMdFile, parseMdFields, parseSoulTraits, parseToolsSections, getAgentDetail, updateAgent };
+// ── Channel management ────────────────────────────────────────────────────────
+
+/**
+ * Returns all channel bindings for an agent across all channel types.
+ * Shape: { telegram: [...], whatsapp: [...] }
+ *
+ * Supports two discovery strategies:
+ * 1. Explicit bindings in config.bindings[].agentId === agentId
+ * 2. Convention-based: account key equals agentId (or "default" for main agent)
+ *    — used by agents provisioned outside the dashboard or in legacy configs
+ */
+function getAgentChannels(agentId) {
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config) throw new Error('Cannot read openclaw.json');
+
+  const agentList = config.agents?.list || [];
+  if (!agentList.find(a => a.id === agentId)) throw new Error(`Agent "${agentId}" not found`);
+
+  const channels = config.channels || {};
+
+  // Strategy 1: explicit binding entries
+  const bindings = (config.bindings || []).filter(b => b.agentId === agentId);
+
+  // Strategy 2: convention-based account keys (agentId itself, or "default" for main)
+  const conventionKeys = new Set([agentId, ...(agentId === 'main' ? ['default'] : [])]);
+
+  // ── Telegram ──────────────────────────────────────────────────────────
+  const telegramAccounts = channels.telegram?.accounts || {};
+
+  // Collect account IDs from explicit bindings
+  const telegramIds = new Set(
+    bindings.filter(b => b.match?.channel === 'telegram').map(b => b.match.accountId)
+  );
+  // Add convention-based keys that actually exist as accounts
+  for (const k of conventionKeys) {
+    if (telegramAccounts[k]) telegramIds.add(k);
+  }
+
+  const telegram = [...telegramIds].map(acctId => {
+    const acct = telegramAccounts[acctId] || {};
+    return {
+      type: 'telegram',
+      accountId: acctId,
+      botToken: acct.botToken || '',
+      dmPolicy: acct.dmPolicy || 'pairing',
+      streaming: acct.streaming || 'partial',
+    };
+  });
+
+  // ── WhatsApp ──────────────────────────────────────────────────────────
+  const whatsappAccounts = channels.whatsapp?.accounts || {};
+
+  const whatsappIds = new Set(
+    bindings.filter(b => b.match?.channel === 'whatsapp').map(b => b.match.accountId)
+  );
+  for (const k of conventionKeys) {
+    if (whatsappAccounts[k]) whatsappIds.add(k);
+  }
+
+  const whatsapp = [...whatsappIds].map(acctId => {
+    const acct = whatsappAccounts[acctId] || {};
+    return {
+      type: 'whatsapp',
+      accountId: acctId,
+      dmPolicy: acct.dmPolicy || 'pairing',
+      allowFrom: acct.allowFrom || [],
+      pairingRequired: !acct.authenticated,
+    };
+  });
+
+  return { telegram, whatsapp };
+}
+
+/**
+ * Add a new channel binding for an agent.
+ * opts: { type: 'telegram'|'whatsapp', botToken?, dmPolicy?, streaming?, allowFrom? }
+ */
+function addAgentChannel(agentId, opts) {
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config) throw new Error('Cannot read openclaw.json');
+
+  const agentList = config.agents?.list || [];
+  if (!agentList.find(a => a.id === agentId)) throw new Error(`Agent "${agentId}" not found`);
+
+  if (!opts.type || !['telegram', 'whatsapp'].includes(opts.type)) {
+    throw new Error('type must be "telegram" or "whatsapp"');
+  }
+
+  if (!config.channels) config.channels = {};
+  if (!config.bindings) config.bindings = [];
+
+  // Use agentId as accountId (one account per agent per channel type)
+  const accountId = agentId;
+
+  if (opts.type === 'telegram') {
+    if (!opts.botToken || !opts.botToken.trim()) throw new Error('botToken is required for Telegram');
+    if (!/^\d+:[A-Za-z0-9_-]+$/.test(opts.botToken.trim())) {
+      throw new Error('Telegram bot token format is invalid (expected: 123456:ABC-DEF...)');
+    }
+    if (!config.channels.telegram) config.channels.telegram = { enabled: true, accounts: {} };
+    if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
+    config.channels.telegram.accounts[accountId] = {
+      botToken: opts.botToken.trim(),
+      dmPolicy: opts.dmPolicy || 'pairing',
+      streaming: opts.streaming || 'partial',
+    };
+  } else if (opts.type === 'whatsapp') {
+    if (!config.channels.whatsapp) config.channels.whatsapp = { accounts: {} };
+    if (!config.channels.whatsapp.accounts) config.channels.whatsapp.accounts = {};
+    config.channels.whatsapp.accounts[accountId] = {
+      dmPolicy: opts.dmPolicy || 'pairing',
+      ...(opts.allowFrom && opts.allowFrom.length > 0 ? { allowFrom: opts.allowFrom } : {}),
+    };
+  }
+
+  // Add binding if not already present
+  const alreadyBound = config.bindings.some(
+    b => b.agentId === agentId && b.match?.channel === opts.type && b.match?.accountId === accountId
+  );
+  if (!alreadyBound) {
+    config.bindings.push({
+      type: 'route',
+      agentId,
+      match: { channel: opts.type, accountId },
+    });
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+  return {
+    ok: true,
+    channel: opts.type,
+    accountId,
+    whatsappPairingRequired: opts.type === 'whatsapp',
+  };
+}
+
+/**
+ * Remove a channel binding for an agent.
+ * type: 'telegram' | 'whatsapp', accountId: string
+ */
+function removeAgentChannel(agentId, channelType, accountId) {
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config) throw new Error('Cannot read openclaw.json');
+
+  const agentList = config.agents?.list || [];
+  if (!agentList.find(a => a.id === agentId)) throw new Error(`Agent "${agentId}" not found`);
+
+  // Remove account entry
+  if (channelType === 'telegram') {
+    if (config.channels?.telegram?.accounts?.[accountId]) {
+      delete config.channels.telegram.accounts[accountId];
+    }
+  } else if (channelType === 'whatsapp') {
+    if (config.channels?.whatsapp?.accounts?.[accountId]) {
+      delete config.channels.whatsapp.accounts[accountId];
+    }
+  }
+
+  // Remove binding
+  if (config.bindings) {
+    config.bindings = config.bindings.filter(
+      b => !(b.agentId === agentId && b.match?.channel === channelType && b.match?.accountId === accountId)
+    );
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+  return { ok: true, removed: { channel: channelType, accountId } };
+}
+
+/**
+ * Update an existing channel account settings (dmPolicy, streaming, botToken, allowFrom).
+ */
+function updateAgentChannel(agentId, channelType, accountId, updates) {
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config) throw new Error('Cannot read openclaw.json');
+
+  const agentList = config.agents?.list || [];
+  if (!agentList.find(a => a.id === agentId)) throw new Error(`Agent "${agentId}" not found`);
+
+  if (channelType === 'telegram') {
+    const acct = config.channels?.telegram?.accounts?.[accountId];
+    if (!acct) throw new Error(`Telegram account "${accountId}" not found for agent "${agentId}"`);
+    if (updates.botToken !== undefined) {
+      if (!/^\d+:[A-Za-z0-9_-]+$/.test(updates.botToken.trim())) {
+        throw new Error('Telegram bot token format is invalid');
+      }
+      acct.botToken = updates.botToken.trim();
+    }
+    if (updates.dmPolicy !== undefined) acct.dmPolicy = updates.dmPolicy;
+    if (updates.streaming !== undefined) acct.streaming = updates.streaming;
+  } else if (channelType === 'whatsapp') {
+    const acct = config.channels?.whatsapp?.accounts?.[accountId];
+    if (!acct) throw new Error(`WhatsApp account "${accountId}" not found for agent "${agentId}"`);
+    if (updates.dmPolicy !== undefined) acct.dmPolicy = updates.dmPolicy;
+    if (updates.allowFrom !== undefined) acct.allowFrom = updates.allowFrom;
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  return { ok: true, channel: channelType, accountId };
+}
+
+module.exports = { readMdFile, parseMdFields, parseSoulTraits, parseToolsSections, getAgentDetail, updateAgent, getAgentChannels, addAgentChannel, removeAgentChannel, updateAgentChannel };

@@ -56,6 +56,12 @@ module.exports = {
   provisionAgent:    agents.provisionAgent,
   slugify:           agents.slugify,
 
+  // ── agent channels ─────────────────────────────────────────────────────────
+  getAgentChannels:    agents.getAgentChannels,
+  addAgentChannel:     agents.addAgentChannel,
+  updateAgentChannel:  agents.updateAgentChannel,
+  removeAgentChannel:  agents.removeAgentChannel,
+
   // ── skill scripts ──────────────────────────────────────────────────────────
   listSkillScripts:    agents.listSkillScripts,
   getSkillScript:      agents.getSkillScript,

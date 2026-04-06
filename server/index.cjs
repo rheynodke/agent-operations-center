@@ -581,6 +581,58 @@ app.patch('/api/agents/:id/tools/:name/toggle', db.authMiddleware, (req, res) =>
   }
 });
 
+// ─── Agent Channel Management ────────────────────────────────────────────────
+
+// Get all channel bindings for an agent
+app.get('/api/agents/:id/channels', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.getAgentChannels(req.params.id);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/channels/get]', err);
+    res.status(err.message?.includes('not found') ? 404 : 500).json({ error: err.message });
+  }
+});
+
+// Add a new channel binding for an agent
+app.post('/api/agents/:id/channels', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.addAgentChannel(req.params.id, req.body);
+    console.log(`[api/agents/channels] Added ${req.body.type} channel for agent "${req.params.id}"`);
+    res.status(201).json(result);
+  } catch (err) {
+    console.error('[api/agents/channels/add]', err);
+    const code = err.message?.includes('not found') ? 404
+      : err.message?.includes('required') || err.message?.includes('invalid') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// Update an existing channel binding (dmPolicy, streaming, botToken, allowFrom)
+app.patch('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.updateAgentChannel(req.params.id, req.params.channelType, req.params.accountId, req.body);
+    console.log(`[api/agents/channels] Updated ${req.params.channelType}/${req.params.accountId} for agent "${req.params.id}"`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/channels/update]', err);
+    const code = err.message?.includes('not found') ? 404 : err.message?.includes('invalid') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// Remove a channel binding from an agent
+app.delete('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.removeAgentChannel(req.params.id, req.params.channelType, req.params.accountId);
+    console.log(`[api/agents/channels] Removed ${req.params.channelType}/${req.params.accountId} from agent "${req.params.id}"`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/channels/remove]', err);
+    res.status(err.message?.includes('not found') ? 404 : 500).json({ error: err.message });
+  }
+});
+
 // ─── Global Skills & Tools Library ──────────────────────────────────────────
 
 // All skills across all scopes with per-agent assignment info

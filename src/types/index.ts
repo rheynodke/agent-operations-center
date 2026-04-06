@@ -27,6 +27,31 @@ export interface Agent {
   avatarPresetId?: string | null
 }
 
+// ─── Agent Channel Management Types ─────────────────────────────────────────
+
+export interface AgentChannelTelegram {
+  type: "telegram"
+  accountId: string
+  botToken: string
+  dmPolicy: "pairing" | "allowlist" | "open" | "disabled"
+  streaming: "off" | "partial" | "full"
+}
+
+export interface AgentChannelWhatsApp {
+  type: "whatsapp"
+  accountId: string
+  dmPolicy: "pairing" | "allowlist" | "open" | "disabled"
+  allowFrom: string[]
+  pairingRequired?: boolean
+}
+
+export type AgentChannelInfo = AgentChannelTelegram | AgentChannelWhatsApp
+
+export interface AgentChannelsResult {
+  telegram: AgentChannelTelegram[]
+  whatsapp: AgentChannelWhatsApp[]
+}
+
 // ─── Agent Provisioning Types ────────────────────────────────────────────────
 
 export interface ChannelBinding {

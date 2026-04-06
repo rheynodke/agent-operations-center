@@ -131,6 +131,26 @@ function extractThinking(content: unknown): string {
   return ""
 }
 
+/** Extract tool result text from a toolResult message's content field */
+function extractToolResultText(content: unknown): string {
+  if (content == null) return ""
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) {
+    return content.map(c => {
+      if (typeof c === "string") return c
+      if (typeof c === "object" && c !== null) {
+        const obj = c as Record<string, unknown>
+        if (obj.type === "text" && typeof obj.text === "string") return obj.text
+        if (typeof obj.content === "string") return obj.content
+        return JSON.stringify(c, null, 2)
+      }
+      return ""
+    }).filter(Boolean).join("\n")
+  }
+  if (typeof content === "object") return JSON.stringify(content, null, 2)
+  return String(content)
+}
+
 /** Extract tool calls from content blocks */
 function extractToolCalls(content: unknown): Array<{ name: string; input: string | Record<string, unknown>; id: string }> {
   if (!Array.isArray(content)) return []
@@ -205,7 +225,8 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
           }]
         }
       }
-    } else if (role === "tool") {
+    } else if (role === "tool" || role === "toolResult") {
+      // "tool" = WS streaming, "toolResult" = gateway history JSONL format
       if (!agentGroup) {
         agentGroup = {
           id: `agent-${msg.timestamp ?? Date.now()}`,
@@ -215,17 +236,26 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
           timestamp: msg.timestamp,
         }
       }
-      const existing = agentGroup.toolCalls!.find((tc) => tc.id === (msg.id ?? msg.toolName))
+      // For toolResult, result text lives in msg.content; for tool, it's in msg.toolResult
+      const resultValue = role === "toolResult"
+        ? extractToolResultText(msg.content)
+        : msg.toolResult
+
+      // Match by toolCallId first, then by id/toolName
+      const matchId = msg.toolCallId ?? msg.id ?? msg.toolName
+      const existing = agentGroup.toolCalls!.find(
+        (tc) => tc.id === matchId || tc.id === msg.toolCallId || tc.id === msg.id
+      )
       if (existing) {
-        existing.result = msg.toolResult
+        existing.result = resultValue
         existing.status = "done"
       } else {
         agentGroup.toolCalls!.push({
-          id: msg.id ?? msg.toolName ?? String(Date.now()),
+          id: matchId ?? String(Date.now()),
           toolName: msg.toolName ?? "unknown",
           input: msg.toolInput,
-          result: msg.toolResult,
-          status: msg.toolResult !== undefined ? "done" : "running",
+          result: resultValue,
+          status: resultValue !== undefined ? "done" : "running",
         })
       }
     }

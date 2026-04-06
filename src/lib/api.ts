@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding } from "@/types"
 
 const BASE = "/api"
 
@@ -147,6 +147,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ slug, scope, content }),
     }),
+
+  // Agent Channels
+  getAgentChannels: (id: string) =>
+    request<AgentChannelsResult>(`/agents/${id}/channels`),
+  addAgentChannel: (id: string, opts: ChannelBinding) =>
+    request<{ ok: boolean; channel: string; accountId: string; whatsappPairingRequired: boolean }>(
+      `/agents/${id}/channels`,
+      { method: "POST", body: JSON.stringify(opts) }
+    ),
+  updateAgentChannel: (id: string, channelType: string, accountId: string, updates: Partial<ChannelBinding>) =>
+    request<{ ok: boolean; channel: string; accountId: string }>(
+      `/agents/${id}/channels/${channelType}/${encodeURIComponent(accountId)}`,
+      { method: "PATCH", body: JSON.stringify(updates) }
+    ),
+  removeAgentChannel: (id: string, channelType: string, accountId: string) =>
+    request<{ ok: boolean; removed: { channel: string; accountId: string } }>(
+      `/agents/${id}/channels/${channelType}/${encodeURIComponent(accountId)}`,
+      { method: "DELETE" }
+    ),
 
   // Sessions
   getSessions: (params?: Record<string, string>) => {
