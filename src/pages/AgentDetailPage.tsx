@@ -1931,6 +1931,137 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/*  DELETE AGENT MODAL                                                  */
+/* ─────────────────────────────────────────────────────────────────── */
+
+function DeleteAgentModal({
+  agentId,
+  agentName,
+  onClose,
+  onDeleted,
+}: {
+  agentId: string
+  agentName: string
+  onClose: () => void
+  onDeleted: () => void
+}) {
+  const [confirmText, setConfirmText] = useState("")
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState("")
+
+  const canDelete = confirmText.trim() === agentId
+
+  const handleDelete = async () => {
+    if (!canDelete) return
+    setDeleting(true)
+    setError("")
+    try {
+      await api.deleteAgent(agentId)
+      onDeleted()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Delete failed")
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)" }}>
+      <div className="bg-card border border-border rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-border bg-red-500/5">
+          <div className="w-9 h-9 rounded-xl bg-red-500/15 border border-red-500/25 flex items-center justify-center shrink-0">
+            <Trash2 className="w-4 h-4 text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold text-foreground">Delete Agent</h2>
+            <p className="text-[11px] text-muted-foreground">This action is permanent and cannot be undone.</p>
+          </div>
+          <button onClick={onClose} className="ml-auto text-muted-foreground hover:text-foreground transition-colors p-1">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-4">
+          {/* What will be deleted */}
+          <div className="bg-red-500/8 border border-red-500/20 rounded-xl p-4 space-y-2">
+            <p className="text-xs font-semibold text-red-400 flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5" />
+              The following will be permanently deleted:
+            </p>
+            <ul className="text-[11px] text-muted-foreground space-y-1 ml-5 list-disc">
+              <li>Agent workspace files <span className="font-mono text-foreground/50">~/.openclaw/workspaces/{agentId}/</span></li>
+              <li>Agent state directory <span className="font-mono text-foreground/50">~/.openclaw/agents/{agentId}/</span></li>
+              <li>Config entries in <span className="font-mono text-foreground/50">openclaw.json</span> (accounts, bindings)</li>
+              <li>Dashboard profile &amp; avatar</li>
+            </ul>
+            <p className="text-[11px] text-amber-400/80 mt-2 flex items-start gap-1.5">
+              <span className="shrink-0 mt-px">⚠</span>
+              Session history is preserved. Gateway restart required to apply channel changes.
+            </p>
+          </div>
+
+          {/* Agent info */}
+          <div className="flex items-center gap-3 px-3 py-2.5 bg-foreground/3 border border-border rounded-lg">
+            <div className="w-8 h-8 rounded-lg bg-foreground/5 flex items-center justify-center text-base">
+              {agentName.charAt(0).toUpperCase()}
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-foreground">{agentName}</p>
+              <p className="text-[10px] font-mono text-muted-foreground/60">{agentId}</p>
+            </div>
+          </div>
+
+          {/* Confirm input */}
+          <div>
+            <label className="block text-[11px] font-semibold text-muted-foreground mb-1.5">
+              Type <span className="font-mono text-foreground/80 bg-foreground/8 px-1 py-0.5 rounded">{agentId}</span> to confirm deletion:
+            </label>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={e => setConfirmText(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && canDelete && handleDelete()}
+              placeholder={agentId}
+              autoFocus
+              className={cn(
+                "w-full bg-background border rounded-lg px-3 py-2 text-sm font-mono transition-all outline-none",
+                canDelete
+                  ? "border-red-500/60 text-foreground focus:border-red-500"
+                  : "border-border text-foreground focus:border-foreground/20"
+              )}
+            />
+          </div>
+
+          {error && (
+            <p className="text-xs text-red-400 flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />{error}
+            </p>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center gap-2 px-5 py-4 border-t border-border">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={!canDelete || deleting}
+            className="flex-1 px-4 py-2 rounded-lg bg-red-500/90 text-white text-sm font-semibold hover:bg-red-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {deleting ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting…</> : <><Trash2 className="w-3.5 h-3.5" /> Delete Agent</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 /*  MAIN PAGE                                                          */
 /* ─────────────────────────────────────────────────────────────────── */
 
@@ -1944,6 +2075,7 @@ export function AgentDetailPage() {
 
   // Modals
   const [editing, setEditing] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showRestartDialog, setShowRestartDialog] = useState(false)
   const [restartReason, setRestartReason] = useState("")
   const [saveMsg, setSaveMsg] = useState("")
@@ -2138,6 +2270,14 @@ export function AgentDetailPage() {
     <div className="flex flex-col min-h-0 h-full w-full">
       {/* Modals */}
       {editing && detail && <EditConfigModal detail={detail} onClose={() => setEditing(false)} onSaved={handleSaved} />}
+      {showDeleteModal && detail && id && (
+        <DeleteAgentModal
+          agentId={id}
+          agentName={detail.identity.name}
+          onClose={() => setShowDeleteModal(false)}
+          onDeleted={() => navigate("/agents")}
+        />
+      )}
       {showRestartDialog && <RestartGatewayDialog onConfirm={() => api.restartGateway()} onDismiss={() => setShowRestartDialog(false)} reason={restartReason} />}
       {showCreateSkill && id && <CreateSkillDialog
         agentId={id}
@@ -2226,6 +2366,13 @@ export function AgentDetailPage() {
                 </button>
                 <button onClick={() => setEditing(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/20 border border-primary/30 text-xs text-primary font-semibold hover:bg-primary/30 transition-colors">
                   <Pencil className="w-3.5 h-3.5" /> Edit Configuration
+                </button>
+                <button
+                  onClick={() => setShowDeleteModal(true)}
+                  title="Delete this agent"
+                  className="w-7 h-7 rounded-lg border border-red-500/20 flex items-center justify-center text-red-400/50 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/40 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>

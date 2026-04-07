@@ -242,6 +242,41 @@ function Step1Identity({
 
 // ── Step 2: Personality ───────────────────────────────────────────────────────
 
+function buildSoulTemplate(name?: string, theme?: string, description?: string): string {
+  const agentName = name?.trim() || "this agent"
+  const parts: string[] = []
+
+  parts.push(`You are ${agentName}, an autonomous AI agent.`)
+
+  if (theme?.trim()) {
+    parts.push(`\nRole / Vibe: **${theme.trim()}**`)
+  }
+
+  if (description?.trim()) {
+    parts.push(`\n${description.trim()}`)
+  }
+
+  parts.push(`
+## Core Identity
+${theme?.trim() ? `As a ${theme.trim()}, describe what makes ${agentName} unique and what drives their decisions.` : `Describe who this agent is and what makes them unique.`}
+
+## Personality Traits
+- **Trait 1** — e.g. Direct and concise. Gets to the point without fluff.
+- **Trait 2** — e.g. Resourceful. Finds solutions where others see walls.
+- **Trait 3** — e.g. Reliable. Follows through on commitments.
+
+## Communication Style
+How does this agent speak and interact? (tone, formality, language, emoji usage, etc.)
+
+## Areas of Expertise
+${description?.trim() ? `Based on the role above, list the main areas of knowledge and skill.` : `- Primary focus area\n- Secondary focus area`}
+
+## Boundaries
+What this agent will NOT do or engage with.`)
+
+  return parts.join("\n")
+}
+
 function Step2Personality({
   form, setForm, models, defaultModel
 }: {
@@ -250,6 +285,10 @@ function Step2Personality({
   models: { id: string; name: string }[]
   defaultModel: string
 }) {
+  const applyTemplate = () => {
+    setForm({ ...form, soulContent: buildSoulTemplate(form.name, form.theme, form.description) })
+  }
+
   return (
     <div className="space-y-5">
       {/* Model */}
@@ -279,11 +318,21 @@ function Step2Personality({
 
       {/* Soul Content */}
       <div>
-        <FieldLabel>Persona / Soul</FieldLabel>
+        <div className="flex items-center justify-between mb-2">
+          <FieldLabel>Persona / Soul</FieldLabel>
+          <button
+            type="button"
+            onClick={applyTemplate}
+            className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400/70 hover:text-emerald-400 transition-colors px-2 py-1 rounded-md hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20"
+          >
+            <Sparkles className="w-3 h-3" />
+            Use Template
+          </button>
+        </div>
         <WizardTextarea
           id="agent-soul"
-          rows={7}
-          placeholder={`Describe the agent's personality and style...\n\nExample:\n_A sharp, no-nonsense strategist who cuts to the point._\n\n**Decisive.** Acts on incomplete information.\n**Efficient.** No fluff, maximum impact.\n**Resourceful.** Finds solutions where others see walls.`}
+          rows={10}
+          placeholder={`Describe the agent's personality and style...\n\nClick "Use Template" above to start from a structured template.`}
           value={form.soulContent || ""}
           onChange={e => setForm({ ...form, soulContent: e.target.value })}
         />
@@ -305,6 +354,15 @@ function TelegramBinding({
   onRemove: () => void
 }) {
   const [showToken, setShowToken] = useState(false)
+  const [allowFromText, setAllowFromText] = useState(
+    (binding.allowFrom || []).join(", ")
+  )
+
+  const handleAllowFromChange = (val: string) => {
+    setAllowFromText(val)
+    const list = val.split(/[,\n]/).map(s => s.trim()).filter(Boolean)
+    onChange({ ...binding, allowFrom: list })
+  }
 
   return (
     <div className="bg-sky-500/5 border border-sky-500/20 rounded-xl p-4 space-y-3">
@@ -366,6 +424,21 @@ function TelegramBinding({
           </WizardSelect>
         </div>
       </div>
+
+      {binding.dmPolicy === "allowlist" && (
+        <div>
+          <FieldLabel>Allowed Telegram User / Chat IDs</FieldLabel>
+          <WizardInput
+            placeholder="123456789, 987654321, -1001234567890…"
+            value={allowFromText}
+            onChange={e => handleAllowFromChange(e.target.value)}
+            className="font-mono text-xs"
+          />
+          <p className="text-[10px] text-white/30 mt-1.5">
+            Comma-separated Telegram user IDs or chat IDs. Get your ID via <span className="text-sky-400">@userinfobot</span>.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -652,7 +725,10 @@ export function ProvisionAgentWizard({ onClose }: Props) {
   useEffect(() => {
     api.getAgentDetail("main").then(d => {
       const ms = (d as any).availableModels || []
-      setModels(ms.map((m: any) => ({ id: m.id || m, name: m.name || m.id || m })))
+      setModels(ms.map((m: any) => ({
+        id: m.id || m.value || m.modelId || String(m),
+        name: m.name || m.label || m.id || m.value || m.modelId || String(m),
+      })))
       const primary = (d as any).config?.model || ""
       setDefaultModel(primary)
       setForm(f => ({ ...f, model: f.model || primary }))
@@ -689,6 +765,10 @@ export function ProvisionAgentWizard({ onClose }: Props) {
 
   const handleNext = () => {
     if (!validateStep()) return
+    // Auto-generate soul template from step 1 context when moving to step 2
+    if (step === 1 && !form.soulContent?.trim()) {
+      setForm(f => ({ ...f, soulContent: buildSoulTemplate(f.name, f.theme, f.description) }))
+    }
     setStep(s => Math.min(s + 1, 4))
   }
 
@@ -712,6 +792,7 @@ export function ProvisionAgentWizard({ onClose }: Props) {
         theme: form.theme?.trim() || undefined,
         description: form.description?.trim() || undefined,
         color: form.color || undefined,
+        avatarPresetId: form.avatarPresetId || undefined,
         soulContent: form.soulContent?.trim() || undefined,
         channels: form.channels || [],
       }

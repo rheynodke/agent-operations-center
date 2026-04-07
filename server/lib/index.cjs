@@ -61,6 +61,7 @@ module.exports = {
   addAgentChannel:     agents.addAgentChannel,
   updateAgentChannel:  agents.updateAgentChannel,
   removeAgentChannel:  agents.removeAgentChannel,
+  deleteAgent:         agents.deleteAgent,
 
   // ── skill scripts ──────────────────────────────────────────────────────────
   listSkillScripts:    agents.listSkillScripts,

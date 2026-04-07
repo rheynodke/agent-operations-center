@@ -192,6 +192,9 @@ function updateAgent(agentId, updates) {
   const agentWorkspace = agent.workspace || OPENCLAW_WORKSPACE;
   const changed = [];
 
+  // Capture old name before mutating, for file heading replacements
+  const oldName = agent.name || agent.identity?.name || agentId;
+
   if (updates.name !== undefined) {
     agent.name = updates.name;
     if (!agent.identity) agent.identity = {};
@@ -239,13 +242,73 @@ function updateAgent(agentId, updates) {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
   }
 
+  // Auto-sync IDENTITY.md when name/emoji/theme changes
+  const identityFields = ['name', 'emoji', 'theme'];
+  const identityChanged = identityFields.some(f => updates[f] !== undefined);
+  if (identityChanged) {
+    const name  = agent.name || agent.identity?.name || agentId;
+    const emoji = agent.identity?.emoji || '🤖';
+    const theme = agent.identity?.theme || agent.identity?.vibe || '';
+    const description = agent.identity?.description || '';
+    const lines = [
+      `# IDENTITY.md - Who Am I?`,
+      '',
+      `- **Name:** ${name}`,
+      `- **Emoji:** ${emoji}`,
+      theme       ? `- **Vibe:** ${theme}` : null,
+      description ? `- **Role:** ${description}` : null,
+    ].filter(l => l !== null).join('\n') + '\n';
+    const identityPath = path.join(agentWorkspace, 'IDENTITY.md');
+    if (fs.existsSync(path.dirname(identityPath))) {
+      fs.writeFileSync(identityPath, lines, 'utf-8');
+      changed.push('IDENTITY.md');
+    }
+  }
+
+  // Sync other workspace files when name changes
+  if (updates.name !== undefined && updates.name !== oldName) {
+    const newName = updates.name;
+
+    // Helper: read file, apply replacements, write back only if changed
+    function syncFileHeadings(filename, replacements) {
+      const filePath = path.join(agentWorkspace, filename);
+      if (!fs.existsSync(filePath)) return;
+      let content = fs.readFileSync(filePath, 'utf-8');
+      let modified = false;
+      for (const [from, to] of replacements) {
+        if (content.includes(from)) {
+          content = content.split(from).join(to);
+          modified = true;
+        }
+      }
+      if (modified) {
+        fs.writeFileSync(filePath, content, 'utf-8');
+        changed.push(filename);
+      }
+    }
+
+    // SOUL.md is entirely about this agent — replace all occurrences of the old name
+    syncFileHeadings('SOUL.md', [
+      [oldName, newName],
+    ]);
+
+    syncFileHeadings('TOOLS.md', [
+      [`## Available to ${oldName}`, `## Available to ${newName}`],
+    ]);
+
+    syncFileHeadings('AGENTS.md', [
+      [`# AGENTS.md - ${oldName}'s Workspace`, `# AGENTS.md - ${newName}'s Workspace`],
+      [`This workspace belongs to **${oldName}**`, `This workspace belongs to **${newName}**`],
+    ]);
+  }
+
   if (updates.identityMd !== undefined) {
     fs.writeFileSync(path.join(agentWorkspace, 'IDENTITY.md'), updates.identityMd, 'utf-8');
-    changed.push('IDENTITY.md');
+    if (!changed.includes('IDENTITY.md')) changed.push('IDENTITY.md');
   }
   if (updates.soulMd !== undefined) {
     fs.writeFileSync(path.join(agentWorkspace, 'SOUL.md'), updates.soulMd, 'utf-8');
-    changed.push('SOUL.md');
+    if (!changed.includes('SOUL.md')) changed.push('SOUL.md');
   }
 
   return { agentId, changed };
@@ -458,4 +521,44 @@ function updateAgentChannel(agentId, channelType, accountId, updates) {
   return { ok: true, channel: channelType, accountId };
 }
 
-module.exports = { readMdFile, parseMdFields, parseSoulTraits, parseToolsSections, getAgentDetail, updateAgent, getAgentChannels, addAgentChannel, removeAgentChannel, updateAgentChannel };
+function deleteAgent(agentId) {
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config) throw new Error('openclaw.json not found');
+
+  // Remove from agents.list
+  if (config.agents?.list) {
+    config.agents.list = config.agents.list.filter(a => a.id !== agentId);
+  }
+
+  // Remove channel accounts
+  if (config.channels?.telegram?.accounts?.[agentId]) {
+    delete config.channels.telegram.accounts[agentId];
+  }
+  if (config.channels?.whatsapp?.accounts?.[agentId]) {
+    delete config.channels.whatsapp.accounts[agentId];
+  }
+
+  // Remove bindings for this agent
+  if (config.bindings) {
+    config.bindings = config.bindings.filter(b => b.agentId !== agentId);
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+  // Remove workspace directory
+  const workspacePath = path.join(OPENCLAW_HOME, 'workspaces', agentId);
+  if (fs.existsSync(workspacePath)) {
+    fs.rmSync(workspacePath, { recursive: true, force: true });
+  }
+
+  // Remove agent state directory
+  const agentStatePath = path.join(AGENTS_DIR, agentId);
+  if (fs.existsSync(agentStatePath)) {
+    fs.rmSync(agentStatePath, { recursive: true, force: true });
+  }
+
+  return { ok: true };
+}
+
+module.exports = { readMdFile, parseMdFields, parseSoulTraits, parseToolsSections, getAgentDetail, updateAgent, getAgentChannels, addAgentChannel, removeAgentChannel, updateAgentChannel, deleteAgent };

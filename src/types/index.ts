@@ -59,7 +59,7 @@ export interface ChannelBinding {
   botToken?: string        // Telegram only
   dmPolicy?: "pairing" | "allowlist" | "open" | "disabled"
   streaming?: "off" | "partial" | "full"  // Telegram only
-  allowFrom?: string[]     // WhatsApp: list of phone numbers
+  allowFrom?: string[]     // Telegram: user/chat IDs; WhatsApp: phone numbers (used when dmPolicy = "allowlist")
 }
 
 export interface ProvisionAgentOpts {

@@ -385,6 +385,20 @@ app.patch('/api/agents/:id', db.authMiddleware, (req, res) => {
   }
 });
 
+app.delete('/api/agents/:id', db.authMiddleware, (req, res) => {
+  try {
+    const agentId = req.params.id;
+    parsers.deleteAgent(agentId);
+    // Remove profile from SQLite
+    db.deleteAgentProfile(agentId);
+    console.log(`[api/agents] Deleted agent "${agentId}"`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/agents/delete]', err);
+    res.status(err.message?.includes('not found') ? 404 : 500).json({ error: err.message });
+  }
+});
+
 app.get('/api/agents/:id/sessions', db.authMiddleware, (req, res) => {
   try {
     const sessions = parsers.getAllSessions().filter(s => s.agent === req.params.id || s.agentId === req.params.id);

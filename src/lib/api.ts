@@ -58,6 +58,8 @@ export const api = {
   getAgentSessions: (id: string) => request(`/agents/${id}/sessions`),
   provisionAgent: (opts: ProvisionAgentOpts) =>
     request<ProvisionResult>("/agents", { method: "POST", body: JSON.stringify(opts) }),
+  deleteAgent: (id: string) =>
+    request<{ ok: boolean }>(`/agents/${id}`, { method: "DELETE" }),
   getAgentProfile: (id: string) =>
     request<{ profile: AgentProfile | null }>(`/agents/${id}/profile`),
   updateAgentProfile: (id: string, updates: Partial<AgentProfile>) =>
