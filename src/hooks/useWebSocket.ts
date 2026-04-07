@@ -1,8 +1,8 @@
 import { useEffect, useRef, useCallback } from "react"
-import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore } from "@/stores"
+import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore } from "@/stores"
 import { useChatStore } from "@/stores/useChatStore"
 import { api } from "@/lib/api"
-import type { WsMessage } from "@/types"
+import type { WsMessage, LiveFeedEntry } from "@/types"
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 30000]
 const DEBOUNCE_MS = 1000 // debounce session/agent reloads
@@ -120,6 +120,59 @@ export function useWebSocket() {
               }
             }
           }
+
+          // Push parsed JSONL events into the Live Feed tab
+          {
+            type ParsedEvt = {
+              role?: string
+              text?: string
+              thinking?: string
+              tools?: Array<{ name: string; input?: string; output?: string }>
+              model?: string
+              cost?: number
+              tokens?: { total?: number }
+              timestamp?: string
+            }
+            const liveRaw = msg as unknown as { agent?: string; event?: ParsedEvt }
+            const agentId = liveRaw.agent ?? ''
+            const agentInfo = useAgentStore.getState().agents.find(a => a.id === agentId)
+            const agentName = agentInfo?.name ?? agentId
+            const agentEmoji = agentInfo?.emoji ?? '🤖'
+            const e = liveRaw.event ?? {}
+            const feedTs = e.timestamp ?? new Date().toISOString()
+            const model = e.model
+            const cost = e.cost
+            const tokens = e.tokens?.total
+
+            const pushFeed = (type: LiveFeedEntry['type'], content: string) => {
+              useLiveFeedStore.getState().addEntry({
+                id: `lf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                timestamp: feedTs,
+                agentId,
+                agentName,
+                agentEmoji,
+                type,
+                content,
+                model,
+                cost,
+                tokens,
+              })
+            }
+
+            if (e.role === 'toolResult' && e.tools?.length) {
+              const t = e.tools[0]
+              pushFeed('tool_result', `${t.name}: ${String(t.output ?? '').slice(0, 200)}`)
+            } else {
+              if (e.thinking) pushFeed('system', e.thinking.slice(0, 200))
+              if (e.tools?.length) {
+                for (const t of e.tools) {
+                  pushFeed('tool_call', `${t.name}${t.input ? ` ${String(t.input).slice(0, 100)}` : ''}`)
+                }
+              }
+              if (e.text) pushFeed('message', e.text.slice(0, 300))
+            }
+          }
+
           // Also schedule a reload so the session list stays in sync
           scheduleReload()
           break
@@ -239,7 +292,27 @@ export function useWebSocket() {
             if (sessionKey) {
               const sk = sessionKey as string
               const isThinking = role === "thinking" || !!thinking
+
+              // Ensure an agent placeholder exists so updateLastAgentMessage has something to mutate.
+              // This handles external sessions (Telegram, old sessions) where no placeholder was added.
+              const currentMsgs = chatStore.messages[sk] ?? []
+              const lastMsg = currentMsgs[currentMsgs.length - 1]
+              const hasAgentPlaceholder = lastMsg?.role === "agent" && lastMsg?.isStreaming
+              if (!hasAgentPlaceholder && (role === "assistant" || role === "thinking" || isThinking)) {
+                chatStore.setAgentRunning(sk, true)
+                chatStore.appendMessage(sk, {
+                  id: `agent-ws-${Date.now()}`,
+                  role: "agent",
+                  toolCalls: [],
+                  isStreaming: true,
+                  responseDone: false,
+                  phase: isThinking ? "thinking" : "responding",
+                  timestamp: Date.now(),
+                })
+              }
+
               if (role === "assistant" || role === "thinking") {
+                chatStore.setAgentRunning(sk, true)
                 const hasText = !!(text as string)?.trim()
                 chatStore.updateLastAgentMessage(sk, (m) => {
                   if (m.role !== "agent") return m
@@ -277,6 +350,20 @@ export function useWebSocket() {
               const sk = sessionKey as string
               if (status === "start") {
                 chatStore.setAgentRunning(sk, true)
+                // Ensure placeholder exists for tool events too
+                const curMsgs = chatStore.messages[sk] ?? []
+                const lastCur = curMsgs[curMsgs.length - 1]
+                if (!lastCur || (lastCur.role !== "agent" || !lastCur.isStreaming)) {
+                  chatStore.appendMessage(sk, {
+                    id: `agent-ws-tool-${Date.now()}`,
+                    role: "agent",
+                    toolCalls: [],
+                    isStreaming: true,
+                    responseDone: false,
+                    phase: "tool_running",
+                    timestamp: Date.now(),
+                  })
+                }
                 chatStore.updateLastAgentMessage(sk, (m) => {
                   if (m.role !== "agent") return m
                   const existing = m.toolCalls?.find((tc) => tc.id === ((toolCallId ?? toolName) as string))
@@ -348,6 +435,47 @@ export function useWebSocket() {
             import("@/lib/chat-api").then(({ chatApi }) => {
               chatApi.getSessions().then((r) => { if (r.sessions) chatStore.setSessions(r.sessions) }).catch(() => {})
             })
+          } else if (msg.type === "gateway:event") {
+            const p = (msg.payload ?? {}) as { event?: string; data?: Record<string, unknown>; ts?: number }
+            if (p.event) {
+              useGatewayLogStore.getState().addEvent({
+                id: `gevt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                ts: p.ts ?? Date.now(),
+                event: p.event,
+                data: p.data ?? {},
+              })
+
+              // Mirror meaningful session lifecycle events into the Live Feed
+              const FEED_GATEWAY_EVENTS = new Set(['session.done', 'session.message', 'session.tool', 'session.error'])
+              if (FEED_GATEWAY_EVENTS.has(p.event)) {
+                const d = p.data ?? {}
+                const agentId = (d.agentId ?? d.agent ?? '') as string
+                const agentInfo = useAgentStore.getState().agents.find(a => a.id === agentId)
+                const content = p.event === 'session.done'
+                  ? `session finished${d.sessionId ? ` (${String(d.sessionId).slice(0, 8)})` : ''}`
+                  : (d.text as string | undefined)?.slice(0, 200) ?? p.event
+                const entryType: LiveFeedEntry['type'] = p.event === 'session.error' ? 'error' : 'system'
+                useLiveFeedStore.getState().addEntry({
+                  id: `lf-gw-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  timestamp: new Date(p.ts ?? Date.now()).toISOString(),
+                  agentId,
+                  agentName: agentInfo?.name ?? agentId,
+                  agentEmoji: agentInfo?.emoji ?? '🤖',
+                  type: entryType,
+                  content,
+                })
+              }
+            }
+          } else if (msg.type === "gateway:log") {
+            const p = (msg.payload ?? {}) as { line?: string; ts?: number; direction?: "in" | "out" }
+            if (p.line) {
+              useGatewayLogStore.getState().addLog({
+                id: `glog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                ts: p.ts ?? Date.now(),
+                line: p.line,
+                direction: p.direction ?? "in",
+              })
+            }
           } else {
             // Unknown event type — might be a new watcher event, schedule a reload
             console.debug("[WS] Unhandled event type:", msg.type)

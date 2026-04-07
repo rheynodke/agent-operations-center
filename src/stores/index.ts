@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { persist } from "zustand/middleware"
 import type { Agent, Session, Task, CronJob, GatewayRoute, Alert, ActivityEvent, LiveFeedEntry, DashboardOverview, AuthUser } from "@/types"
 
 export * from "./useThemeStore"
@@ -196,14 +197,61 @@ interface LiveFeedState {
   setOpen: (open: boolean) => void
 }
 
-export const useLiveFeedStore = create<LiveFeedState>((set) => ({
-  entries: [],
-  isOpen: false,
-  addEntry: (entry) => set((s) => ({ entries: [entry, ...s.entries].slice(0, 500) })),
-  clearFeed: () => set({ entries: [] }),
-  toggleFeed: () => set((s) => ({ isOpen: !s.isOpen })),
-  setOpen: (isOpen) => set({ isOpen }),
-}))
+export const useLiveFeedStore = create<LiveFeedState>()(
+  persist(
+    (set) => ({
+      entries: [],
+      isOpen: false,
+      addEntry: (entry) => set((s) => ({ entries: [entry, ...s.entries].slice(0, 500) })),
+      clearFeed: () => set({ entries: [] }),
+      toggleFeed: () => set((s) => ({ isOpen: !s.isOpen })),
+      setOpen: (isOpen) => set({ isOpen }),
+    }),
+    {
+      name: "aoc-live-feed",
+      partialize: (s) => ({ entries: s.entries }),
+    }
+  )
+)
+
+// ─── Gateway Log Store ────────────────────────────────────────────────────────
+
+export interface GatewayEventEntry {
+  id: string
+  ts: number
+  event: string         // e.g. "health", "tick", "session.message"
+  data: Record<string, unknown>
+}
+
+export interface GatewayLogEntry {
+  id: string
+  ts: number
+  line: string          // raw JSON line from the gateway WS
+  direction?: "in" | "out"
+}
+
+interface GatewayLogState {
+  events: GatewayEventEntry[]
+  logs: GatewayLogEntry[]
+  addEvent: (e: GatewayEventEntry) => void
+  addLog: (e: GatewayLogEntry) => void
+  clearEvents: () => void
+  clearLogs: () => void
+}
+
+export const useGatewayLogStore = create<GatewayLogState>()(
+  persist(
+    (set) => ({
+      events: [],
+      logs: [],
+      addEvent: (e) => set((s) => ({ events: [e, ...s.events].slice(0, 500) })),
+      addLog:   (e) => set((s) => ({ logs:   [e, ...s.logs  ].slice(0, 500) })),
+      clearEvents: () => set({ events: [] }),
+      clearLogs:   () => set({ logs: [] }),
+    }),
+    { name: "aoc-gateway-logs" }
+  )
+)
 
 // ─── Overview Store ───────────────────────────────────────────────────────────
 interface OverviewState {

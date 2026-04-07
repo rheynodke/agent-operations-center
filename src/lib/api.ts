@@ -193,6 +193,15 @@ export const api = {
   stopGateway: () =>
     request<{ ok: boolean; killedPids: number[]; message: string }>("/gateway/stop", { method: "POST" }),
 
+  // OpenClaw config
+  getConfig: () =>
+    request<{ config: Record<string, unknown>; path: string }>("/config"),
+  updateConfigSection: (section: string, value: unknown) =>
+    request<{ ok: boolean; section: string }>(`/config/${section}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value }),
+    }),
+
   // Health
   health: () => request("/health"),
 }

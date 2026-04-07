@@ -502,7 +502,25 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Load history
+  // Load history + subscribe for real-time events
+  const reloadHistory = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
+    setLoadError(null)
+    try {
+      const data = await chatApi.getHistory(sessionKey) // also triggers subscribe server-side
+      const groups = gatewayMessagesToGroups(data.messages ?? [])
+      // Only overwrite if agent is NOT streaming — otherwise we'd clobber live updates
+      const currentlyRunning = useChatStore.getState().agentRunning[sessionKey]
+      if (!currentlyRunning) {
+        useChatStore.getState().setMessages(sessionKey, groups)
+      }
+    } catch (err: unknown) {
+      if (!silent) setLoadError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      if (!silent) setLoading(false)
+    }
+  }, [sessionKey])
+
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -522,6 +540,17 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
     load()
     return () => { cancelled = true }
   }, [sessionKey])
+
+  // After agentRunning goes false (agent finished), reload history to get final persisted state
+  const prevRunning = useRef(false)
+  useEffect(() => {
+    if (prevRunning.current && !isRunning) {
+      // Agent just finished — wait briefly for JSONL to flush, then reload
+      const t = setTimeout(() => reloadHistory(true), 2500)
+      return () => clearTimeout(t)
+    }
+    prevRunning.current = isRunning
+  }, [isRunning, reloadHistory])
 
   // Scroll to bottom instantly on initial load, smooth for new messages
   const initialScrollDone = useRef(false)

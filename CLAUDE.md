@@ -29,7 +29,7 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
 ### Frontend (React 19 + TypeScript)
 
 - **Routing:** React Router v7 in `src/App.tsx`. Auth flow: Setup → Login → DashboardShell. Pages at `src/pages/`.
-- **State:** Zustand stores in `src/stores/index.ts` — one store per domain (agents, sessions, tasks, cron, routing, alerts, activity, live feed, auth, WebSocket status). Chat state lives in `src/stores/useChatStore.ts` separately.
+- **State:** Zustand stores in `src/stores/index.ts` — one store per domain (agents, sessions, tasks, cron, routing, alerts, activity, live feed, auth, WebSocket status). Chat state lives in `src/stores/useChatStore.ts` separately. Theme (light/dark) lives in `src/stores/useThemeStore.ts`.
 - **Real-time:** `src/hooks/useWebSocket.ts` connects to `/ws`, dispatches typed events to Zustand stores. `src/hooks/useDataLoader.ts` handles initial REST data fetch.
 - **API clients:** `src/lib/api.ts` — all standard REST endpoints. `src/lib/chat-api.ts` — gateway/chat-specific endpoints (`/api/chat/*`). Both use auto-auth headers from `useAuthStore`.
 - **Styling:** Tailwind CSS v4 via `@tailwindcss/vite` plugin. shadcn/ui components in `src/components/ui/`. Path alias `@/` maps to `src/`. Theme tokens defined in `src/index.css` — light and dark mode CSS vars. Always use semantic tokens (`bg-card`, `border-border`, `text-foreground`, `bg-foreground/X`) not `bg-white/X` or hardcoded hex colors, so both modes work.
@@ -38,12 +38,17 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
 ### Backend (Node.js + Express 5, CommonJS)
 
 - **Entry:** `server/index.cjs` — Express app with JWT auth, Helmet, CORS, rate limiting.
-- **Barrel:** `server/lib/index.cjs` — **explicit** named export list; adding a new function to any sub-module requires also adding it here. Does NOT use spread (`...agents`).
+- **Barrel:** `server/lib/index.cjs` — **explicit** named export list; adding a new function to any sub-module requires also adding it here. Does NOT use spread (`...submodule`). Note: `server/lib/agents/index.cjs` is a local sub-barrel that *does* use spread to compose its own files.
 - **Sub-modules:**
   - `server/lib/agents/detail.cjs` — `getAgentDetail`, `updateAgent`, `getAgentChannels`, `addAgentChannel`, `updateAgentChannel`, `removeAgentChannel`
+  - `server/lib/agents/files.cjs` — `getAgentFile`, `saveAgentFile`; editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`
+  - `server/lib/agents/skills.cjs` — `getAgentSkills`, `getAllSkills`, `getSkillFile`, `getSkillFileBySlug`, `saveSkillFile`, `saveSkillFileBySlug`, `createSkill`, `createGlobalSkill`, `toggleAgentSkill`
+  - `server/lib/agents/tools.cjs` — `BUILTIN_TOOLS`, `getAgentTools`, `getAllTools`, `toggleAgentTool`
+  - `server/lib/agents/skillScripts.cjs` — `listSkillScripts`, `getSkillScript`, `saveSkillScript`, `deleteSkillScript`, `getSkillScriptsPath`
   - `server/lib/agents/provision.cjs` — writes new agent to `openclaw.json` + scaffolds workspace
-  - `server/lib/agents/skills.cjs` / `tools.cjs` — toggle skill/tool state in `openclaw.json`
-  - `server/lib/sessions/gateway.cjs` — parses JSONL session files from `~/.openclaw/sessions/`
+  - `server/lib/sessions/opencode.cjs` — parses OpenCode JSONL session files from `~/.openclaw/`
+  - `server/lib/sessions/gateway.cjs` — parses gateway JSONL session files from `~/.openclaw/sessions/`
+  - `server/lib/models.cjs` — `getAvailableModels` reads model list from `openclaw.json`
   - `server/lib/gateway-ws.cjs` — persistent WebSocket proxy to OpenClaw Gateway (port 18789); handles Ed25519 challenge-response auth
   - `server/lib/db.cjs` — SQLite via `sql.js` for user auth, agent profiles, avatars
   - `server/lib/watchers.cjs` — chokidar file watchers; broadcasts `session:live-event` and `processing_end` WS events with `sessionKey`

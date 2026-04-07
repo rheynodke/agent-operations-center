@@ -186,8 +186,11 @@ class GatewayWsProxy {
     });
 
     this.ws.on('message', (data) => {
+      const raw = data.toString();
       try {
-        const msg = JSON.parse(data.toString());
+        const msg = JSON.parse(raw);
+        // Attach raw string so _handleMessage can forward it to Gateway Logs
+        msg._raw = raw.length > 800 ? raw.slice(0, 800) + '…' : raw;
         this._handleMessage(msg);
       } catch (e) {
         console.error('[gateway-ws] Message error:', e.message);
@@ -239,6 +242,10 @@ class GatewayWsProxy {
 
     // ── RPC responses ────────────────────────────────────────────────────────
     if (msg.type === 'res') {
+      // Broadcast raw RPC response to Gateway Logs panel
+      if (msg._raw) {
+        this.broadcast({ type: 'gateway:log', payload: { line: msg._raw, ts: Date.now() } });
+      }
       const pending = this.pendingRequests.get(msg.id);
       if (pending) {
         clearTimeout(pending.timeoutHandle);
@@ -270,15 +277,35 @@ class GatewayWsProxy {
       const evt = msg.event;
       const p = msg.payload || {};
 
-      // DEBUG: log raw gateway events
+      // DEBUG: log raw gateway events (non-noise)
       if (evt && !['tick', 'presence', 'health', 'heartbeat'].includes(evt)) {
         console.log(`[gateway-ws] EVENT ${evt}:`, JSON.stringify(p).slice(0, 600));
+      }
+
+      // ── Broadcast ALL gateway events to dashboard clients ─────────────────
+      // "gateway:event" — structured event (all types including tick/health)
+      this.broadcast({
+        type: 'gateway:event',
+        payload: {
+          event: evt,
+          data: p,
+          ts: Date.now(),
+        },
+      });
+      // "gateway:log" — raw log line for the Gateway Logs panel (request/response traffic)
+      if (msg.raw || typeof msg._raw === 'string') {
+        this.broadcast({
+          type: 'gateway:log',
+          payload: { line: msg._raw || msg.raw, ts: Date.now() },
+        });
       }
 
       if (evt === 'session.message') {
         // Streaming message delta from agent
         // Content can be string, {type,text} object, or array of content blocks
         const inner = p.message || p;
+        // Gateway uses p.key, p.sessionKey, or inner.sessionKey — normalise once
+        const sessionKey = p.sessionKey ?? p.key ?? inner.sessionKey ?? inner.key ?? null;
         // Extract plain text only — skip thinking, toolCall, toolResult blocks
         const extractText = (v) => {
           if (v == null) return '';
@@ -315,7 +342,7 @@ class GatewayWsProxy {
           this.broadcast({
             type: 'chat:tool',
             payload: {
-              sessionKey: p.sessionKey,
+              sessionKey,
               toolName: tc.name,
               toolInput: tc.input,
               toolCallId: tc.id,
@@ -340,7 +367,7 @@ class GatewayWsProxy {
                 this.broadcast({
                   type: 'chat:tool',
                   payload: {
-                    sessionKey: p.sessionKey,
+                    sessionKey,
                     toolName: tcName,
                     toolInput: tcInput,
                     toolCallId: tcId,
@@ -356,7 +383,7 @@ class GatewayWsProxy {
           this.broadcast({
             type: 'chat:message',
             payload: {
-              sessionKey: p.sessionKey,
+              sessionKey,
               role: inner.role || p.role || 'assistant',
               text: cleanText,
               thinking,
@@ -370,27 +397,31 @@ class GatewayWsProxy {
         }
         // If the gateway explicitly signals completion, also send a dedicated done event
         if (isDone) {
-          this.broadcast({ type: 'chat:done', payload: { sessionKey: p.sessionKey } });
+          this.broadcast({ type: 'chat:done', payload: { sessionKey } });
         }
       } else if (['session.done', 'session.complete', 'session.end', 'session.finish', 'session.stopped', 'session.final'].includes(evt)) {
         // Explicit session completion events from the gateway
-        this.broadcast({ type: 'chat:done', payload: { sessionKey: p.sessionKey || p.key } });
+        const doneKey = p.sessionKey ?? p.key ?? p.session?.key ?? null;
+        this.broadcast({ type: 'chat:done', payload: { sessionKey: doneKey } });
       } else if (evt === 'agent') {
         // Agent lifecycle events — phase:"end" means the run is definitively over
         if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
-          this.broadcast({ type: 'chat:done', payload: { sessionKey: p.sessionKey } });
+          const agentKey = p.sessionKey ?? p.key ?? null;
+          this.broadcast({ type: 'chat:done', payload: { sessionKey: agentKey } });
         }
       } else if (evt === 'chat') {
         // Chat state events — state:"final" means the agent turn is complete
         if (p.state === 'final') {
-          this.broadcast({ type: 'chat:done', payload: { sessionKey: p.sessionKey } });
+          const chatKey = p.sessionKey ?? p.key ?? null;
+          this.broadcast({ type: 'chat:done', payload: { sessionKey: chatKey } });
         }
       } else if (evt === 'session.tool') {
         // Tool call event
+        const toolSessionKey = p.sessionKey ?? p.key ?? null;
         this.broadcast({
           type: 'chat:tool',
           payload: {
-            sessionKey: p.sessionKey,
+            sessionKey: toolSessionKey,
             toolName: p.toolName,
             toolInput: p.toolInput,
             toolResult: p.toolResult,
@@ -498,7 +529,11 @@ class GatewayWsProxy {
         reject(new Error(`Gateway RPC timeout: ${method}`));
       }, timeoutMs);
       this.pendingRequests.set(id, { resolve, reject, timeoutHandle });
-      this.ws.send(JSON.stringify({ type: 'req', id, method, params }));
+      const reqPayload = JSON.stringify({ type: 'req', id, method, params });
+      this.ws.send(reqPayload);
+      // Broadcast outgoing request to Gateway Logs panel
+      const truncated = reqPayload.length > 800 ? reqPayload.slice(0, 800) + '…' : reqPayload;
+      this.broadcast({ type: 'gateway:log', payload: { line: truncated, ts: Date.now(), direction: 'out' } });
     });
   }
 

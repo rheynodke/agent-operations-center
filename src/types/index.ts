@@ -272,6 +272,8 @@ export type WsEventType =
   | "progress:step"
   | "gateway:connected"
   | "gateway:disconnected"
+  | "gateway:event"
+  | "gateway:log"
   | "chat:message"
   | "chat:tool"
   | "chat:event"

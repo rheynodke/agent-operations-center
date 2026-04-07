@@ -879,6 +879,49 @@ app.get('/api/routes', db.authMiddleware, (req, res) => {
   }
 });
 
+// ─── OpenClaw Config Management ──────────────────────────────────────────────
+
+const EDITABLE_CONFIG_SECTIONS = new Set([
+  'gateway', 'agents', 'tools', 'env', 'memory', 'hooks',
+  'approvals', 'logging', 'commands', 'session', 'messages',
+  'plugins', 'models',
+]);
+
+// GET /api/config — returns full openclaw.json
+app.get('/api/config', db.authMiddleware, (req, res) => {
+  const { readJsonSafe } = require('./lib/config.cjs');
+  const configPath = path.join(parsers.OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config) return res.status(404).json({ error: 'openclaw.json not found' });
+  res.json({ config, path: configPath });
+});
+
+// PATCH /api/config/:section — update a single top-level section and write back
+app.patch('/api/config/:section', db.authMiddleware, (req, res) => {
+  const { section } = req.params;
+  const { value } = req.body;
+
+  if (!EDITABLE_CONFIG_SECTIONS.has(section)) {
+    return res.status(400).json({ error: `Section "${section}" is not editable via this API` });
+  }
+  if (value === undefined) return res.status(400).json({ error: 'value is required' });
+
+  const fs = require('fs');
+  const configPath = path.join(parsers.OPENCLAW_HOME, 'openclaw.json');
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(raw);
+    config[section] = value;
+    if (config.meta) config.meta.lastTouchedAt = new Date().toISOString();
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    console.log(`[api/config] Section "${section}" updated by ${req.user.username}`);
+    res.json({ ok: true, section });
+  } catch (err) {
+    console.error('[api/config/patch]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Activity
 app.get('/api/activity', db.authMiddleware, (req, res) => {
   try {
