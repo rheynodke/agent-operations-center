@@ -14,10 +14,13 @@ import {
   Code,
   MessageSquare,
   Loader2,
+  Globe2,
+  LayoutDashboard,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import { GatewayControlCard } from "@/components/gateway/GatewayControlCard"
+import { AgentWorldView } from "@/components/world/AgentWorldView"
 import { useAgentStore, useSessionStore, useOverviewStore, useWsStore } from "@/stores"
 import { cn } from "@/lib/utils"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -427,14 +430,45 @@ export function OverviewPage() {
 
   const processingCount = agentProcessingMap.size
 
+  const [activeTab, setActiveTab] = useState<"dashboard" | "world">("dashboard")
+
+  const tabs = [
+    { id: "dashboard" as const, label: "Dashboard", icon: LayoutDashboard },
+    { id: "world" as const, label: "Agent World", icon: Globe2 },
+  ]
+
   return (
     <div className="flex flex-col gap-0 animate-fade-in max-w-[1600px] mx-auto">
       {/* ── Dashboard Header ── */}
-      <div className="mb-8">
+      <div className="mb-6 flex items-end justify-between">
         <h1 className="text-4xl font-display font-bold tracking-tight text-foreground">
           System Overview
         </h1>
+        {/* Tab switcher */}
+        <div className="flex items-center gap-1 p-1 rounded-xl bg-surface-low border border-white/5">
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              className={cn(
+                "flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-150",
+                activeTab === id
+                  ? "bg-surface-high text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* ── Agent World Tab ── */}
+      {activeTab === "world" && <AgentWorldView />}
+
+      {/* ── Dashboard Tab ── */}
+      {activeTab === "dashboard" && <>
 
       {/* ── Stat Row ── */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
@@ -642,6 +676,8 @@ export function OverviewPage() {
           onClose={() => setSelectedSession(null)}
         />
       )}
+
+      </> /* end dashboard tab */}
     </div>
   )
 }
