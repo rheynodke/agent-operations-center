@@ -571,11 +571,12 @@ class GatewayWsProxy {
     return this.sendReq('chat.history', { sessionKey, maxChars });
   }
 
-  /** chat.send — { sessionKey, message, idempotencyKey } */
-  chatSend(sessionKey, text) {
+  /** chat.send — { sessionKey, message, idempotencyKey }
+   *  message can be a plain string or an array of content blocks (text/image). */
+  chatSend(sessionKey, message) {
     return this.sendReq('chat.send', {
       sessionKey,
-      message: text,
+      message,
       idempotencyKey: crypto.randomBytes(8).toString('hex'),
     });
   }

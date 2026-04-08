@@ -9,11 +9,13 @@ export interface ChatMessageGroup {
   agentId?: string
   // For user messages
   userText?: string
+  userImages?: string[]   // base64 data URLs or public URLs
   // For agent messages — each phase is separate
   thinkingText?: string      // thinking/reasoning content
   thinkingDone?: boolean     // true when thinking phase is complete
   toolCalls?: ChatToolCall[] // tool call sequence
   responseText?: string      // final response text (streaming)
+  agentImages?: string[]     // image URLs/data-urls from agent content blocks
   responseDone?: boolean     // final response complete
   isStreaming?: boolean
   phase?: AgentPhase         // explicit state machine phase for UX indicators
@@ -91,6 +93,56 @@ export const useChatStore = create<ChatState>((set) => ({
   selectedAgentId: null,
   setSelectedAgentId: (id) => set({ selectedAgentId: id }),
 }))
+
+// Matches: [media attached: /path/file.jpg (image/jpeg) | /path/file.jpg]
+const MEDIA_BLOCK_RE = /\[media attached:\s*([^\s(]+)\s*\([^)]+\)\s*\|[^\]]*\]/g
+// The boilerplate instructions injected after each media block by the gateway
+const MEDIA_BOILERPLATE_RE = /\s*To send an image back,.*?Keep caption in the text body\./gs
+
+/** Parse media attachments from gateway-injected text markers.
+ *  Returns the file paths and the cleaned caption text. */
+export function parseMediaAttachments(text: string): { paths: string[]; caption: string } {
+  const paths: string[] = []
+  let cleaned = text.replace(MEDIA_BLOCK_RE, (_, filePath) => {
+    paths.push(filePath)
+    return ""
+  })
+  cleaned = cleaned.replace(MEDIA_BOILERPLATE_RE, "").trim()
+  return { paths, caption: cleaned }
+}
+
+/** Convert a local openclaw file path to a dashboard /api/media URL */
+export function mediaPathToUrl(filePath: string): string {
+  return `/api/media?path=${encodeURIComponent(filePath)}`
+}
+
+/** Extract image URLs from assistant content blocks (type=image) */
+function extractImageUrls(content: unknown): string[] {
+  if (!Array.isArray(content)) return []
+  const urls: string[] = []
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) continue
+    const obj = block as Record<string, unknown>
+    if (obj.type === "image") {
+      const src = obj.source as Record<string, unknown> | undefined
+      if (src?.type === "url" && typeof src.url === "string") urls.push(src.url)
+      if (src?.type === "base64" && typeof src.media_type === "string" && typeof src.data === "string") {
+        urls.push(`data:${src.media_type};base64,${src.data}`)
+      }
+      if (typeof obj.url === "string") urls.push(obj.url)
+    }
+  }
+  return urls
+}
+
+/** Convert MEDIA:url or MEDIA:./path inline references in agent text to markdown images */
+function convertMediaInlineToMarkdown(text: string): string {
+  // MEDIA:https://... or MEDIA:./path or MEDIA:relative/path
+  return text.replace(/MEDIA:([^\s"')\]]+)/g, (_, ref) => {
+    const url = ref.startsWith('http') ? ref : `/api/media?path=${encodeURIComponent(ref)}`
+    return `![image](${url})`
+  })
+}
 
 /** Strip text-encoded tool call markers from a string (used by models that encode tool calls inline) */
 function stripToolCallMarkers(text: string): string {
@@ -185,19 +237,24 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
     const role = msg.role
     if (role === "user") {
       flushAgent()
+      const rawText = extractText(msg.content || msg.text)
+      const { paths, caption } = parseMediaAttachments(rawText)
       groups.push({
         id: msg.id ?? `user-${msg.timestamp ?? Date.now()}`,
         role: "user",
-        userText: extractText(msg.content || msg.text),
+        userText: caption,
+        userImages: paths.length > 0 ? paths.map(mediaPathToUrl) : undefined,
         timestamp: msg.timestamp,
       })
     } else if (role === "assistant") {
-      const text = stripToolCallMarkers(extractText(msg.content || msg.text))
+      const rawText = stripToolCallMarkers(extractText(msg.content || msg.text))
+      const text = convertMediaInlineToMarkdown(rawText)
       const thinking = msg.thinking || extractThinking(msg.content)
       const contentTools = extractToolCalls(msg.content)
+      const inlineImages = extractImageUrls(msg.content)
       const hasThinking = !!thinking || !!msg.isThinking
       // Skip assistant messages that were only tool call markers (nothing left after stripping)
-      if (!text && !hasThinking && contentTools.length === 0) continue
+      if (!text && !hasThinking && contentTools.length === 0 && inlineImages.length === 0) continue
       if (!agentGroup) {
         agentGroup = {
           id: `agent-${msg.timestamp ?? Date.now()}`,
@@ -208,6 +265,7 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
             id: tc.id, toolName: tc.name, input: tc.input, status: "done" as const,
           })),
           responseText: text || undefined,
+          agentImages: inlineImages.length > 0 ? inlineImages : undefined,
           responseDone: false,
           timestamp: msg.timestamp,
         }
@@ -218,6 +276,9 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
         }
         if (text) {
           agentGroup.responseText = (agentGroup.responseText ?? "") + text
+        }
+        if (inlineImages.length > 0) {
+          agentGroup.agentImages = [...(agentGroup.agentImages ?? []), ...inlineImages]
         }
         for (const tc of contentTools) {
           agentGroup.toolCalls = [...(agentGroup.toolCalls ?? []), {

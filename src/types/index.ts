@@ -25,6 +25,8 @@ export interface Agent {
   color?: string | null
   hasAvatar?: boolean
   avatarPresetId?: string | null
+  // Security / sandbox settings (from openclaw.json agent entry)
+  fsWorkspaceOnly?: boolean
 }
 
 // ─── Agent Channel Management Types ─────────────────────────────────────────
@@ -45,19 +47,30 @@ export interface AgentChannelWhatsApp {
   pairingRequired?: boolean
 }
 
-export type AgentChannelInfo = AgentChannelTelegram | AgentChannelWhatsApp
+export interface AgentChannelDiscord {
+  type: "discord"
+  accountId: string  // pseudo — equals agentId, used as handle for update/remove API
+  envVarName: string
+  dmPolicy: "pairing" | "allowlist" | "open" | "disabled"
+  groupPolicy: "open" | "allowlist" | "disabled"
+}
+
+export type AgentChannelInfo = AgentChannelTelegram | AgentChannelWhatsApp | AgentChannelDiscord
 
 export interface AgentChannelsResult {
   telegram: AgentChannelTelegram[]
   whatsapp: AgentChannelWhatsApp[]
+  discord: AgentChannelDiscord[]
 }
 
 // ─── Agent Provisioning Types ────────────────────────────────────────────────
 
 export interface ChannelBinding {
-  type: "telegram" | "whatsapp"
+  type: "telegram" | "whatsapp" | "discord"
   botToken?: string        // Telegram only
+  envVarName?: string      // Discord: env var name for bot token (default: DISCORD_BOT_TOKEN)
   dmPolicy?: "pairing" | "allowlist" | "open" | "disabled"
+  groupPolicy?: "open" | "allowlist" | "disabled"  // Discord only
   streaming?: "off" | "partial" | "full"  // Telegram only
   allowFrom?: string[]     // Telegram: user/chat IDs; WhatsApp: phone numbers (used when dmPolicy = "allowlist")
 }
@@ -74,6 +87,7 @@ export interface ProvisionAgentOpts {
   soulContent?: string
   channels: ChannelBinding[]
   tags?: string[]
+  fsWorkspaceOnly?: boolean
 }
 
 export interface ProvisionResult {

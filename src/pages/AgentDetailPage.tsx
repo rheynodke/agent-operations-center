@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import { chatApi } from "@/lib/chat-api"
 import { useChatStore } from "@/stores/useChatStore"
-import type { SkillInfo, AgentTool, Session, SkillScript, AgentChannelTelegram, AgentChannelWhatsApp, AgentChannelsResult } from "@/types"
+import type { SkillInfo, AgentTool, Session, SkillScript, AgentChannelTelegram, AgentChannelWhatsApp, AgentChannelDiscord, AgentChannelsResult } from "@/types"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import {
   Loader2, RefreshCw, Zap, Save, X,
@@ -76,6 +76,7 @@ interface AgentDetail {
   } | null
   availableModels: AvailableModel[]
   availableChannels: AvailableChannel[]
+  fsWorkspaceOnly?: boolean
   profile?: {
     avatarPresetId?: string | null
     color?: string | null
@@ -1096,6 +1097,7 @@ interface EditConfig {
   channelStreaming: string
   channelDmPolicy: string
   avatarPresetId: string
+  fsWorkspaceOnly: boolean
 }
 
 function EditConfigModal({
@@ -1105,7 +1107,7 @@ function EditConfigModal({
 }: {
   detail: AgentDetail
   onClose: () => void
-  onSaved: (showRestart: boolean) => void
+  onSaved: (showRestart: boolean, newAgentId?: string) => void
 }) {
   const [cfg, setCfg] = useState<EditConfig>({
     name: detail.identity.name,
@@ -1116,6 +1118,7 @@ function EditConfigModal({
     channelStreaming: detail.channel?.streaming ?? "partial",
     channelDmPolicy: detail.channel?.dmPolicy ?? "pairing",
     avatarPresetId: detail.profile?.avatarPresetId ?? "",
+    fsWorkspaceOnly: detail.fsWorkspaceOnly !== false,
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -1155,6 +1158,7 @@ function EditConfigModal({
       if (cfg.emoji !== orig.identity.emoji) updates.emoji = cfg.emoji
       if (cfg.model !== orig.model) updates.model = cfg.model
       if (cfg.vibe !== orig.identity.vibe) updates.theme = cfg.vibe
+      if (cfg.fsWorkspaceOnly !== (orig.fsWorkspaceOnly !== false)) updates.fsWorkspaceOnly = cfg.fsWorkspaceOnly
 
       const channelChanged =
         cfg.channelAccountId !== orig.channel?.accountId ||
@@ -1168,25 +1172,31 @@ function EditConfigModal({
         }
       }
 
-      if (Object.keys(updates).length === 0 && cfg.avatarPresetId === (detail.profile?.avatarPresetId ?? "")) {
+      const currentPresetId = detail.profile?.avatarPresetId ?? detail.profile?.avatar_preset_id ?? ""
+      if (Object.keys(updates).length === 0 && cfg.avatarPresetId === currentPresetId) {
         onClose(); return
       }
 
+      let newAgentId: string | undefined
       if (Object.keys(updates).length > 0) {
-        await api.updateAgent(orig.id, updates)
+        const result = await api.updateAgent(orig.id, updates) as { agentId?: string }
+        if (result?.agentId && result.agentId !== orig.id) {
+          newAgentId = result.agentId
+        }
       }
 
-      // Save avatar to SQLite profile separately
-      if (cfg.avatarPresetId !== (detail.profile?.avatarPresetId ?? "")) {
+      // Save avatar only if it actually changed (rename migration is handled server-side)
+      if (cfg.avatarPresetId !== currentPresetId) {
+        const profileId = newAgentId ?? orig.id
         const preset = AVATAR_PRESETS.find(p => p.id === cfg.avatarPresetId)
-        await api.updateAgentProfile(orig.id, {
+        await api.updateAgentProfile(profileId, {
           avatarPresetId: cfg.avatarPresetId || undefined,
           color: preset?.color ?? undefined,
         })
       }
 
       const needsRestart = !!(updates.model || updates.channel)
-      onSaved(needsRestart)
+      onSaved(needsRestart, newAgentId)
     } catch (err) {
       setError((err as Error).message || "Save failed")
       setSaving(false)
@@ -1310,6 +1320,35 @@ function EditConfigModal({
             </div>
           </section>
 
+          {/* Security */}
+          <section>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">Security</span>
+              <div className="flex-1 h-px bg-foreground/5" />
+            </div>
+            <button
+              type="button"
+              onClick={() => setCfg(c => ({ ...c, fsWorkspaceOnly: !c.fsWorkspaceOnly }))}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-colors ${
+                cfg.fsWorkspaceOnly
+                  ? "bg-foreground/4 border-foreground/10"
+                  : "bg-amber-500/8 border-amber-500/25"
+              }`}
+            >
+              <div className="text-left">
+                <p className="text-xs font-semibold text-foreground/80">Filesystem Access</p>
+                <p className="text-[10px] text-muted-foreground/50 mt-0.5">
+                  {cfg.fsWorkspaceOnly
+                    ? "Sandboxed — workspace directory only"
+                    : "Unrestricted — can read files outside workspace (required for Telegram/WhatsApp media)"}
+                </p>
+              </div>
+              <div className={`ml-3 relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${cfg.fsWorkspaceOnly ? "bg-foreground/15" : "bg-amber-500/60"}`}>
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${cfg.fsWorkspaceOnly ? "translate-x-1" : "translate-x-[18px]"}`} />
+              </div>
+            </button>
+          </section>
+
           {error && <p className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">{error}</p>}
         </div>
 
@@ -1387,11 +1426,18 @@ function RestartGatewayDialog({ onConfirm, onDismiss, reason }: {
 
 type DmPolicy = "pairing" | "allowlist" | "open" | "disabled"
 type Streaming = "off" | "partial" | "full"
+type GroupPolicy = "open" | "allowlist" | "disabled"
 
 const DM_POLICY_LABELS: Record<DmPolicy, string> = {
   pairing: "Pairing (bot must /start first)",
   allowlist: "Allowlist only",
   open: "Open (anyone)",
+  disabled: "Disabled",
+}
+
+const GROUP_POLICY_LABELS: Record<GroupPolicy, string> = {
+  open: "Open (any server)",
+  allowlist: "Allowlist only",
   disabled: "Disabled",
 }
 
@@ -1401,10 +1447,16 @@ const STREAMING_LABELS: Record<Streaming, string> = {
   full: "Full (all tokens)",
 }
 
-function ChannelBadge({ type }: { type: "telegram" | "whatsapp" }) {
+function ChannelBadge({ type }: { type: "telegram" | "whatsapp" | "discord" }) {
   if (type === "telegram") return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/12 text-sky-600 dark:text-sky-400 border border-sky-500/20">
       <img src="/telegram.webp" className="w-3 h-3 rounded-full" alt="" /> Telegram
+    </span>
+  )
+  if (type === "discord") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/12 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.033.055a19.912 19.912 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
+      Discord
     </span>
   )
   return (
@@ -1681,6 +1733,141 @@ function WhatsAppChannelCard({
   )
 }
 
+function DiscordChannelCard({
+  ch, agentId, onSaved, onRemove,
+}: {
+  ch: AgentChannelDiscord; agentId: string; onSaved: () => void; onRemove: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [dmPolicy, setDmPolicy] = useState<DmPolicy>(ch.dmPolicy)
+  const [groupPolicy, setGroupPolicy] = useState<GroupPolicy>(ch.groupPolicy)
+  const [envVarName, setEnvVarName] = useState(ch.envVarName)
+  const [err, setErr] = useState("")
+
+  async function handleSave() {
+    setSaving(true); setErr("")
+    try {
+      await api.updateAgentChannel(agentId, "discord", ch.accountId, { envVarName, dmPolicy, groupPolicy })
+      setEditing(false)
+      onSaved()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally { setSaving(false) }
+  }
+
+  async function handleRemove() {
+    if (!confirm(`Remove Discord binding for this agent?`)) return
+    setRemoving(true)
+    try {
+      await api.removeAgentChannel(agentId, "discord", ch.accountId)
+      onRemove()
+    } catch (e) {
+      setErr((e as Error).message)
+      setRemoving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-foreground/2">
+        <ChannelBadge type="discord" />
+        <span className="text-[11px] font-mono text-muted-foreground/60 flex-1 truncate">
+          account: {ch.accountId}
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => { setEditing(e => !e); setErr("") }}
+            className="w-6 h-6 rounded flex items-center justify-center hover:bg-foreground/8 text-muted-foreground hover:text-foreground transition-colors"
+            title="Edit"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+          <button
+            onClick={handleRemove}
+            disabled={removing}
+            className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+            title="Remove binding"
+          >
+            {removing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Unlink className="w-3 h-3" />}
+          </button>
+        </div>
+      </div>
+
+      {editing ? (
+        <div className="px-4 py-3 space-y-3">
+          {err && <p className="text-[11px] text-red-500">{err}</p>}
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token Env Var</label>
+            <input
+              value={envVarName}
+              onChange={e => setEnvVarName(e.target.value)}
+              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              placeholder="DISCORD_BOT_TOKEN"
+            />
+            <p className="text-[10px] text-muted-foreground/40 mt-1">Name of the environment variable holding the Discord bot token.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+              <select
+                value={dmPolicy}
+                onChange={e => setDmPolicy(e.target.value as DmPolicy)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+              >
+                {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
+                  <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Guild/Server Policy</label>
+              <select
+                value={groupPolicy}
+                onChange={e => setGroupPolicy(e.target.value as GroupPolicy)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+              >
+                {(Object.keys(GROUP_POLICY_LABELS) as GroupPolicy[]).map(v => (
+                  <option key={v} value={v}>{GROUP_POLICY_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+              Save
+            </button>
+            <button onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 py-2.5 grid grid-cols-3 gap-3 text-[11px]">
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">DM Policy</span>
+            <span className="font-medium text-foreground/80">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Guild Policy</span>
+            <span className="font-medium text-foreground/80">{GROUP_POLICY_LABELS[ch.groupPolicy] ?? ch.groupPolicy}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Token Env</span>
+            <span className="font-mono text-foreground/60">{ch.envVarName}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AddChannelForm({
   agentId, existingTypes, onAdded, onCancel,
 }: {
@@ -1688,12 +1875,15 @@ function AddChannelForm({
 }) {
   const telegramExists = existingTypes.includes("telegram")
   const whatsappExists = existingTypes.includes("whatsapp")
+  const discordExists = existingTypes.includes("discord")
 
   // Default to the first available (non-bound) channel type
-  const defaultType: "telegram" | "whatsapp" = telegramExists ? "whatsapp" : "telegram"
-  const [type, setType] = useState<"telegram" | "whatsapp">(defaultType)
+  const defaultType: "telegram" | "whatsapp" | "discord" = telegramExists ? (whatsappExists ? "discord" : "whatsapp") : "telegram"
+  const [type, setType] = useState<"telegram" | "whatsapp" | "discord">(defaultType)
   const [botToken, setBotToken] = useState("")
+  const [envVarName, setEnvVarName] = useState("DISCORD_BOT_TOKEN")
   const [dmPolicy, setDmPolicy] = useState<DmPolicy>("pairing")
+  const [groupPolicy, setGroupPolicy] = useState<GroupPolicy>("open")
   const [streaming, setStreaming] = useState<Streaming>("partial")
   const [allowFrom, setAllowFrom] = useState("")
   const [saving, setSaving] = useState(false)
@@ -1705,7 +1895,9 @@ function AddChannelForm({
       const af = allowFrom.split(",").map(s => s.trim()).filter(Boolean)
       await api.addAgentChannel(agentId, {
         type,
-        ...(type === "telegram" ? { botToken, streaming } : { allowFrom: af }),
+        ...(type === "telegram" ? { botToken, streaming } : {}),
+        ...(type === "whatsapp" ? { allowFrom: af } : {}),
+        ...(type === "discord" ? { envVarName, groupPolicy } : {}),
         dmPolicy,
       })
       onAdded()
@@ -1715,22 +1907,27 @@ function AddChannelForm({
     }
   }
 
+  const CHANNEL_OPTIONS = [
+    { id: "telegram" as const, label: "Telegram", exists: telegramExists, icon: <img src="/telegram.webp" className="w-3.5 h-3.5 rounded-full" alt="" /> },
+    { id: "whatsapp" as const, label: "WhatsApp", exists: whatsappExists, icon: <img src="/wa.png" className="w-3.5 h-3.5 rounded-full" alt="" /> },
+    { id: "discord" as const, label: "Discord", exists: discordExists, icon: <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.033.055a19.912 19.912 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg> },
+  ]
+
   return (
     <div className="rounded-xl border border-primary/20 bg-primary/4 p-4 space-y-3">
       <p className="text-xs font-semibold text-foreground">Add Channel Binding</p>
       {err && <p className="text-[11px] text-red-500">{err}</p>}
       <div className="flex gap-2">
-        {(["telegram", "whatsapp"] as const).map(t => {
-          const alreadyBound = t === "telegram" ? telegramExists : whatsappExists
+        {CHANNEL_OPTIONS.map(({ id: t, label, exists, icon }) => {
           const isSelected = type === t
           return (
             <button
               key={t}
-              onClick={() => !alreadyBound && setType(t)}
-              disabled={alreadyBound}
+              onClick={() => !exists && setType(t)}
+              disabled={exists}
               className={cn(
                 "flex-1 flex flex-col items-center gap-1 py-2.5 rounded-lg border text-xs font-semibold transition-all",
-                alreadyBound
+                exists
                   ? "border-border bg-foreground/3 text-muted-foreground/30 cursor-not-allowed"
                   : isSelected
                     ? "bg-primary/15 border-primary/30 text-primary"
@@ -1738,10 +1935,10 @@ function AddChannelForm({
               )}
             >
               <div className="flex items-center gap-1.5">
-                <img src={t === "telegram" ? "/telegram.webp" : "/wa.png"} className="w-3.5 h-3.5 rounded-full" alt="" />
-                {t === "telegram" ? "Telegram" : "WhatsApp"}
+                {icon}
+                {label}
               </div>
-              {alreadyBound && (
+              {exists && (
                 <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground/30">Already bound</span>
               )}
             </button>
@@ -1814,10 +2011,55 @@ function AddChannelForm({
         </>
       )}
 
+      {type === "discord" && (
+        <>
+          <div className="rounded-lg bg-indigo-500/6 border border-indigo-500/15 p-3 space-y-1.5">
+            <p className="text-[11px] font-semibold text-indigo-400">Discord Setup Steps</p>
+            <ol className="text-[11px] text-indigo-300/70 space-y-1 list-decimal list-inside">
+              <li>Go to <span className="font-mono text-indigo-300/90">discord.com/developers</span> → New Application → Bot tab</li>
+              <li>Enable <strong>Message Content Intent</strong> + <strong>Server Members Intent</strong></li>
+              <li>Copy the bot token and set: <code className="font-mono bg-foreground/8 px-1 rounded">export DISCORD_BOT_TOKEN=your_token</code></li>
+              <li>Invite the bot to your server via OAuth2 → URL Generator (scopes: <code className="font-mono bg-foreground/8 px-1 rounded">bot</code> + <code className="font-mono bg-foreground/8 px-1 rounded">applications.commands</code>)</li>
+              <li>Restart the OpenClaw gateway so it picks up the env var</li>
+            </ol>
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token Env Var</label>
+            <input
+              value={envVarName}
+              onChange={e => setEnvVarName(e.target.value)}
+              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              placeholder="DISCORD_BOT_TOKEN"
+            />
+            <p className="text-[10px] text-muted-foreground/40 mt-1">Name of the environment variable holding the bot token. Never stored in openclaw.json.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+              <select value={dmPolicy} onChange={e => setDmPolicy(e.target.value as DmPolicy)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40">
+                {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
+                  <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Guild/Server Policy</label>
+              <select value={groupPolicy} onChange={e => setGroupPolicy(e.target.value as GroupPolicy)}
+                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40">
+                {(Object.keys(GROUP_POLICY_LABELS) as GroupPolicy[]).map(v => (
+                  <option key={v} value={v}>{GROUP_POLICY_LABELS[v]}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </>
+      )}
+
       <div className="flex gap-2 pt-1">
         <button
           onClick={handleAdd}
-          disabled={saving || (type === "telegram" ? telegramExists : whatsappExists)}
+          disabled={saving || (type === "telegram" ? telegramExists : type === "whatsapp" ? whatsappExists : discordExists)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
         >
           {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link className="w-3 h-3" />}
@@ -1843,7 +2085,7 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
     try {
       const data = await api.getAgentChannels(agentId)
       setChannels(data)
-    } catch { setChannels({ telegram: [], whatsapp: [] }) }
+    } catch { setChannels({ telegram: [], whatsapp: [], discord: [] }) }
     finally { setLoading(false) }
   }, [agentId])
 
@@ -1852,8 +2094,13 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
   const existingTypes = [
     ...(channels?.telegram.length ? ["telegram"] : []),
     ...(channels?.whatsapp.length ? ["whatsapp"] : []),
+    ...(channels?.discord.length ? ["discord"] : []),
   ]
-  const allBindings = [...(channels?.telegram ?? []), ...(channels?.whatsapp ?? [])]
+  const allBindings = [
+    ...(channels?.telegram ?? []),
+    ...(channels?.whatsapp ?? []),
+    ...(channels?.discord ?? []),
+  ]
 
   function handleSaved() {
     load()
@@ -1886,7 +2133,7 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
             <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground/40">
               <Globe className="w-7 h-7" />
               <p className="text-sm">No channel bindings yet</p>
-              <p className="text-xs">Add Telegram or WhatsApp to receive messages</p>
+              <p className="text-xs">Add Telegram, WhatsApp, or Discord to receive messages</p>
             </div>
           )}
 
@@ -1908,6 +2155,15 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
               onRemove={() => { load(); onRestart() }}
             />
           ))}
+          {channels?.discord.map(ch => (
+            <DiscordChannelCard
+              key={ch.accountId}
+              ch={ch}
+              agentId={agentId}
+              onSaved={handleSaved}
+              onRemove={() => { load(); onRestart() }}
+            />
+          ))}
 
           {addingChannel ? (
             <AddChannelForm
@@ -1916,7 +2172,7 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
               onAdded={() => { setAddingChannel(false); handleSaved() }}
               onCancel={() => setAddingChannel(false)}
             />
-          ) : existingTypes.length < 2 && (
+          ) : existingTypes.length < 3 && (
             <button
               onClick={() => setAddingChannel(true)}
               className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-foreground/15 text-xs text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/4 transition-all"
@@ -2083,6 +2339,7 @@ export function AgentDetailPage() {
 
   // File explorer
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [fileRefreshKey, setFileRefreshKey] = useState(0)
 
   // Skills
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -2255,11 +2512,17 @@ export function AgentDetailPage() {
     }
   }
 
-  function handleSaved(showRestart: boolean) {
+  function handleSaved(showRestart: boolean, newAgentId?: string) {
     setEditing(false)
     setSaveMsg("✓ Saved")
     setTimeout(() => setSaveMsg(""), 3000)
-    loadDetail()
+    if (newAgentId) {
+      // Agent was renamed — navigate to new URL, loadDetail will run via useEffect
+      navigate(`/agents/${newAgentId}`, { replace: true })
+    } else {
+      loadDetail()
+      setFileRefreshKey(k => k + 1)
+    }
     if (showRestart) {
       setRestartReason("Model or channel configuration changed. Restart the gateway for the new settings to take effect.")
       setTimeout(() => setShowRestartDialog(true), 300)
@@ -2503,7 +2766,7 @@ export function AgentDetailPage() {
                   )}
                   <div className="flex-1 min-w-0 min-h-0 overflow-y-auto flex flex-col">
                     {selectedFile && id ? (
-                      <InlineFilePanel key={selectedFile} agentId={id} filename={selectedFile} onSaved={loadDetail} />
+                      <InlineFilePanel key={`${selectedFile}-${fileRefreshKey}`} agentId={id} filename={selectedFile} onSaved={loadDetail} />
                     ) : (
                       <div className="flex flex-col items-center justify-center h-full text-muted-foreground/30">
                         <FileText className="w-10 h-10 mb-3 opacity-30" />

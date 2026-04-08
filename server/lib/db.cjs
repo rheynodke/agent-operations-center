@@ -228,6 +228,8 @@ function getAgentProfile(agentId) {
   const obj = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
   // Parse JSON tags
   try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
+  // Add camelCase aliases for frontend consumption
+  obj.avatarPresetId = obj.avatar_preset_id ?? null;
   return obj;
 }
 
@@ -267,6 +269,21 @@ function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMim
   return getAgentProfile(agentId);
 }
 
+function renameAgentProfile(oldAgentId, newAgentId) {
+  if (!db) return;
+  const existing = getAgentProfile(oldAgentId);
+  if (!existing) return;
+  // Check if new ID already has a profile (unlikely, but safe)
+  const alreadyExists = getAgentProfile(newAgentId);
+  if (alreadyExists) {
+    // Just delete old one — new ID already has a profile
+    db.run('DELETE FROM agent_profiles WHERE agent_id = ?', [oldAgentId]);
+  } else {
+    db.run('UPDATE agent_profiles SET agent_id = ? WHERE agent_id = ?', [newAgentId, oldAgentId]);
+  }
+  persist();
+}
+
 function getAllAgentProfiles() {
   if (!db) return [];
   const result = db.exec('SELECT * FROM agent_profiles ORDER BY provisioned_at DESC');
@@ -303,6 +320,7 @@ module.exports = {
   // Agent profiles
   getAgentProfile,
   upsertAgentProfile,
+  renameAgentProfile,
   getAllAgentProfiles,
   deleteAgentProfile,
 };

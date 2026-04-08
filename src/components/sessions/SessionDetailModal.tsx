@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import { parseMediaAttachments, mediaPathToUrl } from "@/stores/useChatStore"
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedImage"
 import { Dialog, DialogContent, DialogHeader } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -57,6 +59,7 @@ interface FlatEvent {
   title: string
   content: string
   toolName?: string
+  images?: string[]
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
@@ -220,7 +223,21 @@ export function SessionDetailModal({ session, onClose }: Props) {
       const senderName = rawSender === "cli" ? dashboardUserName : rawSender
 
       if (e.role === "human" || e.role === "user") {
-        arr.push({ id: `${baseId}-user`, timestamp: e.timestamp, cost: 0, tokens: 0, type: "user", title: senderName, content: e.text || "<Empty Message>" })
+        // mediaFiles comes from backend (extracted before cleanUserMessage strips the block)
+        // Fall back to parsing e.text for older/external session formats
+        const backendPaths: string[] = (e as { mediaFiles?: string[] }).mediaFiles ?? []
+        const { paths: parsedPaths, caption } = parseMediaAttachments(e.text || "")
+        const allPaths = backendPaths.length > 0 ? backendPaths : parsedPaths
+        arr.push({
+          id: `${baseId}-user`,
+          timestamp: e.timestamp,
+          cost: 0,
+          tokens: 0,
+          type: "user",
+          title: senderName,
+          content: caption || e.text || (allPaths.length > 0 ? "" : "<Empty Message>"),
+          images: allPaths.length > 0 ? allPaths.map(mediaPathToUrl) : undefined,
+        })
       }
 
       if (e.role === "assistant" && e.thinking) {
@@ -241,7 +258,24 @@ export function SessionDetailModal({ session, onClose }: Props) {
       }
 
       if (e.role === "assistant" && e.text) {
-        arr.push({ id: `${baseId}-agent`, timestamp: e.timestamp, cost: e.cost || 0, tokens: e.tokens?.total || 0, type: "agent", title: "Agent", content: e.text })
+        // Extract MEDIA:path inline refs from agent text
+        const MEDIA_RE = /MEDIA:([^\s"')\]]+)/g
+        const agentImages: string[] = []
+        const agentText = e.text.replace(MEDIA_RE, (_, ref) => {
+          const url = ref.startsWith("http") ? ref : mediaPathToUrl(ref)
+          agentImages.push(url)
+          return ""
+        }).trim()
+        arr.push({
+          id: `${baseId}-agent`,
+          timestamp: e.timestamp,
+          cost: e.cost || 0,
+          tokens: e.tokens?.total || 0,
+          type: "agent",
+          title: "Agent",
+          content: agentText,
+          images: agentImages.length > 0 ? agentImages : undefined,
+        })
       }
 
       if (e.role === "assistant" && !e.text && (!e.tools || e.tools.length === 0) && !e.thinking) {
@@ -427,6 +461,32 @@ export function SessionDetailModal({ session, onClose }: Props) {
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/*  IMAGE BLOCK                                                        */
+/* ─────────────────────────────────────────────────────────────────── */
+
+function SessionImageBlock({ src }: { src: string }) {
+  const [zoomed, setZoomed] = useState(false)
+  return (
+    <>
+      <AuthenticatedImage
+        src={src}
+        alt="attachment"
+        className="max-h-40 max-w-[200px] rounded-xl border border-border object-cover cursor-zoom-in"
+        onClick={() => setZoomed(true)}
+      />
+      {zoomed && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-zoom-out p-4"
+          onClick={() => setZoomed(false)}
+        >
+          <AuthenticatedImage src={src} alt="attachment" className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl" />
+        </div>
+      )}
+    </>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 /*  CHAT BUBBLE                                                        */
 /* ─────────────────────────────────────────────────────────────────── */
 
@@ -524,14 +584,21 @@ function ChatBubble({
               <span className="text-[11px] text-muted-foreground">{fmtTime(ev.timestamp)}</span>
               <span className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">{ev.title}</span>
             </div>
-            <div className="bg-blue-500/10 dark:bg-blue-500/15 border border-blue-500/20 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap wrap-break-word">
-              {displayContent}
-              {isLong && (
-                <button onClick={() => setExpanded(!expanded)} className="block mt-1 text-xs text-blue-500 hover:underline cursor-pointer">
-                  {expanded ? "show less" : "show more"}
-                </button>
-              )}
-            </div>
+            {ev.images && ev.images.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 justify-end">
+                {ev.images.map((src, i) => <SessionImageBlock key={i} src={src} />)}
+              </div>
+            )}
+            {ev.content && (
+              <div className="bg-blue-500/10 dark:bg-blue-500/15 border border-blue-500/20 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap wrap-break-word">
+                {displayContent}
+                {isLong && (
+                  <button onClick={() => setExpanded(!expanded)} className="block mt-1 text-xs text-blue-500 hover:underline cursor-pointer">
+                    {expanded ? "show less" : "show more"}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           <div className="w-7 h-7 rounded-full bg-blue-500/15 border border-blue-500/20 flex items-center justify-center shrink-0 mb-0.5">
             <User className="h-3.5 w-3.5 text-blue-500" />
@@ -555,19 +622,26 @@ function ChatBubble({
               <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">{ev.title}</span>
               {fmtTime(ev.timestamp) && <span className="text-[11px] text-muted-foreground">{fmtTime(ev.timestamp)}</span>}
             </div>
-            <div className={cn(
-              "border rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-break-word",
-              isEmpty
-                ? "bg-muted/30 border-border text-muted-foreground italic"
-                : "bg-emerald-500/8 dark:bg-emerald-500/12 border-emerald-500/20 text-foreground/90"
-            )}>
-              {displayContent}
-              {isLong && !isEmpty && (
-                <button onClick={() => setExpanded(!expanded)} className="block mt-1 text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer">
-                  {expanded ? "show less" : "show more"}
-                </button>
-              )}
-            </div>
+            {ev.images && ev.images.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {ev.images.map((src, i) => <SessionImageBlock key={i} src={src} />)}
+              </div>
+            )}
+            {(ev.content || isEmpty) && (
+              <div className={cn(
+                "border rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-break-word",
+                isEmpty
+                  ? "bg-muted/30 border-border text-muted-foreground italic"
+                  : "bg-emerald-500/8 dark:bg-emerald-500/12 border-emerald-500/20 text-foreground/90"
+              )}>
+                {displayContent}
+                {isLong && !isEmpty && (
+                  <button onClick={() => setExpanded(!expanded)} className="block mt-1 text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer">
+                    {expanded ? "show less" : "show more"}
+                  </button>
+                )}
+              </div>
+            )}
             {(ev.tokens > 0 || ev.cost > 0) && (
               <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground/50">
                 {ev.tokens > 0 && <span className="flex items-center gap-1"><Coins className="h-2.5 w-2.5" />{fmtTokens(ev.tokens)}</span>}

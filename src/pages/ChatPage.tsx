@@ -16,6 +16,8 @@ import {
   ChevronRight,
   ChevronDown,
   Clock,
+  ImagePlus,
+  X,
 } from "lucide-react"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -358,6 +360,15 @@ function AgentPicker({ onPick }: { onPick: (agentId: string) => void }) {
 
 // ─── Chat Input ───────────────────────────────────────────────────────────────
 
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
 function ChatInput({
   onSend,
   onAbort,
@@ -365,20 +376,24 @@ function ChatInput({
   agentRunning,
   agentName,
 }: {
-  onSend: (text: string) => void
+  onSend: (text: string, images?: string[]) => void
   onAbort: () => void
   disabled?: boolean
   agentRunning?: boolean
   agentName?: string
 }) {
   const [text, setText] = useState("")
+  const [images, setImages] = useState<string[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const canSend = (text.trim() || images.length > 0) && !disabled && !agentRunning
 
   const handleSend = () => {
-    const t = text.trim()
-    if (!t || disabled || agentRunning) return
-    onSend(t)
+    if (!canSend) return
+    onSend(text.trim(), images.length > 0 ? images : undefined)
     setText("")
+    setImages([])
     if (textareaRef.current) textareaRef.current.style.height = "auto"
   }
 
@@ -396,6 +411,26 @@ function ChatInput({
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`
   }
 
+  const addFiles = async (files: FileList | File[]) => {
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith("image/"))
+    const dataUrls = await Promise.all(imageFiles.map(fileToDataUrl))
+    setImages((prev) => [...prev, ...dataUrls].slice(0, 4)) // max 4
+  }
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items
+    const imageItems = Array.from(items).filter((i) => i.type.startsWith("image/"))
+    if (imageItems.length === 0) return
+    e.preventDefault()
+    const files = imageItems.map((i) => i.getAsFile()).filter(Boolean) as File[]
+    await addFiles(files)
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) await addFiles(e.target.files)
+    e.target.value = ""
+  }
+
   return (
     <div className="px-4 pb-4 pt-3">
       <div className={cn(
@@ -406,6 +441,23 @@ function ChatInput({
           ? "bg-muted/50 border-border/50 opacity-60"
           : "bg-card border-border hover:shadow-md focus-within:shadow-md focus-within:border-primary/30"
       )}>
+        {/* Image previews */}
+        {images.length > 0 && (
+          <div className="flex gap-2 flex-wrap px-4 pt-3">
+            {images.map((src, i) => (
+              <div key={i} className="relative group">
+                <img src={src} className="h-16 w-16 rounded-xl object-cover border border-border" alt="attachment" />
+                <button
+                  onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-background border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10"
+                >
+                  <X className="w-2.5 h-2.5 text-foreground/60" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Input area */}
         <div className="px-5 pt-4 pb-2">
           <textarea
@@ -414,6 +466,7 @@ function ChatInput({
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
+            onPaste={handlePaste}
             placeholder={
               agentRunning
                 ? `${agentName ?? "Agent"} is thinking…`
@@ -429,7 +482,7 @@ function ChatInput({
 
         {/* Action bar */}
         <div className="flex items-center justify-between px-3 pb-3 pt-1">
-          {/* Left: gateway indicator */}
+          {/* Left: gateway indicator + image attach */}
           <div className="flex items-center gap-2">
             <div className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors",
@@ -443,6 +496,26 @@ function ChatInput({
               )} />
               {disabled ? "Offline" : agentRunning ? "Responding" : "Gateway"}
             </div>
+            {/* Image attach button */}
+            {!disabled && !agentRunning && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach image"
+                  className="flex items-center justify-center w-7 h-7 rounded-full text-muted-foreground/40 hover:text-foreground/60 hover:bg-foreground/6 transition-colors"
+                >
+                  <ImagePlus className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
           </div>
 
           {/* Right: send / stop */}
@@ -457,10 +530,10 @@ function ChatInput({
           ) : (
             <button
               onClick={handleSend}
-              disabled={!text.trim() || disabled}
+              disabled={!canSend}
               className={cn(
                 "flex items-center justify-center w-9 h-9 rounded-full transition-all duration-200",
-                text.trim() && !disabled
+                canSend
                   ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_0_16px_hsl(var(--primary)/0.4)] hover:shadow-[0_0_20px_hsl(var(--primary)/0.5)] scale-100 hover:scale-105"
                   : "bg-foreground/8 text-muted-foreground/30 cursor-not-allowed"
               )}
@@ -565,13 +638,14 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [msgs.length, msgs[msgs.length - 1]?.responseText, msgs[msgs.length - 1]?.toolCalls?.length])
 
-  const handleSend = async (text: string) => {
+  const handleSend = async (text: string, images?: string[]) => {
     if (isRunning) return
 
     const userMsg: ChatMessageGroup = {
       id: `user-${Math.random().toString(36).slice(2, 10)}`,
       role: "user",
       userText: text,
+      userImages: images,
       timestamp: Date.now(),
     }
     appendMessage(sessionKey, userMsg)
@@ -589,7 +663,7 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
     setAgentRunning(sessionKey, true)
 
     try {
-      await chatApi.sendMessage(sessionKey, text, agentId)
+      await chatApi.sendMessage(sessionKey, text, agentId, images)
     } catch (err: unknown) {
       updateLastAgentMessage(sessionKey, (m) => ({
         ...m,

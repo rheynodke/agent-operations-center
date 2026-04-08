@@ -3,6 +3,15 @@ const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
 const { parseGatewaySessions } = require('../sessions/gateway.cjs');
+
+function slugify(str) {
+  return str.toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 30) || 'agent';
+}
 // lazy require to avoid tight coupling (prevents circular dep risk)
 const getAvailableModels = (...args) => require('../models.cjs').getAvailableModels(...args);
 
@@ -144,10 +153,16 @@ function getAgentDetail(agentId) {
     dmPolicy: acc.dmPolicy || 'none',
   }));
 
+  // Resolve effective fs.workspaceOnly: agent-level overrides global
+  const globalFsWorkspaceOnly = config.tools?.fs?.workspaceOnly ?? true;
+  const agentFsWorkspaceOnly  = agentConfig.tools?.fs?.workspaceOnly;
+  const fsWorkspaceOnly = agentFsWorkspaceOnly !== undefined ? agentFsWorkspaceOnly : globalFsWorkspaceOnly;
+
   return {
     id: agentId,
     config: agentConfig,
     model,
+    fsWorkspaceOnly,
     identity,
     soul: { description: soulData.description, traits: soulData.traits, raw: soulContent || '' },
     tools: { sections: toolsSections, raw: toolsContent || '' },
@@ -211,6 +226,13 @@ function updateAgent(agentId, updates) {
     if (!agent.identity) agent.identity = {};
     agent.identity.theme = updates.theme;
     changed.push('theme');
+  }
+
+  if (updates.fsWorkspaceOnly !== undefined) {
+    if (!agent.tools) agent.tools = {};
+    if (!agent.tools.fs) agent.tools.fs = {};
+    agent.tools.fs.workspaceOnly = updates.fsWorkspaceOnly === true;
+    changed.push('fsWorkspaceOnly');
   }
 
   if (updates.channel !== undefined) {
@@ -311,7 +333,71 @@ function updateAgent(agentId, updates) {
     if (!changed.includes('SOUL.md')) changed.push('SOUL.md');
   }
 
-  return { agentId, changed };
+  // ── Rename agent id + directories when name changes ───────────────────────
+  let finalAgentId = agentId;
+  if (updates.name !== undefined && agentId !== 'main') {
+    const newId = slugify(updates.name);
+    if (newId && newId !== agentId) {
+      // Ensure new ID isn't already taken
+      const conflict = agentList.find((a, i) => i !== idx && a.id === newId);
+      if (conflict) {
+        console.warn(`[updateAgent] Rename skipped: agent id "${newId}" already exists`);
+      } else {
+        // Re-read config (already written above), now apply id rename
+        const configNow = readJsonSafe(configPath);
+        const agentNow = configNow.agents.list[idx];
+
+        // Old paths
+        const oldWorkspace = agentNow.workspace || path.join(OPENCLAW_HOME, 'workspaces', agentId);
+        const oldAgentDir  = agentNow.agentDir  || path.join(AGENTS_DIR, agentId);
+        const newWorkspace = path.join(OPENCLAW_HOME, 'workspaces', newId);
+        const newAgentDir  = path.join(AGENTS_DIR, newId);
+
+        // Update agent entry
+        agentNow.id        = newId;
+        agentNow.workspace = newWorkspace;
+        agentNow.agentDir  = newAgentDir;
+        configNow.agents.list[idx] = agentNow;
+
+        // Rename telegram account key if it equals old agentId
+        if (configNow.channels?.telegram?.accounts?.[agentId]) {
+          configNow.channels.telegram.accounts[newId] = configNow.channels.telegram.accounts[agentId];
+          delete configNow.channels.telegram.accounts[agentId];
+        }
+        // Rename whatsapp account key
+        if (configNow.channels?.whatsapp?.accounts?.[agentId]) {
+          configNow.channels.whatsapp.accounts[newId] = configNow.channels.whatsapp.accounts[agentId];
+          delete configNow.channels.whatsapp.accounts[agentId];
+        }
+
+        // Update bindings: agentId + accountId references
+        if (configNow.bindings) {
+          for (const b of configNow.bindings) {
+            if (b.agentId === agentId) b.agentId = newId;
+            if (b.match?.accountId === agentId) b.match.accountId = newId;
+          }
+        }
+
+        fs.writeFileSync(configPath, JSON.stringify(configNow, null, 2), 'utf-8');
+
+        // Rename directories on filesystem
+        if (fs.existsSync(oldWorkspace) && !fs.existsSync(newWorkspace)) {
+          fs.renameSync(oldWorkspace, newWorkspace);
+          changed.push(`workspace:${agentId}→${newId}`);
+        }
+        if (fs.existsSync(oldAgentDir) && !fs.existsSync(newAgentDir)) {
+          fs.renameSync(oldAgentDir, newAgentDir);
+          changed.push(`agentDir:${agentId}→${newId}`);
+        }
+
+        finalAgentId = newId;
+        changed.push(`id:${agentId}→${newId}`);
+        console.log(`[updateAgent] Renamed agent "${agentId}" → "${newId}"`);
+      }
+    }
+  }
+
+  return { agentId: finalAgentId, changed };
 }
 
 // ── Channel management ────────────────────────────────────────────────────────
@@ -385,7 +471,21 @@ function getAgentChannels(agentId) {
     };
   });
 
-  return { telegram, whatsapp };
+  // ── Discord ──────────────────────────────────────────────────────────
+  // Discord uses a shared channel config (no per-agent accounts).
+  // An agent has Discord if it has a binding with match.channel === 'discord'.
+  const discordConfig = channels.discord || {};
+  const hasDiscordBinding = bindings.some(b => b.match?.channel === 'discord');
+
+  const discord = hasDiscordBinding ? [{
+    type: 'discord',
+    accountId: agentId,  // pseudo — used as handle for update/remove API
+    envVarName: discordConfig.token?.id || 'DISCORD_BOT_TOKEN',
+    dmPolicy: discordConfig.dmPolicy || 'pairing',
+    groupPolicy: discordConfig.groupPolicy || 'open',
+  }] : [];
+
+  return { telegram, whatsapp, discord };
 }
 
 /**
@@ -400,8 +500,8 @@ function addAgentChannel(agentId, opts) {
   const agentList = config.agents?.list || [];
   if (!agentList.find(a => a.id === agentId)) throw new Error(`Agent "${agentId}" not found`);
 
-  if (!opts.type || !['telegram', 'whatsapp'].includes(opts.type)) {
-    throw new Error('type must be "telegram" or "whatsapp"');
+  if (!opts.type || !['telegram', 'whatsapp', 'discord'].includes(opts.type)) {
+    throw new Error('type must be "telegram", "whatsapp", or "discord"');
   }
 
   if (!config.channels) config.channels = {};
@@ -429,18 +529,27 @@ function addAgentChannel(agentId, opts) {
       dmPolicy: opts.dmPolicy || 'pairing',
       ...(opts.allowFrom && opts.allowFrom.length > 0 ? { allowFrom: opts.allowFrom } : {}),
     };
+  } else if (opts.type === 'discord') {
+    const envVarName = opts.envVarName || 'DISCORD_BOT_TOKEN';
+    if (!config.channels.discord) config.channels.discord = {};
+    config.channels.discord.enabled = true;
+    config.channels.discord.token = { source: 'env', provider: 'default', id: envVarName };
+    if (opts.dmPolicy)    config.channels.discord.dmPolicy    = opts.dmPolicy;
+    if (opts.groupPolicy) config.channels.discord.groupPolicy = opts.groupPolicy;
   }
 
   // Add binding if not already present
-  const alreadyBound = config.bindings.some(
-    b => b.agentId === agentId && b.match?.channel === opts.type && b.match?.accountId === accountId
-  );
+  // Discord uses no accountId in its binding match
+  const alreadyBound = opts.type === 'discord'
+    ? config.bindings.some(b => b.agentId === agentId && b.match?.channel === 'discord')
+    : config.bindings.some(b => b.agentId === agentId && b.match?.channel === opts.type && b.match?.accountId === accountId);
+
   if (!alreadyBound) {
-    config.bindings.push({
-      type: 'route',
-      agentId,
-      match: { channel: opts.type, accountId },
-    });
+    if (opts.type === 'discord') {
+      config.bindings.push({ type: 'route', agentId, match: { channel: 'discord' } });
+    } else {
+      config.bindings.push({ type: 'route', agentId, match: { channel: opts.type, accountId } });
+    }
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
@@ -474,13 +583,19 @@ function removeAgentChannel(agentId, channelType, accountId) {
     if (config.channels?.whatsapp?.accounts?.[accountId]) {
       delete config.channels.whatsapp.accounts[accountId];
     }
+  } else if (channelType === 'discord') {
+    // Discord is a shared channel — only remove the binding, not the channel config
+    // (other agents may still be using the same Discord bot)
   }
 
   // Remove binding
   if (config.bindings) {
-    config.bindings = config.bindings.filter(
-      b => !(b.agentId === agentId && b.match?.channel === channelType && b.match?.accountId === accountId)
-    );
+    config.bindings = config.bindings.filter(b => {
+      if (b.agentId !== agentId || b.match?.channel !== channelType) return true;
+      // Discord bindings have no accountId in match
+      if (channelType === 'discord') return false;
+      return b.match?.accountId !== accountId;
+    });
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
@@ -515,6 +630,13 @@ function updateAgentChannel(agentId, channelType, accountId, updates) {
     if (!acct) throw new Error(`WhatsApp account "${accountId}" not found for agent "${agentId}"`);
     if (updates.dmPolicy !== undefined) acct.dmPolicy = updates.dmPolicy;
     if (updates.allowFrom !== undefined) acct.allowFrom = updates.allowFrom;
+  } else if (channelType === 'discord') {
+    if (!config.channels?.discord) throw new Error('Discord channel not configured');
+    if (updates.envVarName !== undefined) {
+      config.channels.discord.token = { source: 'env', provider: 'default', id: updates.envVarName };
+    }
+    if (updates.dmPolicy    !== undefined) config.channels.discord.dmPolicy    = updates.dmPolicy;
+    if (updates.guildPolicy !== undefined) config.channels.discord.groupPolicy = updates.guildPolicy;
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
@@ -538,6 +660,7 @@ function deleteAgent(agentId) {
   if (config.channels?.whatsapp?.accounts?.[agentId]) {
     delete config.channels.whatsapp.accounts[agentId];
   }
+  // Discord bindings are handled by the bindings filter above; shared channel config is kept
 
   // Remove bindings for this agent
   if (config.bindings) {

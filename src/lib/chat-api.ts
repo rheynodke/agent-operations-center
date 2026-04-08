@@ -26,10 +26,10 @@ export const chatApi = {
     }),
   getHistory: (sessionKey: string, maxChars?: number) =>
     request<{ messages?: GatewayMessage[] }>(`/chat/history/${encodeURIComponent(sessionKey)}${maxChars ? `?maxChars=${maxChars}` : ""}`),
-  sendMessage: (sessionKey: string, text: string, agentId?: string) =>
+  sendMessage: (sessionKey: string, text: string, agentId?: string, images?: string[]) =>
     request<{ ok?: boolean; status?: string }>("/chat/send", {
       method: "POST",
-      body: JSON.stringify({ sessionKey, text, agentId }),
+      body: JSON.stringify({ sessionKey, text, agentId, images }),
     }),
   abortRun: (sessionKey: string) =>
     request<{ ok?: boolean }>("/chat/abort", { method: "POST", body: JSON.stringify({ sessionKey }) }),

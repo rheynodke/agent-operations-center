@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom"
 import {
   X, ChevronRight, ChevronLeft, Check, Bot, Zap, Plus, Trash2,
   MessageCircle, Phone, Eye, EyeOff, Loader2, AlertCircle,
-  Sparkles, Copy, Terminal, Info
+  Sparkles, Copy, Terminal, Hash
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { useAgentStore } from "@/stores"
@@ -64,14 +64,14 @@ function StepIndicator({ current }: { current: number }) {
               <div className={cn(
                 "w-9 h-9 rounded-full flex items-center justify-center border-2 transition-all duration-300",
                 done  && "bg-emerald-500 border-emerald-500 text-white",
-                active && "bg-white/5 border-emerald-500 text-emerald-400",
-                !done && !active && "bg-white/3 border-white/10 text-white/30"
+                active && "bg-foreground/5 border-emerald-500 text-emerald-400",
+                !done && !active && "bg-foreground/3 border-border text-muted-foreground/50"
               )}>
                 {done ? <Check className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
               </div>
               <span className={cn(
                 "text-[10px] font-semibold uppercase tracking-wider transition-colors",
-                active ? "text-emerald-400" : done ? "text-emerald-400/60" : "text-white/20"
+                active ? "text-emerald-400" : done ? "text-emerald-400/60" : "text-muted-foreground/30"
               )}>{step.label}</span>
             </div>
             {idx < STEPS.length - 1 && (
@@ -89,7 +89,7 @@ function StepIndicator({ current }: { current: number }) {
 
 function FieldLabel({ children, required }: { children: React.ReactNode; required?: boolean }) {
   return (
-    <label className="block text-xs font-semibold text-white/60 uppercase tracking-wider mb-2">
+    <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
       {children} {required && <span className="text-rose-400">*</span>}
     </label>
   )
@@ -100,8 +100,8 @@ function WizardInput({ className, ...props }: React.InputHTMLAttributes<HTMLInpu
     <input
       {...props}
       className={cn(
-        "w-full bg-black/30 border border-white/10 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder:text-white/25",
-        "focus:outline-none focus:border-emerald-500/60 focus:bg-black/40 transition-all",
+        "w-full bg-foreground/6 border border-border rounded-lg px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40",
+        "focus:outline-none focus:border-emerald-500/60 focus:bg-foreground/8 transition-all",
         className
       )}
     />
@@ -113,8 +113,8 @@ function WizardTextarea({ className, ...props }: React.TextareaHTMLAttributes<HT
     <textarea
       {...props}
       className={cn(
-        "w-full bg-black/30 border border-white/10 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder:text-white/25",
-        "focus:outline-none focus:border-emerald-500/60 focus:bg-black/40 transition-all resize-none",
+        "w-full bg-foreground/6 border border-border rounded-lg px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40",
+        "focus:outline-none focus:border-emerald-500/60 focus:bg-foreground/8 transition-all resize-none",
         className
       )}
     />
@@ -126,7 +126,7 @@ function WizardSelect({ className, ...props }: React.SelectHTMLAttributes<HTMLSe
     <select
       {...props}
       className={cn(
-        "w-full bg-black/30 border border-white/10 rounded-lg px-3.5 py-2.5 text-sm text-white",
+        "w-full bg-foreground/6 border border-border rounded-lg px-3.5 py-2.5 text-sm text-foreground dark:scheme-dark",
         "focus:outline-none focus:border-emerald-500/60 transition-all appearance-none",
         className
       )}
@@ -183,11 +183,11 @@ function Step1Identity({
             onChange={e => handleIdChange(e.target.value)}
             className="font-mono"
           />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-white/25 font-mono">
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground/40 font-mono">
             {(form.id || "").length}/30
           </span>
         </div>
-        <p className="text-[10px] text-white/30 mt-1.5">Lowercase letters, numbers, hyphens. Cannot be changed later.</p>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">Lowercase letters, numbers, hyphens. Cannot be changed later.</p>
       </div>
 
       {/* Avatar / Mascot Picker */}
@@ -205,7 +205,7 @@ function Step1Identity({
         {form.avatarPresetId && (() => {
           const preset = AVATAR_PRESETS.find(p => p.id === form.avatarPresetId)
           return preset ? (
-            <p className="text-[10px] text-white/30 mt-2">
+            <p className="text-[10px] text-muted-foreground/50 mt-2">
               Selected: <span className="font-semibold" style={{ color: preset.color }}>{preset.name}</span>
               {" · "}<span className="italic">{preset.vibe}</span>
             </p>
@@ -222,7 +222,7 @@ function Step1Identity({
           value={form.theme || ""}
           onChange={e => setForm({ ...form, theme: e.target.value })}
         />
-        <p className="text-[10px] text-white/30 mt-1.5">Becomes agent's identity theme in the config.</p>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">Becomes agent's identity theme in the config.</p>
       </div>
 
       {/* Description */}
@@ -234,7 +234,43 @@ function Step1Identity({
           value={form.description || ""}
           onChange={e => setForm({ ...form, description: e.target.value })}
         />
-        <p className="text-[10px] text-white/30 mt-1.5">Shown in the dashboard. Saved to local SQLite profile.</p>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">Shown in the dashboard. Saved to local SQLite profile.</p>
+      </div>
+
+      {/* Filesystem Security */}
+      <div>
+        <FieldLabel>Filesystem Access</FieldLabel>
+        <button
+          type="button"
+          onClick={() => setForm({ ...form, fsWorkspaceOnly: !(form.fsWorkspaceOnly !== false) })}
+          className={cn(
+            "w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-colors text-left",
+            form.fsWorkspaceOnly !== false
+              ? "bg-foreground/3 border-white/8"
+              : "bg-amber-500/8 border-amber-500/25"
+          )}
+        >
+          <div>
+            <p className="text-xs font-semibold text-foreground/80">
+              {form.fsWorkspaceOnly !== false ? "Sandboxed" : "Unrestricted"}
+            </p>
+            <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+              {form.fsWorkspaceOnly !== false
+                ? "Agent can only access its workspace directory"
+                : "Agent can read files outside workspace — required for Telegram/WhatsApp media"}
+            </p>
+          </div>
+          <div className={cn(
+            "ml-3 relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0",
+            form.fsWorkspaceOnly !== false ? "bg-white/15" : "bg-amber-500/60"
+          )}>
+            <span className={cn(
+              "inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform",
+              form.fsWorkspaceOnly !== false ? "translate-x-1" : "translate-x-[18px]"
+            )} />
+          </div>
+        </button>
+        <p className="text-[10px] text-muted-foreground/40 mt-1.5">Can be changed later in agent settings.</p>
       </div>
     </div>
   )
@@ -307,12 +343,12 @@ function Step2Personality({
               <option key={m.id} value={m.id}>{m.name || m.id}</option>
             ))}
           </WizardSelect>
-          <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/30">
+          <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground/50">
             <ChevronRight className="w-4 h-4 rotate-90" />
           </div>
         </div>
-        <p className="text-[10px] text-white/30 mt-1.5">
-          Default: <span className="text-white/50 font-mono">{defaultModel || "not set"}</span>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">
+          Default: <span className="text-muted-foreground font-mono">{defaultModel || "not set"}</span>
         </p>
       </div>
 
@@ -336,8 +372,8 @@ function Step2Personality({
           value={form.soulContent || ""}
           onChange={e => setForm({ ...form, soulContent: e.target.value })}
         />
-        <p className="text-[10px] text-white/30 mt-1.5">
-          This becomes <span className="text-white/50 font-mono">SOUL.md</span> in the agent's workspace. Leave blank for a default template.
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">
+          This becomes <span className="text-muted-foreground font-mono">SOUL.md</span> in the agent's workspace. Leave blank for a default template.
         </p>
       </div>
     </div>
@@ -373,7 +409,7 @@ function TelegramBinding({
           </div>
           <span className="text-sm font-bold text-sky-300">Telegram</span>
         </div>
-        <button onClick={onRemove} className="text-white/30 hover:text-rose-400 transition-colors">
+        <button onClick={onRemove} className="text-muted-foreground/50 hover:text-rose-400 transition-colors">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -391,12 +427,12 @@ function TelegramBinding({
           <button
             type="button"
             onClick={() => setShowToken(!showToken)}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground/60 transition-colors"
           >
             {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
         </div>
-        <p className="text-[10px] text-white/30 mt-1.5">Get from <span className="text-sky-400">@BotFather</span> on Telegram.</p>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">Get from <span className="text-sky-400">@BotFather</span> on Telegram.</p>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -434,7 +470,7 @@ function TelegramBinding({
             onChange={e => handleAllowFromChange(e.target.value)}
             className="font-mono text-xs"
           />
-          <p className="text-[10px] text-white/30 mt-1.5">
+          <p className="text-[10px] text-muted-foreground/50 mt-1.5">
             Comma-separated Telegram user IDs or chat IDs. Get your ID via <span className="text-sky-400">@userinfobot</span>.
           </p>
         </div>
@@ -469,7 +505,7 @@ function WhatsAppBinding({
           </div>
           <span className="text-sm font-bold text-emerald-300">WhatsApp</span>
         </div>
-        <button onClick={onRemove} className="text-white/30 hover:text-rose-400 transition-colors">
+        <button onClick={onRemove} className="text-muted-foreground/50 hover:text-rose-400 transition-colors">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -502,7 +538,87 @@ function WhatsAppBinding({
           value={allowFromText}
           onChange={e => handleAllowFromChange(e.target.value)}
         />
-        <p className="text-[10px] text-white/30 mt-1.5">Comma-separated. Leave blank to allow based on DM policy.</p>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">Comma-separated. Leave blank to allow based on DM policy.</p>
+      </div>
+    </div>
+  )
+}
+
+function DiscordBinding({
+  binding, onChange, onRemove
+}: {
+  binding: ChannelBinding
+  onChange: (b: ChannelBinding) => void
+  onRemove: () => void
+}) {
+  return (
+    <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-indigo-500/20 flex items-center justify-center">
+            <svg className="w-3.5 h-3.5 text-indigo-400" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.033.055a19.912 19.912 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/>
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-indigo-300">Discord</span>
+        </div>
+        <button onClick={onRemove} className="text-muted-foreground/50 hover:text-rose-400 transition-colors">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Setup guide */}
+      <div className="rounded-lg bg-indigo-500/6 border border-indigo-500/20 p-3 space-y-1.5">
+        <p className="text-[11px] font-semibold text-indigo-400">Discord Setup</p>
+        <ol className="text-[11px] text-indigo-300/70 space-y-1 list-decimal list-inside">
+          <li>Go to <span className="font-mono text-indigo-300/90">discord.com/developers</span> → New Application → Bot tab</li>
+          <li>Enable <strong>Message Content Intent</strong> + <strong>Server Members Intent</strong></li>
+          <li>Copy bot token → set <span className="font-mono text-indigo-300/90">export DISCORD_BOT_TOKEN=your_token</span></li>
+          <li>Invite bot to server via OAuth2 URL Generator (scopes: <span className="font-mono text-indigo-300/90">bot</span> + <span className="font-mono text-indigo-300/90">applications.commands</span>)</li>
+          <li>Restart OpenClaw gateway to pick up the env var</li>
+        </ol>
+      </div>
+
+      <div>
+        <FieldLabel required>Bot Token Env Var</FieldLabel>
+        <div className="relative">
+          <WizardInput
+            placeholder="DISCORD_BOT_TOKEN"
+            value={binding.envVarName || "DISCORD_BOT_TOKEN"}
+            onChange={e => onChange({ ...binding, envVarName: e.target.value })}
+            className="font-mono text-xs pl-8"
+          />
+          <Hash className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/40" />
+        </div>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5">
+          Token is never stored in openclaw.json — only the env var name is saved.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <FieldLabel>DM Policy</FieldLabel>
+          <WizardSelect
+            value={binding.dmPolicy || "pairing"}
+            onChange={e => onChange({ ...binding, dmPolicy: e.target.value as ChannelBinding["dmPolicy"] })}
+          >
+            <option value="pairing">pairing</option>
+            <option value="allowlist">allowlist</option>
+            <option value="open">open</option>
+            <option value="disabled">disabled</option>
+          </WizardSelect>
+        </div>
+        <div>
+          <FieldLabel>Guild/Server Policy</FieldLabel>
+          <WizardSelect
+            value={binding.groupPolicy || "open"}
+            onChange={e => onChange({ ...binding, groupPolicy: e.target.value as ChannelBinding["groupPolicy"] })}
+          >
+            <option value="open">open</option>
+            <option value="allowlist">allowlist</option>
+            <option value="disabled">disabled</option>
+          </WizardSelect>
+        </div>
       </div>
     </div>
   )
@@ -518,6 +634,7 @@ function Step3Channels({
 
   const hasTelegram = channels.some(c => c.type === "telegram")
   const hasWhatsApp = channels.some(c => c.type === "whatsapp")
+  const hasDiscord  = channels.some(c => c.type === "discord")
 
   const addTelegram = () => {
     if (hasTelegram) return
@@ -527,6 +644,11 @@ function Step3Channels({
   const addWhatsApp = () => {
     if (hasWhatsApp) return
     setForm({ ...form, channels: [...channels, { type: "whatsapp", dmPolicy: "pairing", allowFrom: [] }] })
+  }
+
+  const addDiscord = () => {
+    if (hasDiscord) return
+    setForm({ ...form, channels: [...channels, { type: "discord", dmPolicy: "pairing", groupPolicy: "open", envVarName: "DISCORD_BOT_TOKEN" }] })
   }
 
   const updateChannel = (idx: number, binding: ChannelBinding) => {
@@ -541,19 +663,21 @@ function Step3Channels({
 
   return (
     <div className="space-y-4">
-      <p className="text-[11px] text-white/40">
-        Bind this agent to one or more communication channels. At least <strong className="text-white/60">one channel</strong> is required.
+      <p className="text-[11px] text-muted-foreground/70">
+        Bind this agent to one or more communication channels. At least <strong className="text-foreground/60">one channel</strong> is required.
       </p>
 
       {/* Existing bindings */}
       {channels.map((ch, idx) => (
         ch.type === "telegram"
           ? <TelegramBinding key={idx} binding={ch} onChange={b => updateChannel(idx, b)} onRemove={() => removeChannel(idx)} />
-          : <WhatsAppBinding key={idx} binding={ch} onChange={b => updateChannel(idx, b)} onRemove={() => removeChannel(idx)} />
+          : ch.type === "discord"
+            ? <DiscordBinding key={idx} binding={ch} onChange={b => updateChannel(idx, b)} onRemove={() => removeChannel(idx)} />
+            : <WhatsAppBinding key={idx} binding={ch} onChange={b => updateChannel(idx, b)} onRemove={() => removeChannel(idx)} />
       ))}
 
       {/* Add buttons */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {!hasTelegram && (
           <button
             type="button"
@@ -574,6 +698,16 @@ function Step3Channels({
             Add WhatsApp
           </button>
         )}
+        {!hasDiscord && (
+          <button
+            type="button"
+            onClick={addDiscord}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-semibold hover:bg-indigo-500/20 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add Discord
+          </button>
+        )}
       </div>
 
       {channels.length === 0 && (
@@ -591,8 +725,8 @@ function Step3Channels({
 function ReviewRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex justify-between items-start gap-4 py-2 border-b border-white/4">
-      <span className="text-[11px] text-white/40 font-medium shrink-0">{label}</span>
-      <span className={cn("text-[11px] text-right", mono ? "font-mono text-white/70" : "text-white/70")}>{value || "—"}</span>
+      <span className="text-[11px] text-muted-foreground/70 font-medium shrink-0">{label}</span>
+      <span className={cn("text-[11px] text-right", mono ? "font-mono text-foreground/70" : "text-foreground/70")}>{value || "—"}</span>
     </div>
   )
 }
@@ -613,13 +747,13 @@ function Step4Review({
   return (
     <div className="space-y-5">
       {/* Summary card */}
-      <div className="bg-white/2 rounded-xl border border-white/6 overflow-hidden">
-        <div className="px-4 py-3 bg-white/2 border-b border-white/4">
+      <div className="bg-foreground/2 rounded-xl border border-border/60 overflow-hidden">
+        <div className="px-4 py-3 bg-foreground/2 border-b border-white/4">
           <div className="flex items-center gap-3">
             <span className="text-2xl">{form.emoji || "🤖"}</span>
             <div>
-              <p className="text-sm font-bold text-white/90">{form.name}</p>
-              <p className="text-[10px] font-mono text-white/30">{form.id}</p>
+              <p className="text-sm font-bold text-foreground/90">{form.name}</p>
+              <p className="text-[10px] font-mono text-muted-foreground/50">{form.id}</p>
             </div>
             {form.color && (
               <div className="ml-auto w-4 h-4 rounded-full border border-white/20" style={{ backgroundColor: form.color }} />
@@ -634,15 +768,16 @@ function Step4Review({
           <ReviewRow label="Workspace" value={workspacePath} mono />
           <ReviewRow label="Agent Dir" value={agentDirPath} mono />
           <ReviewRow label="Channels" value={channels.map(c => c.type).join(", ")} />
+          <ReviewRow label="Filesystem" value={form.fsWorkspaceOnly !== false ? "Sandboxed (workspace only)" : "Unrestricted"} />
         </div>
       </div>
 
       {/* Files to create */}
       <div>
-        <p className="text-[10px] text-white/40 font-semibold uppercase tracking-wider mb-2">Files that will be created</p>
+        <p className="text-[10px] text-muted-foreground/70 font-semibold uppercase tracking-wider mb-2">Files that will be created</p>
         <div className="flex flex-wrap gap-1.5">
           {["IDENTITY.md", "SOUL.md", "AGENTS.md", "TOOLS.md", "USER.md"].map(f => (
-            <span key={f} className="px-2 py-1 bg-white/3 border border-white/10 rounded text-[10px] font-mono text-white/50">{f}</span>
+            <span key={f} className="px-2 py-1 bg-foreground/3 border border-border rounded text-[10px] font-mono text-muted-foreground">{f}</span>
           ))}
         </div>
       </div>
@@ -657,15 +792,15 @@ function Step4Review({
               <p className="text-[11px] text-amber-300/60">After provisioning, run this command in your terminal to link the WhatsApp number:</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 bg-black/40 rounded-lg px-3 py-2.5">
-            <Terminal className="w-3.5 h-3.5 text-white/30 shrink-0" />
+          <div className="flex items-center gap-2 bg-foreground/8 rounded-lg px-3 py-2.5">
+            <Terminal className="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
             <code className="text-[11px] font-mono text-emerald-300 flex-1">
               openclaw channels login --channel whatsapp --account {form.id}
             </code>
             <button
               type="button"
               onClick={() => navigator.clipboard?.writeText(`openclaw channels login --channel whatsapp --account ${form.id}`)}
-              className="text-white/30 hover:text-white/60 transition-colors"
+              className="text-muted-foreground/50 hover:text-foreground/60 transition-colors"
             >
               <Copy className="w-3.5 h-3.5" />
             </button>
@@ -688,10 +823,10 @@ function Step4Review({
           )} />
         </div>
         <div>
-          <span className="text-sm font-medium text-white/70 group-hover:text-white transition-colors">
+          <span className="text-sm font-medium text-foreground/70 group-hover:text-foreground transition-colors">
             Restart gateway after provisioning
           </span>
-          <p className="text-[10px] text-white/30">Required for the new agent to start receiving messages.</p>
+          <p className="text-[10px] text-muted-foreground/50">Required for the new agent to start receiving messages.</p>
         </div>
       </label>
     </div>
@@ -713,6 +848,7 @@ export function ProvisionAgentWizard({ onClose }: Props) {
     emoji: "🤖",
     channels: [],
     model: "",
+    fsWorkspaceOnly: true,
   })
   const [restartGateway, setRestartGateway] = useState(true)
   const [models, setModels] = useState<{ id: string; name: string }[]>([])
@@ -797,6 +933,7 @@ export function ProvisionAgentWizard({ onClose }: Props) {
         channels: form.channels || [],
       }
 
+      if (form.fsWorkspaceOnly === false) opts.fsWorkspaceOnly = false
       const result = await api.provisionAgent(opts)
 
       if (restartGateway) {
@@ -820,14 +957,14 @@ export function ProvisionAgentWizard({ onClose }: Props) {
 
   if (done) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(16px)" }}>
-        <div className="bg-[#12141A] border border-white/10 rounded-2xl p-8 w-full max-w-md text-center">
+      <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(12px)" }}>
+        <div className="bg-card border border-border rounded-2xl p-8 w-full max-w-md text-center">
           <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 flex items-center justify-center mx-auto mb-4">
             <Check className="w-8 h-8 text-emerald-400" />
           </div>
-          <h2 className="text-xl font-bold text-white mb-2">Agent Provisioned!</h2>
-          <p className="text-sm text-white/50 mb-1">
-            <span className="font-mono text-white/70">{done.agentId}</span> is ready.
+          <h2 className="text-xl font-bold text-foreground mb-2">Agent Provisioned!</h2>
+          <p className="text-sm text-muted-foreground mb-1">
+            <span className="font-mono text-foreground/70">{done.agentId}</span> is ready.
           </p>
           {restartGateway && (
             <p className="text-xs text-emerald-400/60 mb-2">Gateway restarted ✓</p>
@@ -835,11 +972,11 @@ export function ProvisionAgentWizard({ onClose }: Props) {
           {done.whatsappPairingRequired && (
             <div className="my-4 bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-left">
               <p className="text-xs font-bold text-amber-300 mb-2">Complete WhatsApp pairing</p>
-              <div className="flex items-center gap-2 bg-black/40 rounded-lg px-3 py-2">
+              <div className="flex items-center gap-2 bg-foreground/8 rounded-lg px-3 py-2">
                 <code className="text-[11px] font-mono text-emerald-300 flex-1">
                   openclaw channels login --channel whatsapp --account {done.agentId}
                 </code>
-                <button onClick={() => navigator.clipboard?.writeText(`openclaw channels login --channel whatsapp --account ${done.agentId}`)} className="text-white/30 hover:text-white/60">
+                <button onClick={() => navigator.clipboard?.writeText(`openclaw channels login --channel whatsapp --account ${done.agentId}`)} className="text-muted-foreground/50 hover:text-foreground/60">
                   <Copy className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -848,7 +985,7 @@ export function ProvisionAgentWizard({ onClose }: Props) {
           <div className="flex gap-3 mt-6">
             <button
               onClick={onClose}
-              className="flex-1 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-white/60 text-sm hover:bg-white/10 transition-colors"
+              className="flex-1 px-4 py-2.5 rounded-lg bg-foreground/5 border border-border text-foreground/60 text-sm hover:bg-foreground/8 transition-colors"
             >
               Close
             </button>
@@ -867,15 +1004,15 @@ export function ProvisionAgentWizard({ onClose }: Props) {
   // ── Wizard layout ──────────────────────────────────────────────────────────
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(16px)" }}>
-      <div className="bg-[#12141A] border border-white/10 rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(12px)" }}>
+      <div className="bg-card border border-border rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/6 shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 shrink-0">
           <div>
-            <h2 className="text-base font-bold text-white">Provision Agent</h2>
-            <p className="text-[11px] text-white/40">Configure and deploy a new autonomous agent.</p>
+            <h2 className="text-base font-bold text-foreground">Provision Agent</h2>
+            <p className="text-[11px] text-muted-foreground/70">Configure and deploy a new autonomous agent.</p>
           </div>
-          <button onClick={onClose} className="text-white/30 hover:text-white/70 transition-colors p-1.5 rounded-lg hover:bg-white/5">
+          <button onClick={onClose} className="text-muted-foreground/50 hover:text-foreground/70 transition-colors p-1.5 rounded-lg hover:bg-foreground/6">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -908,17 +1045,17 @@ export function ProvisionAgentWizard({ onClose }: Props) {
         )}
 
         {/* Footer nav */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-white/6 shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 border-t border-border/60 shrink-0">
           <button
             onClick={handleBack}
             disabled={step === 1}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white/50 hover:text-white hover:bg-white/5 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-foreground/6 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <ChevronLeft className="w-4 h-4" />
             Back
           </button>
 
-          <span className="text-[10px] text-white/25 font-mono">Step {step} of 4</span>
+          <span className="text-[10px] text-muted-foreground/40 font-mono">Step {step} of 4</span>
 
           {step < 4 ? (
             <button

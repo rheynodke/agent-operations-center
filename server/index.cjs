@@ -377,6 +377,11 @@ app.get('/api/agents/:id/detail', db.authMiddleware, (req, res) => {
 app.patch('/api/agents/:id', db.authMiddleware, (req, res) => {
   try {
     const result = parsers.updateAgent(req.params.id, req.body);
+    // If agent was renamed, migrate the SQLite profile to the new ID
+    if (result.agentId && result.agentId !== req.params.id) {
+      db.renameAgentProfile(req.params.id, result.agentId);
+      console.log(`[api/agents] Migrated profile "${req.params.id}" → "${result.agentId}"`);
+    }
     console.log(`[api/agents] Updated agent "${req.params.id}":`, result.changed);
     res.json({ ok: true, ...result });
   } catch (err) {
@@ -947,6 +952,42 @@ app.get('/api/activity', db.authMiddleware, (req, res) => {
   }
 });
 
+// ─── Media Serve (inbound media from Telegram/WhatsApp/etc) ──────────────────
+// Serves files from OPENCLAW_HOME only — paths outside are rejected.
+// Accepts token as query param because <img> tags cannot send Authorization headers.
+app.get('/api/media', (req, res) => {
+  const fs = require('fs');
+  const mime = require('mime-types');
+
+  // Auth: accept Bearer header OR ?token= query param (needed for <img> src)
+  const tokenFromHeader = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7)
+    : null;
+  const tokenFromQuery = typeof req.query.token === 'string' ? req.query.token : null;
+  const token = tokenFromHeader || tokenFromQuery;
+  if (!token || !db.verifyToken(token)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const filePath = req.query.path;
+  if (!filePath || typeof filePath !== 'string') {
+    return res.status(400).json({ error: 'path is required' });
+  }
+  // Security: resolve and ensure it's under OPENCLAW_HOME
+  const resolved = path.resolve(filePath);
+  const allowed = path.resolve(parsers.OPENCLAW_HOME);
+  if (!resolved.startsWith(allowed + path.sep) && resolved !== allowed) {
+    return res.status(403).json({ error: 'Forbidden path' });
+  }
+  if (!fs.existsSync(resolved)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+  const contentType = mime.lookup(resolved) || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  fs.createReadStream(resolved).pipe(res);
+});
+
 // ─── Chat API (Gateway WebSocket Proxy) ──────────────────────────────────────
 
 // Get gateway connection status
@@ -1019,12 +1060,35 @@ app.post('/api/chat/send', db.authMiddleware, async (req, res) => {
     if (!gatewayProxy.isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
-    const { sessionKey, text, agentId } = req.body;
+    const { sessionKey, text, agentId, images } = req.body;
     if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
-    if (!text?.trim()) return res.status(400).json({ error: 'text is required' });
+    if (!text?.trim() && (!images || images.length === 0)) {
+      return res.status(400).json({ error: 'text or images is required' });
+    }
+    // Build content array for multimodal messages
+    let message;
+    if (images && images.length > 0) {
+      const contentBlocks = [];
+      for (const dataUrl of images) {
+        // dataUrl: "data:<mediaType>;base64,<data>"
+        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          contentBlocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: match[1], data: match[2] },
+          });
+        }
+      }
+      if (text?.trim()) {
+        contentBlocks.push({ type: 'text', text: text.trim() });
+      }
+      message = contentBlocks;
+    } else {
+      message = text.trim();
+    }
     // Ensure we're subscribed
     await gatewayProxy.sessionsMessagesSubscribe(sessionKey);
-    const result = await gatewayProxy.chatSend(sessionKey, text.trim(), agentId);
+    const result = await gatewayProxy.chatSend(sessionKey, message, agentId);
     res.json(result || { ok: true });
   } catch (err) {
     console.error('[api/chat/send]', err);

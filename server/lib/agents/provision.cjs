@@ -291,6 +291,7 @@ function provisionAgent(opts, userId) {
     color    = '',
     soulContent = '',
     channels = [],
+    fsWorkspaceOnly = undefined,
   } = opts;
 
   // 2. Resolve paths
@@ -311,6 +312,7 @@ function provisionAgent(opts, userId) {
       ...(theme ? { theme } : {}),
     },
     ...(model ? { model } : {}),
+    ...(fsWorkspaceOnly === false ? { tools: { fs: { workspaceOnly: false } } } : {}),
   };
 
   if (!config.agents) config.agents = {};
@@ -362,6 +364,23 @@ function provisionAgent(opts, userId) {
       });
       addedBindings.push({ channel: 'whatsapp', accountId: id });
       whatsappPairingRequired = true;
+    }
+
+    if (ch.type === 'discord') {
+      const envVarName = ch.envVarName || 'DISCORD_BOT_TOKEN';
+      if (!config.channels.discord) config.channels.discord = {};
+      config.channels.discord.enabled = true;
+      config.channels.discord.token = { source: 'env', provider: 'default', id: envVarName };
+      if (ch.dmPolicy)    config.channels.discord.dmPolicy    = ch.dmPolicy;
+      if (ch.guildPolicy) config.channels.discord.groupPolicy = ch.guildPolicy;
+
+      // Add binding (no accountId — Discord is a shared channel)
+      config.bindings.push({
+        type: 'route',
+        agentId: id,
+        match: { channel: 'discord' },
+      });
+      addedBindings.push({ channel: 'discord', accountId: id });
     }
   }
 

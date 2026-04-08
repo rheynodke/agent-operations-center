@@ -3,6 +3,7 @@ import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { ThinkingBlock } from "./ThinkingBlock"
 import { ToolCallBlock } from "./ToolCallBlock"
 import { MarkdownRenderer } from "./MarkdownRenderer"
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedImage"
 import { cn } from "@/lib/utils"
 import { Brain, Loader2, User } from "lucide-react"
 import type { ChatMessageGroup } from "@/stores/useChatStore"
@@ -15,13 +16,23 @@ interface Props {
   isLast?: boolean
 }
 
-function UserMessage({ text }: { text: string }) {
+function UserMessage({ text, images }: { text: string; images?: string[] }) {
   return (
     <div className="flex items-end justify-end gap-3">
-      <div className="max-w-[68%]">
-        <div className="bg-primary/12 border border-primary/20 rounded-2xl rounded-br-sm px-4 py-3 text-sm text-foreground/90 leading-relaxed">
-          {text}
-        </div>
+      <div className="max-w-[68%] flex flex-col gap-1.5 items-end">
+        {/* Image previews above the text bubble */}
+        {images && images.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            {images.map((src, i) => (
+              <UserImagePreview key={i} src={src} />
+            ))}
+          </div>
+        )}
+        {text && (
+          <div className="bg-primary/12 border border-primary/20 rounded-2xl rounded-br-sm px-4 py-3 text-sm text-foreground/90 leading-relaxed">
+            {text}
+          </div>
+        )}
       </div>
       {/* User avatar */}
       <div className="shrink-0 w-7 h-7 rounded-full bg-foreground/8 border border-foreground/10 flex items-center justify-center mb-0.5">
@@ -29,6 +40,37 @@ function UserMessage({ text }: { text: string }) {
       </div>
     </div>
   )
+}
+
+function ZoomableImage({ src, alt, className }: { src: string; alt: string; className: string }) {
+  const [zoomed, setZoomed] = React.useState(false)
+  const isApiMedia = src.includes("/api/media")
+  return (
+    <>
+      {isApiMedia ? (
+        <AuthenticatedImage src={src} alt={alt} className={cn(className, "cursor-zoom-in")} onClick={() => setZoomed(true)} />
+      ) : (
+        <img src={src} alt={alt} className={cn(className, "cursor-zoom-in")} onClick={() => setZoomed(true)} onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }} />
+      )}
+      {zoomed && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-zoom-out p-4" onClick={() => setZoomed(false)}>
+          {isApiMedia ? (
+            <AuthenticatedImage src={src} alt={alt} className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl" />
+          ) : (
+            <img src={src} alt={alt} className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl" />
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+function AgentImageBlock({ src }: { src: string }) {
+  return <ZoomableImage src={src} alt="agent image" className="max-h-48 max-w-[260px] rounded-xl border border-border object-cover" />
+}
+
+function UserImagePreview({ src }: { src: string }) {
+  return <ZoomableImage src={src} alt="attachment" className="max-h-40 max-w-[220px] rounded-xl border border-primary/20 object-cover" />
 }
 
 function AgentMessage({
@@ -93,6 +135,15 @@ function AgentMessage({
           <PhasePill color="muted" icon={<Loader2 className="w-3 h-3 text-muted-foreground/50 animate-spin" />} label="Working on it…" />
         )}
 
+        {/* Agent image blocks (from content blocks, e.g. media tool) */}
+        {group.agentImages && group.agentImages.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {group.agentImages.map((src, i) => (
+              <AgentImageBlock key={i} src={src} />
+            ))}
+          </div>
+        )}
+
         {/* Response text */}
         {hasResponse ? (
           <div className={cn("bg-card border border-border rounded-2xl rounded-tl-sm px-4 py-3")}>
@@ -140,7 +191,7 @@ function PhasePill({ color, icon, label }: { color: "violet" | "muted"; icon: Re
 
 export function ChatMessage({ group, agentName, agentAvatarPresetId, agentEmoji, isLast }: Props) {
   if (group.role === "user") {
-    return <UserMessage text={group.userText ?? ""} />
+    return <UserMessage text={group.userText ?? ""} images={group.userImages} />
   }
   return (
     <AgentMessage

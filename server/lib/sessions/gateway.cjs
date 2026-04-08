@@ -37,6 +37,22 @@ function parseTextToolCalls(text) {
 }
 
 /**
+ * Extract local media file paths from a raw gateway user message.
+ * Handles: [media attached: /path/file.jpg (image/jpeg) | ...]
+ */
+const MEDIA_ATTACHED_RE = /\[media attached:\s*([^\s(]+)\s*\([^)]+\)\s*\|[^\]]*\]/g;
+function extractMediaFiles(text) {
+  if (!text || !text.includes('[media attached:')) return [];
+  const paths = [];
+  const re = new RegExp(MEDIA_ATTACHED_RE.source, 'g');
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    paths.push(m[1]);
+  }
+  return paths;
+}
+
+/**
  * Strip metadata blocks from user messages to get actual text.
  * Gateway user messages have format:
  *   Conversation info (untrusted metadata): ```json {...} ```
@@ -362,6 +378,7 @@ function parseGatewaySessionEvents(sessionId, limit = 500) {
           role: msg.role,
           text: cleanUserMessage(text, msg.role),
           sender: extractSender(text, msg.role),
+          mediaFiles: extractMediaFiles(text),
           thinking,
           tools,
           model: evtModel,
@@ -473,6 +490,7 @@ function parseSingleGatewayEntry(jsonLine) {
       role: msg.role,
       text: cleanUserMessage(text, msg.role),
       sender: extractSender(text, msg.role),
+      mediaFiles: extractMediaFiles(text),
       thinking,
       tools,
       model: evtModel,

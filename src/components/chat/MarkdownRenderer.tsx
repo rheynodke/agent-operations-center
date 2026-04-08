@@ -1,12 +1,54 @@
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
-import { Check, Copy } from "lucide-react"
+import { Check, Copy, ZoomIn } from "lucide-react"
 import { useState, type ReactNode } from "react"
+import { AuthenticatedImage } from "@/components/ui/AuthenticatedImage"
 
 interface Props {
   content: string
   className?: string
+}
+
+function ChatImage({ src, alt }: { src?: string; alt?: string }) {
+  const [zoomed, setZoomed] = useState(false)
+  if (!src) return null
+  const isApiMedia = src.includes("/api/media")
+  return (
+    <>
+      <span className="relative inline-block group my-2 cursor-zoom-in" onClick={() => setZoomed(true)}>
+        {isApiMedia ? (
+          <AuthenticatedImage
+            src={src}
+            alt={alt ?? "image"}
+            className="max-w-full max-h-72 rounded-xl border border-border object-contain block"
+          />
+        ) : (
+          <img
+            src={src}
+            alt={alt ?? "image"}
+            className="max-w-full max-h-72 rounded-xl border border-border object-contain block"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
+          />
+        )}
+        <span className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/0 group-hover:bg-black/20 transition-colors">
+          <ZoomIn className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow" />
+        </span>
+      </span>
+      {zoomed && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-zoom-out p-4"
+          onClick={() => setZoomed(false)}
+        >
+          {isApiMedia ? (
+            <AuthenticatedImage src={src} alt={alt ?? "image"} className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl" />
+          ) : (
+            <img src={src} alt={alt ?? "image"} className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl" />
+          )}
+        </div>
+      )}
+    </>
+  )
 }
 
 function CodeBlock({ className, children }: { className?: string; children?: ReactNode }) {
@@ -124,6 +166,9 @@ export function MarkdownRenderer({ content, className = "" }: Props) {
           },
           hr() {
             return <hr className="my-4 border-border" />
+          },
+          img({ src, alt }) {
+            return <ChatImage src={src} alt={alt} />
           },
           strong({ children }) {
             return <strong className="font-semibold text-foreground">{children}</strong>

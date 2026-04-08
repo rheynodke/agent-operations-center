@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from "react"
 import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore } from "@/stores"
-import { useChatStore } from "@/stores/useChatStore"
+import { useChatStore, parseMediaAttachments, mediaPathToUrl } from "@/stores/useChatStore"
 import { api } from "@/lib/api"
 import type { WsMessage, LiveFeedEntry } from "@/types"
 
@@ -309,6 +309,24 @@ export function useWebSocket() {
                   phase: isThinking ? "thinking" : "responding",
                   timestamp: Date.now(),
                 })
+              }
+
+              // User message from external channel (e.g. Telegram) — may contain media
+              if (role === "user" && text) {
+                const rawText = text as string
+                const { paths, caption } = parseMediaAttachments(rawText)
+                // Only append if not already present (avoid duplicates on reload)
+                const existing = chatStore.messages[sk] ?? []
+                const alreadyHas = existing.some(m => m.role === "user" && m.userText === caption && m.timestamp === (msg.payload as Record<string,unknown>).ts)
+                if (!alreadyHas) {
+                  chatStore.appendMessage(sk, {
+                    id: `user-ws-${Date.now()}`,
+                    role: "user",
+                    userText: caption,
+                    userImages: paths.length > 0 ? paths.map(mediaPathToUrl) : undefined,
+                    timestamp: Date.now(),
+                  })
+                }
               }
 
               if (role === "assistant" || role === "thinking") {
