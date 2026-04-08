@@ -11,6 +11,7 @@ const { LiveFeedWatcher } = require('./lib/watchers.cjs');
 const db = require('./lib/db.cjs');
 const { gatewayProxy } = require('./lib/gateway-ws.cjs');
 
+
 const PORT = parseInt(process.env.PORT || '18800', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
@@ -164,7 +165,7 @@ app.get('/api/health', db.authMiddleware, (req, res) => {
 });
 
 // ─── Gateway Management ───────────────────────────────────────────────────────
-const { exec, execFile, spawn } = require('child_process');
+const { exec, execFile } = require('child_process');
 const net = require('net');
 
 function getGatewayConfig() {
@@ -635,7 +636,8 @@ app.patch('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware,
     res.json(result);
   } catch (err) {
     console.error('[api/agents/channels/update]', err);
-    const code = err.message?.includes('not found') ? 404 : err.message?.includes('invalid') ? 400 : 500;
+    const code = err.message?.includes('not found') ? 404
+      : err.message?.includes('invalid') || err.message?.includes('required') || err.message?.includes('empty') ? 400 : 500;
     res.status(code).json({ error: err.message });
   }
 });
@@ -879,7 +881,17 @@ app.get('/api/tasks', db.authMiddleware, (req, res) => {
   }
 });
 
-// Cron
+// Cron — delivery targets (known channels + contacts from sessions)
+app.get('/api/cron/delivery-targets', db.authMiddleware, (req, res) => {
+  try {
+    res.json({ channels: parsers.getDeliveryTargets() });
+  } catch (err) {
+    console.error('[api/cron/delivery-targets]', err.message);
+    res.status(500).json({ error: 'Failed to fetch delivery targets' });
+  }
+});
+
+// Cron — list
 app.get('/api/cron', db.authMiddleware, (req, res) => {
   try {
     res.json({ jobs: parsers.parseCronJobs() });
@@ -888,11 +900,242 @@ app.get('/api/cron', db.authMiddleware, (req, res) => {
   }
 });
 
+// Cron — create
+app.post('/api/cron', db.authMiddleware, async (req, res) => {
+  try {
+    const result = await parsers.cronCreateJob(req.body, gatewayProxy);
+    res.status(201).json(result);
+  } catch (err) {
+    console.error('[api/cron POST]', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to create cron job' });
+  }
+});
+
+// Cron — run history for a job
+app.get('/api/cron/:id/runs', db.authMiddleware, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const result = await parsers.cronGetRuns(req.params.id, limit, gatewayProxy);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/cron/:id/runs]', err.message);
+    res.status(500).json({ error: err.message || 'Failed to get cron runs' });
+  }
+});
+
+// Cron — trigger job now
+app.post('/api/cron/:id/run', db.authMiddleware, async (req, res) => {
+  try {
+    const result = await parsers.cronRunJob(req.params.id, gatewayProxy);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/cron/:id/run]', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to trigger cron job' });
+  }
+});
+
+// Cron — toggle enabled/disabled
+app.post('/api/cron/:id/toggle', db.authMiddleware, async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') return res.status(400).json({ error: '`enabled` boolean required' });
+    const result = await parsers.cronToggleJob(req.params.id, enabled, gatewayProxy);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/cron/:id/toggle]', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to toggle cron job' });
+  }
+});
+
+// Cron — edit
+app.patch('/api/cron/:id', db.authMiddleware, async (req, res) => {
+  try {
+    const result = await parsers.cronUpdateJob(req.params.id, req.body, gatewayProxy);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/cron PATCH]', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update cron job' });
+  }
+});
+
+// Cron — delete
+app.delete('/api/cron/:id', db.authMiddleware, async (req, res) => {
+  try {
+    const result = await parsers.cronDeleteJob(req.params.id, gatewayProxy);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/cron DELETE]', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to delete cron job' });
+  }
+});
+
+// ── Agent Custom Tools (scripts assigned via TOOLS.md) ───────────────────────
+
+app.get('/api/agents/:id/custom-tools', db.authMiddleware, (req, res) => {
+  try {
+    const tools = parsers.listAgentCustomTools(req.params.id, parsers.getAgentFile);
+    res.json({ tools });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/agents/:id/custom-tools/:filename/toggle', db.authMiddleware, (req, res) => {
+  try {
+    const { enabled, scope } = req.body;
+    if (typeof enabled !== 'boolean') return res.status(400).json({ error: '`enabled` boolean required' });
+    const result = parsers.toggleAgentCustomTool(
+      req.params.id, req.params.filename, enabled, scope || 'shared',
+      parsers.getAgentFile, parsers.saveAgentFile
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Agent workspace scripts (agentWorkspace/scripts/) — full CRUD
+app.get('/api/agents/:id/scripts', db.authMiddleware, (req, res) => {
+  try { res.json({ scripts: parsers.listAgentScripts(req.params.id) }); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.get('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
+  try { res.json(parsers.getAgentScript(req.params.id, req.params.filename)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.put('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
+  try {
+    const { content } = req.body;
+    if (typeof content !== 'string') return res.status(400).json({ error: '`content` required' });
+    res.json(parsers.saveAgentScript(req.params.id, req.params.filename, content));
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.patch('/api/agents/:id/scripts/:filename/rename', db.authMiddleware, (req, res) => {
+  try {
+    const { newName } = req.body;
+    if (!newName) return res.status(400).json({ error: '`newName` required' });
+    res.json(parsers.renameAgentScript(req.params.id, req.params.filename, newName));
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.delete('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
+  try { res.json(parsers.deleteAgentScript(req.params.id, req.params.filename)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.patch('/api/agents/:id/scripts/:filename/meta', db.authMiddleware, (req, res) => {
+  try { res.json(parsers.updateAgentScriptMeta(req.params.id, req.params.filename, req.body)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+// ── Workspace Scripts ─────────────────────────────────────────────────────────
+
+app.get('/api/scripts', db.authMiddleware, (req, res) => {
+  try { res.json({ scripts: parsers.listScripts() }); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.get('/api/scripts/:filename', db.authMiddleware, (req, res) => {
+  try { res.json(parsers.getScript(req.params.filename)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.put('/api/scripts/:filename', db.authMiddleware, (req, res) => {
+  try {
+    const { content } = req.body;
+    if (typeof content !== 'string') return res.status(400).json({ error: '`content` string required' });
+    res.json(parsers.saveScript(req.params.filename, content));
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.patch('/api/scripts/:filename/rename', db.authMiddleware, (req, res) => {
+  try {
+    const { newName } = req.body;
+    if (!newName) return res.status(400).json({ error: '`newName` required' });
+    res.json(parsers.renameScript(req.params.filename, newName));
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.delete('/api/scripts/:filename', db.authMiddleware, (req, res) => {
+  try { res.json(parsers.deleteScript(req.params.filename)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+app.patch('/api/scripts/:filename/meta', db.authMiddleware, (req, res) => {
+  try { res.json(parsers.updateScriptMeta(req.params.filename, req.body)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+// Global channel configuration (sanitized — no tokens)
+app.get('/api/channels', db.authMiddleware, (req, res) => {
+  try {
+    res.json(parsers.getChannelsConfig());
+  } catch (err) {
+    console.error('[api/channels]', err);
+    res.status(500).json({ error: 'Failed to fetch channel config' });
+  }
+});
+
+// Channel login: start QR flow via gateway RPC web.login.start
+// POST /api/channels/:channel/:account/login/start
+app.post('/api/channels/:channel/:account/login/start', db.authMiddleware, async (req, res) => {
+  const { account } = req.params;
+
+  if (!gatewayProxy.isConnected) {
+    return res.status(503).json({ error: 'Gateway not connected. Start the gateway first.' });
+  }
+
+  try {
+    // Params: { accountId?, force?, timeoutMs?, verbose? } — no channel field
+    const result = await gatewayProxy.webLoginStart(account);
+    const qrDataUrl = result?.qrDataUrl || null;
+    const message = result?.message || null;
+
+    if (qrDataUrl) return res.json({ qrDataUrl, message });
+    // No QR = already linked
+    return res.json({ qrDataUrl: null, message: message || 'WhatsApp already linked.' });
+  } catch (err) {
+    console.error('[api/channels/login/start]', err);
+    res.status(500).json({ error: err.message || 'Failed to start login flow' });
+  }
+});
+
+// Channel login: wait for QR scan completion (long-poll, up to 3 min)
+// POST /api/channels/:channel/:account/login/wait
+app.post('/api/channels/:channel/:account/login/wait', db.authMiddleware, async (req, res) => {
+  const { account } = req.params;
+
+  if (!gatewayProxy.isConnected) {
+    return res.status(503).json({ error: 'Gateway not connected' });
+  }
+
+  try {
+    const result = await gatewayProxy.webLoginWait(account);
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.warn('[api/channels/login/wait] failed:', err.message);
+    res.status(500).json({ error: err.message || 'Login wait failed' });
+  }
+
+});
+
 // Routes (channel bindings)
 app.get('/api/routes', db.authMiddleware, (req, res) => {
   try {
     const routes = typeof parsers.parseRoutes === 'function' ? parsers.parseRoutes() : [];
-    res.json({ routes });
+    // Enrich with SQLite profile data (avatarPresetId, color)
+    const enriched = routes.map(r => {
+      const profile = db.getAgentProfile(r.agentId);
+      return {
+        ...r,
+        avatarPresetId: profile?.avatarPresetId ?? profile?.avatar_preset_id ?? null,
+        color: profile?.color ?? null,
+      };
+    });
+    res.json({ routes: enriched });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch routes' });
   }

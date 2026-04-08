@@ -49,8 +49,8 @@ export interface AgentChannelWhatsApp {
 
 export interface AgentChannelDiscord {
   type: "discord"
-  accountId: string  // pseudo — equals agentId, used as handle for update/remove API
-  envVarName: string
+  accountId: string
+  hasToken: boolean
   dmPolicy: "pairing" | "allowlist" | "open" | "disabled"
   groupPolicy: "open" | "allowlist" | "disabled"
 }
@@ -67,8 +67,8 @@ export interface AgentChannelsResult {
 
 export interface ChannelBinding {
   type: "telegram" | "whatsapp" | "discord"
-  botToken?: string        // Telegram only
-  envVarName?: string      // Discord: env var name for bot token (default: DISCORD_BOT_TOKEN)
+  botToken?: string        // Telegram and Discord
+  envVarName?: string      // Telegram env var fallback
   dmPolicy?: "pairing" | "allowlist" | "open" | "disabled"
   groupPolicy?: "open" | "allowlist" | "disabled"  // Discord only
   streaming?: "off" | "partial" | "full"  // Telegram only
@@ -175,19 +175,60 @@ export interface Task {
 
 // ─── Cron Types ──────────────────────────────────────────────────────────────
 
+export type CronJobKind = "cron" | "at" | "every"
+export type CronSessionType = "main" | "isolated" | "current" | "custom"
+export type CronDeliveryMode = "announce" | "webhook" | "none"
+export type CronThinking = "off" | "standard" | "high"
+
 export interface CronJob {
   id: string
   name: string
-  agentId: string
-  agentName: string
-  agentEmoji: string
+  agentId?: string
+  agentName?: string
+  agentEmoji?: string
+  // schedule
+  kind?: CronJobKind
   schedule: string
+  tz?: string
+  // execution
+  session?: CronSessionType
+  customSessionId?: string
+  message?: string
+  model?: string
+  thinking?: CronThinking
+  lightContext?: boolean
+  systemEvent?: string
+  wakeMode?: "now" | "next-heartbeat"
+  deleteAfterRun?: boolean
+  timeoutSeconds?: number
+  // delivery
+  deliveryMode?: CronDeliveryMode
+  deliveryChannel?: string
+  deliveryTo?: string
+  deliveryWebhook?: string
+  // runtime
+  status: "active" | "paused" | "error"
+  enabled?: boolean
+  runCount?: number
   lastRun?: string | null
   nextRun?: string | null
-  status: "active" | "paused" | "error"
-  runCount?: number
   lastDuration?: number
   lastCost?: number
+  lastDeliveryStatus?: string
+  errorMessage?: string
+  createdAt?: string
+}
+
+export interface CronRun {
+  runId: string
+  jobId: string
+  status: "running" | "succeeded" | "failed" | "cancelled"
+  startedAt: string
+  endedAt?: string
+  duration?: number
+  cost?: number
+  error?: string
+  summary?: string
 }
 
 // ─── Routing Types ───────────────────────────────────────────────────────────
@@ -197,12 +238,28 @@ export interface GatewayRoute {
   agentId: string
   agentName: string
   agentEmoji: string
-  channelType: "telegram"
-  channelId: string
-  channelUsername?: string
-  mode: RouteMode
-  status: "live" | "idle" | "error" | "none"
-  connectedAt?: string
+  avatarPresetId?: string | null
+  color?: string | null
+  channelType: "telegram" | "discord" | "whatsapp" | string
+  accountId: string | null
+  accountLabel: string | null
+  dmPolicy: string | null
+  groupPolicy: string | null
+  streaming?: string | null
+}
+
+export interface ChannelsConfig {
+  telegram: {
+    enabled: boolean
+    accounts: { accountId: string; hasToken: boolean; dmPolicy: string | null; streaming: string | null; groupPolicy: string | null }[]
+  } | null
+  discord: {
+    enabled: boolean
+    accounts: { accountId: string; hasToken: boolean; dmPolicy: string | null; groupPolicy: string | null }[]
+  } | null
+  whatsapp: {
+    accounts: { accountId: string; dmPolicy: string | null }[]
+  } | null
 }
 
 // ─── Alert Types ─────────────────────────────────────────────────────────────
@@ -401,6 +458,25 @@ export interface GlobalToolInfo {
   enabledCount: number
   totalAgents: number
   agentAssignments: GlobalToolAgentAssignment[]
+}
+
+// ─── Workspace Script Types ──────────────────────────────────────────────────
+
+export interface WorkspaceScript {
+  name: string
+  displayName?: string
+  description?: string
+  ext: string
+  emoji: string
+  lang: string
+  size: number
+  mtime: string
+  executable: boolean
+  path: string
+  relPath: string
+  execHint: string
+  content?: string
+  isNew?: boolean
 }
 
 // ─── Skill Script Types ──────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react"
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
@@ -17,11 +17,13 @@ import {
   Plus, Package, Power, PowerOff, Sparkles,
   Activity, PanelLeftClose, PanelLeftOpen,
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
-  Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight,
+  Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer,
 } from "lucide-react"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
+import { CronPage } from "@/pages/CronPage"
+import { SyntaxEditor } from "@/components/ui/SyntaxEditor"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  TYPES                                                              */
@@ -951,7 +953,10 @@ function CreateSkillDialog({
   ]
 
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center bg-foreground/20 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-60 flex items-center justify-center bg-foreground/20 backdrop-blur-sm dark:bg-background/45 dark:backdrop-blur-md dark:backdrop-brightness-60"
+      onClick={onClose}
+    >
       <div className="bg-card border border-foreground/10 rounded-2xl shadow-2xl w-[460px] max-w-[95vw]" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
@@ -1172,7 +1177,7 @@ function EditConfigModal({
         }
       }
 
-      const currentPresetId = detail.profile?.avatarPresetId ?? detail.profile?.avatar_preset_id ?? ""
+      const currentPresetId = detail.profile?.avatarPresetId ?? ""
       if (Object.keys(updates).length === 0 && cfg.avatarPresetId === currentPresetId) {
         onClose(); return
       }
@@ -1743,13 +1748,17 @@ function DiscordChannelCard({
   const [removing, setRemoving] = useState(false)
   const [dmPolicy, setDmPolicy] = useState<DmPolicy>(ch.dmPolicy)
   const [groupPolicy, setGroupPolicy] = useState<GroupPolicy>(ch.groupPolicy)
-  const [envVarName, setEnvVarName] = useState(ch.envVarName)
+  const [botToken, setBotToken] = useState("")
   const [err, setErr] = useState("")
 
   async function handleSave() {
     setSaving(true); setErr("")
     try {
-      await api.updateAgentChannel(agentId, "discord", ch.accountId, { envVarName, dmPolicy, groupPolicy })
+      await api.updateAgentChannel(agentId, "discord", ch.accountId, {
+        ...(botToken.trim() ? { botToken: botToken.trim() } : {}),
+        dmPolicy,
+        groupPolicy,
+      })
       setEditing(false)
       onSaved()
     } catch (e) {
@@ -1799,14 +1808,15 @@ function DiscordChannelCard({
         <div className="px-4 py-3 space-y-3">
           {err && <p className="text-[11px] text-red-500">{err}</p>}
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token Env Var</label>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Replace Bot Token</label>
             <input
-              value={envVarName}
-              onChange={e => setEnvVarName(e.target.value)}
+              type="password"
+              value={botToken}
+              onChange={e => setBotToken(e.target.value)}
               className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
-              placeholder="DISCORD_BOT_TOKEN"
+              placeholder="Leave blank to keep current token"
             />
-            <p className="text-[10px] text-muted-foreground/40 mt-1">Name of the environment variable holding the Discord bot token.</p>
+            <p className="text-[10px] text-muted-foreground/40 mt-1">Only fill this if you want to replace the current Discord bot token.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1859,8 +1869,8 @@ function DiscordChannelCard({
             <span className="font-medium text-foreground/80">{GROUP_POLICY_LABELS[ch.groupPolicy] ?? ch.groupPolicy}</span>
           </div>
           <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Token Env</span>
-            <span className="font-mono text-foreground/60">{ch.envVarName}</span>
+            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Bot Token</span>
+            <span className="font-medium text-foreground/80">{ch.hasToken ? "Configured" : "Missing"}</span>
           </div>
         </div>
       )}
@@ -1881,7 +1891,7 @@ function AddChannelForm({
   const defaultType: "telegram" | "whatsapp" | "discord" = telegramExists ? (whatsappExists ? "discord" : "whatsapp") : "telegram"
   const [type, setType] = useState<"telegram" | "whatsapp" | "discord">(defaultType)
   const [botToken, setBotToken] = useState("")
-  const [envVarName, setEnvVarName] = useState("DISCORD_BOT_TOKEN")
+  const [discordBotToken, setDiscordBotToken] = useState("")
   const [dmPolicy, setDmPolicy] = useState<DmPolicy>("pairing")
   const [groupPolicy, setGroupPolicy] = useState<GroupPolicy>("open")
   const [streaming, setStreaming] = useState<Streaming>("partial")
@@ -1897,7 +1907,7 @@ function AddChannelForm({
         type,
         ...(type === "telegram" ? { botToken, streaming } : {}),
         ...(type === "whatsapp" ? { allowFrom: af } : {}),
-        ...(type === "discord" ? { envVarName, groupPolicy } : {}),
+        ...(type === "discord" ? { botToken: discordBotToken, groupPolicy } : {}),
         dmPolicy,
       })
       onAdded()
@@ -2018,20 +2028,21 @@ function AddChannelForm({
             <ol className="text-[11px] text-indigo-300/70 space-y-1 list-decimal list-inside">
               <li>Go to <span className="font-mono text-indigo-300/90">discord.com/developers</span> → New Application → Bot tab</li>
               <li>Enable <strong>Message Content Intent</strong> + <strong>Server Members Intent</strong></li>
-              <li>Copy the bot token and set: <code className="font-mono bg-foreground/8 px-1 rounded">export DISCORD_BOT_TOKEN=your_token</code></li>
+              <li>Copy the bot token from the Bot tab</li>
               <li>Invite the bot to your server via OAuth2 → URL Generator (scopes: <code className="font-mono bg-foreground/8 px-1 rounded">bot</code> + <code className="font-mono bg-foreground/8 px-1 rounded">applications.commands</code>)</li>
-              <li>Restart the OpenClaw gateway so it picks up the env var</li>
+              <li>Paste the token below and save the binding</li>
             </ol>
           </div>
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token Env Var</label>
+            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token</label>
             <input
-              value={envVarName}
-              onChange={e => setEnvVarName(e.target.value)}
+              type="password"
+              value={discordBotToken}
+              onChange={e => setDiscordBotToken(e.target.value)}
               className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
-              placeholder="DISCORD_BOT_TOKEN"
+              placeholder="Paste Discord bot token"
             />
-            <p className="text-[10px] text-muted-foreground/40 mt-1">Name of the environment variable holding the bot token. Never stored in openclaw.json.</p>
+            <p className="text-[10px] text-muted-foreground/40 mt-1">Stored in <span className="font-mono">channels.discord.accounts.{agentId}.token</span>.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -2068,6 +2079,453 @@ function AddChannelForm({
         <button onClick={onCancel} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
           Cancel
         </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── CustomToolsPanel ────────────────────────────────────────────────────────
+
+interface CustomTool {
+  name: string; emoji: string; lang: string; size: number; relPath: string; execHint: string
+  enabled: boolean; scope: 'shared' | 'agent'; content?: string; mtime?: string
+}
+
+interface CustomToolsData { shared: CustomTool[]; agent: CustomTool[] }
+
+const EXT_COLOR: Record<string, string> = {
+  '.sh': 'text-emerald-400', '.bash': 'text-emerald-400', '.zsh': 'text-emerald-400',
+  '.py': 'text-blue-400', '.js': 'text-yellow-400', '.ts': 'text-sky-400',
+  '.rb': 'text-red-400', '.lua': 'text-purple-400',
+}
+
+const ALLOWED_EXT_LIST = ['.sh', '.py', '.js', '.ts', '.rb', '.bash', '.zsh', '.fish', '.lua']
+
+const STARTER_CONTENT: Record<string, string> = {
+  '.sh': '#!/bin/bash\nset -euo pipefail\n\n# Your script here\necho "Hello from script"\n',
+  '.py': '#!/usr/bin/env python3\n\n# Your script here\nprint("Hello from script")\n',
+  '.js': '#!/usr/bin/env node\n\n// Your script here\nconsole.log("Hello from script");\n',
+  '.ts': '#!/usr/bin/env ts-node\n\nconsole.log("Hello from script");\n',
+}
+
+function ToolToggle({ enabled, loading, onToggle }: { enabled: boolean; loading: boolean; onToggle: () => void }) {
+  return (
+    <button onClick={() => !loading && onToggle()} disabled={loading} className="shrink-0">
+      {loading
+        ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+        : <div className={cn("w-9 h-5 rounded-full flex items-center transition-colors", enabled ? "bg-amber-500 justify-end" : "bg-foreground/15 justify-start")}>
+            <div className="w-4 h-4 rounded-full bg-white mx-0.5 shadow-sm" />
+          </div>
+      }
+    </button>
+  )
+}
+
+function AgentScriptEditor({
+  tool, agentId, onSaved, onDeleted, onClose,
+}: { tool: CustomTool; agentId: string; onSaved: (t: CustomTool) => void; onDeleted: (name: string) => void; onClose: () => void }) {
+  const [content, setContent] = useState(tool.content ?? '')
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [displayName, setDisplayName] = useState((tool as CustomTool & { displayName?: string }).displayName ?? '')
+  const [description, setDescription] = useState((tool as CustomTool & { description?: string }).description ?? '')
+  const [metaDirty, setMetaDirty] = useState(false)
+
+  useEffect(() => {
+    setContent(tool.content ?? '')
+    setDisplayName((tool as CustomTool & { displayName?: string }).displayName ?? '')
+    setDescription((tool as CustomTool & { description?: string }).description ?? '')
+    setDirty(false)
+    setMetaDirty(false)
+  }, [tool.name])
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      const [result] = await Promise.all([
+        api.saveAgentScript(agentId, tool.name, content) as Promise<CustomTool>,
+        metaDirty ? api.updateAgentScriptMeta(agentId, tool.name, { name: displayName, description }) : Promise.resolve(null),
+      ])
+      onSaved({ ...result, scope: 'agent', enabled: tool.enabled, content, displayName, description } as CustomTool)
+      setDirty(false)
+      setMetaDirty(false)
+    } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Save failed') }
+    finally { setSaving(false) }
+  }
+
+  async function handleDelete() {
+    try {
+      await api.deleteAgentScript(agentId, tool.name)
+      onDeleted(tool.name)
+    } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Delete failed') }
+  }
+
+  return (
+    <div className="flex flex-col h-full min-h-0 border-t border-border">
+      {/* Header */}
+      <div className="shrink-0 flex items-center gap-2 px-3 py-2 bg-foreground/2 border-b border-border">
+        <span className="text-base">{tool.emoji}</span>
+        <span className="text-[12px] font-mono font-semibold text-foreground flex-1">{tool.name}</span>
+        {(dirty || metaDirty) && (
+          <button onClick={handleSave} disabled={saving}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary text-primary-foreground text-[11px] font-bold hover:bg-primary/90 transition-colors disabled:opacity-50">
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} Save
+          </button>
+        )}
+        {!confirmDelete
+          ? <button onClick={() => setConfirmDelete(true)} className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+          : <div className="flex items-center gap-1 text-xs text-destructive">
+              <span>Delete?</span>
+              <button onClick={handleDelete} className="font-bold hover:underline">Yes</button>
+              <button onClick={() => setConfirmDelete(false)} className="text-muted-foreground">No</button>
+            </div>
+        }
+        <button onClick={onClose} className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"><X className="w-3.5 h-3.5" /></button>
+      </div>
+
+      {/* Metadata fields */}
+      <div className="shrink-0 flex flex-col gap-1.5 px-3 py-2.5 border-b border-border/30 bg-foreground/1">
+        <input
+          value={displayName}
+          onChange={e => { setDisplayName(e.target.value); setMetaDirty(true) }}
+          placeholder="Display name (e.g. Backup Database)"
+          className="bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/40 focus:outline-none border-b border-transparent focus:border-border/50 py-0.5 transition-colors w-full font-medium"
+        />
+        <input
+          value={description}
+          onChange={e => { setDescription(e.target.value); setMetaDirty(true) }}
+          placeholder="Description — what does this script do? (injected into TOOLS.md)"
+          className="bg-transparent text-[11px] text-muted-foreground placeholder:text-muted-foreground/30 focus:outline-none border-b border-transparent focus:border-border/30 py-0.5 transition-colors w-full"
+        />
+      </div>
+      {/* Editor with live syntax highlighting */}
+      <SyntaxEditor
+        value={content}
+        onChange={v => { setContent(v); setDirty(true) }}
+        ext={tool.name.match(/(\.[^.]+)$/)?.[1] || ''}
+        className="flex-1 min-h-0"
+        onKeyDown={e => {
+          if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault()
+            if (dirty || metaDirty) handleSave()
+          }
+        }}
+      />
+      <div className="shrink-0 flex items-center gap-3 px-3 py-1.5 border-t border-border/30 text-[10px] text-muted-foreground/40">
+        <span><kbd>⌘S</kbd> save</span><span><kbd>Tab</kbd> indent</span>
+        <span className="ml-auto">{content.split('\n').length} lines</span>
+        {dirty && <span className="text-amber-400/60 flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-amber-400/60" />unsaved</span>}
+      </div>
+    </div>
+  )
+}
+
+// Syntax highlighting map for react-syntax-highlighter
+const EXT_LANGUAGE: Record<string, string> = {
+  '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash', '.fish': 'bash',
+  '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
+  '.rb': 'ruby', '.lua': 'lua',
+}
+
+// Lazy import to keep bundle light
+const SyntaxHighlighter = React.lazy(() =>
+  import('react-syntax-highlighter').then(m => ({ default: m.default || m.Light || m.Prism }))
+)
+
+// Shared dark theme tokens — manually applied via CSS-in-JS
+const SH_STYLE: Record<string, React.CSSProperties> = {
+  'hljs-keyword':   { color: '#c792ea' },
+  'hljs-string':    { color: '#c3e88d' },
+  'hljs-comment':   { color: '#546e7a', fontStyle: 'italic' },
+  'hljs-number':    { color: '#f78c6c' },
+  'hljs-built_in':  { color: '#82aaff' },
+  'hljs-variable':  { color: '#f07178' },
+  'hljs-title':     { color: '#82aaff' },
+  'hljs-params':    { color: '#e5c07b' },
+  'hljs-subst':     { color: '#e06c75' },
+  'hljs-attr':      { color: '#ffcb6b' },
+}
+
+function CodeView({ content, ext, editable = false, onChange }: {
+  content: string; ext: string; editable?: boolean; onChange?: (v: string) => void
+}) {
+  const lang = EXT_LANGUAGE[ext] || 'plaintext'
+
+  if (editable) {
+    return (
+      <textarea
+        value={content}
+        onChange={e => onChange?.(e.target.value)}
+        spellCheck={false}
+        className="w-full h-full resize-none bg-[#0d0d0f] text-[12px] font-mono text-foreground/90 px-4 py-4 focus:outline-none leading-relaxed"
+        style={{ tabSize: 2 }}
+        onKeyDown={e => {
+          if (e.key === 'Tab') {
+            e.preventDefault()
+            const s = e.currentTarget.selectionStart
+            const newVal = content.slice(0, s) + '  ' + content.slice(e.currentTarget.selectionEnd)
+            onChange?.(newVal)
+            requestAnimationFrame(() => { e.currentTarget.selectionStart = e.currentTarget.selectionEnd = s + 2 })
+          }
+        }}
+      />
+    )
+  }
+
+  // Read-only with syntax highlighting
+  return (
+    <React.Suspense fallback={<pre className="px-4 py-4 text-[12px] font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap">{content}</pre>}>
+      <SyntaxHighlighter
+        language={lang}
+        useInlineStyles={true}
+        customStyle={{
+          background: '#0d0d0f',
+          fontSize: '12px',
+          lineHeight: '1.6',
+          padding: '16px',
+          margin: 0,
+          overflowX: 'auto',
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        }}
+        style={SH_STYLE as never}
+        showLineNumbers
+        lineNumberStyle={{ color: '#3e4451', fontSize: '11px', minWidth: '2.5em', paddingRight: '12px', userSelect: 'none' }}
+      >
+        {content}
+      </SyntaxHighlighter>
+    </React.Suspense>
+  )
+}
+
+function SharedScriptPreview({ tool, onClose }: { tool: CustomTool; onClose: () => void }) {
+  const [content, setContent] = useState<string | null>(null)
+  const ext = tool.name.match(/(\.[^.]+)$/)?.[1] || ''
+
+  useEffect(() => {
+    api.getScript(tool.name)
+      .then(r => setContent((r as { content?: string }).content ?? ''))
+      .catch(() => setContent('# Failed to load'))
+  }, [tool.name])
+
+  return (
+    <div className="flex flex-col h-full min-h-0 border-t border-border">
+      <div className="shrink-0 flex items-center gap-2 px-3 py-2 bg-foreground/2 border-b border-border">
+        <span className="text-base">{tool.emoji}</span>
+        <span className="text-[12px] font-mono font-semibold text-foreground flex-1">{tool.name}</span>
+        <span className={cn("text-[9px] font-mono font-semibold mr-1", EXT_COLOR[ext] || 'text-muted-foreground')}>{ext}</span>
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-bold uppercase">shared · read-only</span>
+        <button onClick={onClose} className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors ml-1">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0">
+        {content === null
+          ? <div className="flex items-center justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>
+          : <SyntaxEditor value={content} onChange={() => {}} ext={ext} readOnly className="h-full" />
+        }
+      </div>
+    </div>
+  )
+}
+
+function CustomToolsPanel({ agentId, onCountChange }: { agentId: string; onCountChange?: (n: number) => void }) {
+  const [data, setData] = useState<CustomToolsData>({ shared: [], agent: [] })
+  const [loading, setLoading] = useState(true)
+  const [toggling, setToggling] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [editTool, setEditTool] = useState<CustomTool | null>(null)
+  const [previewTool, setPreviewTool] = useState<CustomTool | null>(null)
+  const [showNewForm, setShowNewForm] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newExt, setNewExt] = useState('.sh')
+  const [creating, setCreating] = useState(false)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const r = await api.getAgentCustomTools(agentId) as { tools: CustomToolsData }
+      const shared = r.tools?.shared ?? []
+      const agent  = r.tools?.agent  ?? []
+      setData({ shared, agent })
+      onCountChange?.(shared.length + agent.length)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [agentId])
+
+  async function handleToggle(tool: CustomTool) {
+    setToggling(tool.name)
+    const newEnabled = !tool.enabled
+    const key = tool.scope === 'agent' ? 'agent' : 'shared'
+    setData(prev => ({ ...prev, [key]: prev[key].map(t => t.name === tool.name ? { ...t, enabled: newEnabled } : t) }))
+    try {
+      await api.toggleAgentCustomTool(agentId, tool.name, newEnabled, tool.scope)
+    } catch (e: unknown) {
+      setData(prev => ({ ...prev, [key]: prev[key].map(t => t.name === tool.name ? { ...t, enabled: tool.enabled } : t) }))
+      setError(e instanceof Error ? e.message : 'Toggle failed')
+    } finally {
+      setToggling(null)
+    }
+  }
+
+  async function openEdit(tool: CustomTool) {
+    const full = await api.getAgentScript(agentId, tool.name) as CustomTool
+    setEditTool({ ...tool, ...full })
+    setPreviewTool(null)
+  }
+
+  async function handleCreateAgent() {
+    if (!newName.trim()) return
+    const filename = `${newName.trim().replace(/[^a-zA-Z0-9_.\-]/g, '_')}${newExt}`
+    setCreating(true)
+    try {
+      const content = STARTER_CONTENT[newExt] || `# ${filename}\n`
+      const result = await api.saveAgentScript(agentId, filename, content) as CustomTool
+      const newTool: CustomTool = { ...result, scope: 'agent', enabled: false, content }
+      setData(prev => ({ ...prev, agent: [newTool, ...prev.agent] }))
+      setEditTool(newTool)
+      setShowNewForm(false)
+      setNewName('')
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Create failed') }
+    finally { setCreating(false) }
+  }
+
+  function ToolRow({ tool }: { tool: CustomTool }) {
+    const ext = tool.name.match(/(\.[^.]+)$/)?.[1] || ''
+    const extColor = EXT_COLOR[ext] || 'text-muted-foreground'
+    const isToggling = toggling === tool.name
+    const isActive = (editTool?.name === tool.name) || (previewTool?.name === tool.name)
+
+    function handleRowClick() {
+      if (tool.scope === 'agent') {
+        setPreviewTool(null)
+        openEdit(tool)
+      } else {
+        setEditTool(null)
+        setPreviewTool(isActive ? null : tool)
+      }
+    }
+
+    return (
+      <div
+        onClick={handleRowClick}
+        className={cn(
+          "flex items-center gap-2 px-3 py-2 rounded-lg border transition-all cursor-pointer",
+          isActive
+            ? "bg-amber-500/10 border-amber-500/30"
+            : tool.enabled
+              ? "bg-foreground/3 border-amber-500/15 hover:bg-amber-500/5"
+              : "bg-foreground/1 border-border/50 hover:bg-foreground/4 hover:border-border"
+        )}
+      >
+        <span className="text-base shrink-0">{tool.emoji}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-mono font-semibold text-foreground truncate">{tool.name}</span>
+            <span className={cn("text-[9px] font-mono", extColor)}>{ext}</span>
+          </div>
+          <p className="text-[9px] font-mono text-muted-foreground/40 truncate">{tool.execHint}</p>
+        </div>
+        {/* Stop propagation on toggle so row click doesn't fire */}
+        <div onClick={e => e.stopPropagation()}>
+          <ToolToggle enabled={tool.enabled} loading={isToggling} onToggle={() => handleToggle(tool)} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Left: lists | Right: editor/preview */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Lists panel */}
+        <div className="w-56 shrink-0 border-r border-border overflow-y-auto flex flex-col">
+          {loading && <div className="flex items-center justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>}
+          {error && <p className="text-[11px] text-destructive px-3 py-2">{error}</p>}
+
+          {!loading && (
+            <>
+              {/* Agent scripts */}
+              <div className="px-3 pt-3 pb-1">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-amber-400">Agent Scripts</span>
+                  <button onClick={() => { setShowNewForm(!showNewForm); setEditTool(null); setPreviewTool(null) }}
+                    className="p-0.5 rounded text-amber-400/60 hover:text-amber-400 hover:bg-amber-500/10 transition-colors">
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+                {showNewForm && (
+                  <div className="flex flex-col gap-1.5 mb-2 p-2 rounded-lg bg-secondary border border-border">
+                    <input autoFocus value={newName} onChange={e => setNewName(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleCreateAgent()}
+                      placeholder="script-name"
+                      className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                    <div className="flex gap-1 flex-wrap">
+                      {ALLOWED_EXT_LIST.slice(0,5).map(e => (
+                        <button key={e} type="button" onClick={() => setNewExt(e)}
+                          className={cn("px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-colors",
+                            newExt === e ? "bg-primary text-primary-foreground" : "bg-foreground/5 text-muted-foreground hover:text-foreground")}>
+                          {e}
+                        </button>
+                      ))}
+                    </div>
+                    <button onClick={handleCreateAgent} disabled={!newName.trim() || creating}
+                      className="flex items-center justify-center gap-1 py-1 rounded bg-primary text-primary-foreground text-[11px] font-bold disabled:opacity-50">
+                      {creating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />} Create
+                    </button>
+                  </div>
+                )}
+                {data.agent.length === 0 && !showNewForm && (
+                  <p className="text-[10px] text-muted-foreground/40 italic py-1">No agent scripts yet</p>
+                )}
+                <div className="space-y-1">
+                  {data.agent.map(t => <ToolRow key={t.name} tool={t} />)}
+                </div>
+              </div>
+
+              <div className="mx-3 border-t border-border/40 my-2" />
+
+              {/* Shared scripts */}
+              <div className="px-3 pb-3">
+                <span className="text-[9px] font-bold uppercase tracking-widest text-sky-400 block mb-1.5">Shared Scripts</span>
+                {data.shared.length === 0 && (
+                  <p className="text-[10px] text-muted-foreground/40 italic py-1">No scripts in ~/.openclaw/scripts/</p>
+                )}
+                <div className="space-y-1">
+                  {data.shared.map(t => <ToolRow key={t.name} tool={t} />)}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right panel: editor or preview */}
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+          {editTool && (
+            <AgentScriptEditor
+              tool={editTool}
+              agentId={agentId}
+              onSaved={t => setData(prev => ({ ...prev, agent: prev.agent.map(a => a.name === t.name ? t : a) }))}
+              onDeleted={name => { setData(prev => ({ ...prev, agent: prev.agent.filter(a => a.name !== name) })); setEditTool(null) }}
+              onClose={() => setEditTool(null)}
+            />
+          )}
+          {previewTool && !editTool && (
+            <SharedScriptPreview tool={previewTool} onClose={() => setPreviewTool(null)} />
+          )}
+          {!editTool && !previewTool && (
+            <div className="flex flex-col items-center justify-center flex-1 gap-3 text-center px-6">
+              <Terminal className="w-7 h-7 text-muted-foreground/15" />
+              <p className="text-[12px] text-muted-foreground/50">Select a script to edit or preview</p>
+              <p className="text-[10px] text-muted-foreground/30">Enabled scripts inject context into TOOLS.md</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -2352,14 +2810,15 @@ export function AgentDetailPage() {
   const [toolsLoading, setToolsLoading] = useState(false)
 
   // Active tab in Skills & Tools panel
-  const [activeTab, setActiveTab] = useState<'skills' | 'tools'>('skills')
+  const [activeTab, setActiveTab] = useState<'skills' | 'tools' | 'custom-tools'>('skills')
+  const [customToolsTotal, setCustomToolsTotal] = useState(0)
 
   // Sidebar collapse states
   const [fileSidebarCollapsed, setFileSidebarCollapsed] = useState(false)
   const [skillSidebarCollapsed, setSkillSidebarCollapsed] = useState(false)
 
   // Main body tab
-  const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels'>('files')
+  const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels' | 'schedules'>('files')
 
   // Live session monitoring
   const [viewingSession, setViewingSession] = useState<Session | null>(null)
@@ -2679,9 +3138,10 @@ export function AgentDetailPage() {
             {/* Tab bar */}
             <div className="flex items-center gap-0 px-3 border-b border-border bg-foreground/2 shrink-0">
               {([
-                { key: 'files',    label: 'Agent Files',    icon: FolderOpen },
-                { key: 'skills',   label: 'Skills & Tools', icon: Sparkles   },
-                { key: 'channels', label: 'Channels',       icon: Link       },
+                { key: 'files',     label: 'Agent Files',    icon: FolderOpen },
+                { key: 'skills',    label: 'Skills & Tools', icon: Sparkles   },
+                { key: 'channels',  label: 'Channels',       icon: Link       },
+                { key: 'schedules', label: 'Schedules',      icon: Timer      },
               ] as const).map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}
@@ -2797,10 +3257,23 @@ export function AgentDetailPage() {
                       className={cn("px-3 py-1 rounded text-[11px] font-bold transition-all",
                         activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-300 border border-violet-500/30" : "text-muted-foreground hover:text-foreground")}
                     >
-                      Tools
+                      Built-in Tools
                       <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-400" : "bg-foreground/5 text-muted-foreground")}>
                         {tools.filter(t => !t.enabled).length > 0 ? `${tools.filter(t => !t.enabled).length} denied` : tools.length}
                       </span>
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('custom-tools')}
+                      className={cn("px-3 py-1 rounded text-[11px] font-bold transition-all",
+                        activeTab === 'custom-tools' ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : "text-muted-foreground hover:text-foreground")}
+                    >
+                      Custom Tools
+                      {customToolsTotal > 0 && (
+                        <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded",
+                          activeTab === 'custom-tools' ? "bg-amber-500/20 text-amber-400" : "bg-foreground/5 text-muted-foreground")}>
+                          {customToolsTotal}
+                        </span>
+                      )}
                     </button>
                   </div>
                   {activeTab === 'skills' && (
@@ -2817,6 +3290,9 @@ export function AgentDetailPage() {
                   )}
                   {activeTab === 'tools' && (
                     <span className="ml-auto text-[10px] text-muted-foreground/50 italic">Toggles write to tools.deny</span>
+                  )}
+                  {activeTab === 'custom-tools' && (
+                    <span className="ml-auto text-[10px] text-muted-foreground/50 italic">Toggles inject context into TOOLS.md</span>
                   )}
                 </div>
 
@@ -2870,6 +3346,10 @@ export function AgentDetailPage() {
                       )}
                     </div>
                   </div>
+                )}
+
+                {activeTab === 'custom-tools' && id && (
+                  <CustomToolsPanel agentId={id} onCountChange={setCustomToolsTotal} />
                 )}
 
                 {activeTab === 'tools' && (
@@ -2994,6 +3474,13 @@ export function AgentDetailPage() {
                     )}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* ═══ SCHEDULES TAB ═══ */}
+            {bodyTab === 'schedules' && id && (
+              <div className="flex-1 overflow-y-auto min-h-0 px-4 py-4">
+                <CronPage filterAgentId={id} />
               </div>
             )}
 

@@ -4,6 +4,18 @@ const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
 const { parseGatewaySessions } = require('../sessions/gateway.cjs');
 
+/**
+ * Normalize streaming value: openclaw.json may store it as
+ * { mode: "partial" } (object) or just "partial" (string).
+ * Always returns a plain string.
+ */
+function normalizeStreaming(val, fallback = 'off') {
+  if (!val) return fallback;
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object' && val.mode) return val.mode;
+  return fallback;
+}
+
 function slugify(str) {
   return str.toLowerCase()
     .replace(/\s+/g, '-')
@@ -129,7 +141,7 @@ function getAgentDetail(agentId) {
     channelInfo = {
       type: 'telegram',
       accountId: accountKey,
-      streaming: telegramAccounts[accountKey].streaming || 'off',
+      streaming: normalizeStreaming(telegramAccounts[accountKey].streaming),
       dmPolicy: telegramAccounts[accountKey].dmPolicy || 'none',
     };
   }
@@ -149,7 +161,7 @@ function getAgentDetail(agentId) {
   const allTelegramAccounts = channels.telegram?.accounts || {};
   const availableChannels = Object.entries(allTelegramAccounts).map(([key, acc]) => ({
     accountId: key,
-    streaming: acc.streaming || 'off',
+    streaming: normalizeStreaming(acc.streaming),
     dmPolicy: acc.dmPolicy || 'none',
   }));
 
@@ -369,6 +381,11 @@ function updateAgent(agentId, updates) {
           configNow.channels.whatsapp.accounts[newId] = configNow.channels.whatsapp.accounts[agentId];
           delete configNow.channels.whatsapp.accounts[agentId];
         }
+        // Rename discord account key
+        if (configNow.channels?.discord?.accounts?.[agentId]) {
+          configNow.channels.discord.accounts[newId] = configNow.channels.discord.accounts[agentId];
+          delete configNow.channels.discord.accounts[agentId];
+        }
 
         // Update bindings: agentId + accountId references
         if (configNow.bindings) {
@@ -446,7 +463,7 @@ function getAgentChannels(agentId) {
       accountId: acctId,
       botToken: acct.botToken || '',
       dmPolicy: acct.dmPolicy || 'pairing',
-      streaming: acct.streaming || 'partial',
+      streaming: normalizeStreaming(acct.streaming, 'partial'),
     };
   });
 
@@ -472,18 +489,27 @@ function getAgentChannels(agentId) {
   });
 
   // ── Discord ──────────────────────────────────────────────────────────
-  // Discord uses a shared channel config (no per-agent accounts).
-  // An agent has Discord if it has a binding with match.channel === 'discord'.
-  const discordConfig = channels.discord || {};
-  const hasDiscordBinding = bindings.some(b => b.match?.channel === 'discord');
+  const discordAccounts = channels.discord?.accounts || {};
 
-  const discord = hasDiscordBinding ? [{
-    type: 'discord',
-    accountId: agentId,  // pseudo — used as handle for update/remove API
-    envVarName: discordConfig.token?.id || 'DISCORD_BOT_TOKEN',
-    dmPolicy: discordConfig.dmPolicy || 'pairing',
-    groupPolicy: discordConfig.groupPolicy || 'open',
-  }] : [];
+  const discordIds = new Set(
+    bindings
+      .filter(b => b.match?.channel === 'discord')
+      .map(b => b.match.accountId || agentId)
+  );
+  for (const k of conventionKeys) {
+    if (discordAccounts[k]) discordIds.add(k);
+  }
+
+  const discord = [...discordIds].map(acctId => {
+    const acct = discordAccounts[acctId] || {};
+    return {
+      type: 'discord',
+      accountId: acctId,
+      hasToken: Boolean(acct.token || channels.discord?.token),
+      dmPolicy: acct.dmPolicy || channels.discord?.dmPolicy || 'pairing',
+      groupPolicy: acct.groupPolicy || channels.discord?.groupPolicy || 'open',
+    };
+  });
 
   return { telegram, whatsapp, discord };
 }
@@ -530,26 +556,28 @@ function addAgentChannel(agentId, opts) {
       ...(opts.allowFrom && opts.allowFrom.length > 0 ? { allowFrom: opts.allowFrom } : {}),
     };
   } else if (opts.type === 'discord') {
-    const envVarName = opts.envVarName || 'DISCORD_BOT_TOKEN';
+    if (!opts.botToken || !String(opts.botToken).trim()) {
+      throw new Error('botToken is required for Discord');
+    }
     if (!config.channels.discord) config.channels.discord = {};
+    if (!config.channels.discord.accounts) config.channels.discord.accounts = {};
     config.channels.discord.enabled = true;
-    config.channels.discord.token = { source: 'env', provider: 'default', id: envVarName };
-    if (opts.dmPolicy)    config.channels.discord.dmPolicy    = opts.dmPolicy;
-    if (opts.groupPolicy) config.channels.discord.groupPolicy = opts.groupPolicy;
+    config.channels.discord.accounts[accountId] = {
+      token: String(opts.botToken).trim(),
+      dmPolicy: opts.dmPolicy || 'pairing',
+      groupPolicy: opts.groupPolicy || 'open',
+    };
   }
 
   // Add binding if not already present
-  // Discord uses no accountId in its binding match
-  const alreadyBound = opts.type === 'discord'
-    ? config.bindings.some(b => b.agentId === agentId && b.match?.channel === 'discord')
-    : config.bindings.some(b => b.agentId === agentId && b.match?.channel === opts.type && b.match?.accountId === accountId);
+  const alreadyBound = config.bindings.some(b => {
+    if (b.agentId !== agentId || b.match?.channel !== opts.type) return false;
+    const bindingAccountId = b.match?.accountId || (opts.type === 'discord' ? agentId : null);
+    return bindingAccountId === accountId;
+  });
 
   if (!alreadyBound) {
-    if (opts.type === 'discord') {
-      config.bindings.push({ type: 'route', agentId, match: { channel: 'discord' } });
-    } else {
-      config.bindings.push({ type: 'route', agentId, match: { channel: opts.type, accountId } });
-    }
+    config.bindings.push({ type: 'route', agentId, match: { channel: opts.type, accountId } });
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
@@ -584,17 +612,17 @@ function removeAgentChannel(agentId, channelType, accountId) {
       delete config.channels.whatsapp.accounts[accountId];
     }
   } else if (channelType === 'discord') {
-    // Discord is a shared channel — only remove the binding, not the channel config
-    // (other agents may still be using the same Discord bot)
+    if (config.channels?.discord?.accounts?.[accountId]) {
+      delete config.channels.discord.accounts[accountId];
+    }
   }
 
   // Remove binding
   if (config.bindings) {
     config.bindings = config.bindings.filter(b => {
       if (b.agentId !== agentId || b.match?.channel !== channelType) return true;
-      // Discord bindings have no accountId in match
-      if (channelType === 'discord') return false;
-      return b.match?.accountId !== accountId;
+      const bindingAccountId = b.match?.accountId || (channelType === 'discord' ? agentId : null);
+      return bindingAccountId !== accountId;
     });
   }
 
@@ -632,11 +660,25 @@ function updateAgentChannel(agentId, channelType, accountId, updates) {
     if (updates.allowFrom !== undefined) acct.allowFrom = updates.allowFrom;
   } else if (channelType === 'discord') {
     if (!config.channels?.discord) throw new Error('Discord channel not configured');
-    if (updates.envVarName !== undefined) {
-      config.channels.discord.token = { source: 'env', provider: 'default', id: updates.envVarName };
+    if (!config.channels.discord.accounts) config.channels.discord.accounts = {};
+    let acct = config.channels.discord.accounts[accountId];
+    if (!acct && config.channels.discord.token) {
+      // Migrate legacy shared Discord config into a per-agent account on first edit.
+      acct = config.channels.discord.accounts[accountId] = {
+        token: config.channels.discord.token,
+        dmPolicy: config.channels.discord.dmPolicy || 'pairing',
+        groupPolicy: config.channels.discord.groupPolicy || 'open',
+      };
     }
-    if (updates.dmPolicy    !== undefined) config.channels.discord.dmPolicy    = updates.dmPolicy;
-    if (updates.guildPolicy !== undefined) config.channels.discord.groupPolicy = updates.guildPolicy;
+    if (!acct) throw new Error(`Discord account "${accountId}" not found for agent "${agentId}"`);
+    if (updates.botToken !== undefined) {
+      if (!String(updates.botToken).trim()) {
+        throw new Error('Discord bot token cannot be empty');
+      }
+      acct.token = String(updates.botToken).trim();
+    }
+    if (updates.dmPolicy !== undefined) acct.dmPolicy = updates.dmPolicy;
+    if (updates.groupPolicy !== undefined) acct.groupPolicy = updates.groupPolicy;
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
@@ -660,7 +702,9 @@ function deleteAgent(agentId) {
   if (config.channels?.whatsapp?.accounts?.[agentId]) {
     delete config.channels.whatsapp.accounts[agentId];
   }
-  // Discord bindings are handled by the bindings filter above; shared channel config is kept
+  if (config.channels?.discord?.accounts?.[agentId]) {
+    delete config.channels.discord.accounts[agentId];
+  }
 
   // Remove bindings for this agent
   if (config.bindings) {

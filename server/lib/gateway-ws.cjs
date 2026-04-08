@@ -590,6 +590,56 @@ class GatewayWsProxy {
   sessionsMessagesSubscribe(sessionKey) {
     return this.sendReq('sessions.messages.subscribe', { key: sessionKey });
   }
+
+  /** channels.status — returns built-in + bundled channel/plugin status summaries */
+  channelsStatus() {
+    return this.sendReq('channels.status', {});
+  }
+
+  /** web.login.start — starts a QR/web login flow for a QR-capable channel (e.g. WhatsApp)
+   *  Schema: { accountId?, force?, timeoutMs?, verbose? } — no 'channel' field (auto-detected)
+   *  Returns: { qrDataUrl: "data:image/png;base64,...", message } */
+  webLoginStart(accountId) {
+    const params = {};
+    if (accountId) params.accountId = accountId;
+    return this.sendReq('web.login.start', params, 20000);
+  }
+
+  /** web.login.wait — waits for the QR login flow to complete
+   *  Schema: { accountId?, timeoutMs? }
+   *  Long timeout (3 min) since user needs time to scan */
+  webLoginWait(accountId) {
+    const params = { timeoutMs: 175000 };
+    if (accountId) params.accountId = accountId;
+    return this.sendReq('web.login.wait', params, 180000);
+  }
+
+  // ─── Cron management ─────────────────────────────────────────────────────────
+
+  /** cron.list — list all cron jobs */
+  cronList() {
+    return this.sendReq('cron.list', {});
+  }
+
+  /** cron.status — overall cron scheduler status */
+  cronStatus() {
+    return this.sendReq('cron.status', {});
+  }
+
+  /** cron.list — list jobs known to the gateway (in-memory, loaded at startup) */
+  cronList() {
+    return this.sendReq('cron.list', {});
+  }
+
+  /** cron.run — trigger a job immediately (job must be known to gateway) */
+  cronRun(id) {
+    return this.sendReq('cron.run', { id });
+  }
+
+  /** cron.runs — run history for a job */
+  cronRuns(id, limit = 50) {
+    return this.sendReq('cron.runs', { id, limit });
+  }
 }
 
 // ─── Singleton ────────────────────────────────────────────────────────────────

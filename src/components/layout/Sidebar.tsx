@@ -12,6 +12,7 @@ import {
   PanelLeftOpen,
   BookOpen,
   MessageSquare,
+  Cable,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAlertStore, useWsStore } from "@/stores"
@@ -37,7 +38,12 @@ const navGroups = [
     label: "Automation",
     items: [
       { to: "/cron", label: "Schedules", icon: Timer },
-      { to: "/routing", label: "Routing", icon: Radio },
+    ],
+  },
+  {
+    label: "Channels",
+    items: [
+      { to: "/routing", label: "Channel Routing", icon: Cable },
     ],
   },
   {
@@ -120,7 +126,7 @@ export function Sidebar() {
                   {!sidebarCollapsed && (
                     <>
                       <span className="flex-1">{label}</span>
-                      {label === "Routing" && alerts.length > 0 && (
+                      {label === "Channel Routing" && alerts.length > 0 && (
                         <span className="flex items-center justify-center h-4 min-w-4 rounded-full bg-destructive/20 text-destructive text-[10px] font-bold px-1">
                           {alerts.length}
                         </span>
@@ -130,7 +136,7 @@ export function Sidebar() {
                       )}
                     </>
                   )}
-                  {sidebarCollapsed && label === "Routing" && alerts.length > 0 && (
+                  {sidebarCollapsed && label === "Channel Routing" && alerts.length > 0 && (
                     <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-destructive" />
                   )}
                 </NavLink>

@@ -573,25 +573,26 @@ function DiscordBinding({
         <ol className="text-[11px] text-indigo-300/70 space-y-1 list-decimal list-inside">
           <li>Go to <span className="font-mono text-indigo-300/90">discord.com/developers</span> → New Application → Bot tab</li>
           <li>Enable <strong>Message Content Intent</strong> + <strong>Server Members Intent</strong></li>
-          <li>Copy bot token → set <span className="font-mono text-indigo-300/90">export DISCORD_BOT_TOKEN=your_token</span></li>
+          <li>Copy the bot token from the Bot tab</li>
           <li>Invite bot to server via OAuth2 URL Generator (scopes: <span className="font-mono text-indigo-300/90">bot</span> + <span className="font-mono text-indigo-300/90">applications.commands</span>)</li>
-          <li>Restart OpenClaw gateway to pick up the env var</li>
+          <li>Paste the token below for this agent</li>
         </ol>
       </div>
 
       <div>
-        <FieldLabel required>Bot Token Env Var</FieldLabel>
+        <FieldLabel required>Bot Token</FieldLabel>
         <div className="relative">
           <WizardInput
-            placeholder="DISCORD_BOT_TOKEN"
-            value={binding.envVarName || "DISCORD_BOT_TOKEN"}
-            onChange={e => onChange({ ...binding, envVarName: e.target.value })}
+            type="password"
+            placeholder="Paste Discord bot token"
+            value={binding.botToken || ""}
+            onChange={e => onChange({ ...binding, botToken: e.target.value })}
             className="font-mono text-xs pl-8"
           />
           <Hash className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/40" />
         </div>
         <p className="text-[10px] text-muted-foreground/50 mt-1.5">
-          Token is never stored in openclaw.json — only the env var name is saved.
+          Saved per agent under <span className="font-mono">channels.discord.accounts.&lt;agentId&gt;.token</span>.
         </p>
       </div>
 
@@ -648,7 +649,7 @@ function Step3Channels({
 
   const addDiscord = () => {
     if (hasDiscord) return
-    setForm({ ...form, channels: [...channels, { type: "discord", dmPolicy: "pairing", groupPolicy: "open", envVarName: "DISCORD_BOT_TOKEN" }] })
+    setForm({ ...form, channels: [...channels, { type: "discord", dmPolicy: "pairing", groupPolicy: "open", botToken: "" }] })
   }
 
   const updateChannel = (idx: number, binding: ChannelBinding) => {

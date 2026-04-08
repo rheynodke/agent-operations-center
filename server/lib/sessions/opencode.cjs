@@ -181,8 +181,76 @@ function parseCronJobs() {
   const filePath = path.join(OPENCLAW_HOME, 'cron', 'jobs.json');
   const data = readJsonSafe(filePath);
   if (!data) return [];
-  if (Array.isArray(data)) return data;
-  return data.jobs || [];
+  const raw = Array.isArray(data) ? data : (data.jobs || []);
+
+  return raw.map((job) => {
+    const sched = job.schedule || {};
+    // Normalise schedule to a display string
+    let scheduleStr = '';
+    let kind = sched.kind || job.kind || 'cron';
+    if (kind === 'every' && sched.everyMs) {
+      const ms = sched.everyMs;
+      if (ms % 86400000 === 0) scheduleStr = `${ms / 86400000}d`;
+      else if (ms % 3600000 === 0) scheduleStr = `${ms / 3600000}h`;
+      else if (ms % 60000 === 0) scheduleStr = `${ms / 60000}m`;
+      else scheduleStr = `${ms}ms`;
+    } else if (kind === 'at' && sched.atMs) {
+      scheduleStr = new Date(sched.atMs).toISOString();
+    } else if (kind === 'cron' && sched.cronExpr) {
+      scheduleStr = sched.cronExpr;
+    } else {
+      scheduleStr = JSON.stringify(sched);
+    }
+
+    const state = job.state || {};
+    const isEnabled = job.enabled !== false;
+    let status = 'active';
+    if (!isEnabled) status = 'paused';
+    else if (state.scheduleErrorCount > 0 || state.lastError) status = 'error';
+
+    // Extract payload fields
+    const payload = job.payload || {};
+    const message = payload.message || payload.text || '';
+    const sessionTarget = job.sessionTarget || job.session || 'isolated';
+
+    // Delivery — gateway uses `delivery` field (not `announce`)
+    const announce = job.delivery || job.announce || {};
+
+    return {
+      id:           job.id,
+      name:         job.name,
+      agentId:      job.agentId,
+      kind,
+      schedule:     scheduleStr,
+      tz:           sched.tz || job.tz || 'UTC',
+      session:      sessionTarget,
+      message,
+      model:        payload.model,
+      thinking:     payload.thinking,
+      lightContext: payload.lightContext,
+      wakeMode:     job.wakeMode,
+      deliveryMode: announce.channel ? 'announce' : (job.webhookUrl ? 'webhook' : 'none'),
+      deliveryChannel: announce.channel,
+      deliveryTo:   announce.to,
+      deliveryWebhook: job.webhookUrl,
+      status,
+      enabled:      isEnabled,
+      runCount:     (() => {
+        try {
+          const runsFile = path.join(OPENCLAW_HOME, 'cron', 'runs', `${job.id}.jsonl`);
+          if (!fs.existsSync(runsFile)) return 0;
+          return fs.readFileSync(runsFile, 'utf-8').trim().split('\n').filter(Boolean).length;
+        } catch { return 0; }
+      })(),
+      lastRun:      state.lastRunAtMs  ? new Date(state.lastRunAtMs).toISOString()  : null,
+      nextRun:      state.nextRunAtMs  ? new Date(state.nextRunAtMs).toISOString()  : null,
+      lastDuration: state.lastDurationMs,
+      lastCost:     state.lastCostUsd,
+      lastDeliveryStatus: state.lastDeliveryStatus,
+      errorMessage: state.lastError || (state.consecutiveErrors > 0 ? `${state.consecutiveErrors} consecutive errors` : undefined),
+      createdAt:    job.createdAtMs ? new Date(job.createdAtMs).toISOString() : undefined,
+    };
+  });
 }
 
 function parseCommandLog(limit = 50) {

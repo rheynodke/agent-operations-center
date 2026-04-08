@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## What This Is
 
@@ -48,15 +48,13 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
   - `server/lib/agents/skillScripts.cjs` — `listSkillScripts`, `getSkillScript`, `saveSkillScript`, `deleteSkillScript`, `getSkillScriptsPath`
   - `server/lib/agents/provision.cjs` — writes new agent to `openclaw.json` + scaffolds workspace
   - `server/lib/sessions/index.cjs` — sessions sub-barrel (composes opencode + gateway via spread)
-  - `server/lib/sessions/opencode.cjs` — parses OpenCode JSONL session files from `~/.openclaw/`; `parseCronJobs()` reads `~/.openclaw/cron/jobs.json` and normalizes the schedule object to display string
+  - `server/lib/sessions/opencode.cjs` — parses OpenCode JSONL session files from `~/.openclaw/`
   - `server/lib/sessions/gateway.cjs` — parses gateway JSONL session files from `~/.openclaw/agents/{agentId}/sessions/`; handles text-encoded tool call markers (`<|tool_calls_section_begin|>`) and strips gateway-injected metadata from user messages
   - `server/lib/models.cjs` — `getAvailableModels` reads model list from `openclaw.json`
-  - `server/lib/gateway-ws.cjs` — persistent WebSocket proxy to OpenClaw Gateway (port 18789); 3-layer auth hierarchy: device auth token > Ed25519 signing > passphrase fallback. Cron RPC methods: `cronList`, `cronRun`, `cronRuns`, `cronStatus` (gateway supports these; `cron.create/update/delete/toggle` do NOT exist — use file write instead)
+  - `server/lib/gateway-ws.cjs` — persistent WebSocket proxy to OpenClaw Gateway (port 18789); 3-layer auth hierarchy: device auth token (`~/.openclaw/identity/device-auth.json`, operator scopes) > Ed25519 signing (`~/.openclaw/identity/device.json`) > passphrase from `openclaw.json` (fallback, limited scopes)
   - `server/lib/db.cjs` — SQLite via `sql.js` for user auth, agent profiles, avatars. `getAgentProfile` returns both snake_case columns and explicit camelCase aliases (e.g. `avatarPresetId` from `avatar_preset_id`) — always add aliases here when adding new columns.
   - `server/lib/routing.cjs` — `parseRoutes` (enriches `openclaw.json` bindings with agent metadata for the Routing page), `getChannelsConfig` (sanitized global channel config without bot tokens)
   - `server/lib/watchers.cjs` — chokidar file watchers; broadcasts `session:live-event` and `processing_end` WS events with `sessionKey`
-  - `server/lib/automation/cron.cjs` — cron CRUD (create/update/delete/toggle/run/runs); tries gateway RPC first, falls back to direct `~/.openclaw/cron/jobs.json` file write. `buildSchedule()` converts form opts to gateway schema (`{kind, everyMs}` etc). `buildJobFromOpts()` produces the full job object.
-  - `server/lib/scripts.cjs` — shared workspace scripts (`~/.openclaw/scripts/`) and agent-specific scripts (`{agentWorkspace}/scripts/`). Metadata stored in `.tools.json` per directory. `listAgentCustomTools()` returns `{shared, agent}` enriched with `enabled` from agent's TOOLS.md. `toggleAgentCustomTool()` injects/removes HTML-comment-delimited blocks in TOOLS.md.
 - **Config:** `server/lib/config.cjs` exports `OPENCLAW_HOME`, `OPENCLAW_WORKSPACE`, `AGENTS_DIR`, `readJsonSafe`.
 
 ### Data Flow
@@ -64,24 +62,6 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
 OpenClaw filesystem → chokidar watchers → Express parsers → REST API + WebSocket broadcasts → Zustand stores → React UI
 
 The backend does NOT own agent data. It reads from OpenClaw's filesystem as the source of truth, and uses SQLite only for dashboard-specific data (user accounts, agent profiles/avatars, UI preferences).
-
-### Cron / Scheduled Tasks
-
-- Jobs persist at `~/.openclaw/cron/jobs.json` (gateway schema): `{id, name, agentId, schedule: {kind, everyMs|cronExpr|atMs}, sessionTarget, payload: {kind: "agentTurn"|"systemEvent", message}, delivery: {channel, accountId, to}, state}`
-- **Gateway is the scheduler.** It loads `jobs.json` at startup — newly written jobs only activate after gateway restart.
-- `parseCronJobs()` normalizes raw job objects: `schedule` object → display string (`"5m"`, `"0 9 * * 1-5"`), `sessionTarget` → `session`, `state.*` → `runCount/lastRun/nextRun`.
-- Run history at `~/.openclaw/cron/runs/{jobId}.jsonl` — JSONL, one entry per execution.
-- `CronPage` accepts optional `filterAgentId` prop; when set (from AgentDetailPage Schedules tab), hides agent filter pills and pre-fills new job form.
-
-### Custom Tools / Scripts
-
-Two scopes:
-- **Shared** (`~/.openclaw/scripts/`) — all agents can use, managed in Skills & Tools > Custom Tools tab (full CRUD). Read-only preview in agent detail.
-- **Agent-specific** (`{agentWorkspace}/scripts/`) — per-agent, full CRUD in agent detail Custom Tools sub-tab.
-
-Metadata stored in `.tools.json` per directory (not as companion files). When a script is "enabled" for an agent, `toggleAgentCustomTool()` appends a `<!-- custom-tool: name -->` ... `<!-- /custom-tool: name -->` block to the agent's `TOOLS.md` so the agent can read its exec hint and description.
-
-Allowed extensions: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`, `.lua`. Max 512KB.
 
 ### Chat / Gateway Integration
 
@@ -108,11 +88,7 @@ Channel bindings in `openclaw.json` use two patterns:
 
 ### Agent Detail Page Tab Structure
 
-`AgentDetailPage.tsx` uses a 4-tab body layout (`bodyTab` state): **Agent Files** | **Skills & Tools** | **Channels** | **Schedules**.
-
-The Skills & Tools tab has its own `activeTab` state: `'skills'` | `'tools'` (built-in) | `'custom-tools'`. The Custom Tools sub-tab shows `CustomToolsPanel` with agent-specific (full CRUD) and shared (toggle + read-only preview) scripts side-by-side.
-
-The Schedules tab embeds `<CronPage filterAgentId={id} />` which filters to the agent's jobs only.
+`AgentDetailPage.tsx` uses a 3-tab body layout (`bodyTab` state): **Agent Files** | **Skills & Tools** | **Channels**. The Channels tab hosts `ChannelsPanel` (channel CRUD) and Recent Sessions. The inner Skills & Tools tab has its own `activeTab` state (`'skills'` | `'tools'`).
 
 ### Agent Rename
 
@@ -139,7 +115,3 @@ Skills are resolved by searching these directories in order (first `SKILL.md` ma
 4. `~/.openclaw/skills/{name}/`
 
 Skill scripts live at `{skillDir}/scripts/` and are managed via `skillScripts.cjs`.
-
-### SyntaxEditor Component
-
-`src/components/ui/SyntaxEditor.tsx` — transparent-textarea-over-highlighted-pre pattern. Architecture: fixed-width gutter (48px, line numbers rendered manually) + code area (highlight layer + textarea overlay with `color: transparent; caret-color: #abb2bf`). Both layers share identical `font`, `fontSize`, `lineHeight`, and `padding` — the gutter is a separate column to avoid em-calculation drift. Uses `react-syntax-highlighter` (lazy-loaded) for the highlight layer. Used in `CustomToolsTab.tsx` and `AgentDetailPage.tsx` for script editing.

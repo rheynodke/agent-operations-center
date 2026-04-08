@@ -367,18 +367,23 @@ function provisionAgent(opts, userId) {
     }
 
     if (ch.type === 'discord') {
-      const envVarName = ch.envVarName || 'DISCORD_BOT_TOKEN';
+      if (!ch.botToken || !String(ch.botToken).trim()) {
+        throw new Error('Discord botToken is required');
+      }
       if (!config.channels.discord) config.channels.discord = {};
+      if (!config.channels.discord.accounts) config.channels.discord.accounts = {};
       config.channels.discord.enabled = true;
-      config.channels.discord.token = { source: 'env', provider: 'default', id: envVarName };
-      if (ch.dmPolicy)    config.channels.discord.dmPolicy    = ch.dmPolicy;
-      if (ch.guildPolicy) config.channels.discord.groupPolicy = ch.guildPolicy;
+      config.channels.discord.accounts[id] = {
+        token: String(ch.botToken).trim(),
+        dmPolicy: ch.dmPolicy || 'pairing',
+        groupPolicy: ch.groupPolicy || 'open',
+      };
 
-      // Add binding (no accountId — Discord is a shared channel)
+      // Add binding
       config.bindings.push({
         type: 'route',
         agentId: id,
-        match: { channel: 'discord' },
+        match: { channel: 'discord', accountId: id },
       });
       addedBindings.push({ channel: 'discord', accountId: id });
     }

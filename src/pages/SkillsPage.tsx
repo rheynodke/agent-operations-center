@@ -4,12 +4,13 @@ import {
   BookOpen, Wrench, Search, RefreshCw, ChevronRight,
   Globe, FolderGit2, User, Package, Boxes, Key, Settings2,
   CheckCircle2, XCircle, Layers, AlertCircle, Edit3, Save,
-  X, Loader2, Plus, Sparkles, ScrollText,
+  X, Loader2, Plus, Sparkles, ScrollText, Terminal,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import { useAgentStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
+import { CustomToolsTab } from "@/components/skills/CustomToolsTab"
 import type { GlobalSkillInfo, GlobalToolInfo, ToolGroup } from "@/types"
 
 // ─── Source config ────────────────────────────────────────────────────────────
@@ -813,7 +814,7 @@ function StatBadge({ label, value, icon: Icon, color }: { label: string; value: 
   )
 }
 
-type TabId = "skills" | "tools"
+type TabId = "skills" | "tools" | "custom-tools"
 
 export function SkillsPage() {
   const storeAgents = useAgentStore((s) => s.agents)
@@ -824,6 +825,7 @@ export function SkillsPage() {
   const [tools, setTools] = useState<GlobalToolInfo[]>([])
   const [agents, setAgents] = useState<{ id: string; name: string; emoji: string }[]>([])
   const [showCreate, setShowCreate] = useState(false)
+  const [scriptCount, setScriptCount] = useState(0)
 
   /** Enrich agentAssignments in skills/tools with avatarPresetId from the store */
   function enrichWithAvatars<T extends { agentAssignments: { agentId: string; avatarPresetId?: string | null }[] }>(items: T[]): T[] {
@@ -840,10 +842,14 @@ export function SkillsPage() {
     setLoading(true)
     setError(null)
     try {
-      const [skillsRes, toolsRes] = await Promise.all([api.getGlobalSkills(), api.getGlobalTools()])
+      const [skillsRes, toolsRes, scriptsRes] = await Promise.all([
+        api.getGlobalSkills(), api.getGlobalTools(),
+        api.listScripts().catch(() => ({ scripts: [] })),
+      ])
       setSkills(skillsRes.skills)
       setAgents(skillsRes.agents)
       setTools(toolsRes.tools)
+      setScriptCount((scriptsRes as { scripts: unknown[] }).scripts?.length ?? 0)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load")
     } finally {
@@ -931,6 +937,17 @@ export function SkillsPage() {
               <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/8 text-[9px] text-muted-foreground tabular-nums">{tools.length}</span>
             )}
           </button>
+          <button
+            onClick={() => setTab("custom-tools")}
+            className={cn("flex items-center gap-1.5 px-3 py-2 text-[12px] font-medium border-b-2 transition-colors -mb-px",
+              tab === "custom-tools" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            Custom Tools
+            {scriptCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/8 text-[9px] text-muted-foreground tabular-nums">{scriptCount}</span>
+            )}
+          </button>
         </div>
 
         {/* Content */}
@@ -948,8 +965,10 @@ export function SkillsPage() {
           </div>
         ) : tab === "skills" ? (
           <SkillsTab skills={enrichWithAvatars(skills)} agents={agents} onCreateClick={() => setShowCreate(true)} onRefresh={load} />
-        ) : (
+        ) : tab === "tools" ? (
           <ToolsTab tools={enrichWithAvatars(tools)} agents={agents} />
+        ) : (
+          <CustomToolsTab />
         )}
       </div>
     </div>

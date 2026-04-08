@@ -183,9 +183,59 @@ export const api = {
 
   // Cron
   getCronJobs: () => request("/cron"),
+  getCronDeliveryTargets: () => request("/cron/delivery-targets"),
+  createCronJob: (opts: Record<string, unknown>) =>
+    request("/cron", { method: "POST", body: JSON.stringify(opts) }),
+  updateCronJob: (id: string, opts: Record<string, unknown>) =>
+    request(`/cron/${id}`, { method: "PATCH", body: JSON.stringify(opts) }),
+  deleteCronJob: (id: string) =>
+    request(`/cron/${id}`, { method: "DELETE" }),
+  runCronJob: (id: string) =>
+    request(`/cron/${id}/run`, { method: "POST" }),
+  getCronJobRuns: (id: string, limit = 50) =>
+    request(`/cron/${id}/runs?limit=${limit}`),
+  toggleCronJob: (id: string, enabled: boolean) =>
+    request(`/cron/${id}/toggle`, { method: "POST", body: JSON.stringify({ enabled }) }),
 
-  // Routes
+  // Agent Custom Tools (both scopes)
+  getAgentCustomTools: (agentId: string) => request(`/agents/${agentId}/custom-tools`),
+  toggleAgentCustomTool: (agentId: string, filename: string, enabled: boolean, scope: "shared" | "agent") =>
+    request(`/agents/${agentId}/custom-tools/${encodeURIComponent(filename)}/toggle`, {
+      method: "POST", body: JSON.stringify({ enabled, scope }),
+    }),
+  // Agent workspace scripts (full CRUD)
+  listAgentScripts: (agentId: string) => request(`/agents/${agentId}/scripts`),
+  getAgentScript: (agentId: string, filename: string) => request(`/agents/${agentId}/scripts/${encodeURIComponent(filename)}`),
+  saveAgentScript: (agentId: string, filename: string, content: string) =>
+    request(`/agents/${agentId}/scripts/${encodeURIComponent(filename)}`, { method: "PUT", body: JSON.stringify({ content }) }),
+  deleteAgentScript: (agentId: string, filename: string) =>
+    request(`/agents/${agentId}/scripts/${encodeURIComponent(filename)}`, { method: "DELETE" }),
+  renameAgentScript: (agentId: string, filename: string, newName: string) =>
+    request(`/agents/${agentId}/scripts/${encodeURIComponent(filename)}/rename`, { method: "PATCH", body: JSON.stringify({ newName }) }),
+  updateAgentScriptMeta: (agentId: string, filename: string, meta: { name?: string; description?: string }) =>
+    request(`/agents/${agentId}/scripts/${encodeURIComponent(filename)}/meta`, { method: "PATCH", body: JSON.stringify(meta) }),
+
+  // Workspace Scripts
+  listScripts: () => request("/scripts"),
+  getScript: (filename: string) => request(`/scripts/${encodeURIComponent(filename)}`),
+  saveScript: (filename: string, content: string) =>
+    request(`/scripts/${encodeURIComponent(filename)}`, { method: "PUT", body: JSON.stringify({ content }) }),
+  deleteScript: (filename: string) =>
+    request(`/scripts/${encodeURIComponent(filename)}`, { method: "DELETE" }),
+  renameScript: (filename: string, newName: string) =>
+    request(`/scripts/${encodeURIComponent(filename)}/rename`, { method: "PATCH", body: JSON.stringify({ newName }) }),
+  updateScriptMeta: (filename: string, meta: { name?: string; description?: string }) =>
+    request(`/scripts/${encodeURIComponent(filename)}/meta`, { method: "PATCH", body: JSON.stringify(meta) }),
+
+  // Routes & Channels
   getRoutes: () => request("/routes"),
+  getChannels: () => request("/channels"),
+
+  // Channel login (QR flow)
+  channelLoginStart: (channel: string, account: string) =>
+    request<{ qrDataUrl: string | null; [key: string]: unknown }>(`/channels/${channel}/${account}/login/start`, { method: "POST" }),
+  channelLoginWait: (channel: string, account: string) =>
+    request<{ ok: boolean; [key: string]: unknown }>(`/channels/${channel}/${account}/login/wait`, { method: "POST" }),
 
   // Gateway management
   getGatewayStatus: () =>
