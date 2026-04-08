@@ -4,13 +4,14 @@ import {
   BookOpen, Wrench, Search, RefreshCw, ChevronRight,
   Globe, FolderGit2, User, Package, Boxes, Key, Settings2,
   CheckCircle2, XCircle, Layers, AlertCircle, Edit3, Save,
-  X, Loader2, Plus, Sparkles, ScrollText, Terminal,
+  X, Loader2, Plus, Sparkles, ScrollText, Terminal, Download,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import { useAgentStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { CustomToolsTab } from "@/components/skills/CustomToolsTab"
+import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
 import type { GlobalSkillInfo, GlobalToolInfo, ToolGroup } from "@/types"
 
 // ─── Source config ────────────────────────────────────────────────────────────
@@ -825,6 +826,7 @@ export function SkillsPage() {
   const [tools, setTools] = useState<GlobalToolInfo[]>([])
   const [agents, setAgents] = useState<{ id: string; name: string; emoji: string }[]>([])
   const [showCreate, setShowCreate] = useState(false)
+  const [showInstall, setShowInstall] = useState(false)
   const [scriptCount, setScriptCount] = useState(0)
 
   /** Enrich agentAssignments in skills/tools with avatarPresetId from the store */
@@ -869,9 +871,16 @@ export function SkillsPage() {
           onClose={() => setShowCreate(false)}
           onCreated={(slug) => {
             setShowCreate(false)
-            load().then(() => {
-              // The SkillsTab will auto-select based on the list refresh
-            })
+            load()
+          }}
+        />
+      )}
+      {showInstall && (
+        <InstallSkillModal
+          onClose={() => setShowInstall(false)}
+          onInstalled={(_slug) => {
+            setShowInstall(false)
+            load()
           }}
         />
       )}
@@ -883,6 +892,12 @@ export function SkillsPage() {
           <p className="text-[12px] text-muted-foreground mt-0.5">Global registry of skills and built-in tools across all agents</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowInstall(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400 hover:bg-amber-500/20 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" /> Install from External
+          </button>
           <button
             onClick={() => setShowCreate(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-[12px] text-primary hover:bg-primary/25 transition-colors"

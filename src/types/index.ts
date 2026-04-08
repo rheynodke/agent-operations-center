@@ -492,3 +492,61 @@ export interface SkillScript {
   content?: string
   execHint?: string
 }
+
+// ─── ClawHub Skill Install ────────────────────────────────────────────────────
+
+export interface ClawHubSecurityIssue {
+  level: "danger" | "warn" | "info"
+  label: string
+  file: string
+  count?: number
+}
+
+export interface ClawHubSecurityResult {
+  rating: "clean" | "info" | "warn" | "danger"
+  summary: string
+  issues: ClawHubSecurityIssue[]
+  scannedFiles: string[]
+}
+
+export interface ClawHubSkillPreview {
+  slug: string
+  name: string
+  description: string
+  version: string | null
+  author: string | null
+  license: string | null
+  emoji: string | null
+  skillMdContent: string
+  security: ClawHubSecurityResult
+  fileList: string[]
+  _bufferB64: string
+}
+
+export interface ClawHubInstallTarget {
+  value: "global" | "personal" | "project" | "workspace" | "agent"
+  label: string
+  path: string | null
+}
+
+// ─── SkillsMP ─────────────────────────────────────────────────────────────────
+
+export interface SkillsmpSkill {
+  id: string
+  slug: string
+  name: string
+  description: string
+  author: string | null
+  license: string | null
+  stars: number
+  version: string | null
+  githubUrl: string | null
+  repoPath: string | null
+  skillMdUrl: string | null
+  tags: string[]
+}
+
+export interface SkillsmpKeyStatus {
+  configured: boolean
+  preview: string | null
+}

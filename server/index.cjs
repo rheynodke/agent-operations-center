@@ -654,6 +654,142 @@ app.delete('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware
   }
 });
 
+// ─── ClawHub Skill Install ────────────────────────────────────────────────────
+
+const skillsInstall = require('./lib/skills-install.cjs');
+
+// GET /api/skills/clawhub/targets — list install location options
+app.get('/api/skills/clawhub/targets', db.authMiddleware, (req, res) => {
+  try {
+    res.json({ targets: skillsInstall.getInstallTargets() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills/clawhub/preview — fetch + scan skill without installing
+// Body: { url: "https://clawhub.ai/author/slug" }
+app.post('/api/skills/clawhub/preview', db.authMiddleware, async (req, res) => {
+  const { url } = req.body || {};
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'url is required' });
+  }
+  try {
+    const preview = await skillsInstall.previewSkill(url);
+    res.json(preview);
+  } catch (err) {
+    console.error('[api/skills/clawhub/preview]', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch skill from ClawHub' });
+  }
+});
+
+// POST /api/skills/clawhub/install — download + extract skill
+// Body: { url, target, agentId?, bufferB64? }
+app.post('/api/skills/clawhub/install', db.authMiddleware, async (req, res) => {
+  const { url, target, agentId, bufferB64 } = req.body || {};
+  if (!url || !target) {
+    return res.status(400).json({ error: 'url and target are required' });
+  }
+  try {
+    const result = await skillsInstall.installSkill({ urlOrSlug: url, target, agentId, bufferB64 });
+    console.log(`[api/skills/clawhub] Installed "${result.slug}" to ${result.path}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/skills/clawhub/install]', err);
+    const code = err.message?.includes('already installed') ? 409 : 500;
+    res.status(code).json({ error: err.message || 'Install failed' });
+  }
+});
+
+// ─── SkillsMP Integration ─────────────────────────────────────────────────────
+
+const SKILLSMP_KEY = 'skillsmp_api_key';
+
+// GET /api/settings/skillsmp — check if API key is configured (masked)
+app.get('/api/settings/skillsmp', db.authMiddleware, (req, res) => {
+  const key = db.getSetting(SKILLSMP_KEY);
+  res.json({
+    configured: !!key,
+    // Return only first/last 4 chars for display
+    preview: key ? `${key.slice(0, 11)}…${key.slice(-4)}` : null,
+  });
+});
+
+// POST /api/settings/skillsmp — save API key
+app.post('/api/settings/skillsmp', db.authMiddleware, (req, res) => {
+  const { apiKey } = req.body || {};
+  if (!apiKey || typeof apiKey !== 'string') {
+    return res.status(400).json({ error: 'apiKey is required' });
+  }
+  if (!apiKey.startsWith('sk_live_')) {
+    return res.status(400).json({ error: 'Invalid API key format. Must start with sk_live_' });
+  }
+  db.setSetting(SKILLSMP_KEY, apiKey.trim());
+  res.json({ ok: true, preview: `${apiKey.slice(0, 11)}…${apiKey.slice(-4)}` });
+});
+
+// DELETE /api/settings/skillsmp — remove API key
+app.delete('/api/settings/skillsmp', db.authMiddleware, (req, res) => {
+  db.deleteSetting(SKILLSMP_KEY);
+  res.json({ ok: true });
+});
+
+// GET /api/skills/skillsmp/search?q= — search SkillsMP
+app.get('/api/skills/skillsmp/search', db.authMiddleware, async (req, res) => {
+  const { q } = req.query;
+  if (!q || typeof q !== 'string' || !q.trim()) {
+    return res.status(400).json({ error: 'q (query) is required' });
+  }
+  const apiKey = db.getSetting(SKILLSMP_KEY);
+  if (!apiKey) {
+    return res.status(401).json({ error: 'SkillsMP API key not configured', code: 'NO_API_KEY' });
+  }
+  try {
+    const skills = await skillsInstall.skillsmpSearch(q.trim(), apiKey);
+    res.json({ skills });
+  } catch (err) {
+    console.error('[api/skills/skillsmp/search]', err);
+    const code = err.message?.includes('auth failed') || err.message?.includes('Invalid') ? 401 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// POST /api/skills/skillsmp/preview — fetch SKILL.md content + basic security scan
+app.post('/api/skills/skillsmp/preview', db.authMiddleware, async (req, res) => {
+  const { skill } = req.body || {};
+  if (!skill) return res.status(400).json({ error: 'skill is required' });
+  try {
+    const result = await skillsInstall.fetchSkillsmpSkillMd(skill);
+    if (!result) {
+      return res.status(404).json({ error: 'Could not fetch SKILL.md — GitHub source not available or inaccessible' });
+    }
+    // Run basic security scan on the SKILL.md content
+    const { runSecurityScan } = skillsInstall;
+    const security = runSecurityScan ? runSecurityScan({ 'SKILL.md': () => result.content }) : null;
+    res.json({ content: result.content, sourceUrl: result.url, security });
+  } catch (err) {
+    console.error('[api/skills/skillsmp/preview]', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch skill preview' });
+  }
+});
+
+// POST /api/skills/skillsmp/install — install from SkillsMP
+app.post('/api/skills/skillsmp/install', db.authMiddleware, async (req, res) => {
+  const { skill, target, agentId } = req.body || {};
+  if (!skill || !target) {
+    return res.status(400).json({ error: 'skill and target are required' });
+  }
+  try {
+    const result = await skillsInstall.installSkillsmpSkill({ skill, target, agentId });
+    console.log(`[api/skills/skillsmp] Installed "${result.slug}" to ${result.path}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/skills/skillsmp/install]', err);
+    const code = err.message?.includes('already installed') ? 409 : 500;
+    res.status(code).json({ error: err.message || 'Install failed' });
+  }
+});
+
 // ─── Global Skills & Tools Library ──────────────────────────────────────────
 
 // All skills across all scopes with per-agent assignment info

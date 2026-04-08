@@ -110,6 +110,10 @@ function getAgentDetail(agentId) {
   const agentsContent = readMdFile(path.join(agentWorkspace, 'AGENTS.md'));
   const userContent = readMdFile(path.join(agentWorkspace, 'USER.md'))
     || readMdFile(path.join(OPENCLAW_WORKSPACE, 'USER.md'));
+  const heartbeatContent = readMdFile(path.join(agentWorkspace, 'HEARTBEAT.md'))
+    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'HEARTBEAT.md'));
+  const bootstrapContent = readMdFile(path.join(agentWorkspace, 'BOOTSTRAP.md'))
+    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'BOOTSTRAP.md'));
 
   const identityFields = parseMdFields(identityContent);
   const soulData = parseSoulTraits(soulContent);
@@ -188,6 +192,8 @@ function getAgentDetail(agentId) {
         tools: toolsContent ? true : false,
         agents: agentsContent ? true : false,
         user: userContent ? true : false,
+        heartbeat: heartbeatContent ? true : false,
+        bootstrap: bootstrapContent ? true : false,
       },
     },
     channel: channelInfo,

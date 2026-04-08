@@ -231,6 +231,43 @@ export const api = {
   getRoutes: () => request("/routes"),
   getChannels: () => request("/channels"),
 
+  // ClawHub skill install
+  clawHubTargets: () =>
+    request<{ targets: import("@/types").ClawHubInstallTarget[] }>("/skills/clawhub/targets"),
+  clawHubPreview: (url: string) =>
+    request<import("@/types").ClawHubSkillPreview>("/skills/clawhub/preview", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+  clawHubInstall: (url: string, target: string, agentId?: string, bufferB64?: string) =>
+    request<{ ok: boolean; slug: string; path: string; target: string }>("/skills/clawhub/install", {
+      method: "POST",
+      body: JSON.stringify({ url, target, agentId, bufferB64 }),
+    }),
+
+  // SkillsMP
+  skillsmpKeyStatus: () =>
+    request<import("@/types").SkillsmpKeyStatus>("/settings/skillsmp"),
+  skillsmpSetKey: (apiKey: string) =>
+    request<{ ok: boolean; preview: string }>("/settings/skillsmp", {
+      method: "POST",
+      body: JSON.stringify({ apiKey }),
+    }),
+  skillsmpDeleteKey: () =>
+    request<{ ok: boolean }>("/settings/skillsmp", { method: "DELETE" }),
+  skillsmpSearch: (q: string) =>
+    request<{ skills: import("@/types").SkillsmpSkill[] }>(`/skills/skillsmp/search?q=${encodeURIComponent(q)}`),
+  skillsmpPreview: (skill: import("@/types").SkillsmpSkill) =>
+    request<{ content: string; sourceUrl: string; security: import("@/types").ClawHubSecurityResult | null }>("/skills/skillsmp/preview", {
+      method: "POST",
+      body: JSON.stringify({ skill }),
+    }),
+  skillsmpInstall: (skill: import("@/types").SkillsmpSkill, target: string, agentId?: string) =>
+    request<{ ok: boolean; slug: string; path: string; target: string }>("/skills/skillsmp/install", {
+      method: "POST",
+      body: JSON.stringify({ skill, target, agentId }),
+    }),
+
   // Channel login (QR flow)
   channelLoginStart: (channel: string, account: string) =>
     request<{ qrDataUrl: string | null; [key: string]: unknown }>(`/channels/${channel}/${account}/login/start`, { method: "POST" }),

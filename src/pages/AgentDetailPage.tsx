@@ -24,6 +24,7 @@ import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 import { CronPage } from "@/pages/CronPage"
 import { SyntaxEditor } from "@/components/ui/SyntaxEditor"
+import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  TYPES                                                              */
@@ -118,7 +119,7 @@ function formatTokens(n: number): string {
   return `${n}`
 }
 
-const WORKSPACE_FILES = ["IDENTITY.md", "SOUL.md", "TOOLS.md", "AGENTS.md", "USER.md", "BOOTSTRAP.md"] as const
+const WORKSPACE_FILES = ["IDENTITY.md", "SOUL.md", "TOOLS.md", "AGENTS.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md"] as const
 
 const fileDescriptions: Record<string, string> = {
   "IDENTITY.md": "Agent persona — name, emoji, creature, vibe",
@@ -126,6 +127,7 @@ const fileDescriptions: Record<string, string> = {
   "TOOLS.md": "Available tools and integrations",
   "AGENTS.md": "Multi-agent collaboration patterns",
   "USER.md": "User context — preferences and projects",
+  "HEARTBEAT.md": "Periodic tasks — runs on every gateway heartbeat poll",
   "BOOTSTRAP.md": "One-time first-run setup ritual",
 }
 
@@ -135,8 +137,97 @@ const fileIcons: Record<string, string> = {
   "TOOLS.md": "🔧",
   "AGENTS.md": "🤝",
   "USER.md": "👤",
+  "HEARTBEAT.md": "💓",
   "BOOTSTRAP.md": "🚀",
 }
+
+const FILE_STARTERS: Record<string, string> = {
+  "HEARTBEAT.md": `# HEARTBEAT.md\n\n# Add tasks below — agent will execute these on every heartbeat poll.\n# Keep this file empty (or only comments) to reply HEARTBEAT_OK silently.\n\n`,
+  "BOOTSTRAP.md": `# BOOTSTRAP.md\n\n# One-time setup ritual — runs the very first time this agent starts.\n# Delete this file once the setup is complete.\n\n`,
+  "USER.md": `# USER.md\n\n# User context — preferences, projects, and background info.\n\n`,
+}
+
+const HEARTBEAT_TEMPLATES: { label: string; emoji: string; description: string; content: string }[] = [
+  {
+    label: "Error Monitor",
+    emoji: "🚨",
+    description: "Alert via Telegram if new errors appear in log file",
+    content: `# HEARTBEAT.md — Error Monitor
+
+- Check ~/project/logs/error.log for new entries since last check
+- If new errors found: summarize and send to Telegram, then clear the file
+- Otherwise: HEARTBEAT_OK
+`,
+  },
+  {
+    label: "Urgent TODO",
+    emoji: "📋",
+    description: "Notify when urgent items appear in TODO.md",
+    content: `# HEARTBEAT.md — Urgent TODO Watcher
+
+- Read TODO.md in workspace
+- If any item is marked with [!] or [urgent], notify via Telegram immediately
+- Otherwise: HEARTBEAT_OK
+
+Do not repeat alerts for items already notified. Track sent alerts in memory/heartbeat-sent.md.
+`,
+  },
+  {
+    label: "Memory Cleanup",
+    emoji: "🧹",
+    description: "Compact old memory files periodically",
+    content: `# HEARTBEAT.md — Memory Maintenance
+
+- Check memory/ folder — count daily files (YYYY-MM-DD.md format)
+- If more than 14 files exist: summarize the oldest 7 into memory/archive.md, then delete them
+- Keep the summary concise — key events, decisions, lessons only
+- Otherwise: HEARTBEAT_OK
+`,
+  },
+  {
+    label: "Proactive Check-in",
+    emoji: "💬",
+    description: "Reach out if there's been no activity for a while",
+    content: `# HEARTBEAT.md — Proactive Check-in
+
+- Check last message timestamp in session history
+- If more than 8 hours have passed since last interaction:
+  - Look for anything worth reporting (pending tasks, new files, errors)
+  - If something noteworthy: send a brief update via Telegram
+  - If nothing new: HEARTBEAT_OK
+- Otherwise: HEARTBEAT_OK
+
+Only send one proactive message per 8-hour window. Don't spam.
+`,
+  },
+  {
+    label: "File Inbox",
+    emoji: "📥",
+    description: "Process drop files placed in an inbox folder",
+    content: `# HEARTBEAT.md — File Inbox Processor
+
+- Check ~/inbox/ folder for new files
+- For each new file found:
+  - Read its content
+  - Process according to file type (summarize .txt, extract data from .csv, etc.)
+  - Move processed file to ~/inbox/done/
+  - Send result summary to Telegram
+- If inbox is empty: HEARTBEAT_OK
+`,
+  },
+  {
+    label: "Silent (disabled)",
+    emoji: "🔇",
+    description: "Keep heartbeat active but do nothing",
+    content: `# HEARTBEAT.md
+
+# Heartbeat is active but no tasks are configured.
+# Agent will always reply HEARTBEAT_OK silently.
+
+# Add tasks here when needed.
+`,
+  },
+]
 
 const toolIcons: Record<string, React.ElementType> = {
   terminal: Terminal, ssh: Terminal, git: Terminal,
@@ -190,6 +281,7 @@ function InlineFilePanel({
   const [error, setError] = useState("")
   const [saved, setSaved] = useState(false)
   const [editMode, setEditMode] = useState(false)
+  const [isNew, setIsNew] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -198,6 +290,7 @@ function InlineFilePanel({
     setError("")
     setSaved(false)
     setEditMode(false)
+    setIsNew(false)
     api.getAgentFile(agentId, filename)
       .then(data => {
         if (cancelled) return
@@ -208,7 +301,17 @@ function InlineFilePanel({
       })
       .catch(err => {
         if (cancelled) return
-        setError((err as Error).message)
+        const msg = (err as Error).message || ""
+        if (msg.toLowerCase().includes("not found") || msg.includes("404")) {
+          // File doesn't exist yet — enter create mode with starter template
+          const starter = FILE_STARTERS[filename] || `# ${filename}\n\n`
+          setContent(starter)
+          setOriginalContent("")
+          setIsNew(true)
+          setEditMode(true)
+        } else {
+          setError(msg)
+        }
         setLoading(false)
       })
     return () => { cancelled = true }
@@ -223,6 +326,7 @@ function InlineFilePanel({
     try {
       await api.saveAgentFile(agentId, filename, content)
       setOriginalContent(content)
+      setIsNew(false)
       setSaved(true)
       setEditMode(false)
       onSaved()
@@ -255,7 +359,12 @@ function InlineFilePanel({
                   Global
                 </span>
               )}
-              {isDirty && (
+              {isNew && (
+                <span className="text-[9px] font-bold uppercase tracking-wider text-sky-400 bg-sky-400/10 border border-sky-400/20 px-1.5 py-0.5 rounded">
+                  New file
+                </span>
+              )}
+              {isDirty && !isNew && (
                 <span className="text-[9px] font-bold uppercase tracking-wider text-blue-400 bg-blue-400/10 border border-blue-400/20 px-1.5 py-0.5 rounded">
                   Modified
                 </span>
@@ -277,19 +386,21 @@ function InlineFilePanel({
           )}
           {editMode ? (
             <>
-              <button
-                onClick={() => { setContent(originalContent); setEditMode(false) }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
-              >
-                <X className="w-3 h-3" /> Cancel
-              </button>
+              {!isNew && (
+                <button
+                  onClick={() => { setContent(originalContent); setEditMode(false) }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+                >
+                  <X className="w-3 h-3" /> Cancel
+                </button>
+              )}
               <button
                 onClick={handleSave}
-                disabled={!isDirty || saving}
+                disabled={(!isDirty && !isNew) || saving}
                 className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/20 border border-primary/30 text-[11px] text-primary font-bold hover:bg-primary/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                {saving ? "Saving…" : "Save"}
+                {saving ? "Saving…" : isNew ? "Create" : "Save"}
               </button>
             </>
           ) : (
@@ -302,6 +413,26 @@ function InlineFilePanel({
           )}
         </div>
       </div>
+
+      {/* Heartbeat template picker — shown when editing HEARTBEAT.md */}
+      {filename === "HEARTBEAT.md" && editMode && (
+        <div className="shrink-0 border-b border-border bg-foreground/1 px-4 py-2.5">
+          <p className="text-[10px] text-muted-foreground/50 mb-2 uppercase tracking-wider font-semibold">Insert template</p>
+          <div className="flex flex-wrap gap-1.5">
+            {HEARTBEAT_TEMPLATES.map(tpl => (
+              <button
+                key={tpl.label}
+                onClick={() => setContent(tpl.content)}
+                title={tpl.description}
+                className="flex items-center gap-1.5 px-2 py-1 rounded border border-foreground/10 bg-foreground/3 hover:bg-foreground/8 hover:border-foreground/20 transition-colors text-[11px] text-foreground/60 hover:text-foreground"
+              >
+                <span>{tpl.emoji}</span>
+                <span>{tpl.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Content area */}
       <div className="flex-1 overflow-auto relative">
@@ -2803,6 +2934,7 @@ export function AgentDetailPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
   const [showCreateSkill, setShowCreateSkill] = useState(false)
+  const [showInstallSkill, setShowInstallSkill] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
 
   // Built-in tools
@@ -3007,6 +3139,12 @@ export function AgentDetailPage() {
         onClose={() => setShowCreateSkill(false)}
         onCreated={(slug) => { setShowCreateSkill(false); loadSkills().then(() => setSelectedSkill(slug)) }}
       />}
+      {showInstallSkill && (
+        <InstallSkillModal
+          onClose={() => setShowInstallSkill(false)}
+          onInstalled={() => { setShowInstallSkill(false); loadSkills() }}
+        />
+      )}
       {viewingSession && <SessionDetailModal session={viewingSession} onClose={() => setViewingSession(null)} />}
 
       {loading ? (
@@ -3198,15 +3336,14 @@ export function AgentDetailPage() {
                         return (
                           <button
                             key={file}
-                            onClick={() => exists && setSelectedFile(file)}
-                            disabled={!exists}
+                            onClick={() => setSelectedFile(file)}
                             className={cn(
                               "w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors group",
                               isSelected
                                 ? "bg-primary/10 border-r-2 border-primary text-foreground"
                                 : exists
                                   ? "text-foreground/70 hover:bg-foreground/3 hover:text-foreground"
-                                  : "text-foreground/15 cursor-not-allowed"
+                                  : "text-foreground/25 hover:bg-foreground/3 hover:text-foreground/60"
                             )}
                           >
                             <span className={cn("text-base leading-none", !exists && "grayscale opacity-30")}>
@@ -3282,10 +3419,16 @@ export function AgentDetailPage() {
                         className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
                         {skillSidebarCollapsed ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span>Expand</span></> : <><PanelLeftClose className="w-3.5 h-3.5" /><span>Collapse</span></>}
                       </button>
-                      <button onClick={() => setShowCreateSkill(true)}
-                        className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 border border-primary/20 text-[11px] text-primary font-bold hover:bg-primary/20 transition-colors">
-                        <Plus className="w-3 h-3" /> New Skill
-                      </button>
+                      <div className="ml-auto flex items-center gap-1.5">
+                        <button onClick={() => setShowInstallSkill(true)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400 font-medium hover:bg-amber-500/20 transition-colors">
+                          <Download className="w-3 h-3" /> Install
+                        </button>
+                        <button onClick={() => setShowCreateSkill(true)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 border border-primary/20 text-[11px] text-primary font-bold hover:bg-primary/20 transition-colors">
+                          <Plus className="w-3 h-3" /> New Skill
+                        </button>
+                      </div>
                     </>
                   )}
                   {activeTab === 'tools' && (

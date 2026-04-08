@@ -90,6 +90,15 @@ async function initDatabase() {
     db.run(`ALTER TABLE agent_profiles ADD COLUMN avatar_preset_id TEXT`);
   } catch (_) { /* column already exists */ }
 
+  // Dashboard settings — key/value store for API keys, preferences, etc.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
   persist();
   return db;
 }
@@ -304,6 +313,31 @@ function deleteAgentProfile(agentId) {
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   initDatabase,
+  // ─── Settings ───────────────────────────────────────────────────────────────
+  getSetting(key) {
+    if (!db) return null;
+    const res = db.exec('SELECT value FROM settings WHERE key = ?', [key]);
+    if (!res.length || !res[0].values.length) return null;
+    return res[0].values[0][0];
+  },
+  setSetting(key, value) {
+    if (!db) throw new Error('Database not initialized');
+    const stmt = db.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    );
+    stmt.run([key, value]);
+    stmt.free();
+    persist();
+  },
+  deleteSetting(key) {
+    if (!db) return;
+    const stmt = db.prepare('DELETE FROM settings WHERE key = ?');
+    stmt.run([key]);
+    stmt.free();
+    persist();
+  },
+
   persist,
   hasAnyUsers,
   createUser,

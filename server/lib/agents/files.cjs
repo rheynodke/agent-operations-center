@@ -4,7 +4,7 @@ const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
 const { readMdFile } = require('./detail.cjs');
 
-const ALLOWED_FILES = ['IDENTITY.md', 'SOUL.md', 'TOOLS.md', 'AGENTS.md', 'USER.md'];
+const ALLOWED_FILES = ['IDENTITY.md', 'SOUL.md', 'TOOLS.md', 'AGENTS.md', 'USER.md', 'HEARTBEAT.md'];
 
 function normalizeFilename(filename) {
   const upper = filename.toUpperCase();
