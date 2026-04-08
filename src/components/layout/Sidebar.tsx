@@ -13,6 +13,7 @@ import {
   BookOpen,
   MessageSquare,
   Cable,
+  Webhook,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAlertStore, useWsStore } from "@/stores"
@@ -38,6 +39,7 @@ const navGroups = [
     label: "Automation",
     items: [
       { to: "/cron", label: "Schedules", icon: Timer },
+      { to: "/hooks", label: "Webhooks", icon: Webhook },
     ],
   },
   {

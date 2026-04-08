@@ -10,6 +10,22 @@ const parsers = require('./lib/index.cjs'); // modular barrel — replaces parse
 const { LiveFeedWatcher } = require('./lib/watchers.cjs');
 const db = require('./lib/db.cjs');
 const { gatewayProxy } = require('./lib/gateway-ws.cjs');
+const versioning = require('./lib/versioning.cjs');
+
+/** Shorthand: save a version snapshot after a successful file write */
+function vSave(scopeKey, content, req, op = 'edit') {
+  try {
+    versioning.saveVersion(db.getDb(), {
+      scopeKey,
+      content,
+      savedBy: req.user?.username || null,
+      op,
+      persist: db.persist,
+    });
+  } catch (e) {
+    console.warn('[versioning] saveVersion failed:', e.message);
+  }
+}
 
 
 const PORT = parseInt(process.env.PORT || '18800', 10);
@@ -433,6 +449,7 @@ app.put('/api/agents/:id/files/:filename', db.authMiddleware, (req, res) => {
     if (content === undefined) return res.status(400).json({ error: 'content is required' });
     const result = parsers.saveAgentFile(req.params.id, req.params.filename, content);
     console.log(`[api/agents/files] Saved ${result.filename} for agent "${req.params.id}"`);
+    vSave(`agent:${req.params.id}:${result.filename}`, content, req);
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[api/agents/files/put]', err);
@@ -535,6 +552,7 @@ app.put('/api/agents/:id/skills/:name/file', db.authMiddleware, (req, res) => {
     if (content === undefined) return res.status(400).json({ error: 'content is required' });
     const result = parsers.saveSkillFile(req.params.id, req.params.name, content);
     console.log(`[api/agents/skills] Saved skill "${req.params.name}" for agent "${req.params.id}"`);
+    vSave(`skill:${req.params.id}:${req.params.name}`, content, req);
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[api/agents/skills/file/put]', err);
@@ -570,6 +588,19 @@ app.patch('/api/agents/:id/skills/:name/toggle', db.authMiddleware, (req, res) =
   } catch (err) {
     console.error('[api/agents/skills/toggle]', err);
     const status = err.message?.includes('not found') ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// Delete an agent's workspace skill (only 'workspace' source allowed)
+app.delete('/api/agents/:id/skills/:name', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.deleteAgentSkill(req.params.id, req.params.name);
+    console.log(`[api/agents/skills] Deleted skill "${req.params.name}" for agent "${req.params.id}"`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/skills/delete]', err);
+    const status = err.message?.includes('not found') ? 404 : err.message?.includes('Cannot delete') ? 403 : 500;
     res.status(status).json({ error: err.message });
   }
 });
@@ -818,6 +849,19 @@ app.post('/api/skills', db.authMiddleware, (req, res) => {
   }
 });
 
+// Delete a skill from the global library by slug
+app.delete('/api/skills/:slug', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.deleteSkillBySlug(req.params.slug);
+    console.log(`[api/skills] Deleted skill "${req.params.slug}"`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/skills/delete]', err);
+    const status = err.message?.includes('not found') ? 404 : err.message?.includes('not deletable') ? 403 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
 // Read a skill's SKILL.md directly by slug
 app.get('/api/skills/:slug/file', db.authMiddleware, (req, res) => {
   try {
@@ -837,6 +881,7 @@ app.put('/api/skills/:slug/file', db.authMiddleware, (req, res) => {
     if (content === undefined) return res.status(400).json({ error: 'content is required' });
     const result = parsers.saveSkillFileBySlug(req.params.slug, content);
     console.log(`[api/skills] Saved SKILL.md for "${req.params.slug}"`);
+    vSave(`skill:global:${req.params.slug}`, content, req);
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[api/skills/file/put]', err);
@@ -907,6 +952,7 @@ app.put('/api/agents/:id/skills/:name/scripts/:filename', db.authMiddleware, (re
       { appendToSkillMd: appendToSkillMd !== false }
     );
     console.log(`[api/agents/skills/scripts] Saved "${req.params.filename}" in skill "${req.params.name}" for agent "${req.params.id}" (new: ${result.isNew}, skillMdUpdated: ${result.skillMdUpdated})`);
+    vSave(`skill-script:${req.params.id}:${req.params.name}:${req.params.filename}`, content, req, result.isNew ? 'create' : 'edit');
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[api/agents/skills/scripts/save]', err);
@@ -1145,7 +1191,9 @@ app.put('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
   try {
     const { content } = req.body;
     if (typeof content !== 'string') return res.status(400).json({ error: '`content` required' });
-    res.json(parsers.saveAgentScript(req.params.id, req.params.filename, content));
+    const result = parsers.saveAgentScript(req.params.id, req.params.filename, content);
+    vSave(`script:agent:${req.params.id}:${req.params.filename}`, content, req);
+    res.json(result);
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
@@ -1183,7 +1231,9 @@ app.put('/api/scripts/:filename', db.authMiddleware, (req, res) => {
   try {
     const { content } = req.body;
     if (typeof content !== 'string') return res.status(400).json({ error: '`content` string required' });
-    res.json(parsers.saveScript(req.params.filename, content));
+    const result = parsers.saveScript(req.params.filename, content);
+    vSave(`script:global:${req.params.filename}`, content, req);
+    res.json(result);
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
@@ -1277,6 +1327,88 @@ app.get('/api/routes', db.authMiddleware, (req, res) => {
   }
 });
 
+// ─── File Version History ─────────────────────────────────────────────────────
+
+// GET /api/versions?scope=agent:tadaki:IDENTITY.md&limit=30
+app.get('/api/versions', db.authMiddleware, (req, res) => {
+  const { scope, limit = '30' } = req.query;
+  if (!scope) return res.status(400).json({ error: 'scope is required' });
+  try {
+    const versions = versioning.listVersions(db.getDb(), { scopeKey: scope, limit: Math.min(parseInt(limit) || 30, 100) });
+    res.json({ versions });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/versions/:id — get a specific version (includes content)
+app.get('/api/versions/:id', db.authMiddleware, (req, res) => {
+  try {
+    const v = versioning.getVersion(db.getDb(), parseInt(req.params.id));
+    if (!v) return res.status(404).json({ error: 'Version not found' });
+    res.json({ version: v });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/versions/:id/restore — restore a version (write content back to file)
+app.post('/api/versions/:id/restore', db.authMiddleware, async (req, res) => {
+  try {
+    const v = versioning.getVersion(db.getDb(), parseInt(req.params.id));
+    if (!v) return res.status(404).json({ error: 'Version not found' });
+
+    const key = v.scope_key;
+    const content = v.content;
+
+    // Route to appropriate save function based on scope_key prefix
+    if (key.startsWith('agent:')) {
+      const parts = key.split(':');              // agent:{agentId}:{fileName}
+      const agentId  = parts[1];
+      const fileName = parts.slice(2).join(':');
+      parsers.saveAgentFile(agentId, fileName, content);
+    } else if (key.startsWith('skill:global:')) {
+      const slug = key.slice('skill:global:'.length);
+      parsers.saveSkillFileBySlug(slug, content);
+    } else if (key.startsWith('skill:')) {
+      const parts = key.split(':');              // skill:{agentId}:{skillName}
+      parsers.saveSkillFile(parts[1], parts[2], content);
+    } else if (key.startsWith('skill-script:')) {
+      const parts = key.split(':');              // skill-script:{agentId}:{skill}:{file}
+      parsers.saveSkillScript(parts[1], parts[2], parts[3], content, { appendToSkillMd: false });
+    } else if (key.startsWith('script:agent:')) {
+      const parts = key.split(':');              // script:agent:{agentId}:{file}
+      parsers.saveAgentScript(parts[2], parts[3], content);
+    } else if (key.startsWith('script:global:')) {
+      const file = key.slice('script:global:'.length);
+      parsers.saveScript(file, content);
+    } else {
+      return res.status(400).json({ error: `Cannot restore scope_key: ${key}` });
+    }
+
+    // Record the restore as a new version
+    vSave(key, content, req, 'edit');
+
+    console.log(`[api/versions] Restored version ${v.id} (${key}) by ${req.user?.username}`);
+    res.json({ ok: true, scopeKey: key, restoredVersionId: v.id });
+  } catch (err) {
+    console.error('[api/versions/restore]', err);
+    res.status(500).json({ error: err.message || 'Restore failed' });
+  }
+});
+
+// DELETE /api/versions/:id
+app.delete('/api/versions/:id', db.authMiddleware, (req, res) => {
+  try {
+    const v = versioning.getVersion(db.getDb(), parseInt(req.params.id));
+    if (!v) return res.status(404).json({ error: 'Version not found' });
+    versioning.deleteVersion(db.getDb(), parseInt(req.params.id), db.persist);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── OpenClaw Config Management ──────────────────────────────────────────────
 
 const EDITABLE_CONFIG_SECTIONS = new Set([
@@ -1316,6 +1448,48 @@ app.patch('/api/config/:section', db.authMiddleware, (req, res) => {
     res.json({ ok: true, section });
   } catch (err) {
     console.error('[api/config/patch]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Hooks / Inbound Webhooks ─────────────────────────────────────────────────
+
+// GET /api/hooks/config
+app.get('/api/hooks/config', db.authMiddleware, (req, res) => {
+  try {
+    res.json(parsers.getHooksConfig());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/hooks/config
+app.put('/api/hooks/config', db.authMiddleware, (req, res) => {
+  try {
+    parsers.saveHooksConfig(req.body);
+    res.json(parsers.getHooksConfig());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/hooks/token — generate + save a new random token
+app.post('/api/hooks/token', db.authMiddleware, (req, res) => {
+  try {
+    const token = parsers.generateToken();
+    parsers.saveHooksConfig({ token });
+    res.json({ token });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/hooks/sessions
+app.get('/api/hooks/sessions', db.authMiddleware, (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    res.json({ sessions: parsers.getHookSessions(limit) });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

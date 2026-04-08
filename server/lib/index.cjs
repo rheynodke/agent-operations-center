@@ -13,6 +13,7 @@ const agents     = require('./agents/index.cjs');
 const { getAvailableModels } = require('./models.cjs');
 const cronLib    = require('./automation/cron.cjs');
 const scriptsLib = require('./scripts.cjs');
+const hooksLib   = require('./hooks.cjs');
 
 const { readJsonSafe, OPENCLAW_HOME } = config;
 const { parseRoutes, getChannelsConfig } = require('./routing.cjs');
@@ -52,6 +53,8 @@ module.exports = {
   createSkill:          agents.createSkill,
   createGlobalSkill:    agents.createGlobalSkill,
   toggleAgentSkill:     agents.toggleAgentSkill,
+  deleteAgentSkill:     agents.deleteAgentSkill,
+  deleteSkillBySlug:    agents.deleteSkillBySlug,
   BUILTIN_TOOLS:     agents.BUILTIN_TOOLS,
   getAgentTools:     agents.getAgentTools,
   getAllTools:        agents.getAllTools,
@@ -106,4 +109,10 @@ module.exports = {
   updateAgentScriptMeta:   scriptsLib.updateAgentScriptMeta,
   listAgentCustomTools:    scriptsLib.listAgentCustomTools,
   toggleAgentCustomTool:   scriptsLib.toggleAgentCustomTool,
+
+  // ── hooks / inbound webhooks ───────────────────────────────────────────────
+  getHooksConfig:   hooksLib.getHooksConfig,
+  saveHooksConfig:  hooksLib.saveHooksConfig,
+  getHookSessions:  hooksLib.getHookSessions,
+  generateToken:    hooksLib.generateToken,
 };

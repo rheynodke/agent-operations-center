@@ -17,7 +17,7 @@ import {
   Plus, Package, Power, PowerOff, Sparkles,
   Activity, PanelLeftClose, PanelLeftOpen,
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
-  Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer,
+  Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer, History,
 } from "lucide-react"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -25,6 +25,8 @@ import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 import { CronPage } from "@/pages/CronPage"
 import { SyntaxEditor } from "@/components/ui/SyntaxEditor"
 import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
+import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  TYPES                                                              */
@@ -279,6 +281,7 @@ function InlineFilePanel({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
+  const [showHistory, setShowHistory] = useState(false)
   const [saved, setSaved] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [isNew, setIsNew] = useState(false)
@@ -404,15 +407,38 @@ function InlineFilePanel({
               </button>
             </>
           ) : (
-            <button
-              onClick={() => setEditMode(true)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
-            >
-              <Edit3 className="w-3 h-3" /> Edit
-            </button>
+            <>
+              <button
+                onClick={() => setShowHistory(true)}
+                className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+                title="Version history"
+              >
+                <History className="w-3 h-3" />
+              </button>
+              <button
+                onClick={() => setEditMode(true)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+              >
+                <Edit3 className="w-3 h-3" /> Edit
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {showHistory && (
+        <VersionHistoryPanel
+          scopeKey={`agent:${agentId}:${filename}`}
+          currentContent={content}
+          onClose={() => setShowHistory(false)}
+          onRestored={(restoredContent) => {
+            setContent(restoredContent)
+            setOriginalContent(restoredContent)
+            setShowHistory(false)
+            onSaved()
+          }}
+        />
+      )}
 
       {/* Heartbeat template picker — shown when editing HEARTBEAT.md */}
       {filename === "HEARTBEAT.md" && editMode && (
@@ -501,6 +527,7 @@ function SkillScriptsPanel({
   const [scriptLoading, setScriptLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [error, setError] = useState("")
   const [saveMsg, setSaveMsg] = useState("")
   const [pathInfo, setPathInfo] = useState<{ relPath: string; scriptsDirExists: boolean } | null>(null)
@@ -570,8 +597,9 @@ function SkillScriptsPanel({
     }
   }
 
-  async function handleDelete() {
-    if (!selected || !confirm(`Delete ${selected}?`)) return
+  async function doDelete() {
+    if (!selected) return
+    setShowDeleteConfirm(false)
     setDeleting(true)
     try {
       await api.deleteSkillScript(agentId, skillSlug, selected)
@@ -745,7 +773,7 @@ function SkillScriptsPanel({
                   <button onClick={handleDownload} title="Download script" className="p-1 rounded hover:bg-foreground/5 text-muted-foreground hover:text-foreground transition-colors">
                     <Download className="w-3.5 h-3.5" />
                   </button>
-                  <button onClick={handleDelete} disabled={deleting} title="Delete script" className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors">
+                  <button onClick={() => setShowDeleteConfirm(true)} disabled={deleting} title="Delete script" className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors">
                     {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                   </button>
                   {isDirty && (
@@ -786,6 +814,17 @@ function SkillScriptsPanel({
           )}
         </div>
       </div>
+      {showDeleteConfirm && selected && (
+        <ConfirmDialog
+          title={`Delete "${selected}"?`}
+          description="This script file will be permanently deleted and cannot be recovered."
+          confirmLabel="Delete Script"
+          destructive
+          loading={deleting}
+          onConfirm={doDelete}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
     </div>
   )
 }
@@ -815,6 +854,9 @@ function InlineSkillPanel({
   const [editMode, setEditMode] = useState(false)
   const [editable, setEditable] = useState(false)
   const [skillTab, setSkillTab] = useState<'skillmd' | 'scripts'>('skillmd')
+  const [showHistory, setShowHistory] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   function reloadSkillMd() {
@@ -857,6 +899,18 @@ function InlineSkillPanel({
       setError((err as Error).message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function doDelete() {
+    setShowDeleteConfirm(false)
+    setDeleting(true)
+    try {
+      await api.deleteAgentSkill(agentId, skillSlug)
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+      setDeleting(false)
     }
   }
 
@@ -904,7 +958,19 @@ function InlineSkillPanel({
             {skill?.enabled ? "Enabled" : "Disabled"}
           </button>
 
-          {skillTab === 'skillmd' && editable && (
+          {/* Delete — only for workspace skills */}
+          {skill?.source === 'workspace' && !editMode && (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              disabled={deleting}
+              className="flex items-center gap-1 px-2 py-1 rounded-md border border-red-500/20 text-[10px] text-red-400/70 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+              title="Delete workspace skill"
+            >
+              {deleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+            </button>
+          )}
+
+          {skillTab === 'skillmd' && (
             editMode ? (
               <>
                 <button
@@ -923,12 +989,23 @@ function InlineSkillPanel({
                 </button>
               </>
             ) : (
-              <button
-                onClick={() => setEditMode(true)}
-                className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
-              >
-                <Edit3 className="w-3 h-3" /> Edit
-              </button>
+              <>
+                <button
+                  onClick={() => setShowHistory(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+                  title="Version history"
+                >
+                  <History className="w-3 h-3" />
+                </button>
+                {editable && (
+                  <button
+                    onClick={() => setEditMode(true)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+                  >
+                    <Edit3 className="w-3 h-3" /> Edit
+                  </button>
+                )}
+              </>
             )
           )}
         </div>
@@ -989,6 +1066,31 @@ function InlineSkillPanel({
           />
         )}
       </div>
+
+      {showHistory && (
+        <VersionHistoryPanel
+          scopeKey={`skill:${agentId}:${skillSlug}`}
+          currentContent={content}
+          onClose={() => setShowHistory(false)}
+          onRestored={(c) => {
+            setContent(c)
+            setOriginalContent(c)
+            setShowHistory(false)
+            onSaved()
+          }}
+        />
+      )}
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title={`Delete "${skillSlug}"?`}
+          description="This will permanently remove the skill directory. This action cannot be undone."
+          confirmLabel="Delete Skill"
+          destructive
+          loading={deleting}
+          onConfirm={doDelete}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
     </div>
   )
 }
@@ -1610,6 +1712,7 @@ function TelegramChannelCard({
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [removing, setRemoving] = useState(false)
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false)
   const [dmPolicy, setDmPolicy] = useState<DmPolicy>(ch.dmPolicy)
   const [streaming, setStreaming] = useState<Streaming>(ch.streaming)
   const [botToken, setBotToken] = useState(ch.botToken)
@@ -1626,8 +1729,8 @@ function TelegramChannelCard({
     } finally { setSaving(false) }
   }
 
-  async function handleRemove() {
-    if (!confirm(`Remove Telegram binding for this agent? The bot token will be deleted from openclaw.json.`)) return
+  async function doRemove() {
+    setShowRemoveConfirm(false)
     setRemoving(true)
     try {
       await api.removeAgentChannel(agentId, "telegram", ch.accountId)
@@ -1654,7 +1757,7 @@ function TelegramChannelCard({
             <Pencil className="w-3 h-3" />
           </button>
           <button
-            onClick={handleRemove}
+            onClick={() => setShowRemoveConfirm(true)}
             disabled={removing}
             className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
             title="Remove binding"
@@ -1663,6 +1766,18 @@ function TelegramChannelCard({
           </button>
         </div>
       </div>
+
+      {showRemoveConfirm && (
+        <ConfirmDialog
+          title="Remove Telegram Binding?"
+          description="The bot token for this account will be removed from openclaw.json. The agent will stop receiving Telegram messages."
+          confirmLabel="Remove Binding"
+          destructive
+          loading={removing}
+          onConfirm={doRemove}
+          onCancel={() => setShowRemoveConfirm(false)}
+        />
+      )}
 
       {editing ? (
         <div className="px-4 py-3 space-y-3">
@@ -1744,6 +1859,7 @@ function WhatsAppChannelCard({
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [removing, setRemoving] = useState(false)
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false)
   const [dmPolicy, setDmPolicy] = useState<DmPolicy>(ch.dmPolicy)
   const [allowFrom, setAllowFrom] = useState(ch.allowFrom.join(", "))
   const [err, setErr] = useState("")
@@ -1760,8 +1876,8 @@ function WhatsAppChannelCard({
     } finally { setSaving(false) }
   }
 
-  async function handleRemove() {
-    if (!confirm(`Remove WhatsApp binding for this agent?`)) return
+  async function doRemove() {
+    setShowRemoveConfirm(false)
     setRemoving(true)
     try {
       await api.removeAgentChannel(agentId, "whatsapp", ch.accountId)
@@ -1792,7 +1908,7 @@ function WhatsAppChannelCard({
             <Pencil className="w-3 h-3" />
           </button>
           <button
-            onClick={handleRemove}
+            onClick={() => setShowRemoveConfirm(true)}
             disabled={removing}
             className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
           >
@@ -1865,6 +1981,17 @@ function WhatsAppChannelCard({
           </div>
         </div>
       )}
+      {showRemoveConfirm && (
+        <ConfirmDialog
+          title="Remove WhatsApp Binding?"
+          description="This will remove the WhatsApp account binding. The agent will stop receiving WhatsApp messages."
+          confirmLabel="Remove Binding"
+          destructive
+          loading={removing}
+          onConfirm={doRemove}
+          onCancel={() => setShowRemoveConfirm(false)}
+        />
+      )}
     </div>
   )
 }
@@ -1877,6 +2004,7 @@ function DiscordChannelCard({
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [removing, setRemoving] = useState(false)
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false)
   const [dmPolicy, setDmPolicy] = useState<DmPolicy>(ch.dmPolicy)
   const [groupPolicy, setGroupPolicy] = useState<GroupPolicy>(ch.groupPolicy)
   const [botToken, setBotToken] = useState("")
@@ -1897,8 +2025,8 @@ function DiscordChannelCard({
     } finally { setSaving(false) }
   }
 
-  async function handleRemove() {
-    if (!confirm(`Remove Discord binding for this agent?`)) return
+  async function doRemove() {
+    setShowRemoveConfirm(false)
     setRemoving(true)
     try {
       await api.removeAgentChannel(agentId, "discord", ch.accountId)
@@ -1925,7 +2053,7 @@ function DiscordChannelCard({
             <Pencil className="w-3 h-3" />
           </button>
           <button
-            onClick={handleRemove}
+            onClick={() => setShowRemoveConfirm(true)}
             disabled={removing}
             className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
             title="Remove binding"
@@ -2004,6 +2132,17 @@ function DiscordChannelCard({
             <span className="font-medium text-foreground/80">{ch.hasToken ? "Configured" : "Missing"}</span>
           </div>
         </div>
+      )}
+      {showRemoveConfirm && (
+        <ConfirmDialog
+          title="Remove Discord Binding?"
+          description="This will remove the Discord bot binding for this agent. The agent will stop receiving Discord messages."
+          confirmLabel="Remove Binding"
+          destructive
+          loading={removing}
+          onConfirm={doRemove}
+          onCancel={() => setShowRemoveConfirm(false)}
+        />
       )}
     </div>
   )

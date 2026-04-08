@@ -4,7 +4,7 @@ import {
   BookOpen, Wrench, Search, RefreshCw, ChevronRight,
   Globe, FolderGit2, User, Package, Boxes, Key, Settings2,
   CheckCircle2, XCircle, Layers, AlertCircle, Edit3, Save,
-  X, Loader2, Plus, Sparkles, ScrollText, Terminal, Download,
+  X, Loader2, Plus, Sparkles, ScrollText, Terminal, Download, History, Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
@@ -12,6 +12,8 @@ import { useAgentStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { CustomToolsTab } from "@/components/skills/CustomToolsTab"
 import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
+import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import type { GlobalSkillInfo, GlobalToolInfo, ToolGroup } from "@/types"
 
 // ─── Source config ────────────────────────────────────────────────────────────
@@ -226,6 +228,7 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
   const [saving, setSaving] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [error, setError] = useState("")
+  const [showHistory, setShowHistory] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -305,18 +308,38 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
                 {saving ? "Saving…" : "Save"}
               </button>
             </>
-          ) : editable ? (
-            <button
-              onClick={() => setEditMode(true)}
-              className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
-            >
-              <Edit3 className="w-3 h-3" /> Edit
-            </button>
           ) : (
-            <span className="text-[9px] text-muted-foreground/40 px-1">read-only</span>
+            <>
+              <button
+                onClick={() => setShowHistory(true)}
+                className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                title="Version history"
+              >
+                <History className="w-3 h-3" />
+              </button>
+              {editable ? (
+                <button
+                  onClick={() => setEditMode(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                >
+                  <Edit3 className="w-3 h-3" /> Edit
+                </button>
+              ) : (
+                <span className="text-[9px] text-muted-foreground/40 px-1">read-only</span>
+              )}
+            </>
           )}
         </div>
       </div>
+
+      {showHistory && (
+        <VersionHistoryPanel
+          scopeKey={`skill:global:${slug}`}
+          currentContent={content}
+          onClose={() => setShowHistory(false)}
+          onRestored={(c) => { setContent(c); setOriginal(c); setShowHistory(false); onSaved() }}
+        />
+      )}
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
@@ -351,8 +374,23 @@ function SkillDetail({
 }) {
   const navigate = useNavigate()
   const [detailTab, setDetailTab] = useState<"info" | "editor">("info")
+  const [deleting, setDeleting] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const enabledAgents = skill.agentAssignments.filter(a => a.enabled)
   const disabledAgents = skill.agentAssignments.filter(a => !a.enabled)
+
+  async function doDelete() {
+    setShowDeleteConfirm(false)
+    setDeleting(true)
+    try {
+      await api.deleteGlobalSkill(skill.slug)
+      onClose()
+      onRefresh()
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : String(e))
+      setDeleting(false)
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -383,9 +421,22 @@ function SkillDetail({
             </div>
           </div>
         </div>
-        <button onClick={onClose} className="shrink-0 text-muted-foreground/50 hover:text-muted-foreground text-lg leading-none mt-0.5 transition-colors">
-          ×
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {skill.editable && (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              disabled={deleting}
+              className="flex items-center gap-1 px-2 py-1 rounded-md border border-red-500/20 text-[11px] text-red-400/70 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+              title="Delete skill"
+            >
+              {deleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          )}
+          <button onClick={onClose} className="text-muted-foreground/50 hover:text-muted-foreground text-lg leading-none transition-colors">
+            ×
+          </button>
+        </div>
       </div>
 
       {/* Sub-tabs */}
@@ -494,6 +545,17 @@ function SkillDetail({
           <SkillMdEditor slug={skill.slug} editable={skill.editable} onSaved={onRefresh} />
         )}
       </div>
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title={`Delete "${skill.name}"?`}
+          description="This will permanently remove the skill directory. It will no longer be available to any agent."
+          confirmLabel="Delete Skill"
+          destructive
+          loading={deleting}
+          onConfirm={doDelete}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
     </div>
   )
 }

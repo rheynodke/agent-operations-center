@@ -550,3 +550,20 @@ export interface SkillsmpKeyStatus {
   configured: boolean
   preview: string | null
 }
+
+// ─── File Versioning ──────────────────────────────────────────────────────────
+
+export interface FileVersion {
+  id: number
+  scope_key: string
+  content_size: number
+  checksum: string
+  op: "create" | "edit" | "delete"
+  saved_by: string | null
+  saved_at: string
+  label: string | null
+}
+
+export interface FileVersionDetail extends FileVersion {
+  content: string
+}

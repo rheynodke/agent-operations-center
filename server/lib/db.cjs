@@ -99,6 +99,25 @@ async function initDatabase() {
     )
   `);
 
+  // File version history — stores full content snapshots for agent files, skills, scripts
+  // scope_key format: 'agent:{agentId}:{fileName}' | 'skill:global:{slug}' | 'skill:{agentId}:{name}' | 'script:agent:{agentId}:{file}' | 'script:global:{file}'
+  db.run(`
+    CREATE TABLE IF NOT EXISTS file_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope_key TEXT NOT NULL,
+      content TEXT NOT NULL,
+      content_size INTEGER NOT NULL,
+      checksum TEXT NOT NULL,
+      op TEXT NOT NULL DEFAULT 'edit',
+      saved_by TEXT,
+      saved_at TEXT NOT NULL DEFAULT (datetime('now')),
+      label TEXT
+    )
+  `);
+
+  // Index for fast history lookups per file
+  db.run(`CREATE INDEX IF NOT EXISTS idx_file_versions_scope ON file_versions(scope_key, saved_at DESC)`);
+
   persist();
   return db;
 }
@@ -313,6 +332,8 @@ function deleteAgentProfile(agentId) {
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   initDatabase,
+  getDb: () => db,
+  persist,
   // ─── Settings ───────────────────────────────────────────────────────────────
   getSetting(key) {
     if (!db) return null;

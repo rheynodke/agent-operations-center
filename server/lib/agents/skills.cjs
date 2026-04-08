@@ -410,6 +410,51 @@ function createGlobalSkill(skillSlug, scope, content) {
   return { slug: skillSlug, path: targetDir, skillMdPath, scope };
 }
 
+/**
+ * Delete a skill directory for a specific agent.
+ * Only allows deletion of 'workspace' source skills (agent-owned).
+ * Optionally removes from agent's skills allowlist in openclaw.json.
+ */
+function deleteAgentSkill(agentId, skillName) {
+  const skills = getAgentSkills(agentId);
+  const skill = skills.find(s => s.name === skillName || s.slug === skillName);
+  if (!skill) throw new Error(`Skill "${skillName}" not found for agent "${agentId}"`);
+  if (skill.source !== 'workspace') {
+    throw new Error(`Cannot delete skill "${skillName}" — only workspace skills can be deleted from agent detail (source: ${skill.source})`);
+  }
+  // skill.path is the SKILL.md path, skill dir is its parent
+  const skillDir = path.dirname(skill.path);
+  fs.rmSync(skillDir, { recursive: true, force: true });
+
+  // Also remove from agent's skills allowlist if present
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (config) {
+    const agentList = config.agents?.list || [];
+    const agentConfig = agentList.find(a => a.id === agentId);
+    if (agentConfig && Array.isArray(agentConfig.skills)) {
+      agentConfig.skills = agentConfig.skills.filter(s => s !== skillName && s !== skill.slug);
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    }
+  }
+
+  return { ok: true, deleted: skillName, path: skillDir };
+}
+
+/**
+ * Delete a skill by slug from the global library.
+ * Resolves the skill path without agent context (like saveSkillFileBySlug).
+ * Only allows deleting editable skills.
+ */
+function deleteSkillBySlug(slug) {
+  const skill = getSkillFileBySlug(slug);
+  if (!skill) throw new Error(`Skill "${slug}" not found`);
+  if (!skill.editable) throw new Error(`Skill "${slug}" is not deletable (source: ${skill.source})`);
+  const skillDir = path.dirname(skill.path);
+  fs.rmSync(skillDir, { recursive: true, force: true });
+  return { ok: true, deleted: slug, path: skillDir };
+}
+
 module.exports = {
   parseSkillFrontmatter,
   scanSkillDir,
@@ -422,4 +467,6 @@ module.exports = {
   createSkill,
   createGlobalSkill,
   toggleAgentSkill,
+  deleteAgentSkill,
+  deleteSkillBySlug,
 };

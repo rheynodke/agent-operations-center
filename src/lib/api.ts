@@ -102,6 +102,16 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     }),
+  deleteAgentSkill: (agentId: string, skillName: string) =>
+    request<{ ok: boolean; deleted: string; path: string }>(`/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}`, {
+      method: "DELETE",
+    }),
+
+  // Global skills library
+  deleteGlobalSkill: (slug: string) =>
+    request<{ ok: boolean; deleted: string; path: string }>(`/skills/${encodeURIComponent(slug)}`, {
+      method: "DELETE",
+    }),
 
   // Agent built-in tools management
   getAgentTools: (agentId: string) =>
@@ -227,6 +237,13 @@ export const api = {
   updateScriptMeta: (filename: string, meta: { name?: string; description?: string }) =>
     request(`/scripts/${encodeURIComponent(filename)}/meta`, { method: "PATCH", body: JSON.stringify(meta) }),
 
+  // Hooks / Inbound Webhooks
+  getHooksConfig: () => request("/hooks/config"),
+  saveHooksConfig: (updates: Record<string, unknown>) =>
+    request("/hooks/config", { method: "PUT", body: JSON.stringify(updates) }),
+  generateHookToken: () => request("/hooks/token", { method: "POST" }),
+  getHookSessions: (limit = 50) => request(`/hooks/sessions?limit=${limit}`),
+
   // Routes & Channels
   getRoutes: () => request("/routes"),
   getChannels: () => request("/channels"),
@@ -267,6 +284,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ skill, target, agentId }),
     }),
+
+  // File versioning
+  listVersions: (scope: string, limit = 30) =>
+    request<{ versions: import("@/types").FileVersion[] }>(`/versions?scope=${encodeURIComponent(scope)}&limit=${limit}`),
+  getVersion: (id: number) =>
+    request<{ version: import("@/types").FileVersionDetail }>(`/versions/${id}`),
+  restoreVersion: (id: number) =>
+    request<{ ok: boolean; scopeKey: string; restoredVersionId: number }>(`/versions/${id}/restore`, { method: "POST" }),
+  deleteVersion: (id: number) =>
+    request<{ ok: boolean }>(`/versions/${id}`, { method: "DELETE" }),
 
   // Channel login (QR flow)
   channelLoginStart: (channel: string, account: string) =>
