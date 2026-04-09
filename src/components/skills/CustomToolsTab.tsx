@@ -9,9 +9,11 @@ import { api } from "@/lib/api"
 import type { WorkspaceScript } from "@/types"
 import { cn } from "@/lib/utils"
 import { SyntaxEditor, EXT_LANGUAGE } from "@/components/ui/SyntaxEditor"
+import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
 import {
   Plus, Trash2, RefreshCw, Copy, Check, FileCode2, Terminal,
   Pencil, Save, X, AlertCircle, Loader2, FolderOpen, ChevronRight,
+  Wand2,
 } from "lucide-react"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -169,11 +171,13 @@ function ScriptEditor({
   onSaved,
   onDeleted,
   onRenamed,
+  agentId,
 }: {
   script: WorkspaceScript
   onSaved: (s: WorkspaceScript) => void
   onDeleted: (name: string) => void
   onRenamed: (oldName: string, s: WorkspaceScript) => void
+  agentId?: string
 }) {
   const [content, setContent] = useState(script.content ?? "")
   const [dirty, setDirty] = useState(false)
@@ -183,6 +187,7 @@ function ScriptEditor({
   const [copied, setCopied] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState(script.name.replace(/\.[^.]+$/, ""))
+  const [showAiPanel, setShowAiPanel] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   // Metadata
   const [displayName, setDisplayName] = useState(script.displayName ?? "")
@@ -313,6 +318,17 @@ function ScriptEditor({
               Save
             </button>
           )}
+          <button
+            onClick={() => setShowAiPanel(p => !p)}
+            className={cn("flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs font-bold transition-colors",
+              showAiPanel
+                ? "bg-violet-500/20 border-violet-500/30 text-violet-400"
+                : "border-border text-muted-foreground hover:text-violet-400 hover:border-violet-500/30 hover:bg-violet-500/10"
+            )}
+            title="AI Assist"
+          >
+            <Wand2 className="h-3.5 w-3.5" /> AI
+          </button>
           {!confirmDelete ? (
             <button
               onClick={() => setConfirmDelete(true)}
@@ -384,6 +400,29 @@ function ScriptEditor({
         }}
       />
 
+      {/* AI Assist Panel */}
+      {showAiPanel && (
+        <AiAssistPanel
+          fileType="script"
+          currentContent={content}
+          agentId={agentId}
+          extraContext={[
+            `Script name: ${script.name}`,
+            `Language: ${script.lang} (${script.ext})`,
+            description ? `Purpose: ${description}` : "",
+            `Exec hint: ${script.execHint}`,
+            agentId ? `Agent ID: ${agentId}` : "Scope: shared (all agents)",
+          ].filter(Boolean).join(". ")}
+          placeholder={`Describe what this script should do… (e.g. "Check postgres connection and return status", "List all running docker containers as JSON")`}
+          onApply={(generated) => {
+            setContent(generated)
+            setDirty(true)
+            setShowAiPanel(false)
+          }}
+          onClose={() => setShowAiPanel(false)}
+        />
+      )}
+
       {/* Footer shortcuts */}
       <div className="shrink-0 flex items-center gap-4 px-4 py-2 border-t border-border/30 text-[10px] text-muted-foreground/40">
         <span><kbd>⌘S</kbd> save</span>
@@ -398,9 +437,10 @@ function ScriptEditor({
 
 interface CustomToolsTabProps {
   onScriptSelect?: (script: WorkspaceScript) => void
+  agentId?: string
 }
 
-export function CustomToolsTab({ onScriptSelect }: CustomToolsTabProps) {
+export function CustomToolsTab({ onScriptSelect, agentId }: CustomToolsTabProps) {
   const [scripts, setScripts] = useState<WorkspaceScript[]>([])
   const [selected, setSelected] = useState<WorkspaceScript | null>(null)
   const [loading, setLoading] = useState(true)
@@ -592,6 +632,7 @@ export function CustomToolsTab({ onScriptSelect }: CustomToolsTabProps) {
             onSaved={handleSaved}
             onDeleted={handleDeleted}
             onRenamed={handleRenamed}
+            agentId={agentId}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground/40">

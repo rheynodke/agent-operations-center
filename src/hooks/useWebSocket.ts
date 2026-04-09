@@ -315,9 +315,12 @@ export function useWebSocket() {
               if (role === "user" && text) {
                 const rawText = text as string
                 const { paths, caption } = parseMediaAttachments(rawText)
-                // Only append if not already present (avoid duplicates on reload)
+                // Dedup: check last 5 user messages by text content only.
+                // Timestamp comparison is intentionally omitted — local timestamps
+                // and gateway broadcast timestamps always differ, causing false duplicates.
                 const existing = chatStore.messages[sk] ?? []
-                const alreadyHas = existing.some(m => m.role === "user" && m.userText === caption && m.timestamp === (msg.payload as Record<string,unknown>).ts)
+                const recentUserMsgs = existing.filter(m => m.role === "user").slice(-5)
+                const alreadyHas = recentUserMsgs.some(m => m.userText === caption)
                 if (!alreadyHas) {
                   chatStore.appendMessage(sk, {
                     id: `user-ws-${Date.now()}`,

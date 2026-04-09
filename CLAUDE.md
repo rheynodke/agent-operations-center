@@ -143,3 +143,11 @@ Skill scripts live at `{skillDir}/scripts/` and are managed via `skillScripts.cj
 ### SyntaxEditor Component
 
 `src/components/ui/SyntaxEditor.tsx` — transparent-textarea-over-highlighted-pre pattern. Architecture: fixed-width gutter (48px, line numbers rendered manually) + code area (highlight layer + textarea overlay with `color: transparent; caret-color: #abb2bf`). Both layers share identical `font`, `fontSize`, `lineHeight`, and `padding` — the gutter is a separate column to avoid em-calculation drift. Uses `react-syntax-highlighter` (lazy-loaded) for the highlight layer. Used in `CustomToolsTab.tsx` and `AgentDetailPage.tsx` for script editing.
+
+### Agent World (3D View)
+
+`AgentWorldPage` → `AgentWorldView` → `AgentWorld3D` (in `src/components/world/`). Built with React Three Fiber + `@react-three/drei`. Renders a top-down isometric office scene where each agent gets a desk; agent state (`processing` | `working` | `idle` | `offline`) drives animated character behavior. Theme-aware via `SCENE_THEME` (dark/light palettes for canvas bg, floor, lighting). `AgentWorld3D` accepts `agents`, `agentStates`, and `deskXPcts` props — the wrapper (`AgentWorldView`) derives these from Zustand stores.
+
+### SQLite DB Location
+
+In development, the SQLite database (`aoc.db`) is stored at `data/aoc.db` in the project root (not `~/.openclaw/`). This path is controlled by `server/lib/db.cjs`.

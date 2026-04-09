@@ -17,6 +17,19 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // SSE endpoint — needs special handling to disable buffering
+      "/api/ai/generate": {
+        target: "http://127.0.0.1:18800",
+        changeOrigin: true,
+        // Disable response buffering so SSE chunks flow through immediately
+        configure: (proxy) => {
+          proxy.on("proxyRes", (proxyRes, _req, res) => {
+            if (proxyRes.headers["content-type"]?.includes("text/event-stream")) {
+              proxyRes.pipe(res, { end: true })
+            }
+          })
+        },
+      },
       "/api": {
         target: "http://127.0.0.1:18800",
         changeOrigin: true,

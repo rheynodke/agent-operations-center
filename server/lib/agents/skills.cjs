@@ -1,7 +1,15 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
+const os   = require('os');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
+
+function expandHome(p) {
+  if (!p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
 
 // ── Frontmatter + dir scanning ───────────────────────────────────────────────
 
@@ -74,7 +82,7 @@ function getAgentSkills(agentId) {
   const agentConfig = agentList.find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentWorkspace   = agentConfig.workspace || OPENCLAW_WORKSPACE;
+  const agentWorkspace   = expandHome(agentConfig.workspace || OPENCLAW_WORKSPACE);
   const skillEntries     = config.skills?.entries || {};
   const extraDirs        = config.skills?.load?.extraDirs || [];
 
@@ -176,7 +184,7 @@ function createSkill(agentId, skillSlug, scope, content) {
   const agentConfig = (config.agents?.list || []).find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentWorkspace = agentConfig.workspace || OPENCLAW_WORKSPACE;
+  const agentWorkspace = expandHome(agentConfig.workspace || OPENCLAW_WORKSPACE);
 
   let targetDir;
   switch (scope) {
@@ -216,8 +224,10 @@ function toggleAgentSkill(agentId, skillName, enabled) {
   if (enabled) {
     if (Array.isArray(currentAllowlist)) {
       if (!currentAllowlist.includes(skillName)) agentConfig.skills = [...currentAllowlist, skillName];
+    } else {
+      // No allowlist yet → initialize with this skill (ensures skills: [] always exists)
+      agentConfig.skills = [skillName];
     }
-    // If no allowlist: skill was never restricted → already enabled, no-op
   } else {
     if (Array.isArray(currentAllowlist)) {
       agentConfig.skills = currentAllowlist.filter(s => s !== skillName);
@@ -261,7 +271,7 @@ function getAllSkills() {
 
   // Scan each agent's workspace dirs
   for (const agent of agentList) {
-    const ws = agent.workspace || OPENCLAW_WORKSPACE;
+    const ws = expandHome(agent.workspace || OPENCLAW_WORKSPACE);
     if (ws) {
       addSource('workspace', 'Workspace', path.join(ws, 'skills'));
       addSource('project-agent', 'Project Agent', path.join(ws, '.agents', 'skills'));
@@ -388,9 +398,9 @@ function createGlobalSkill(skillSlug, scope, content) {
   const agentList = config.agents?.list || [];
 
   // Use defaults.workspace or first agent's workspace for workspace/agent scope
-  const defaultWorkspace = config.agents?.defaults?.workspace || OPENCLAW_WORKSPACE;
+  const defaultWorkspace = expandHome(config.agents?.defaults?.workspace || OPENCLAW_WORKSPACE);
   const firstAgentWorkspace = agentList[0]
-    ? (agentList[0].workspace || defaultWorkspace)
+    ? expandHome(agentList[0].workspace || defaultWorkspace)
     : defaultWorkspace;
 
   let targetDir;
@@ -455,6 +465,30 @@ function deleteSkillBySlug(slug) {
   return { ok: true, deleted: slug, path: skillDir };
 }
 
+/**
+ * Ensure every agent in openclaw.json has a `skills: []` field.
+ * Safe to call on startup — only writes if something is missing.
+ */
+function ensureAgentSkillsFields() {
+  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const config = readJsonSafe(configPath);
+  if (!config?.agents?.list) return;
+
+  let dirty = false;
+  for (const agent of config.agents.list) {
+    if (!Array.isArray(agent.skills)) {
+      agent.skills = [];
+      dirty = true;
+      console.log(`[skills] Added missing skills:[] to agent "${agent.id}"`);
+    }
+  }
+
+  if (dirty) {
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    console.log('[skills] openclaw.json updated — skills field backfilled for existing agents');
+  }
+}
+
 module.exports = {
   parseSkillFrontmatter,
   scanSkillDir,
@@ -469,4 +503,5 @@ module.exports = {
   toggleAgentSkill,
   deleteAgentSkill,
   deleteSkillBySlug,
+  ensureAgentSkillsFields,
 };

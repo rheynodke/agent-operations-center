@@ -8,64 +8,165 @@ import { api } from "@/lib/api"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import type { FileVersion, FileVersionDetail } from "@/types"
 
-// ─── Simple line diff ─────────────────────────────────────────────────────────
+// ─── LCS-based unified diff ───────────────────────────────────────────────────
 
-function computeDiff(oldText: string, newText: string) {
-  const oldLines = oldText.split("\n")
-  const newLines = newText.split("\n")
-  const added   = newLines.filter(l => !oldLines.includes(l)).length
-  const removed = oldLines.filter(l => !newLines.includes(l)).length
-  return { added, removed, same: Math.min(oldLines.length, newLines.length) - Math.max(0, removed) }
+type DiffLine =
+  | { type: "same";    line: string; oldNum: number; newNum: number }
+  | { type: "remove";  line: string; oldNum: number; newNum: 0 }
+  | { type: "add";     line: string; oldNum: 0;      newNum: number }
+
+function lcsDiff(oldLines: string[], newLines: string[]): DiffLine[] {
+  const m = oldLines.length, n = newLines.length
+  // For very large files fall back to a simple list
+  if (m > 400 || n > 400) {
+    return [
+      ...oldLines.slice(0, 60).map((line, i) => ({ type: "remove" as const, line, oldNum: i + 1, newNum: 0 as const })),
+      ...newLines.slice(0, 60).map((line, i) => ({ type: "add"    as const, line, oldNum: 0 as const, newNum: i + 1 })),
+    ]
+  }
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1])
+  const result: DiffLine[] = []
+  let i = m, j = n
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      result.unshift({ type: "same", line: oldLines[i - 1], oldNum: i, newNum: j }); i--; j--
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      result.unshift({ type: "add", line: newLines[j - 1], oldNum: 0, newNum: j }); j--
+    } else {
+      result.unshift({ type: "remove", line: oldLines[i - 1], oldNum: i, newNum: 0 }); i--
+    }
+  }
+  return result
 }
 
-function DiffBadge({ a, r }: { a: number; r: number }) {
-  if (a === 0 && r === 0) return <span className="text-[10px] text-muted-foreground/50">no diff</span>
-  return (
-    <span className="flex items-center gap-1 text-[10px]">
-      {a > 0 && <span className="text-green-400">+{a}</span>}
-      {r > 0 && <span className="text-red-400">-{r}</span>}
-    </span>
-  )
+type DisplayEntry = DiffLine | { type: "ellipsis"; count: number }
+
+function collapseContext(diffs: DiffLine[], ctx = 2): DisplayEntry[] {
+  const out: DisplayEntry[] = []
+  let run: DiffLine[] = []
+  const flush = () => {
+    if (run.length <= ctx * 2 + 1) { out.push(...run) }
+    else { out.push(...run.slice(0, ctx), { type: "ellipsis", count: run.length - ctx * 2 }, ...run.slice(-ctx)) }
+    run = []
+  }
+  for (const d of diffs) { if (d.type === "same") run.push(d); else { flush(); out.push(d) } }
+  flush()
+  return out
+}
+
+function countChanges(diffs: DiffLine[]) {
+  let added = 0, removed = 0
+  for (const d of diffs) { if (d.type === "add") added++; else if (d.type === "remove") removed++ }
+  return { added, removed }
 }
 
 // ─── Inline diff viewer ───────────────────────────────────────────────────────
 
-function DiffViewer({ oldContent, newContent }: { oldContent: string; newContent: string }) {
-  const oldLines = oldContent.split("\n")
-  const newLines = newContent.split("\n")
+function DiffViewer({ oldContent, newContent, loading }: { oldContent: string; newContent: string; loading?: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-6 bg-muted/10 rounded-lg border border-border text-muted-foreground/60">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        <span className="text-[11px]">Loading version…</span>
+      </div>
+    )
+  }
 
-  // Very simple diff: mark lines unique to old (removed) vs unique to new (added)
-  const oldSet = new Set(oldLines)
-  const newSet = new Set(newLines)
+  if (oldContent === newContent) {
+    return (
+      <div className="bg-muted/10 rounded-lg border border-border">
+        <div className="px-3 py-2 border-b border-border flex items-center gap-3 bg-surface-high rounded-t-lg">
+          <span className="text-[10px] text-amber-400 font-medium">Selected version</span>
+          <span className="text-[10px] text-muted-foreground/50">vs</span>
+          <span className="text-[10px] text-muted-foreground">Current file</span>
+        </div>
+        <div className="px-3 py-4 text-[11px] text-muted-foreground/50 text-center">Identical to current</div>
+      </div>
+    )
+  }
+
+  const diffs   = lcsDiff(oldContent.split("\n"), newContent.split("\n"))
+  const { added, removed } = countChanges(diffs)
+  const entries = collapseContext(diffs)
 
   return (
-    <div className="font-mono text-[10px] leading-relaxed overflow-y-auto max-h-56 bg-muted/10 rounded-lg border border-border">
-      <div className="px-3 py-2 border-b border-border flex items-center gap-3 bg-surface-high sticky top-0">
-        <span className="text-[10px] text-green-400 font-medium">Selected version</span>
+    <div className="font-mono text-[10px] leading-[1.6] rounded-lg border border-border flex flex-col" style={{ maxHeight: "20rem" }}>
+      {/* Header — pinned, never scrolls */}
+      <div className="px-3 py-2 border-b border-border flex items-center gap-3 bg-surface-high rounded-t-lg shrink-0">
+        <span className="text-[10px] text-amber-400 font-medium">Selected version</span>
         <span className="text-[10px] text-muted-foreground/50">vs</span>
         <span className="text-[10px] text-muted-foreground">Current file</span>
+        <span className="ml-auto flex items-center gap-1.5">
+          {removed > 0 && <span className="text-red-400">-{removed}</span>}
+          {added   > 0 && <span className="text-green-400">+{added}</span>}
+        </span>
       </div>
-      <div className="divide-y divide-border/30">
-        {/* Show removed lines (in old, not in new) */}
-        {oldLines.filter(l => !newSet.has(l)).slice(0, 20).map((line, i) => (
-          <div key={`r-${i}`} className="px-3 py-0.5 bg-red-500/8 text-red-300/80 flex gap-2">
-            <span className="select-none text-red-500/60 shrink-0">-</span>
-            <span className="truncate">{line || " "}</span>
-          </div>
-        ))}
-        {/* Show added lines (in new, not in old) */}
-        {newLines.filter(l => !oldSet.has(l)).slice(0, 20).map((line, i) => (
-          <div key={`a-${i}`} className="px-3 py-0.5 bg-green-500/8 text-green-300/80 flex gap-2">
-            <span className="select-none text-green-500/60 shrink-0">+</span>
-            <span className="truncate">{line || " "}</span>
-          </div>
-        ))}
-        {(oldLines.filter(l => !newSet.has(l)).length > 20 || newLines.filter(l => !oldSet.has(l)).length > 20) && (
-          <div className="px-3 py-1 text-muted-foreground/50 text-center">… diff truncated</div>
-        )}
-        {oldLines.filter(l => !newSet.has(l)).length === 0 && newLines.filter(l => !oldSet.has(l)).length === 0 && (
-          <div className="px-3 py-3 text-muted-foreground/50 text-center">Identical to current</div>
-        )}
+
+      {/* Scrollable diff area — vertical + horizontal, fills remaining height */}
+      <div className="overflow-auto flex-1 bg-muted/10 rounded-b-lg">
+        {/* Inner min-width so short lines still allow horizontal scroll */}
+        <div className="min-w-max">
+          {entries.map((entry, idx) => {
+            if (entry.type === "ellipsis") {
+              return (
+                <div key={`e-${idx}`} className="py-0.5 text-muted-foreground/40 select-none text-center bg-muted/5 sticky left-0">
+                  ⋯ {entry.count} unchanged line{entry.count !== 1 ? "s" : ""}
+                </div>
+              )
+            }
+            const isAdd    = entry.type === "add"
+            const isRemove = entry.type === "remove"
+            return (
+              <div key={`${entry.type}-${idx}`} className={cn(
+                "flex gap-0",
+                isAdd    && "bg-green-500/8",
+                isRemove && "bg-red-500/8",
+              )}>
+                {/* Gutter: old line# — sticky left */}
+                <span className={cn(
+                  "w-9 shrink-0 text-right pr-1.5 py-px select-none border-r border-border/30 text-muted-foreground/30 sticky left-0",
+                  isAdd    && "bg-green-500/8",
+                  isRemove && "bg-red-500/8 text-red-400/50",
+                  !isAdd && !isRemove && "bg-muted/10",
+                )}>
+                  {entry.type !== "add" ? entry.oldNum : ""}
+                </span>
+                {/* Gutter: new line# — sticky left */}
+                <span className={cn(
+                  "w-9 shrink-0 text-right pr-1.5 py-px select-none border-r border-border/30 text-muted-foreground/30 sticky left-9",
+                  isAdd    && "bg-green-500/8 text-green-400/50",
+                  isRemove && "bg-red-500/8",
+                  !isAdd && !isRemove && "bg-muted/10",
+                )}>
+                  {entry.type !== "remove" ? entry.newNum : ""}
+                </span>
+                {/* Sign */}
+                <span className={cn(
+                  "w-5 shrink-0 text-center py-px select-none",
+                  isAdd    && "text-green-400",
+                  isRemove && "text-red-400",
+                  !isAdd && !isRemove && "text-muted-foreground/20",
+                )}>
+                  {isAdd ? "+" : isRemove ? "−" : " "}
+                </span>
+                {/* Content — full width, no truncation */}
+                <span className={cn(
+                  "pl-1 pr-8 py-px whitespace-pre",
+                  isAdd    && "text-green-300/90",
+                  isRemove && "text-red-300/80",
+                  !isAdd && !isRemove && "text-muted-foreground/60",
+                )}>
+                  {entry.line || " "}
+                </span>
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -74,12 +175,13 @@ function DiffViewer({ oldContent, newContent }: { oldContent: string; newContent
 // ─── Version row ──────────────────────────────────────────────────────────────
 
 function VersionRow({
-  version, isLatest, currentContent, isSelected, onSelect, onRestore, onDelete, restoring,
+  version, isLatest, currentContent, isSelected, loadingContent, onSelect, onRestore, onDelete, restoring,
 }: {
   version: FileVersionDetail
   isLatest: boolean
   currentContent: string
   isSelected: boolean
+  loadingContent: boolean
   onSelect: () => void
   onRestore: () => void
   onDelete: () => void
@@ -130,7 +232,11 @@ function VersionRow({
       {/* Expanded detail */}
       {isSelected && (
         <div className="px-4 pb-3 flex flex-col gap-2">
-          <DiffViewer oldContent={version.content_size > 0 ? currentContent : ""} newContent={currentContent} />
+          <DiffViewer
+            oldContent={loadingContent ? "" : (version.content ?? "")}
+            newContent={currentContent}
+            loading={loadingContent}
+          />
 
           <div className="flex items-center gap-2 mt-1">
             <button
@@ -243,7 +349,7 @@ export function VersionHistoryPanel({ scopeKey, currentContent, onClose, onResto
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg bg-card border border-border rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
+      <div className="relative z-10 w-full max-w-3xl bg-card border border-border rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
@@ -298,10 +404,11 @@ export function VersionHistoryPanel({ scopeKey, currentContent, onClose, onResto
               {versions.map((v, i) => (
                 <VersionRow
                   key={v.id}
-                  version={{ ...v, content: v.content ?? currentContent } as FileVersionDetail}
+                  version={v as FileVersionDetail}
                   isLatest={i === 0}
                   currentContent={currentContent}
                   isSelected={selectedId === v.id}
+                  loadingContent={loadingContent === v.id}
                   onSelect={() => handleSelect(v.id)}
                   onRestore={() => handleRestore(v.id)}
                   onDelete={() => setConfirmDeleteId(v.id)}

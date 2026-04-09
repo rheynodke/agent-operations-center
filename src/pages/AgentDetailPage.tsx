@@ -18,6 +18,7 @@ import {
   Activity, PanelLeftClose, PanelLeftOpen,
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
   Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer, History,
+  Wand2, StopCircle, CornerDownLeft,
 } from "lucide-react"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -27,6 +28,7 @@ import { SyntaxEditor } from "@/components/ui/SyntaxEditor"
 import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
+import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  TYPES                                                              */
@@ -121,7 +123,7 @@ function formatTokens(n: number): string {
   return `${n}`
 }
 
-const WORKSPACE_FILES = ["IDENTITY.md", "SOUL.md", "TOOLS.md", "AGENTS.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md"] as const
+const WORKSPACE_FILES = ["IDENTITY.md", "SOUL.md", "TOOLS.md", "AGENTS.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "BOOTSTRAP.md"] as const
 
 const fileDescriptions: Record<string, string> = {
   "IDENTITY.md": "Agent persona — name, emoji, creature, vibe",
@@ -129,6 +131,7 @@ const fileDescriptions: Record<string, string> = {
   "TOOLS.md": "Available tools and integrations",
   "AGENTS.md": "Multi-agent collaboration patterns",
   "USER.md": "User context — preferences and projects",
+  "MEMORY.md": "Long-term curated memory — distilled across sessions",
   "HEARTBEAT.md": "Periodic tasks — runs on every gateway heartbeat poll",
   "BOOTSTRAP.md": "One-time first-run setup ritual",
 }
@@ -139,6 +142,7 @@ const fileIcons: Record<string, string> = {
   "TOOLS.md": "🔧",
   "AGENTS.md": "🤝",
   "USER.md": "👤",
+  "MEMORY.md": "🧠",
   "HEARTBEAT.md": "💓",
   "BOOTSTRAP.md": "🚀",
 }
@@ -147,6 +151,7 @@ const FILE_STARTERS: Record<string, string> = {
   "HEARTBEAT.md": `# HEARTBEAT.md\n\n# Add tasks below — agent will execute these on every heartbeat poll.\n# Keep this file empty (or only comments) to reply HEARTBEAT_OK silently.\n\n`,
   "BOOTSTRAP.md": `# BOOTSTRAP.md\n\n# One-time setup ritual — runs the very first time this agent starts.\n# Delete this file once the setup is complete.\n\n`,
   "USER.md": `# USER.md\n\n# User context — preferences, projects, and background info.\n\n`,
+  "MEMORY.md": `# MEMORY.md — Long-Term Memory\n\n_Nothing here yet. Fill this in over time with things worth remembering across sessions._\n\n## Key Facts\n\n## Lessons Learned\n\n## Ongoing Context\n\n`,
 }
 
 const HEARTBEAT_TEMPLATES: { label: string; emoji: string; description: string; content: string }[] = [
@@ -263,6 +268,14 @@ function StatPill({ icon: Icon, label, value }: {
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/*  AI ASSIST PANEL  (shared component)                                 */
+/* ─────────────────────────────────────────────────────────────────── */
+// NOTE: AiAssistPanel and streamAiGenerate are imported from shared component below.
+// This comment block is kept as a section marker only.
+
+// AiAssistPanel imported from shared component below
+
+/* ─────────────────────────────────────────────────────────────────── */
 /*  INLINE FILE VIEWER / EDITOR                                        */
 /* ─────────────────────────────────────────────────────────────────── */
 
@@ -270,10 +283,12 @@ function InlineFilePanel({
   agentId,
   filename,
   onSaved,
+  agentName,
 }: {
   agentId: string
   filename: string
   onSaved: () => void
+  agentName?: string
 }) {
   const [content, setContent] = useState("")
   const [originalContent, setOriginalContent] = useState("")
@@ -285,6 +300,7 @@ function InlineFilePanel({
   const [saved, setSaved] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [isNew, setIsNew] = useState(false)
+  const [showAiPanel, setShowAiPanel] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -416,6 +432,17 @@ function InlineFilePanel({
                 <History className="w-3 h-3" />
               </button>
               <button
+                onClick={() => { setShowAiPanel(p => !p) }}
+                className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md border text-[11px] font-bold transition-colors",
+                  showAiPanel
+                    ? "bg-violet-500/20 border-violet-500/30 text-violet-400"
+                    : "border-foreground/10 text-muted-foreground hover:text-violet-400 hover:border-violet-500/30 hover:bg-violet-500/10"
+                )}
+                title="AI Assist"
+              >
+                <Wand2 className="w-3 h-3" /> AI
+              </button>
+              <button
                 onClick={() => setEditMode(true)}
                 className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
               >
@@ -483,6 +510,22 @@ function InlineFilePanel({
           </div>
         )}
       </div>
+
+      {/* AI Assist Panel */}
+      {showAiPanel && (
+        <AiAssistPanel
+          fileType={filename}
+          currentContent={content}
+          agentName={agentName}
+          agentId={agentId}
+          onApply={(generated) => {
+            setContent(generated)
+            setEditMode(true)
+            setShowAiPanel(false)
+          }}
+          onClose={() => setShowAiPanel(false)}
+        />
+      )}
 
       {/* Footer */}
       <div className="flex items-center justify-between px-4 py-1.5 border-t border-border shrink-0 bg-foreground/1">
@@ -839,12 +882,14 @@ function InlineSkillPanel({
   skill,
   onToggle,
   onSaved,
+  agentName,
 }: {
   agentId: string
   skillSlug: string
   skill: SkillInfo | null
   onToggle: () => void
   onSaved: () => void
+  agentName?: string
 }) {
   const [content, setContent] = useState("")
   const [originalContent, setOriginalContent] = useState("")
@@ -857,6 +902,7 @@ function InlineSkillPanel({
   const [showHistory, setShowHistory] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showAiPanel, setShowAiPanel] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   function reloadSkillMd() {
@@ -997,6 +1043,17 @@ function InlineSkillPanel({
                 >
                   <History className="w-3 h-3" />
                 </button>
+                <button
+                  onClick={() => setShowAiPanel(p => !p)}
+                  className={cn("flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-bold transition-colors",
+                    showAiPanel
+                      ? "bg-violet-500/20 border-violet-500/30 text-violet-400"
+                      : "border-foreground/10 text-muted-foreground hover:text-violet-400 hover:border-violet-500/30 hover:bg-violet-500/10"
+                  )}
+                  title="AI Assist"
+                >
+                  <Wand2 className="w-3 h-3" /> AI
+                </button>
                 {editable && (
                   <button
                     onClick={() => setEditMode(true)}
@@ -1089,6 +1146,23 @@ function InlineSkillPanel({
           loading={deleting}
           onConfirm={doDelete}
           onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+
+      {/* AI Assist Panel */}
+      {showAiPanel && skillTab === 'skillmd' && (
+        <AiAssistPanel
+          fileType="SKILL.md"
+          currentContent={content}
+          agentName={agentName}
+          agentId={agentId}
+          extraContext={`Skill slug: ${skillSlug}. Skill name: ${skill?.name || skillSlug}.`}
+          onApply={(generated) => {
+            setContent(generated)
+            setEditMode(true)
+            setShowAiPanel(false)
+          }}
+          onClose={() => setShowAiPanel(false)}
         />
       )}
     </div>
@@ -2401,6 +2475,7 @@ function AgentScriptEditor({
   const [displayName, setDisplayName] = useState((tool as CustomTool & { displayName?: string }).displayName ?? '')
   const [description, setDescription] = useState((tool as CustomTool & { description?: string }).description ?? '')
   const [metaDirty, setMetaDirty] = useState(false)
+  const [showAiPanel, setShowAiPanel] = useState(false)
 
   useEffect(() => {
     setContent(tool.content ?? '')
@@ -2443,6 +2518,17 @@ function AgentScriptEditor({
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} Save
           </button>
         )}
+        <button
+          onClick={() => setShowAiPanel(p => !p)}
+          className={cn("flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-bold transition-colors",
+            showAiPanel
+              ? "bg-violet-500/20 border-violet-500/30 text-violet-400"
+              : "border-foreground/10 text-muted-foreground hover:text-violet-400 hover:border-violet-500/30 hover:bg-violet-500/10"
+          )}
+          title="AI Assist"
+        >
+          <Wand2 className="w-3 h-3" /> AI
+        </button>
         {!confirmDelete
           ? <button onClick={() => setConfirmDelete(true)} className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
           : <div className="flex items-center gap-1 text-xs text-destructive">
@@ -2487,6 +2573,29 @@ function AgentScriptEditor({
         <span className="ml-auto">{content.split('\n').length} lines</span>
         {dirty && <span className="text-amber-400/60 flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-amber-400/60" />unsaved</span>}
       </div>
+
+      {/* AI Assist Panel */}
+      {showAiPanel && (
+        <AiAssistPanel
+          fileType="script"
+          currentContent={content}
+          agentId={agentId}
+          extraContext={[
+            `Script name: ${tool.name}`,
+            `Language: ${tool.lang || tool.name.match(/(\.[^.]+)$/)?.[1] || 'bash'}`,
+            description ? `Purpose: ${description}` : "",
+            `Exec hint: ${tool.execHint}`,
+            `Scope: agent-specific (agent: ${agentId})`,
+          ].filter(Boolean).join(". ")}
+          placeholder={`Describe what this script should do… (e.g. "Check postgres connection and return JSON status", "List files changed in last 24h")`}
+          onApply={(generated) => {
+            setContent(generated)
+            setDirty(true)
+            setShowAiPanel(false)
+          }}
+          onClose={() => setShowAiPanel(false)}
+        />
+      )}
     </div>
   )
 }
@@ -3087,6 +3196,7 @@ export function AgentDetailPage() {
   // Sidebar collapse states
   const [fileSidebarCollapsed, setFileSidebarCollapsed] = useState(false)
   const [skillSidebarCollapsed, setSkillSidebarCollapsed] = useState(false)
+  const [collapsedSkillGroups, setCollapsedSkillGroups] = useState<Set<string>>(new Set())
 
   // Main body tab
   const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels' | 'schedules'>('files')
@@ -3502,7 +3612,7 @@ export function AgentDetailPage() {
                   )}
                   <div className="flex-1 min-w-0 min-h-0 overflow-y-auto flex flex-col">
                     {selectedFile && id ? (
-                      <InlineFilePanel key={`${selectedFile}-${fileRefreshKey}`} agentId={id} filename={selectedFile} onSaved={loadDetail} />
+                      <InlineFilePanel key={`${selectedFile}-${fileRefreshKey}`} agentId={id} filename={selectedFile} onSaved={loadDetail} agentName={detail?.identity?.name || id} />
                     ) : (
                       <div className="flex flex-col items-center justify-center h-full text-muted-foreground/30">
                         <FileText className="w-10 h-10 mb-3 opacity-30" />
@@ -3590,27 +3700,80 @@ export function AgentDetailPage() {
                             <p className="text-[11px] text-muted-foreground">No skills installed</p>
                             <p className="text-[10px] text-muted-foreground/50 mt-1">Create one to get started</p>
                           </div>
-                        ) : skills.map(skill => {
-                          const isSelected = selectedSkill === skill.slug
-                          return (
-                            <button key={skill.slug} onClick={() => setSelectedSkill(skill.slug)}
-                              className={cn("w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors group",
-                                isSelected ? "bg-primary/10 border-r-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-foreground/3")}>
-                              <span className="text-sm shrink-0">{skill.emoji || '⚡'}</span>
-                              <div className="min-w-0 flex-1">
-                                <span className="text-[12px] font-semibold block truncate">{skill.name}</span>
-                                <div className="flex items-center gap-1.5 mt-0.5">
-                                  <span className={cn("text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded",
-                                    skill.source === 'workspace' ? "bg-blue-500/15 text-blue-400" :
-                                    skill.source === 'managed' ? "bg-purple-500/15 text-purple-400" :
-                                    skill.source === 'personal' ? "bg-green-500/15 text-green-400" :
-                                    "bg-foreground/5 text-muted-foreground/70")}>{skill.sourceLabel}</span>
-                                  {!skill.enabled && <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded bg-amber-500/15 text-amber-400">Off</span>}
-                                </div>
+                        ) : (() => {
+                          const SOURCE_ORDER = ['workspace', 'project-agent', 'personal', 'managed']
+                          const SOURCE_META: Record<string, { label: string; color: string; dot: string; borderColor: string }> = {
+                            'workspace':     { label: 'Workspace',     color: 'text-blue-400',   dot: 'bg-blue-400',   borderColor: 'border-blue-500/20' },
+                            'project-agent': { label: 'Project Agent', color: 'text-indigo-400', dot: 'bg-indigo-400', borderColor: 'border-indigo-500/20' },
+                            'personal':      { label: 'Personal',      color: 'text-green-400',  dot: 'bg-green-400',  borderColor: 'border-green-500/20' },
+                            'managed':       { label: 'Managed',       color: 'text-purple-400', dot: 'bg-purple-400', borderColor: 'border-purple-500/20' },
+                          }
+                          // Group skills by source, preserving SOURCE_ORDER, extras at end
+                          const grouped = new Map<string, SkillInfo[]>()
+                          for (const sk of skills) {
+                            const key = SOURCE_ORDER.includes(sk.source) ? sk.source : 'extra'
+                            if (!grouped.has(key)) grouped.set(key, [])
+                            grouped.get(key)!.push(sk)
+                          }
+                          const orderedKeys = [...SOURCE_ORDER.filter(k => grouped.has(k)), ...(grouped.has('extra') ? ['extra'] : [])]
+
+                          return orderedKeys.map(sourceKey => {
+                            const groupSkills = grouped.get(sourceKey)!
+                            const meta = SOURCE_META[sourceKey] ?? { label: groupSkills[0]?.sourceLabel ?? sourceKey, color: 'text-muted-foreground', dot: 'bg-foreground/30', borderColor: 'border-border' }
+                            const isCollapsed = collapsedSkillGroups.has(sourceKey)
+                            const toggleGroup = () => setCollapsedSkillGroups(prev => {
+                              const next = new Set(prev)
+                              next.has(sourceKey) ? next.delete(sourceKey) : next.add(sourceKey)
+                              return next
+                            })
+                            // Max visible items before scroll: 5 items × ~36px each = 180px
+                            const ITEM_H = 36
+                            const MAX_VISIBLE = 8
+                            const listHeight = Math.min(groupSkills.length, MAX_VISIBLE) * ITEM_H
+
+                            return (
+                              <div key={sourceKey} className={cn("border-b last:border-b-0", meta.borderColor)}>
+                                {/* Collapsible group header */}
+                                <button
+                                  onClick={toggleGroup}
+                                  className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-foreground/3 transition-colors group/header"
+                                >
+                                  <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", meta.dot)} />
+                                  <span className={cn("text-[9px] font-bold uppercase tracking-widest flex-1 text-left", meta.color)}>{meta.label}</span>
+                                  <span className="text-[9px] text-muted-foreground/40 mr-1">{groupSkills.length}</span>
+                                  {isCollapsed
+                                    ? <ChevronRight className="w-3 h-3 text-muted-foreground/30 group-hover/header:text-muted-foreground/60 transition-colors" />
+                                    : <ChevronDown className="w-3 h-3 text-muted-foreground/30 group-hover/header:text-muted-foreground/60 transition-colors" />
+                                  }
+                                </button>
+                                {/* Scrollable skill list — max MAX_VISIBLE items then scrolls */}
+                                {!isCollapsed && (
+                                  <div
+                                    className="overflow-y-auto"
+                                    style={{ maxHeight: `${listHeight}px` }}
+                                  >
+                                    {groupSkills.map(skill => {
+                                      const isSelected = selectedSkill === skill.slug
+                                      return (
+                                        <button key={skill.slug} onClick={() => setSelectedSkill(skill.slug)}
+                                          className={cn("w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors group",
+                                            isSelected ? "bg-primary/10 border-r-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-foreground/3")}>
+                                          <span className="text-sm shrink-0">{skill.emoji || '⚡'}</span>
+                                          <div className="min-w-0 flex-1">
+                                            <span className="text-[12px] font-semibold block truncate">{skill.name}</span>
+                                            {!skill.enabled && (
+                                              <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-px rounded bg-amber-500/15 text-amber-400">Off</span>
+                                            )}
+                                          </div>
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                )}
                               </div>
-                            </button>
-                          )
-                        })}
+                            )
+                          })
+                        })()}
                       </div>
                     )}
                     <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
@@ -3618,7 +3781,8 @@ export function AgentDetailPage() {
                         <InlineSkillPanel agentId={id} skillSlug={selectedSkill}
                           skill={skills.find(s => s.slug === selectedSkill) || null}
                           onToggle={() => { const s = skills.find(sk => sk.slug === selectedSkill); if (s) handleToggleSkill(s) }}
-                          onSaved={loadSkills} />
+                          onSaved={loadSkills}
+                          agentName={detail?.identity?.name || id} />
                       ) : (
                         <div className="flex flex-col items-center justify-center h-full text-center px-6">
                           <Sparkles className="w-8 h-8 text-foreground/8 mb-3" />

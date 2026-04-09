@@ -5,6 +5,7 @@ import {
   Globe, FolderGit2, User, Package, Boxes, Key, Settings2,
   CheckCircle2, XCircle, Layers, AlertCircle, Edit3, Save,
   X, Loader2, Plus, Sparkles, ScrollText, Terminal, Download, History, Trash2,
+  Wand2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
@@ -14,6 +15,7 @@ import { CustomToolsTab } from "@/components/skills/CustomToolsTab"
 import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
+import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
 import type { GlobalSkillInfo, GlobalToolInfo, ToolGroup } from "@/types"
 
 // ─── Source config ────────────────────────────────────────────────────────────
@@ -229,6 +231,7 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
   const [editMode, setEditMode] = useState(false)
   const [error, setError] = useState("")
   const [showHistory, setShowHistory] = useState(false)
+  const [showAiPanel, setShowAiPanel] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -317,6 +320,17 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
               >
                 <History className="w-3 h-3" />
               </button>
+              <button
+                onClick={() => setShowAiPanel(p => !p)}
+                className={cn("flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-bold transition-colors",
+                  showAiPanel
+                    ? "bg-violet-500/20 border-violet-500/30 text-violet-400"
+                    : "border-white/10 text-muted-foreground hover:text-violet-400 hover:border-violet-500/30 hover:bg-violet-500/10"
+                )}
+                title="AI Assist"
+              >
+                <Wand2 className="w-3 h-3" /> AI
+              </button>
               {editable ? (
                 <button
                   onClick={() => setEditMode(true)}
@@ -357,6 +371,21 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
           </div>
         )}
       </div>
+
+      {/* AI Assist Panel */}
+      {showAiPanel && (
+        <AiAssistPanel
+          fileType="SKILL.md"
+          currentContent={content}
+          extraContext={`Skill slug: ${slug}`}
+          onApply={(generated) => {
+            setContent(generated)
+            setEditMode(true)
+            setShowAiPanel(false)
+          }}
+          onClose={() => setShowAiPanel(false)}
+        />
+      )}
     </div>
   )
 }

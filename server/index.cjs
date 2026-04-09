@@ -10,6 +10,7 @@ const parsers = require('./lib/index.cjs'); // modular barrel — replaces parse
 const { LiveFeedWatcher } = require('./lib/watchers.cjs');
 const db = require('./lib/db.cjs');
 const { gatewayProxy } = require('./lib/gateway-ws.cjs');
+const aiLib = require('./lib/ai.cjs');
 const versioning = require('./lib/versioning.cjs');
 
 /** Shorthand: save a version snapshot after a successful file write */
@@ -181,7 +182,7 @@ app.get('/api/health', db.authMiddleware, (req, res) => {
 });
 
 // ─── Gateway Management ───────────────────────────────────────────────────────
-const { exec, execFile } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const net = require('net');
 
 function getGatewayConfig() {
@@ -231,6 +232,51 @@ app.get('/api/gateway/status', db.authMiddleware, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/ai/context — OS/environment context for AI prompt injection
+app.get('/api/ai/context', db.authMiddleware, (req, res) => {
+  try {
+    res.json(aiLib.getOsContext());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/ai/generate — SSE streaming AI content generation via Claude Code CLI
+app.post('/api/ai/generate', db.authMiddleware, async (req, res) => {
+  const { prompt, currentContent, fileType, agentName, agentId, extraContext } = req.body;
+  if (!prompt?.trim()) return res.status(400).json({ error: 'prompt is required' });
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const send = (data) => { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {} };
+
+  // Abort when the underlying TCP socket closes (client disconnects)
+  // Note: req.on('close') can fire before generation is done in Express 5 — use socket instead
+  const ac = new AbortController();
+  const onSocketClose = () => ac.abort();
+  req.socket?.on('close', onSocketClose);
+
+  try {
+    for await (const chunk of aiLib.generateStream({ prompt, currentContent, fileType, agentName, agentId, extraContext }, ac.signal)) {
+      if (ac.signal.aborted) break;
+      send({ text: chunk });
+    }
+    if (!ac.signal.aborted) send({ done: true });
+  } catch (err) {
+    if (!ac.signal.aborted) {
+      console.error('[ai/generate]', err.message);
+      send({ error: err.message });
+    }
+  } finally {
+    req.socket?.off('close', onSocketClose);
+    res.end();
   }
 });
 
@@ -1755,6 +1801,9 @@ wss.on('close', () => clearInterval(heartbeatInterval));
 async function start() {
   await db.initDatabase();
   feedWatcher.start();
+
+  // Ensure all agents have skills: [] field in openclaw.json
+  try { parsers.ensureAgentSkillsFields(); } catch (e) { console.warn('[startup] ensureAgentSkillsFields failed:', e.message); }
 
   // Connect to OpenClaw Gateway for real-time chat
   gatewayProxy.connect();

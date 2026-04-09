@@ -114,6 +114,7 @@ function getAgentDetail(agentId) {
     || readMdFile(path.join(OPENCLAW_WORKSPACE, 'HEARTBEAT.md'));
   const bootstrapContent = readMdFile(path.join(agentWorkspace, 'BOOTSTRAP.md'))
     || readMdFile(path.join(OPENCLAW_WORKSPACE, 'BOOTSTRAP.md'));
+  const memoryContent = readMdFile(path.join(agentWorkspace, 'MEMORY.md'));
 
   const identityFields = parseMdFields(identityContent);
   const soulData = parseSoulTraits(soulContent);
@@ -194,6 +195,7 @@ function getAgentDetail(agentId) {
         user: userContent ? true : false,
         heartbeat: heartbeatContent ? true : false,
         bootstrap: bootstrapContent ? true : false,
+        memory: memoryContent ? true : false,
       },
     },
     channel: channelInfo,
@@ -339,6 +341,11 @@ function updateAgent(agentId, updates) {
     syncFileHeadings('AGENTS.md', [
       [`# AGENTS.md - ${oldName}'s Workspace`, `# AGENTS.md - ${newName}'s Workspace`],
       [`This workspace belongs to **${oldName}**`, `This workspace belongs to **${newName}**`],
+    ]);
+
+    syncFileHeadings('MEMORY.md', [
+      [`# MEMORY.md — ${oldName}'s Long-Term Memory`, `# MEMORY.md — ${newName}'s Long-Term Memory`],
+      [`_Nothing here yet. ${oldName} will fill this in over time._`, `_Nothing here yet. ${newName} will fill this in over time._`],
     ]);
   }
 
