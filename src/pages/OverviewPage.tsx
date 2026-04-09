@@ -440,10 +440,17 @@ export function OverviewPage() {
   return (
     <div className="flex flex-col gap-0 animate-fade-in max-w-[1600px] mx-auto">
       {/* ── Dashboard Header ── */}
-      <div className="mb-6 flex items-end justify-between">
-        <h1 className="text-4xl font-display font-bold tracking-tight text-foreground">
-          System Overview
-        </h1>
+      <div className={`flex items-end justify-between ${activeTab === "world" ? "mb-2" : "mb-6"}`}>
+        {activeTab === "dashboard" && (
+          <h1 className="text-4xl font-display font-bold tracking-tight text-foreground">
+            System Overview
+          </h1>
+        )}
+        {activeTab === "world" && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-muted-foreground uppercase tracking-widest">Agent World</span>
+          </div>
+        )}
         {/* Tab switcher */}
         <div className="flex items-center gap-1 p-1 rounded-xl bg-surface-low border border-white/5">
           {tabs.map(({ id, label, icon: Icon }) => (
@@ -464,8 +471,12 @@ export function OverviewPage() {
         </div>
       </div>
 
-      {/* ── Agent World Tab ── */}
-      {activeTab === "world" && <AgentWorldView />}
+      {/* ── Agent World Tab ── full-bleed: reclaim p-6 horizontal padding ── */}
+      {activeTab === "world" && (
+        <div style={{ margin: "0 -24px" }}>
+          <AgentWorldView />
+        </div>
+      )}
 
       {/* ── Dashboard Tab ── */}
       {activeTab === "dashboard" && <>

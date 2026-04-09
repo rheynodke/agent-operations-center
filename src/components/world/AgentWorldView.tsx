@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react"
 import { motion } from "framer-motion"
-import { useAgentStore, useLiveFeedStore } from "@/stores"
+import { useAgentStore, useLiveFeedStore, useThemeStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 import type { Agent } from "@/types"
+import { AgentWorld3D } from "./AgentWorld3D"
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -759,82 +760,46 @@ export function AgentWorldView() {
   const meetingCx = dims.w * 0.5
   const meetingCy = dims.h * 0.65
 
-  return (
-    <div className="flex flex-col gap-3">
-      <StatsBar
-        total={agents.length}
-        processing={processingCount}
-        working={workingCount}
-        idle={idleCount}
-      />
+  const theme = useThemeStore(s => s.theme)
+  const isLight = theme === "light"
 
-      {/* Scene container */}
+  return (
+    <div
+      className="relative w-full"
+      style={{
+        height: "calc(100vh - 104px)",
+        minHeight: 500,
+        borderRadius: 12,
+        overflow: "hidden",
+        boxShadow: isLight
+          ? "0 0 0 1px rgba(100,140,200,0.35), 0 8px 40px rgba(80,120,200,0.12)"
+          : "0 0 0 1px rgba(30,60,160,0.4), 0 0 40px rgba(0,0,255,0.05), 0 12px 60px rgba(0,0,0,0.8)",
+      }}
+    >
+      {/* ── Stats bar — frosted overlay at top ── */}
       <div
-        ref={sceneRef}
-        className="relative w-full"
+        className="absolute top-0 left-0 right-0 z-10"
         style={{
-          height: SCENE_H,
-          borderRadius: 18,
-          overflow: "hidden",
-          border: "2.5px solid #1a3268",
-          boxShadow: "0 0 0 1px #0a1020, 0 8px 48px rgba(0,0,0,0.7), inset 0 0 80px rgba(0,0,0,0.4)",
+          padding: "10px 16px",
+          background: isLight
+            ? "linear-gradient(180deg, rgba(220,232,245,0.96) 0%, rgba(220,232,245,0.65) 55%, transparent 100%)"
+            : "linear-gradient(180deg, rgba(8,14,28,0.95) 0%, rgba(8,14,28,0.6) 60%, transparent 100%)",
+          pointerEvents: "none",
         }}
       >
-        {/* Diamond tile floor */}
-        <DiamondFloor />
+        <StatsBar
+          total={agents.length}
+          processing={processingCount}
+          working={workingCount}
+          idle={idleCount}
+        />
+      </div>
 
-        {/* Top wall */}
-        <TopWall />
-
-        {/* Zone dividers + labels */}
-        <RoomDividers />
-
-        {/* Side decorations (server rack, plant, corner stations) */}
-        <SideDecorations />
-
-        {/* Meeting table */}
-        <MeetingTable cx={meetingCx} cy={meetingCy} />
-
-        {/* Workstations */}
-        {agents.map((agent, i) => {
-          const ws = agentStates[i]
-          return (
-            <Workstation
-              key={agent.id}
-              x={(deskXPcts[i] / 100) * dims.w}
-              y={dims.h * (WS_CENTER_Y_PCT / 100)}
-              color={getAgentColor(agent)}
-              occupied={ws === "working" || ws === "processing"}
-              processing={ws === "processing"}
-              agentName={agent.name}
-            />
-          )
-        })}
-
-        {/* Agent characters */}
-        {agents.map((agent, i) => (
-          <AgentCharacter
-            key={agent.id}
-            agent={agent}
-            worldState={agentStates[i]}
-            deskXPct={deskXPcts[i]}
-            dims={dims}
-          />
-        ))}
-
-        {/* Empty state */}
-        {agents.length === 0 && (
-          <div
-            className="absolute inset-0 flex flex-col items-center justify-center gap-3"
-            style={{ zIndex: 50 }}
-          >
-            <div style={{ fontSize: 48, opacity: 0.2 }}>🤖</div>
-            <p className="text-sm text-muted-foreground" style={{ opacity: 0.4 }}>
-              No agents provisioned
-            </p>
-          </div>
-        )}
+      {/* ── 3D canvas fills 100% of container ── */}
+      <div ref={sceneRef} className="w-full h-full">
+        <AgentWorld3D agents={agents} agentStates={agentStates as any} deskXPcts={deskXPcts} />
       </div>
     </div>
   )
 }
+
