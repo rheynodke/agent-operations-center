@@ -100,7 +100,7 @@ const WAYPOINTS: Waypoint[] = [
 // current XZ. Used for idle separation (prevents overlapping).
 const AGENT_WORLD_POSITIONS = new Map<string, [number, number]>()
 const WALK_SPEED      = 4   // idle wander speed (world-units/sec)
-const DESK_WALK_SPEED = 10.0   // sprint speed when heading to desk (working/processing)
+const DESK_WALK_SPEED = 15.0   // sprint speed when heading to desk (working/processing)
 const SEP_RADIUS = 2.0   // minimum inter-agent gap
 const SEP_FORCE  = 4.0   // repulsion strength (units/sec at zero distance)
 
@@ -329,7 +329,7 @@ function ArcadeArea() {
       <Box args={[18, 0.06, 14]} position={[9, 0.03, 7]} receiveShadow>
         <meshStandardMaterial color="#1a0533" roughness={1} />
       </Box>
-      {/* 2 grid border lines only (cheap) */}
+      {/* Grid border lines */}
       <Box args={[18, 0.04, 0.12]} position={[9, 0.07, 1]}>
         <meshStandardMaterial color="#7c3aed" emissive="#7c3aed" emissiveIntensity={1.2} toneMapped={false} />
       </Box>
@@ -341,7 +341,7 @@ function ArcadeArea() {
       <Box args={[18, 9, 0.4]} position={[9, 4.5, 0.2]} receiveShadow>
         <meshStandardMaterial color="#0f0520" />
       </Box>
-      {/* Wall neon strips (emissive only, no light) */}
+      {/* Wall neon strips */}
       <Box args={[18, 0.12, 0.1]} position={[9, 1.5, 0.35]}>
         <meshStandardMaterial color="#ec4899" emissive="#ec4899" emissiveIntensity={2.5} toneMapped={false} />
       </Box>
@@ -350,7 +350,7 @@ function ArcadeArea() {
       </Box>
 
       {/* Entrance arch */}
-      <Box args={[0.5, 7, 0.5]} position={[1.5, 3.5, 13.5]}>
+      {/* <Box args={[0.5, 7, 0.5]} position={[1.5, 3.5, 13.5]}>
         <meshStandardMaterial color="#1e1030" />
       </Box>
       <Box args={[0.5, 7, 0.5]} position={[16.5, 3.5, 13.5]}>
@@ -358,72 +358,190 @@ function ArcadeArea() {
       </Box>
       <Box args={[15.5, 0.5, 0.5]} position={[9, 7.25, 13.5]}>
         <meshStandardMaterial color="#1e1030" />
-      </Box>
-      {/* Arch neon (emissive only) */}
-      <Box args={[14, 0.2, 0.15]} position={[9, 6.8, 13.6]}>
+      </Box> */}
+      {/* Arch neon */}
+      {/* <Box args={[14, 0.2, 0.15]} position={[9, 6.8, 13.6]}>
         <meshStandardMaterial color="#f59e0b" emissive="#f59e0b" emissiveIntensity={3} toneMapped={false} />
       </Box>
-      {/* Arcade sign */}
-      <Text
-        position={[9, 8.2, 13.7]}
-        fontSize={0.9}
-        color="#fbbf24"
-        anchorX="center"
-        anchorY="middle"
-      >
-        ARCADE
-      </Text>
+      <Text position={[9, 8.2, 13.7]} fontSize={0.9} color="#fbbf24" anchorX="center" anchorY="middle">
+        🕹  ARCADE
+      </Text> */}
 
-      {/* Floor edge strip (emissive only) */}
+      {/* Floor edge strip */}
       <Box args={[18, 0.06, 0.15]} position={[9, 0.08, 13]}>
         <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={2.5} toneMapped={false} />
       </Box>
 
-      {/* ── 4 ARCADE CABINETS (simplified for perf) ── */}
+      {/* Holographic floor grid */}
+      {[2, 5, 8, 11, 14].map((xg, i) => (
+        <Box key={`gx${i}`} args={[0.04, 0.02, 14]} position={[xg, 0.07, 7]}>
+          <meshStandardMaterial color="#7c3aed" emissive="#7c3aed" emissiveIntensity={0.6} toneMapped={false} transparent opacity={0.5} />
+        </Box>
+      ))}
+      {[3, 6, 9].map((zg, i) => (
+        <Box key={`gz${i}`} args={[18, 0.02, 0.04]} position={[9, 0.07, zg]}>
+          <meshStandardMaterial color="#7c3aed" emissive="#7c3aed" emissiveIntensity={0.6} toneMapped={false} transparent opacity={0.5} />
+        </Box>
+      ))}
+
+
+      {/* ── 4 GAME STATION CABINETS ── */}
       {([
-        { x: 3,  color: "#ff2d55", color2: "#a3e635" },  // hot red body  · neon lime screen
-        { x: 7,  color: "#8b5cf6", color2: "#fb923c" },  // violet body   · vivid orange screen
-        { x: 11, color: "#06b6d4", color2: "#fde047" },  // cyan body     · golden yellow screen
-        { x: 15, color: "#10b981", color2: "#f472b6" },  // emerald body  · hot pink screen
-      ] as const).map(({ x, color, color2 }, ci) => (
+        { x: 3,  bodyCol: "#12082a", accentCol: "#ff2d55", screenCol: "#ff2d55", screenCol2: "#ff8fa3", btnCols: ["#ff2d55","#ff9f0a","#30d158","#0a84ff"], label: "COMBAT X" },
+        { x: 7,  bodyCol: "#0a0a20", accentCol: "#8b5cf6", screenCol: "#8b5cf6", screenCol2: "#c4b5fd", btnCols: ["#8b5cf6","#ec4899","#fde047","#34d399"], label: "NEBULA" },
+        { x: 11, bodyCol: "#001a2a", accentCol: "#06b6d4", screenCol: "#06b6d4", screenCol2: "#67e8f9", btnCols: ["#06b6d4","#38bdf8","#fbbf24","#a3e635"], label: "CYBERRUN" },
+        { x: 15, bodyCol: "#001a12", accentCol: "#10b981", screenCol: "#10b981", screenCol2: "#6ee7b7", btnCols: ["#10b981","#f472b6","#fb923c","#a78bfa"], label: "QUANTUM Z" },
+      ]).map(({ x, bodyCol, accentCol, screenCol, screenCol2, btnCols, label }, ci) => (
         <group key={ci} position={[x, 0, 2]}>
-          {/* Cabinet body */}
-          <Box args={[2.6, 5, 2]} position={[0, 2.5, 0]} castShadow receiveShadow>
-            <meshStandardMaterial color="#0f0a1e" roughness={0.6} />
+
+          {/* Toekick riser */}
+          <Box args={[2.6, 0.35, 2.1]} position={[0, 0.18, 0]} castShadow>
+            <meshStandardMaterial color="#0a0a14" roughness={0.9} />
           </Box>
-          {/* Side stripes */}
-          <Box args={[0.08, 5, 2.05]} position={[-1.35, 2.5, 0]}>
-            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={1.2} toneMapped={false} />
+          <Box args={[2.5, 0.06, 0.06]} position={[0, 0.06, 1.05]}>
+            <meshStandardMaterial color={accentCol} emissive={accentCol} emissiveIntensity={3} toneMapped={false} />
           </Box>
-          <Box args={[0.08, 5, 2.05]} position={[1.35, 2.5, 0]}>
-            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={1.2} toneMapped={false} />
+
+          {/* Lower cabinet body */}
+          <Box args={[2.6, 2.2, 2.1]} position={[0, 1.45, 0]} castShadow receiveShadow>
+            <meshStandardMaterial color={bodyCol} roughness={0.55} metalness={0.25} />
           </Box>
-          {/* Screen (emissive only, NO pointLight) */}
-          <Box args={[2.0, 2.6, 0.08]} position={[0, 4.5, 1.1]} rotation={[-0.2, 0, 0]}>
-            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={2.5} toneMapped={false} />
+          <Box args={[2.55, 2.15, 0.08]} position={[0, 1.45, 1.06]}>
+            <meshStandardMaterial color="#050510" roughness={0.8} />
           </Box>
-          {/* Control panel */}
-          <Box args={[2.6, 0.8, 1.4]} position={[0, 2.4, 1.0]} rotation={[-0.5, 0, 0]}>
-            <meshStandardMaterial color="#1e1030" roughness={0.4} />
+
+          {/* Control panel deck */}
+          <Box args={[2.6, 0.12, 1.6]} position={[0, 2.62, 0.65]} rotation={[-0.45, 0, 0]} castShadow>
+            <meshStandardMaterial color="#0d0d22" roughness={0.3} metalness={0.5} />
           </Box>
-          {/* Marquee glow bar */}
-          <Box args={[2.6, 0.35, 0.1]} position={[0, 5.15, 0.85]}>
-            <meshStandardMaterial color={color2} emissive={color2} emissiveIntensity={2.5} toneMapped={false} />
+          <Box args={[2.3, 0.06, 1.3]} position={[0, 2.72, 0.6]} rotation={[-0.45, 0, 0]}>
+            <meshStandardMaterial color="#1a1a3e" roughness={0.2} metalness={0.7} />
           </Box>
+
+          {/* Joystick */}
+          <Box args={[0.38, 0.1, 0.38]} position={[-0.6, 2.92, 0.72]} rotation={[-0.45, 0, 0]}>
+            <meshStandardMaterial color="#222244" roughness={0.4} metalness={0.5} />
+          </Box>
+          <Cylinder args={[0.06, 0.07, 0.45, 8]} position={[-0.6, 3.22, 0.45]} rotation={[0.45, 0, 0]}>
+            <meshStandardMaterial color="#e2e8f0" roughness={0.3} metalness={0.7} />
+          </Cylinder>
+          <Sphere args={[0.11, 10, 8]} position={[-0.6, 3.42, 0.3]}>
+            <meshStandardMaterial color={accentCol} roughness={0.15} metalness={0.3} />
+          </Sphere>
+
+          {/* Action buttons */}
+          {([
+            { ox: 0.2, oz: 0.75, col: btnCols[0] },
+            { ox: 0.6, oz: 0.62, col: btnCols[1] },
+            { ox: 1.0, oz: 0.75, col: btnCols[2] },
+            { ox: 0.6, oz: 0.9,  col: btnCols[3] },
+          ]).map(({ ox, oz, col }, bi) => (
+            <group key={bi} position={[ox, 2.78 + oz * 0.12, oz * 0.68]} rotation={[-0.45, 0, 0]}>
+              <Cylinder args={[0.095, 0.095, 0.06, 12]} rotation={[Math.PI / 2, 0, 0]}>
+                <meshStandardMaterial color="#111122" roughness={0.5} />
+              </Cylinder>
+              <Cylinder args={[0.075, 0.075, 0.07, 12]} position={[0, 0, 0.04]} rotation={[Math.PI / 2, 0, 0]}>
+                <meshStandardMaterial color={col} emissive={col} emissiveIntensity={2.2} toneMapped={false} roughness={0.1} />
+              </Cylinder>
+            </group>
+          ))}
+
+          {/* Upper cabinet body */}
+          <Box args={[2.6, 3.0, 1.2]} position={[0, 4.25, -0.05]} castShadow receiveShadow>
+            <meshStandardMaterial color={bodyCol} roughness={0.5} metalness={0.28} />
+          </Box>
+          <Box args={[2.6, 3.0, 0.08]} position={[0, 4.25, 0.61]}>
+            <meshStandardMaterial color="#08060f" roughness={0.7} />
+          </Box>
+
+          {/* Monitor bezel */}
+          <Box args={[2.3, 2.4, 0.12]} position={[0, 4.5, 0.66]} castShadow>
+            <meshStandardMaterial color="#0a0814" roughness={0.4} metalness={0.4} />
+          </Box>
+          <Box args={[2.32, 2.42, 0.05]} position={[0, 4.5, 0.6]}>
+            <meshStandardMaterial color={accentCol} emissive={accentCol} emissiveIntensity={0.6} toneMapped={false} transparent opacity={0.7} />
+          </Box>
+
+          {/* Screen bloom */}
+          <Box args={[1.95, 2.0, 0.04]} position={[0, 4.5, 0.72]}>
+            <meshStandardMaterial color={screenCol} emissive={screenCol} emissiveIntensity={0.6} toneMapped={false} transparent opacity={0.35} />
+          </Box>
+          {/* Main screen */}
+          <Box args={[1.82, 1.88, 0.05]} position={[0, 4.5, 0.76]}>
+            <meshStandardMaterial color={screenCol2} emissive={screenCol2} emissiveIntensity={2.8} toneMapped={false} />
+          </Box>
+          {/* Scanlines */}
+          {[4.0, 4.7, 5.1].map((sy, si) => (
+            <Box key={si} args={[1.82, 0.04, 0.04]} position={[0, sy, 0.78]}>
+              <meshStandardMaterial color="#000000" transparent opacity={0.3} />
+            </Box>
+          ))}
+
+          {/* Speaker grilles */}
+          {([-0.95, 0.95] as const).map((sx, si) => (
+            <group key={si} position={[sx, 4.5, 0.63]}>
+              {[-0.55, -0.25, 0.05, 0.35].map((sy, sli) => (
+                <Box key={sli} args={[0.12, 0.03, 0.06]} position={[0, sy, 0]}>
+                  <meshStandardMaterial color="#1a1a2e" roughness={0.8} />
+                </Box>
+              ))}
+            </group>
+          ))}
+
+          {/* Side neon stripes */}
+          <Box args={[0.06, 4.8, 2.15]} position={[-1.32, 2.9, 0]}>
+            <meshStandardMaterial color={accentCol} emissive={accentCol} emissiveIntensity={1.8} toneMapped={false} />
+          </Box>
+          <Box args={[0.06, 4.8, 2.15]} position={[1.32, 2.9, 0]}>
+            <meshStandardMaterial color={accentCol} emissive={accentCol} emissiveIntensity={1.8} toneMapped={false} />
+          </Box>
+          <Box args={[0.05, 4.8, 0.06]} position={[-1.28, 2.9, 1.08]}>
+            <meshStandardMaterial color={accentCol} emissive={accentCol} emissiveIntensity={1.2} toneMapped={false} />
+          </Box>
+          <Box args={[0.05, 4.8, 0.06]} position={[1.28, 2.9, 1.08]}>
+            <meshStandardMaterial color={accentCol} emissive={accentCol} emissiveIntensity={1.2} toneMapped={false} />
+          </Box>
+
+          {/* Marquee header */}
+          <Box args={[2.6, 0.8, 1.2]} position={[0, 6.1, -0.05]} castShadow>
+            <meshStandardMaterial color="#08060f" roughness={0.6} />
+          </Box>
+          <Box args={[2.3, 0.55, 0.06]} position={[0, 6.1, 0.61]}>
+            <meshStandardMaterial color={screenCol} emissive={screenCol} emissiveIntensity={1.5} toneMapped={false} transparent opacity={0.88} />
+          </Box>
+          <Text
+            position={[0, 6.1, 0.68]}
+            fontSize={0.24}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+            fontWeight="bold"
+            outlineWidth={0.02}
+            outlineColor={accentCol}
+          >
+            {label}
+          </Text>
+
+          {/* Coin slot */}
+          <Box args={[0.5, 0.18, 0.08]} position={[0.7, 2.06, 1.07]}>
+            <meshStandardMaterial color="#1a1a2e" roughness={0.5} />
+          </Box>
+          <Box args={[0.26, 0.05, 0.1]} position={[0.7, 2.06, 1.09]}>
+            <meshStandardMaterial color="#050508" roughness={1} />
+          </Box>
+          {/* Card reader */}
+          <Box args={[0.4, 0.08, 0.06]} position={[-0.7, 2.06, 1.07]}>
+            <meshStandardMaterial color={accentCol} emissive={accentCol} emissiveIntensity={0.8} toneMapped={false} />
+          </Box>
+
         </group>
       ))}
 
-      {/* ── 2 zone lights replace 12 per-cabinet lights ── */}
-      <pointLight position={[9, 5, 5]} intensity={2.0} distance={22} color="#a855f7" />
+      {/* Zone lights */}
+      <pointLight position={[9, 5, 5]} intensity={2.5} distance={22} color="#a855f7" />
       <pointLight position={[9, 3, 12]} intensity={1.5} distance={15} color="#ec4899" />
+      <pointLight position={[9, 7, 2]} intensity={1.0} distance={20} color="#06b6d4" />
 
-      {/* Overhead neon bars (emissive only) */}
-      <Box args={[18, 0.12, 0.25]} position={[9, 8.5, 4]}>
-        <meshStandardMaterial color="#a855f7" emissive="#a855f7" emissiveIntensity={3} toneMapped={false} />
-      </Box>
-      <Box args={[18, 0.12, 0.25]} position={[9, 8.5, 9]}>
-        <meshStandardMaterial color="#ec4899" emissive="#ec4899" emissiveIntensity={3} toneMapped={false} />
-      </Box>
     </group>
   )
 }
@@ -1536,6 +1654,21 @@ function AgentAvatar3D({
   })
 
   const [hovered, setHovered] = useState(false)
+  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handlePointerEnter = useCallback((e: any) => {
+    e.stopPropagation()
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current)
+      leaveTimerRef.current = null
+    }
+    setHovered(true)
+  }, [])
+
+  const handlePointerLeave = useCallback((e: any) => {
+    e.stopPropagation()
+    leaveTimerRef.current = setTimeout(() => setHovered(false), 250)
+  }, [])
 
   const [initPos] = useState<[number, number, number]>(() => {
     const wp = WAYPOINTS[lastWpIdxRef.current]
@@ -1556,14 +1689,23 @@ function AgentAvatar3D({
         <meshStandardMaterial color={darkerColor} roughness={0.7} metalness={0.1} />
       </Box>
 
-      {/* ── Torso — hover target + live emissive via bodyRef ── */}
+      {/* ── Large invisible hover hitbox covering the whole avatar ── */}
+      <Box
+        args={[2.2, 4.0, 2.2]}
+        position={[0, 1.6, 0]}
+        visible={false}
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={handlePointerLeave}
+      />
+
+      {/* ── Torso — live emissive via bodyRef ── */}
       <Cylinder
         ref={bodyRef}
         args={[0.46, 0.50, 1.15, 16]}
         position={[0, 0.85, 0]}
         castShadow
-        onPointerEnter={e => { e.stopPropagation(); setHovered(true) }}
-        onPointerLeave={e => { e.stopPropagation(); setHovered(false) }}
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={handlePointerLeave}
       >
         <meshStandardMaterial
           color={color}
@@ -1652,8 +1794,21 @@ function AgentAvatar3D({
 
       {/* Hover profile card */}
       {hovered && (
-        <Html position={[0, 4.2, 0]} center zIndexRange={[100, 200]} style={{ pointerEvents: "none" }}>
-          <AgentProfileCard agent={agent} state={state} color={color} />
+        <Html position={[0, 4.8, 0]} center zIndexRange={[100, 200]} style={{ pointerEvents: "auto" }}>
+          <div
+            onPointerEnter={() => {
+              if (leaveTimerRef.current) {
+                clearTimeout(leaveTimerRef.current)
+                leaveTimerRef.current = null
+              }
+              setHovered(true)
+            }}
+            onPointerLeave={() => {
+              leaveTimerRef.current = setTimeout(() => setHovered(false), 250)
+            }}
+          >
+            <AgentProfileCard agent={agent} state={state} color={color} />
+          </div>
         </Html>
       )}
     </group>
