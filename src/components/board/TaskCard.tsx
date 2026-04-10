@@ -90,12 +90,12 @@ export function TaskCard({ task, agentEmoji, agentName, isDragging, onEdit, onDe
         )}
         {/* 3-dot menu */}
         <DropdownMenu>
-          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuTrigger asChild onClick={(e: React.MouseEvent) => e.stopPropagation()}>
             <button className="ml-auto p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-accent">
               <MoreHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuContent align="end" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
             <DropdownMenuItem onClick={() => onEdit(task)}>
               <Pencil className="mr-2 h-3.5 w-3.5" /> Edit
             </DropdownMenuItem>
