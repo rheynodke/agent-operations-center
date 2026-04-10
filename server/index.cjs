@@ -196,12 +196,16 @@ function getGatewayConfig() {
 
 // Broadcast helper for task updates
 function broadcastTasksUpdate() {
-  const tasks = db.getAllTasks();
-  wss.clients.forEach((client) => {
-    if (client.readyState === 1 /* OPEN */) {
-      client.send(JSON.stringify({ type: 'tasks:updated', payload: tasks, timestamp: new Date().toISOString() }));
-    }
-  });
+  try {
+    const tasks = db.getAllTasks();
+    wss.clients.forEach((client) => {
+      if (client.readyState === client.OPEN) {
+        client.send(JSON.stringify({ type: 'tasks:updated', payload: tasks, timestamp: new Date().toISOString() }));
+      }
+    });
+  } catch (err) {
+    console.error('[broadcastTasksUpdate]', err);
+  }
 }
 
 function checkGatewayPort(port, host = '127.0.0.1') {
@@ -1235,12 +1239,14 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
 
     const after = db.updateTask(id, patch);
 
-    // Write activity entries for meaningful changes
-    if (status && status !== before.status) {
+    // Write activity entries for all meaningful changes (independent, not mutually exclusive)
+    if (status !== undefined && status !== before.status) {
       db.addTaskActivity({ taskId: id, type: 'status_change', fromValue: before.status, toValue: status, actor, note });
-    } else if (assignTo !== undefined && assignTo !== before.agentId) {
+    }
+    if (assignTo !== undefined && assignTo !== before.agentId) {
       db.addTaskActivity({ taskId: id, type: 'assignment', fromValue: before.agentId || null, toValue: assignTo || null, actor });
-    } else if (note && !status) {
+    }
+    if (note && status === undefined) {
       db.addTaskActivity({ taskId: id, type: 'comment', actor, note });
     }
 
@@ -1267,9 +1273,11 @@ app.delete('/api/tasks/:id', db.authMiddleware, (req, res) => {
 
 app.get('/api/tasks/:id/activity', db.authMiddleware, (req, res) => {
   try {
+    if (!db.getTask(req.params.id)) return res.status(404).json({ error: 'Task not found' });
     const activity = db.getTaskActivity(req.params.id);
     res.json({ activity });
   } catch (err) {
+    console.error('[api/tasks/:id/activity GET]', err);
     res.status(500).json({ error: 'Failed to fetch activity' });
   }
 });
