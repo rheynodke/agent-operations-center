@@ -108,7 +108,7 @@ module.exports = {
   updateAgentScriptMeta:   scriptsLib.updateAgentScriptMeta,
   listAgentCustomTools:    scriptsLib.listAgentCustomTools,
   toggleAgentCustomTool:   scriptsLib.toggleAgentCustomTool,
-  ensureUpdateTaskScript:  scriptsLib.ensureUpdateTaskScript,
+  ensureUpdateTaskScript:  scriptsLib.ensureUpdateTaskScript,\n  ensureAocEnvFile:        scriptsLib.ensureAocEnvFile,
 
   // ── hooks / inbound webhooks ───────────────────────────────────────────────
   getHooksConfig:   hooksLib.getHooksConfig,

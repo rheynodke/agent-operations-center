@@ -2069,6 +2069,7 @@ async function syncTaskScriptForAllAgents() {
 async function start() {
   await db.initDatabase();
   feedWatcher.start();
+  parsers.ensureAocEnvFile();   // write ~/.openclaw/.aoc_env with current token
   syncTaskScriptForAllAgents(); // non-blocking, fire-and-forget
 
   // Ensure all agents have skills: [] field in openclaw.json
