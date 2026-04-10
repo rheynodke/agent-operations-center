@@ -445,7 +445,7 @@ function provisionAgent(opts, userId) {
     ensureUpdateTaskScript();
     const getFileFn  = (_id, filename) => fs.readFileSync(path.join(workspacePath, filename), 'utf-8');
     const saveFileFn = (_id, filename, content) => fs.writeFileSync(path.join(workspacePath, filename), content, 'utf-8');
-    toggleAgentCustomTool(agentId, 'update_task.sh', true, 'shared', getFileFn, saveFileFn);
+    toggleAgentCustomTool(id, 'update_task.sh', true, 'shared', getFileFn, saveFileFn);
   } catch (e) {
     console.warn('[provision] update_task setup failed:', e.message);
   }
