@@ -10,10 +10,11 @@ import type { WorkspaceScript } from "@/types"
 import { cn } from "@/lib/utils"
 import { SyntaxEditor, EXT_LANGUAGE } from "@/components/ui/SyntaxEditor"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
+import { TemplatePicker } from "@/components/ai/TemplatePicker"
 import {
   Plus, Trash2, RefreshCw, Copy, Check, FileCode2, Terminal,
   Pencil, Save, X, AlertCircle, Loader2, FolderOpen, ChevronRight,
-  Wand2,
+  Wand2, LayoutTemplate,
 } from "lucide-react"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -188,6 +189,7 @@ function ScriptEditor({
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState(script.name.replace(/\.[^.]+$/, ""))
   const [showAiPanel, setShowAiPanel] = useState(false)
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   // Metadata
   const [displayName, setDisplayName] = useState(script.displayName ?? "")
@@ -319,6 +321,13 @@ function ScriptEditor({
             </button>
           )}
           <button
+            onClick={() => setShowTemplatePicker(true)}
+            className="flex items-center gap-1 px-2 py-1.5 rounded-lg border border-border text-xs font-bold text-muted-foreground hover:text-amber-400 hover:border-amber-500/30 hover:bg-amber-500/10 transition-colors"
+            title="ADLC Script Templates"
+          >
+            <LayoutTemplate className="h-3.5 w-3.5" /> Templates
+          </button>
+          <button
             onClick={() => setShowAiPanel(p => !p)}
             className={cn("flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs font-bold transition-colors",
               showAiPanel
@@ -420,6 +429,19 @@ function ScriptEditor({
             setShowAiPanel(false)
           }}
           onClose={() => setShowAiPanel(false)}
+        />
+      )}
+
+      {/* ADLC Script Template Picker */}
+      {showTemplatePicker && (
+        <TemplatePicker
+          mode="script"
+          onSelect={(templateContent) => {
+            setContent(templateContent)
+            setDirty(true)
+            setShowTemplatePicker(false)
+          }}
+          onClose={() => setShowTemplatePicker(false)}
         />
       )}
 

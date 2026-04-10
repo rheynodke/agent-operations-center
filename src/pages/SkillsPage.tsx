@@ -5,10 +5,11 @@ import {
   Globe, FolderGit2, User, Package, Boxes, Key, Settings2,
   CheckCircle2, XCircle, Layers, AlertCircle, Edit3, Save,
   X, Loader2, Plus, Sparkles, ScrollText, Terminal, Download, History, Trash2,
-  Wand2,
+  Wand2, LayoutTemplate, FolderOpen, FileText, FileCode2, ChevronDown,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
+import type { SkillFileNode } from "@/lib/api"
 import { useAgentStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { CustomToolsTab } from "@/components/skills/CustomToolsTab"
@@ -16,6 +17,8 @@ import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
+import { TemplatePicker } from "@/components/ai/TemplatePicker"
+import { SkillTemplatePicker, SKILL_TEMPLATES, type SkillTemplate } from "@/components/skills/SkillTemplatePicker"
 import type { GlobalSkillInfo, GlobalToolInfo, ToolGroup } from "@/types"
 
 // ─── Source config ────────────────────────────────────────────────────────────
@@ -81,6 +84,10 @@ const SCOPES = [
 ]
 
 function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreated: (slug: string) => void }) {
+  const [step, setStep] = useState<"pick" | "form">("pick")
+  const [selectedTemplate, setSelectedTemplate] = useState<SkillTemplate | null>(null)
+  const [showAdlcPicker, setShowAdlcPicker] = useState(false)
+
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
   const [scope, setScope] = useState("workspace")
@@ -99,23 +106,39 @@ function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreat
     }
   })()
 
+  function handlePickTemplate(tpl: SkillTemplate) {
+    setSelectedTemplate(tpl)
+    if (tpl.suggestedSlug && !name) setName(tpl.suggestedSlug)
+    if (tpl.suggestedDescription && !description) setDescription(tpl.suggestedDescription)
+    setStep("form")
+  }
+
   async function handleCreate() {
     if (!slug) { setError("Name is required"); return }
     const desc = description.trim() || name.trim()
-    const content = [
-      `---`,
-      `name: ${slug}`,
-      `description: ${desc}`,
-      `---`,
-      ``,
-      `# ${name.trim()}`,
-      ``,
-      desc !== name.trim() ? desc + "\n" : "",
-      `## Instructions`,
-      ``,
-      `Describe what this skill does and how the agent should use it.`,
-      ``,
-    ].join("\n")
+
+    let content: string
+    if (selectedTemplate && selectedTemplate.id !== "blank") {
+      content = selectedTemplate.content
+        .replace(/\{slug\}/g, slug)
+        .replace(/\{name\}/g, name.trim())
+        .replace(/\{description\}/g, desc)
+    } else {
+      content = [
+        `---`,
+        `name: ${slug}`,
+        `description: "${desc}"`,
+        `---`,
+        ``,
+        `# ${name.trim()}`,
+        ``,
+        desc !== name.trim() ? desc + "\n" : "",
+        `## Instructions`,
+        ``,
+        `Describe what this skill does and how the agent should use it.`,
+        ``,
+      ].join("\n")
+    }
 
     setSaving(true)
     setError("")
@@ -130,94 +153,167 @@ function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreat
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-card border border-white/10 rounded-2xl shadow-2xl w-[460px] max-w-[95vw]" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center gap-2 px-5 py-4 border-b border-white/5">
-          <Sparkles className="w-4 h-4 text-primary" />
-          <h2 className="text-sm font-display font-bold text-foreground">Create New Skill</h2>
-          <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Skill Name</label>
-            <input
-              value={name}
-              onChange={e => { setName(e.target.value); setError("") }}
-              onKeyDown={e => e.key === "Enter" && handleCreate()}
-              placeholder="my-custom-skill"
-              autoFocus
-              className="w-full px-3 py-2 rounded-lg bg-white/3 border border-white/10 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
-            />
-            {slug && name !== slug && (
-              <p className="text-[10px] text-muted-foreground/50 mt-1 font-mono">
-                Folder: <span className="text-primary/70">{slug}/</span>
-              </p>
-            )}
-          </div>
-
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">
-              Description <span className="normal-case text-muted-foreground/40">(optional)</span>
-            </label>
-            <input
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              placeholder="What does this skill do?"
-              className="w-full px-3 py-2 rounded-lg bg-white/3 border border-white/10 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
-            />
-          </div>
-
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Scope</label>
-            <div className="grid grid-cols-3 gap-2">
-              {SCOPES.map(s => (
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+        <div className="bg-card border border-white/10 rounded-2xl shadow-2xl w-[500px] max-w-[95vw]" onClick={e => e.stopPropagation()}>
+          {/* Header */}
+          <div className="flex items-center gap-2 px-5 py-4 border-b border-white/5">
+            <Sparkles className="w-4 h-4 text-primary" />
+            <h2 className="text-sm font-display font-bold text-foreground">Create New Skill</h2>
+            {step === "form" && (
+              <div className="flex items-center gap-1 ml-1">
+                <span className="text-[10px] text-muted-foreground/40">·</span>
                 <button
-                  key={s.id}
-                  onClick={() => setScope(s.id)}
-                  className={cn(
-                    "flex flex-col items-center gap-1 p-2.5 rounded-xl border text-center transition-all",
-                    scope === s.id ? s.color : "border-white/8 bg-white/2 text-muted-foreground hover:bg-white/5 hover:border-white/15"
-                  )}
+                  onClick={() => setStep("pick")}
+                  className="text-[10px] text-muted-foreground/60 hover:text-primary transition-colors"
                 >
-                  <span className="text-lg">{s.icon}</span>
-                  <span className="text-[11px] font-semibold">{s.label}</span>
-                  <span className="text-[9px] opacity-60">{s.desc}</span>
+                  ← Templates
                 </button>
-              ))}
-            </div>
+              </div>
+            )}
+            <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
-          {pathPreview && (
-            <p className="text-[10px] text-muted-foreground/50 font-mono bg-white/2 rounded-lg px-3 py-2 border border-white/5 break-all">
-              {pathPreview}
-            </p>
-          )}
+          <div className="p-5">
+            {step === "pick" ? (
+              /* ── Step 1: Template picker ── */
+              <>
+                <SkillTemplatePicker
+                  onSelect={handlePickTemplate}
+                  onBrowseAdlc={() => setShowAdlcPicker(true)}
+                />
+                <div className="flex gap-2 mt-4">
+                  <button onClick={onClose} className="flex-1 py-2 rounded-xl border border-white/10 text-[12px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── Step 2: Name + scope form ── */
+              <div className="space-y-4">
+                {/* Template badge */}
+                {selectedTemplate && selectedTemplate.id !== "blank" && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/15">
+                    <span className="text-base leading-none">{selectedTemplate.icon}</span>
+                    <span className="text-[11px] font-semibold text-foreground/80">{selectedTemplate.name}</span>
+                    <button
+                      onClick={() => setStep("pick")}
+                      className="ml-auto text-[10px] text-muted-foreground/50 hover:text-primary transition-colors"
+                    >
+                      Change
+                    </button>
+                  </div>
+                )}
 
-          {error && (
-            <p className="text-[11px] text-destructive flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" /> {error}
-            </p>
-          )}
+                <div>
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Skill Name</label>
+                  <input
+                    value={name}
+                    onChange={e => { setName(e.target.value); setError("") }}
+                    onKeyDown={e => e.key === "Enter" && handleCreate()}
+                    placeholder="my-custom-skill"
+                    autoFocus
+                    className="w-full px-3 py-2 rounded-lg bg-white/3 border border-white/10 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
+                  />
+                  {slug && name !== slug && (
+                    <p className="text-[10px] text-muted-foreground/50 mt-1 font-mono">
+                      Folder: <span className="text-primary/70">{slug}/</span>
+                    </p>
+                  )}
+                </div>
 
-          <div className="flex gap-2 pt-1">
-            <button onClick={onClose} className="flex-1 py-2 rounded-xl border border-white/10 text-[12px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
-              Cancel
-            </button>
-            <button
-              onClick={handleCreate}
-              disabled={!slug || saving}
-              className="flex-1 py-2 rounded-xl bg-primary/20 border border-primary/30 text-[12px] text-primary font-bold hover:bg-primary/30 transition-colors disabled:opacity-40 flex items-center justify-center gap-1.5"
-            >
-              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-              {saving ? "Creating…" : "Create Skill"}
-            </button>
+                <div>
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">
+                    Description <span className="normal-case text-muted-foreground/40">(optional)</span>
+                  </label>
+                  <input
+                    value={description}
+                    onChange={e => setDescription(e.target.value)}
+                    placeholder="What does this skill do?"
+                    className="w-full px-3 py-2 rounded-lg bg-white/3 border border-white/10 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Scope</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {SCOPES.map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => setScope(s.id)}
+                        className={cn(
+                          "flex flex-col items-center gap-1 p-2.5 rounded-xl border text-center transition-all",
+                          scope === s.id ? s.color : "border-white/8 bg-white/2 text-muted-foreground hover:bg-white/5 hover:border-white/15"
+                        )}
+                      >
+                        <span className="text-lg">{s.icon}</span>
+                        <span className="text-[11px] font-semibold">{s.label}</span>
+                        <span className="text-[9px] opacity-60">{s.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {pathPreview && (
+                  <p className="text-[10px] text-muted-foreground/50 font-mono bg-white/2 rounded-lg px-3 py-2 border border-white/5 break-all">
+                    {pathPreview}
+                  </p>
+                )}
+
+                {error && (
+                  <p className="text-[11px] text-destructive flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3" /> {error}
+                  </p>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button onClick={() => setStep("pick")} className="flex-1 py-2 rounded-xl border border-white/10 text-[12px] text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+                    ← Back
+                  </button>
+                  <button
+                    onClick={handleCreate}
+                    disabled={!slug || saving}
+                    className="flex-1 py-2 rounded-xl bg-primary/20 border border-primary/30 text-[12px] text-primary font-bold hover:bg-primary/30 transition-colors disabled:opacity-40 flex items-center justify-center gap-1.5"
+                  >
+                    {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                    {saving ? "Creating…" : "Create Skill"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
-    </div>
+
+      {/* ADLC full template picker overlay */}
+      {showAdlcPicker && (
+        <TemplatePicker
+          mode="skill"
+          onSelect={(content, _name) => {
+            // Extract slug from frontmatter name field
+            const slugMatch = content.match(/^---[\s\S]*?\nname:\s*([^\s\n]+)/)
+            const extractedSlug = slugMatch?.[1]?.trim() || ""
+            const fakeTpl: SkillTemplate = {
+              id: "adlc-custom",
+              name: _name,
+              icon: "📄",
+              description: "",
+              category: "workflow",
+              suggestedSlug: extractedSlug,
+              suggestedDescription: "",
+              content,
+            }
+            setShowAdlcPicker(false)
+            setSelectedTemplate(fakeTpl)
+            if (extractedSlug && !name) setName(extractedSlug)
+            setStep("form")
+          }}
+          onClose={() => setShowAdlcPicker(false)}
+        />
+      )}
+    </>
   )
 }
 
@@ -232,6 +328,7 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
   const [error, setError] = useState("")
   const [showHistory, setShowHistory] = useState(false)
   const [showAiPanel, setShowAiPanel] = useState(false)
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -321,6 +418,13 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
                 <History className="w-3 h-3" />
               </button>
               <button
+                onClick={() => setShowTemplatePicker(true)}
+                className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] text-muted-foreground hover:text-amber-400 hover:border-amber-500/30 hover:bg-amber-500/10 transition-colors font-bold"
+                title="ADLC Templates"
+              >
+                <LayoutTemplate className="w-3 h-3" /> Templates
+              </button>
+              <button
                 onClick={() => setShowAiPanel(p => !p)}
                 className={cn("flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-bold transition-colors",
                   showAiPanel
@@ -386,6 +490,204 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
           onClose={() => setShowAiPanel(false)}
         />
       )}
+
+      {/* ADLC Template Picker */}
+      {showTemplatePicker && (
+        <TemplatePicker
+          mode="skill"
+          onSelect={(templateContent, name) => {
+            setContent(templateContent)
+            setEditMode(true)
+            setShowTemplatePicker(false)
+          }}
+          onClose={() => setShowTemplatePicker(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Skill Files Panel ────────────────────────────────────────────────────────
+
+function FileTreeNode({
+  node,
+  depth,
+  selectedPath,
+  onSelect,
+}: {
+  node: SkillFileNode
+  depth: number
+  selectedPath: string | null
+  onSelect: (path: string) => void
+}) {
+  const [open, setOpen] = useState(depth < 2)
+  const isSelected = selectedPath === node.path
+  const indent = depth * 12
+
+  if (node.type === 'dir') {
+    return (
+      <div>
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="w-full flex items-center gap-1.5 py-1 px-2 text-left hover:bg-foreground/3 transition-colors rounded"
+          style={{ paddingLeft: `${8 + indent}px` }}
+        >
+          {open ? <ChevronDown className="w-3 h-3 text-muted-foreground/40 shrink-0" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
+          <FolderOpen className="w-3.5 h-3.5 text-amber-400/70 shrink-0" />
+          <span className="text-[11px] font-semibold text-muted-foreground/70">{node.name}/</span>
+          <span className="text-[9px] text-muted-foreground/30 ml-auto">{node.children?.length ?? 0}</span>
+        </button>
+        {open && node.children?.map(child => (
+          <FileTreeNode key={child.path} node={child} depth={depth + 1} selectedPath={selectedPath} onSelect={onSelect} />
+        ))}
+      </div>
+    )
+  }
+
+  const fileEmoji = node.ext === '.md' ? '📄' : node.ext === '.sh' || node.ext === '.bash' || node.ext === '.zsh' ? '🟢' : node.ext === '.py' ? '🐍' : node.ext === '.js' || node.ext === '.ts' ? '🟡' : '📄'
+
+  return (
+    <button
+      onClick={() => node.isText && onSelect(node.path)}
+      disabled={!node.isText}
+      className={cn(
+        "w-full flex items-center gap-1.5 py-1 px-2 text-left transition-colors rounded",
+        isSelected ? "bg-primary/10 text-foreground" : "hover:bg-foreground/3 text-muted-foreground/70",
+        !node.isText && "opacity-40 cursor-not-allowed"
+      )}
+      style={{ paddingLeft: `${8 + indent}px` }}
+    >
+      <span className="text-xs shrink-0">{fileEmoji}</span>
+      <span className={cn("text-[11px] font-mono truncate flex-1", isSelected && "text-primary font-semibold")}>
+        {node.name}
+      </span>
+      {node.size !== undefined && (
+        <span className="text-[9px] text-muted-foreground/30 shrink-0">
+          {node.size < 1024 ? `${node.size}B` : `${(node.size / 1024).toFixed(1)}KB`}
+        </span>
+      )}
+    </button>
+  )
+}
+
+function SkillFilesPanel({ slug, editable }: { slug: string; editable: boolean }) {
+  const [tree, setTree] = useState<SkillFileNode[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [fileContent, setFileContent] = useState('')
+  const [fileLoading, setFileLoading] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    api.getSkillDirTree(slug)
+      .then(data => { setTree(data.tree); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [slug])
+
+  useEffect(() => {
+    if (!selectedPath) return
+    setFileLoading(true)
+    setEditMode(false)
+    setError('')
+    api.getSkillAnyFile(slug, selectedPath)
+      .then(data => { setFileContent(data.content); setEditContent(data.content); setFileLoading(false) })
+      .catch(e => { setError((e as Error).message); setFileLoading(false) })
+  }, [slug, selectedPath])
+
+  async function handleSave() {
+    if (!selectedPath) return
+    setSaving(true)
+    try {
+      await api.saveSkillAnyFile(slug, selectedPath, editContent)
+      setFileContent(editContent)
+      setEditMode(false)
+    } catch (e) { setError((e as Error).message) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="flex h-full min-h-0">
+      {/* File tree — left panel */}
+      <div className="w-52 shrink-0 border-r border-border overflow-y-auto py-1.5">
+        {loading ? (
+          <div className="flex justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>
+        ) : tree.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground/40 px-3 py-4 italic">No files found</p>
+        ) : (
+          tree.map(node => (
+            <FileTreeNode key={node.path} node={node} depth={0} selectedPath={selectedPath} onSelect={setSelectedPath} />
+          ))
+        )}
+      </div>
+
+      {/* File viewer — right panel */}
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        {!selectedPath ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-6">
+            <FileText className="w-8 h-8 text-foreground/8 mb-3" />
+            <p className="text-[12px] text-muted-foreground/40">Pilih file untuk melihat isinya</p>
+            <p className="text-[10px] text-muted-foreground/30 mt-1">assets/ · references/ · scripts/ · SKILL.md</p>
+          </div>
+        ) : (
+          <>
+            {/* File header */}
+            <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-border bg-foreground/2">
+              <span className="text-[11px] font-mono text-foreground/70 flex-1 truncate">{selectedPath}</span>
+              {error && <span className="text-[10px] text-red-400">{error}</span>}
+              {!fileLoading && editable && !editMode && (
+                <button
+                  onClick={() => { setEditContent(fileContent); setEditMode(true) }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+                >
+                  <Edit3 className="w-3 h-3" /> Edit
+                </button>
+              )}
+              {editMode && (
+                <>
+                  <button
+                    onClick={() => { setEditMode(false); setEditContent(fileContent) }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <X className="w-3 h-3" /> Cancel
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={saving}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded bg-primary/20 border border-primary/30 text-[10px] text-primary font-bold hover:bg-primary/30 transition-colors disabled:opacity-40"
+                  >
+                    {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                    Save
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {fileLoading ? (
+                <div className="flex justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>
+              ) : editMode ? (
+                <textarea
+                  value={editContent}
+                  onChange={e => setEditContent(e.target.value)}
+                  className="w-full h-full resize-none bg-transparent text-[11.5px] font-mono text-foreground/90 px-4 py-3 focus:outline-none leading-relaxed"
+                  spellCheck={false}
+                />
+              ) : (
+                <div className="overflow-y-auto h-full px-4 py-3">
+                  <pre className="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap leading-relaxed">
+                    {fileContent || <span className="text-muted-foreground/30 italic">Empty file</span>}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -402,7 +704,7 @@ function SkillDetail({
   onRefresh: () => void
 }) {
   const navigate = useNavigate()
-  const [detailTab, setDetailTab] = useState<"info" | "editor">("info")
+  const [detailTab, setDetailTab] = useState<"info" | "editor" | "files">("info")
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const enabledAgents = skill.agentAssignments.filter(a => a.enabled)
@@ -490,6 +792,16 @@ function SkillDetail({
           SKILL.md
           {skill.editable && <span className="w-1.5 h-1.5 rounded-full bg-primary/60 ml-0.5" />}
         </button>
+        <button
+          onClick={() => setDetailTab("files")}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors -mb-px",
+            detailTab === "files" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+          )}
+        >
+          <FolderOpen className="w-3 h-3" />
+          Files
+        </button>
       </div>
 
       {/* Tab content */}
@@ -570,8 +882,10 @@ function SkillDetail({
               </div>
             )}
           </div>
-        ) : (
+        ) : detailTab === "editor" ? (
           <SkillMdEditor slug={skill.slug} editable={skill.editable} onSaved={onRefresh} />
+        ) : (
+          <SkillFilesPanel slug={skill.slug} editable={skill.editable} />
         )}
       </div>
       {showDeleteConfirm && (

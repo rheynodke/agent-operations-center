@@ -224,12 +224,73 @@ function getSkillScriptsPath(agentId, skillName) {
   };
 }
 
+// ── Skill directory tree (all files, not just scripts/) ──────────────────────
+
+const TEXT_EXTENSIONS = new Set([
+  '.md', '.txt', '.sh', '.py', '.js', '.ts', '.rb', '.lua', '.bash', '.zsh',
+  '.fish', '.json', '.yaml', '.yml', '.toml', '.env', '.cfg', '.conf', '.ini',
+]);
+
+function isTextFile(filename) {
+  return TEXT_EXTENSIONS.has(path.extname(filename).toLowerCase());
+}
+
+function buildDirTree(dirPath, relativePath = '') {
+  const entries = [];
+  let items;
+  try { items = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return entries; }
+
+  for (const item of items.sort((a, b) => {
+    if (a.isDirectory() && !b.isDirectory()) return -1;
+    if (!a.isDirectory() && b.isDirectory()) return 1;
+    return a.name.localeCompare(b.name);
+  })) {
+    const rel = relativePath ? `${relativePath}/${item.name}` : item.name;
+    const abs = path.join(dirPath, item.name);
+    if (item.isDirectory()) {
+      entries.push({ name: item.name, path: rel, type: 'dir', children: buildDirTree(abs, rel) });
+    } else {
+      const stat = fs.statSync(abs);
+      entries.push({ name: item.name, path: rel, type: 'file', size: stat.size, ext: path.extname(item.name).toLowerCase(), isText: isTextFile(item.name) });
+    }
+  }
+  return entries;
+}
+
+function getAgentSkillDirTree(agentId, skillName) {
+  const { skillDir } = getAgentSkillPath(agentId, skillName);
+  return { skillDir, tree: buildDirTree(skillDir) };
+}
+
+function getAgentSkillAnyFile(agentId, skillName, relativePath) {
+  const { skillDir } = getAgentSkillPath(agentId, skillName);
+  const resolved = path.resolve(skillDir, relativePath);
+  if (!resolved.startsWith(path.resolve(skillDir))) throw new Error('Path traversal not allowed');
+  if (!fs.existsSync(resolved)) throw new Error(`File not found: ${relativePath}`);
+  const stat = fs.statSync(resolved);
+  if (stat.isDirectory()) throw new Error('Path is a directory');
+  if (!isTextFile(relativePath)) throw new Error('Binary files not readable via API');
+  return { path: relativePath, content: fs.readFileSync(resolved, 'utf-8'), size: stat.size };
+}
+
+function saveAgentSkillAnyFile(agentId, skillName, relativePath, content) {
+  const { skillDir } = getAgentSkillPath(agentId, skillName);
+  const resolved = path.resolve(skillDir, relativePath);
+  if (!resolved.startsWith(path.resolve(skillDir))) throw new Error('Path traversal not allowed');
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(resolved, content, 'utf-8');
+  return { path: relativePath, size: content.length };
+}
+
 module.exports = {
   listSkillScripts,
   getSkillScript,
   saveSkillScript,
   deleteSkillScript,
   getSkillScriptsPath,
+  getAgentSkillDirTree,
+  getAgentSkillAnyFile,
+  saveAgentSkillAnyFile,
   ALLOWED_EXTENSIONS,
   EXT_EMOJI,
 };

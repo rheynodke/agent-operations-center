@@ -908,6 +908,45 @@ app.delete('/api/skills/:slug', db.authMiddleware, (req, res) => {
   }
 });
 
+// GET /api/skills/:slug/tree — full directory tree of a skill
+app.get('/api/skills/:slug/tree', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.getSkillDirTree(req.params.slug);
+    res.json(result);
+  } catch (err) {
+    const status = err.message?.includes('not found') ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// GET /api/skills/:slug/anyfile?path=assets/AGENTS.md — read any file in skill dir
+app.get('/api/skills/:slug/anyfile', db.authMiddleware, (req, res) => {
+  try {
+    const filePath = req.query.path;
+    if (!filePath) return res.status(400).json({ error: 'path query param required' });
+    const result = parsers.getSkillAnyFile(req.params.slug, filePath);
+    res.json(result);
+  } catch (err) {
+    const status = err.message?.includes('not found') ? 404 : err.message?.includes('traversal') ? 403 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// PUT /api/skills/:slug/anyfile?path=assets/AGENTS.md — save any file in skill dir
+app.put('/api/skills/:slug/anyfile', db.authMiddleware, (req, res) => {
+  try {
+    const filePath = req.query.path;
+    const { content } = req.body;
+    if (!filePath) return res.status(400).json({ error: 'path query param required' });
+    if (content === undefined) return res.status(400).json({ error: 'content is required' });
+    const result = parsers.saveSkillAnyFile(req.params.slug, filePath, content);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const status = err.message?.includes('not found') ? 404 : err.message?.includes('read-only') ? 403 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
 // Read a skill's SKILL.md directly by slug
 app.get('/api/skills/:slug/file', db.authMiddleware, (req, res) => {
   try {
@@ -944,6 +983,44 @@ app.get('/api/tools', db.authMiddleware, (req, res) => {
   } catch (err) {
     console.error('[api/tools]', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Skill Directory Tree (all files, not just scripts/) ─────────────────────
+
+app.get('/api/agents/:id/skills/:name/tree', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.getAgentSkillDirTree(req.params.id, req.params.name);
+    res.json(result);
+  } catch (err) {
+    const status = err.message?.includes('not found') ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.get('/api/agents/:id/skills/:name/anyfile', db.authMiddleware, (req, res) => {
+  try {
+    const filePath = req.query.path;
+    if (!filePath) return res.status(400).json({ error: 'path query param required' });
+    const result = parsers.getAgentSkillAnyFile(req.params.id, req.params.name, filePath);
+    res.json(result);
+  } catch (err) {
+    const status = err.message?.includes('not found') ? 404 : err.message?.includes('traversal') ? 403 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.put('/api/agents/:id/skills/:name/anyfile', db.authMiddleware, (req, res) => {
+  try {
+    const filePath = req.query.path;
+    const { content } = req.body;
+    if (!filePath) return res.status(400).json({ error: 'path query param required' });
+    if (content === undefined) return res.status(400).json({ error: 'content is required' });
+    const result = parsers.saveAgentSkillAnyFile(req.params.id, req.params.name, filePath, content);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const status = err.message?.includes('not found') ? 404 : err.message?.includes('traversal') ? 403 : 500;
+    res.status(status).json({ error: err.message });
   }
 });
 

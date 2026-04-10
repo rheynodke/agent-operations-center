@@ -489,6 +489,122 @@ function ensureAgentSkillsFields() {
   }
 }
 
+// ── Skill directory tree ──────────────────────────────────────────────────────
+
+const TEXT_EXTENSIONS = new Set([
+  '.md', '.txt', '.sh', '.py', '.js', '.ts', '.rb', '.lua', '.bash', '.zsh',
+  '.fish', '.json', '.yaml', '.yml', '.toml', '.env', '.cfg', '.conf', '.ini',
+]);
+
+function isTextFile(filename) {
+  return TEXT_EXTENSIONS.has(path.extname(filename).toLowerCase());
+}
+
+/**
+ * Recursively list all files in a skill directory.
+ * Returns a tree structure: [ { name, path, type: 'file'|'dir', children?, size, ext } ]
+ */
+function buildDirTree(dirPath, relativePath = '') {
+  const entries = [];
+  let items;
+  try { items = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return entries; }
+
+  for (const item of items.sort((a, b) => {
+    // Dirs first, then files. Alphabetical within each group.
+    if (a.isDirectory() && !b.isDirectory()) return -1;
+    if (!a.isDirectory() && b.isDirectory()) return 1;
+    return a.name.localeCompare(b.name);
+  })) {
+    const rel = relativePath ? `${relativePath}/${item.name}` : item.name;
+    const abs = path.join(dirPath, item.name);
+    if (item.isDirectory()) {
+      entries.push({
+        name: item.name,
+        path: rel,
+        type: 'dir',
+        children: buildDirTree(abs, rel),
+      });
+    } else {
+      const stat = fs.statSync(abs);
+      entries.push({
+        name: item.name,
+        path: rel,
+        type: 'file',
+        size: stat.size,
+        ext: path.extname(item.name).toLowerCase(),
+        isText: isTextFile(item.name),
+      });
+    }
+  }
+  return entries;
+}
+
+/**
+ * Get the full directory tree of a skill by slug.
+ */
+function getSkillDirTree(slug) {
+  const { skills } = getAllSkills();
+  const skill = skills.find(s => s.slug === slug || s.name === slug);
+  if (!skill) throw new Error(`Skill "${slug}" not found`);
+  const skillDir = skill.path;
+  return {
+    slug: skill.slug,
+    name: skill.name,
+    source: skill.source,
+    editable: skill.editable,
+    skillDir,
+    tree: buildDirTree(skillDir),
+  };
+}
+
+/**
+ * Read any file within a skill directory by relative path.
+ * Security: ensures the resolved path is within skillDir.
+ */
+function getSkillAnyFile(slug, relativePath) {
+  const { skills } = getAllSkills();
+  const skill = skills.find(s => s.slug === slug || s.name === slug);
+  if (!skill) throw new Error(`Skill "${slug}" not found`);
+  const skillDir = skill.path;
+
+  const resolved = path.resolve(skillDir, relativePath);
+  if (!resolved.startsWith(path.resolve(skillDir))) {
+    throw new Error('Path traversal not allowed');
+  }
+  if (!fs.existsSync(resolved)) throw new Error(`File not found: ${relativePath}`);
+
+  const stat = fs.statSync(resolved);
+  if (stat.isDirectory()) throw new Error(`Path is a directory: ${relativePath}`);
+  if (!isTextFile(relativePath)) throw new Error(`Binary files are not readable via this API`);
+
+  const content = fs.readFileSync(resolved, 'utf-8');
+  return {
+    slug: skill.slug,
+    path: relativePath,
+    content,
+    size: stat.size,
+    editable: skill.editable,
+  };
+}
+
+/**
+ * Save any text file within a skill directory by relative path.
+ */
+function saveSkillAnyFile(slug, relativePath, content) {
+  const { skills } = getAllSkills();
+  const skill = skills.find(s => s.slug === slug || s.name === slug);
+  if (!skill) throw new Error(`Skill "${slug}" not found`);
+  if (!skill.editable) throw new Error(`Skill "${slug}" is read-only (source: ${skill.source})`);
+
+  const skillDir = skill.path;
+  const resolved = path.resolve(skillDir, relativePath);
+  if (!resolved.startsWith(path.resolve(skillDir))) throw new Error('Path traversal not allowed');
+
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(resolved, content, 'utf-8');
+  return { slug: skill.slug, path: relativePath, size: content.length };
+}
+
 module.exports = {
   parseSkillFrontmatter,
   scanSkillDir,
@@ -504,4 +620,7 @@ module.exports = {
   deleteAgentSkill,
   deleteSkillBySlug,
   ensureAgentSkillsFields,
+  getSkillDirTree,
+  getSkillAnyFile,
+  saveSkillAnyFile,
 };

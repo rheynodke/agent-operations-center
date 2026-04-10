@@ -331,7 +331,7 @@ export function SessionDetailModal({ session, onClose }: Props) {
 
           {/* Left: Chat / Timeline */}
           <div
-            className="flex-1 flex flex-col min-w-0 border-r border-border"
+            className="flex-1 flex flex-col min-w-0 overflow-hidden border-r border-border"
             ref={scrollAreaRef}
             onScrollCapture={() => { userScrolledRef.current = true }}
           >
@@ -546,20 +546,22 @@ function ChatBubble({
       <div className="pl-4 py-0.5">
         <div className={cn("rounded-lg border overflow-hidden", config.bg)}>
           {/* Block header */}
-          <div className={cn("flex items-center gap-2 px-3 py-1.5", config.headerBg)}>
+          <div className={cn("flex items-center gap-2 px-3 py-1.5 min-w-0", config.headerBg)}>
             <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", config.dot)} />
-            <span className={cn("text-[11px] font-semibold tracking-wide", config.labelClass)}>
+            <span className={cn("text-[11px] font-semibold tracking-wide shrink-0", config.labelClass)}>
               {ev.type === "tool_use" ? "TOOL" : ev.type === "tool_result" ? "RESULT" : "THINKING"}
             </span>
-            <span className="text-[11px] text-muted-foreground truncate">{config.label !== "Internal Reasoning" ? config.label : ""}</span>
+            <span className="text-[11px] text-muted-foreground truncate min-w-0">{config.label !== "Internal Reasoning" ? config.label : ""}</span>
             {showTime && (
-              <span className="ml-auto text-[10px] font-mono text-muted-foreground/50 shrink-0">{fmtTime(ev.timestamp)}</span>
+              <span className="ml-auto text-[10px] font-mono text-muted-foreground/50 shrink-0 pl-2">{fmtTime(ev.timestamp)}</span>
             )}
           </div>
-          {/* Block body */}
-          <pre className="text-[11px] font-mono leading-relaxed px-3 py-2.5 whitespace-pre-wrap wrap-break-word text-foreground/70 dark:text-foreground/60 max-w-full overflow-x-auto">
-            {displayContent}
-          </pre>
+          {/* Block body — wrap long lines, horizontal scroll only if truly needed */}
+          <div className="overflow-x-auto">
+            <pre className="text-[11px] font-mono leading-relaxed px-3 py-2.5 whitespace-pre-wrap break-words text-foreground/70 dark:text-foreground/60 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+              {displayContent}
+            </pre>
+          </div>
           {isLong && (
             <button
               onClick={() => setExpanded(!expanded)}
@@ -578,8 +580,8 @@ function ChatBubble({
   if (isUser) {
     return (
       <div className="flex flex-col items-end gap-1 py-1">
-        <div className="flex items-end gap-2 max-w-[80%]">
-          <div className="flex flex-col items-end gap-1">
+        <div className="flex items-end gap-2 max-w-[80%] min-w-0">
+          <div className="flex flex-col items-end gap-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-muted-foreground">{fmtTime(ev.timestamp)}</span>
               <span className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">{ev.title}</span>
@@ -590,7 +592,7 @@ function ChatBubble({
               </div>
             )}
             {ev.content && (
-              <div className="bg-blue-500/10 dark:bg-blue-500/15 border border-blue-500/20 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap wrap-break-word">
+              <div className="bg-blue-500/10 dark:bg-blue-500/15 border border-blue-500/20 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap break-words min-w-0" style={{ overflowWrap: 'anywhere' }}>
                 {displayContent}
                 {isLong && (
                   <button onClick={() => setExpanded(!expanded)} className="block mt-1 text-xs text-blue-500 hover:underline cursor-pointer">
@@ -613,11 +615,11 @@ function ChatBubble({
     const isEmpty = ev.content === "<Processing...>"
     return (
       <div className="flex flex-col items-start gap-1 py-1">
-        <div className="flex items-end gap-2 max-w-[80%]">
+        <div className="flex items-end gap-2 max-w-[80%] min-w-0">
           <div className="w-8 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0 mb-0.5 overflow-hidden">
             <AgentAvatar avatarPresetId={avatarPresetId} emoji={agentEmoji ?? "🤖"} size="w-8 h-8" />
           </div>
-          <div className="flex flex-col items-start gap-1">
+          <div className="flex flex-col items-start gap-1 min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">{ev.title}</span>
               {fmtTime(ev.timestamp) && <span className="text-[11px] text-muted-foreground">{fmtTime(ev.timestamp)}</span>}
@@ -629,11 +631,11 @@ function ChatBubble({
             )}
             {(ev.content || isEmpty) && (
               <div className={cn(
-                "border rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-break-word",
+                "border rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words w-full min-w-0",
                 isEmpty
                   ? "bg-muted/30 border-border text-muted-foreground italic"
                   : "bg-emerald-500/8 dark:bg-emerald-500/12 border-emerald-500/20 text-foreground/90"
-              )}>
+              )} style={{ overflowWrap: 'anywhere' }}>
                 {displayContent}
                 {isLong && !isEmpty && (
                   <button onClick={() => setExpanded(!expanded)} className="block mt-1 text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer">

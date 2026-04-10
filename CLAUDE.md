@@ -58,6 +58,8 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
   - `server/lib/automation/cron.cjs` — cron CRUD (create/update/delete/toggle/run/runs); tries gateway RPC first, falls back to direct `~/.openclaw/cron/jobs.json` file write. `buildSchedule()` converts form opts to gateway schema (`{kind, everyMs}` etc). `buildJobFromOpts()` produces the full job object.
   - `server/lib/scripts.cjs` — shared workspace scripts (`~/.openclaw/scripts/`) and agent-specific scripts (`{agentWorkspace}/scripts/`). Metadata stored in `.tools.json` per directory. `listAgentCustomTools()` returns `{shared, agent}` enriched with `enabled` from agent's TOOLS.md. `toggleAgentCustomTool()` injects/removes HTML-comment-delimited blocks in TOOLS.md.
 - **Config:** `server/lib/config.cjs` exports `OPENCLAW_HOME`, `OPENCLAW_WORKSPACE`, `AGENTS_DIR`, `readJsonSafe`.
+- **AI generation:** `server/lib/ai.cjs` — `generateStream()` (async generator, SSE via Claude CLI), `getOsContext()`, `FILE_CONTEXTS`.
+- **`server.js` (root)** — legacy file, NOT used. The active entry is `server/index.cjs`.
 
 ### Data Flow
 
@@ -139,6 +141,26 @@ Skills are resolved by searching these directories in order (first `SKILL.md` ma
 4. `~/.openclaw/skills/{name}/`
 
 Skill scripts live at `{skillDir}/scripts/` and are managed via `skillScripts.cjs`.
+
+### AI Assist (Content Generation)
+
+`POST /api/ai/generate` — SSE streaming endpoint. Spawns a `claude` CLI subprocess via `server/lib/ai.cjs` (`generateStream()`). Uses `CLAUDE_BIN` env var (default `/opt/homebrew/bin/claude`).
+
+- `AiAssistPanel.tsx` (`src/components/ai/`) — floating panel rendered inline next to editable file areas. Calls `streamAiGenerate()` which reads SSE chunks and appends to output.
+- `server/lib/ai.cjs` — also exports `getOsContext()` (detects installed runtimes/shells on the host) used by `GET /api/ai/os-context`, and `FILE_CONTEXTS` map (per-filetype generation hints for `IDENTITY.md`, `SOUL.md`, `SKILL.md`, `script`, etc.).
+- SSE format: `data: {"text": "..."}` chunks, terminated by `data: {"done": true}` or `data: {"error": "..."}`.
+- Abort: client disconnect detected via `req.socket.on('close')` → `AbortController` signal passed to `generateStream`.
+
+### Skill & Script Templates
+
+`src/data/templates/` — ADLC-aligned template library for Skills and Scripts.
+
+- **Types:** `SkillTemplate` (has `agent`, `agentEmoji`, `slug`, full `SKILL.md` content) and `ScriptTemplate` (has `filename` with extension, `content`).
+- **Skill templates** organized per ADLC agent: `pm-analyst`, `ux-designer`, `em-architecture`, `qa-engineer`, `doc-writer`, `ai-ops`, `odoo-skills`, `superpowers`.
+- **Script templates:** `data-integration`, `notifications`, `cost-quality`, `task-management`.
+- Entry point: `src/data/templates/index.ts` exports `SKILL_TEMPLATES`, `SCRIPT_TEMPLATES`, `SUPERPOWERS_TEMPLATES`.
+- `src/data/adlcTemplates.ts` — **deprecated** re-export wrapper; use `src/data/templates/index.ts` directly.
+- `SkillTemplatePicker.tsx` (`src/components/skills/`) — modal picker UI consumed by `SkillsPage` and agent detail Skills tab.
 
 ### SyntaxEditor Component
 

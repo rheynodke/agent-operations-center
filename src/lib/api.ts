@@ -1,6 +1,16 @@
 import { useAuthStore } from "@/stores"
 import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding } from "@/types"
 
+export interface SkillFileNode {
+  name: string
+  path: string
+  type: 'file' | 'dir'
+  size?: number
+  ext?: string
+  isText?: boolean
+  children?: SkillFileNode[]
+}
+
 const BASE = "/api"
 
 async function request<T>(
@@ -97,6 +107,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, scope, content }),
     }),
+  getAgentSkillDirTree: (agentId: string, skillName: string) =>
+    request<{ skillDir: string; tree: SkillFileNode[] }>(`/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}/tree`),
+  getAgentSkillAnyFile: (agentId: string, skillName: string, filePath: string) =>
+    request<{ path: string; content: string; size: number }>(`/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}/anyfile?path=${encodeURIComponent(filePath)}`),
+  saveAgentSkillAnyFile: (agentId: string, skillName: string, filePath: string, content: string) =>
+    request<{ ok: boolean; path: string; size: number }>(`/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}/anyfile?path=${encodeURIComponent(filePath)}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    }),
   toggleAgentSkill: (agentId: string, skillName: string, enabled: boolean) =>
     request<{ ok: boolean; allowlist: string[] | undefined }>(`/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}/toggle`, {
       method: "PATCH",
@@ -158,6 +177,15 @@ export const api = {
     request<{ ok: boolean; slug: string; path: string; scope: string }>("/skills", {
       method: "POST",
       body: JSON.stringify({ slug, scope, content }),
+    }),
+  getSkillDirTree: (slug: string) =>
+    request<{ slug: string; name: string; source: string; editable: boolean; skillDir: string; tree: SkillFileNode[] }>(`/skills/${encodeURIComponent(slug)}/tree`),
+  getSkillAnyFile: (slug: string, filePath: string) =>
+    request<{ slug: string; path: string; content: string; size: number; editable: boolean }>(`/skills/${encodeURIComponent(slug)}/anyfile?path=${encodeURIComponent(filePath)}`),
+  saveSkillAnyFile: (slug: string, filePath: string, content: string) =>
+    request<{ ok: boolean; slug: string; path: string; size: number }>(`/skills/${encodeURIComponent(slug)}/anyfile?path=${encodeURIComponent(filePath)}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
     }),
 
   // Agent Channels

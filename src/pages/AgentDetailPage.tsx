@@ -18,7 +18,7 @@ import {
   Activity, PanelLeftClose, PanelLeftOpen,
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
   Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer, History,
-  Wand2, StopCircle, CornerDownLeft,
+  Wand2, StopCircle, CornerDownLeft, LayoutTemplate,
 } from "lucide-react"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -29,6 +29,9 @@ import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
+import { TemplatePicker } from "@/components/ai/TemplatePicker"
+import { SkillTemplatePicker, type SkillTemplate } from "@/components/skills/SkillTemplatePicker"
+import type { SkillFileNode } from "@/lib/api"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  TYPES                                                              */
@@ -873,6 +876,124 @@ function SkillScriptsPanel({
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/*  AGENT SKILL FILES PANEL (all files in skill dir)                   */
+/* ─────────────────────────────────────────────────────────────────── */
+
+function AgentSkillFileNode({
+  node, depth, selectedPath, onSelect,
+}: { node: SkillFileNode; depth: number; selectedPath: string | null; onSelect: (p: string) => void }) {
+  const [open, setOpen] = useState(depth < 2)
+  const isSelected = selectedPath === node.path
+  const indent = depth * 12
+
+  if (node.type === 'dir') {
+    return (
+      <div>
+        <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-1.5 py-1 px-2 hover:bg-foreground/3 transition-colors rounded" style={{ paddingLeft: `${8 + indent}px` }}>
+          {open ? <ChevronDown className="w-3 h-3 text-muted-foreground/40 shrink-0" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
+          <FolderOpen className="w-3.5 h-3.5 text-amber-400/70 shrink-0" />
+          <span className="text-[10px] font-semibold text-muted-foreground/70">{node.name}/</span>
+          <span className="text-[9px] text-muted-foreground/30 ml-auto">{node.children?.length ?? 0}</span>
+        </button>
+        {open && node.children?.map(c => <AgentSkillFileNode key={c.path} node={c} depth={depth + 1} selectedPath={selectedPath} onSelect={onSelect} />)}
+      </div>
+    )
+  }
+
+  const ext = node.ext ?? ''
+  const emoji = ext === '.md' ? '📄' : ['.sh', '.bash', '.zsh'].includes(ext) ? '🟢' : ext === '.py' ? '🐍' : ['.js', '.ts'].includes(ext) ? '🟡' : '📄'
+
+  return (
+    <button
+      onClick={() => node.isText && onSelect(node.path)}
+      disabled={!node.isText}
+      className={cn("w-full flex items-center gap-1.5 py-1 px-2 transition-colors rounded", isSelected ? "bg-primary/10 text-primary" : "hover:bg-foreground/3 text-muted-foreground/70", !node.isText && "opacity-40 cursor-not-allowed")}
+      style={{ paddingLeft: `${8 + indent}px` }}
+    >
+      <span className="text-xs shrink-0">{emoji}</span>
+      <span className={cn("text-[10px] font-mono truncate flex-1", isSelected && "text-primary font-semibold")}>{node.name}</span>
+      {node.size !== undefined && <span className="text-[9px] text-muted-foreground/30 shrink-0">{node.size < 1024 ? `${node.size}B` : `${(node.size / 1024).toFixed(1)}KB`}</span>}
+    </button>
+  )
+}
+
+function AgentSkillFilesPanel({ agentId, skillSlug, editable }: { agentId: string; skillSlug: string; editable: boolean }) {
+  const [tree, setTree] = useState<SkillFileNode[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [fileContent, setFileContent] = useState('')
+  const [fileLoading, setFileLoading] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    api.getAgentSkillDirTree(agentId, skillSlug)
+      .then(data => { setTree(data.tree); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [agentId, skillSlug])
+
+  useEffect(() => {
+    if (!selectedPath) return
+    setFileLoading(true); setEditMode(false); setError('')
+    api.getAgentSkillAnyFile(agentId, skillSlug, selectedPath)
+      .then(data => { setFileContent(data.content); setEditContent(data.content); setFileLoading(false) })
+      .catch(e => { setError((e as Error).message); setFileLoading(false) })
+  }, [agentId, skillSlug, selectedPath])
+
+  async function handleSave() {
+    if (!selectedPath) return
+    setSaving(true)
+    try { await api.saveAgentSkillAnyFile(agentId, skillSlug, selectedPath, editContent); setFileContent(editContent); setEditMode(false) }
+    catch (e) { setError((e as Error).message) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 overflow-hidden">
+      <div className="w-48 shrink-0 border-r border-border overflow-y-auto py-1">
+        {loading ? <div className="flex justify-center py-6"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>
+          : tree.length === 0 ? <p className="text-[10px] text-muted-foreground/40 px-3 py-3 italic">No files</p>
+          : tree.map(n => <AgentSkillFileNode key={n.path} node={n} depth={0} selectedPath={selectedPath} onSelect={setSelectedPath} />)}
+      </div>
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        {!selectedPath ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-4">
+            <FolderOpen className="w-8 h-8 text-foreground/8 mb-2" />
+            <p className="text-[11px] text-muted-foreground/40">Pilih file untuk lihat isinya</p>
+          </div>
+        ) : (
+          <>
+            <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-foreground/2">
+              <span className="text-[10px] font-mono text-foreground/60 flex-1 truncate">{selectedPath}</span>
+              {error && <span className="text-[9px] text-red-400 truncate">{error}</span>}
+              {!fileLoading && editable && !editMode && (
+                <button onClick={() => { setEditContent(fileContent); setEditMode(true) }} className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-foreground/10 text-[9px] text-muted-foreground hover:text-foreground transition-colors">
+                  <Edit3 className="w-2.5 h-2.5" /> Edit
+                </button>
+              )}
+              {editMode && <>
+                <button onClick={() => { setEditMode(false); setEditContent(fileContent) }} className="text-[9px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded border border-foreground/10 transition-colors"><X className="w-2.5 h-2.5 inline" /> Cancel</button>
+                <button onClick={handleSave} disabled={saving} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/20 border border-primary/30 text-[9px] text-primary font-bold disabled:opacity-40">
+                  {saving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Save className="w-2.5 h-2.5" />} Save
+                </button>
+              </>}
+            </div>
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {fileLoading ? <div className="flex justify-center py-6"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>
+                : editMode ? <textarea value={editContent} onChange={e => setEditContent(e.target.value)} className="w-full h-full resize-none bg-transparent text-[11px] font-mono text-foreground/90 px-3 py-2 focus:outline-none leading-relaxed" spellCheck={false} />
+                : <div className="overflow-y-auto h-full px-3 py-2"><pre className="text-[10.5px] font-mono text-foreground/70 whitespace-pre-wrap leading-relaxed">{fileContent || <span className="text-muted-foreground/30 italic">Empty</span>}</pre></div>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 /*  INLINE SKILL VIEWER / EDITOR                                       */
 /* ─────────────────────────────────────────────────────────────────── */
 
@@ -898,11 +1019,12 @@ function InlineSkillPanel({
   const [error, setError] = useState("")
   const [editMode, setEditMode] = useState(false)
   const [editable, setEditable] = useState(false)
-  const [skillTab, setSkillTab] = useState<'skillmd' | 'scripts'>('skillmd')
+  const [skillTab, setSkillTab] = useState<'skillmd' | 'scripts' | 'files'>('skillmd')
   const [showHistory, setShowHistory] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showAiPanel, setShowAiPanel] = useState(false)
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   function reloadSkillMd() {
@@ -987,6 +1109,15 @@ function InlineSkillPanel({
           >
             <Code2 className="w-2.5 h-2.5" /> Scripts
           </button>
+          <button
+            onClick={() => setSkillTab('files')}
+            className={cn(
+              "flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold transition-all",
+              skillTab === 'files' ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <FolderOpen className="w-2.5 h-2.5" /> Files
+          </button>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
@@ -1042,6 +1173,13 @@ function InlineSkillPanel({
                   title="Version history"
                 >
                   <History className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => setShowTemplatePicker(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-amber-400 hover:border-amber-500/30 hover:bg-amber-500/10 transition-colors font-bold"
+                  title="ADLC Templates"
+                >
+                  <LayoutTemplate className="w-3 h-3" /> Templates
                 </button>
                 <button
                   onClick={() => setShowAiPanel(p => !p)}
@@ -1115,12 +1253,14 @@ function InlineSkillPanel({
               </pre>
             </div>
           )
-        ) : (
+        ) : skillTab === 'scripts' ? (
           <SkillScriptsPanel
             agentId={agentId}
             skillSlug={skillSlug}
             onSkillMdUpdated={() => { reloadSkillMd(); onSaved() }}
           />
+        ) : (
+          <AgentSkillFilesPanel agentId={agentId} skillSlug={skillSlug} editable={editable} />
         )}
       </div>
 
@@ -1165,6 +1305,19 @@ function InlineSkillPanel({
           onClose={() => setShowAiPanel(false)}
         />
       )}
+
+      {/* ADLC Template Picker */}
+      {showTemplatePicker && (
+        <TemplatePicker
+          mode="skill"
+          onSelect={(templateContent) => {
+            setContent(templateContent)
+            setEditMode(true)
+            setShowTemplatePicker(false)
+          }}
+          onClose={() => setShowTemplatePicker(false)}
+        />
+      )}
     </div>
   )
 }
@@ -1184,6 +1337,10 @@ function CreateSkillDialog({
   onClose: () => void
   onCreated: (slug: string) => void
 }) {
+  const [step, setStep] = useState<"pick" | "form">("pick")
+  const [selectedTemplate, setSelectedTemplate] = useState<SkillTemplate | null>(null)
+  const [showAdlcPicker, setShowAdlcPicker] = useState(false)
+
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
   const [scope, setScope] = useState("workspace")
@@ -1192,7 +1349,6 @@ function CreateSkillDialog({
 
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "-")
 
-  // Compute path preview based on scope
   const pathPreview = (() => {
     if (!slug) return null
     const ws = agentWorkspace || "~/<workspace>"
@@ -1204,24 +1360,48 @@ function CreateSkillDialog({
     }
   })()
 
+  function handlePickTemplate(tpl: SkillTemplate) {
+    setSelectedTemplate(tpl)
+    // Always update name/desc when user explicitly picks a template (overwrite previous selection)
+    if (tpl.id !== "blank") {
+      if (tpl.suggestedSlug) setName(tpl.suggestedSlug)
+      // Use suggestedDescription first; fallback: parse from SKILL.md frontmatter
+      const desc = tpl.suggestedDescription || (() => {
+        const fm = tpl.content?.match(/^---\s*\n([\s\S]*?)\n---/)
+        const fmBody = fm?.[1] ?? ""
+        return fmBody.match(/^description:\s*"?([^"\n]+)"?/m)?.[1]?.trim() || ""
+      })()
+      setDescription(desc)
+    }
+    setStep("form")
+  }
+
   async function handleCreate() {
     if (!slug) { setError("Name is required"); return }
 
     const desc = description.trim() || name.trim()
-    const content = [
-      `---`,
-      `name: ${slug}`,
-      `description: ${desc}`,
-      `---`,
-      ``,
-      `# ${name.trim()}`,
-      ``,
-      desc !== name.trim() ? desc + "\n" : "",
-      `## Instructions`,
-      ``,
-      `Describe what this skill does and how the agent should use it.`,
-      ``,
-    ].join("\n")
+    let content: string
+    if (selectedTemplate && selectedTemplate.id !== "blank") {
+      content = selectedTemplate.content
+        .replace(/\{slug\}/g, slug)
+        .replace(/\{name\}/g, name.trim())
+        .replace(/\{description\}/g, desc)
+    } else {
+      content = [
+        `---`,
+        `name: ${slug}`,
+        `description: "${desc}"`,
+        `---`,
+        ``,
+        `# ${name.trim()}`,
+        ``,
+        desc !== name.trim() ? desc + "\n" : "",
+        `## Instructions`,
+        ``,
+        `Describe what this skill does and how the agent should use it.`,
+        ``,
+      ].join("\n")
+    }
 
     setSaving(true)
     setError("")
@@ -1260,102 +1440,177 @@ function CreateSkillDialog({
   ]
 
   return (
-    <div
-      className="fixed inset-0 z-60 flex items-center justify-center bg-foreground/20 backdrop-blur-sm dark:bg-background/45 dark:backdrop-blur-md dark:backdrop-brightness-60"
-      onClick={onClose}
-    >
-      <div className="bg-card border border-foreground/10 rounded-2xl shadow-2xl w-[460px] max-w-[95vw]" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
-          <Sparkles className="w-4 h-4 text-primary" />
-          <h2 className="text-sm font-display font-bold text-foreground">Create New Skill</h2>
-          <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-foreground/5 text-muted-foreground hover:text-foreground transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          {/* Skill name / slug */}
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Skill Name</label>
-            <Input
-              value={name}
-              onChange={e => { setName(e.target.value); setError("") }}
-              onKeyDown={e => e.key === "Enter" && handleCreate()}
-              placeholder="my-custom-skill"
-              className="bg-foreground/3 border-foreground/10 text-sm"
-              autoFocus
-            />
-            {slug && name !== slug && (
-              <p className="text-[10px] text-muted-foreground/50 mt-1 font-mono">
-                Folder: <span className="text-primary/70">{slug}/</span>
-              </p>
-            )}
-          </div>
-
-          {/* Description */}
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">
-              Description <span className="normal-case text-muted-foreground/40">(optional)</span>
-            </label>
-            <Input
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              placeholder="What does this skill do?"
-              className="bg-foreground/3 border-foreground/10 text-sm"
-            />
-          </div>
-
-          {/* Scope selector */}
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Scope</label>
-            <div className="grid grid-cols-3 gap-2">
-              {SCOPES.map(opt => (
+    <>
+      <div
+        className="fixed inset-0 z-60 flex items-center justify-center bg-foreground/20 backdrop-blur-sm dark:bg-background/45 dark:backdrop-blur-md dark:backdrop-brightness-60"
+        onClick={onClose}
+      >
+        <div className="bg-card border border-foreground/10 rounded-2xl shadow-2xl w-[500px] max-w-[95vw]" onClick={e => e.stopPropagation()}>
+          {/* Header */}
+          <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
+            <Sparkles className="w-4 h-4 text-primary" />
+            <h2 className="text-sm font-display font-bold text-foreground">Create New Skill</h2>
+            {step === "form" && (
+              <div className="flex items-center gap-1 ml-1">
+                <span className="text-[10px] text-muted-foreground/40">·</span>
                 <button
-                  key={opt.id}
-                  onClick={() => setScope(opt.id)}
-                  className={cn(
-                    "flex flex-col items-center gap-1.5 p-3 rounded-xl border transition-all text-center",
-                    scope === opt.id
-                      ? opt.colorClass
-                      : "bg-foreground/2 border-border text-muted-foreground hover:border-foreground/10 hover:bg-foreground/4"
-                  )}
+                  onClick={() => setStep("pick")}
+                  className="text-[10px] text-muted-foreground/60 hover:text-primary transition-colors"
                 >
-                  <span className="text-base leading-none">{opt.icon}</span>
-                  <span className="text-[11px] font-bold leading-tight">{opt.label}</span>
-                  <span className="text-[9px] opacity-60 leading-tight">{opt.desc}</span>
+                  ← Templates
                 </button>
-              ))}
-            </div>
+              </div>
+            )}
+            <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-foreground/5 text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
 
-            {/* Path preview */}
-            {pathPreview && (
-              <div className="mt-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-foreground/3 border border-border">
-                <FolderOpen className="w-3 h-3 text-muted-foreground/50 shrink-0" />
-                <code className="text-[10px] font-mono text-muted-foreground/70 truncate">{pathPreview}</code>
+          <div className="p-5">
+            {step === "pick" ? (
+              /* ── Step 1: Template picker ── */
+              <>
+                <SkillTemplatePicker
+                  onSelect={handlePickTemplate}
+                  onBrowseAdlc={() => setShowAdlcPicker(true)}
+                />
+                <div className="flex gap-2 mt-4">
+                  <button onClick={onClose} className="flex-1 py-2 rounded-xl border border-border text-[12px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── Step 2: Name + scope form ── */
+              <div className="space-y-4">
+                {/* Template badge */}
+                {selectedTemplate && selectedTemplate.id !== "blank" && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/15">
+                    <span className="text-base leading-none">{selectedTemplate.icon}</span>
+                    <span className="text-[11px] font-semibold text-foreground/80">{selectedTemplate.name}</span>
+                    <button
+                      onClick={() => setStep("pick")}
+                      className="ml-auto text-[10px] text-muted-foreground/50 hover:text-primary transition-colors"
+                    >
+                      Change
+                    </button>
+                  </div>
+                )}
+
+                {/* Skill name / slug */}
+                <div>
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Skill Name</label>
+                  <Input
+                    value={name}
+                    onChange={e => { setName(e.target.value); setError("") }}
+                    onKeyDown={e => e.key === "Enter" && handleCreate()}
+                    placeholder="my-custom-skill"
+                    className="bg-foreground/3 border-foreground/10 text-sm"
+                    autoFocus
+                  />
+                  {slug && name !== slug && (
+                    <p className="text-[10px] text-muted-foreground/50 mt-1 font-mono">
+                      Folder: <span className="text-primary/70">{slug}/</span>
+                    </p>
+                  )}
+                </div>
+
+                {/* Description */}
+                <div>
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">
+                    Description <span className="normal-case text-muted-foreground/40">(optional)</span>
+                  </label>
+                  <Input
+                    value={description}
+                    onChange={e => setDescription(e.target.value)}
+                    placeholder="What does this skill do?"
+                    className="bg-foreground/3 border-foreground/10 text-sm"
+                  />
+                </div>
+
+                {/* Scope selector */}
+                <div>
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Scope</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {SCOPES.map(opt => (
+                      <button
+                        key={opt.id}
+                        onClick={() => setScope(opt.id)}
+                        className={cn(
+                          "flex flex-col items-center gap-1.5 p-3 rounded-xl border transition-all text-center",
+                          scope === opt.id
+                            ? opt.colorClass
+                            : "bg-foreground/2 border-border text-muted-foreground hover:border-foreground/10 hover:bg-foreground/4"
+                        )}
+                      >
+                        <span className="text-base leading-none">{opt.icon}</span>
+                        <span className="text-[11px] font-bold leading-tight">{opt.label}</span>
+                        <span className="text-[9px] opacity-60 leading-tight">{opt.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {pathPreview && (
+                    <div className="mt-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-foreground/3 border border-border">
+                      <FolderOpen className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+                      <code className="text-[10px] font-mono text-muted-foreground/70 truncate">{pathPreview}</code>
+                    </div>
+                  )}
+                </div>
+
+                {error && (
+                  <p className="text-[11px] text-destructive bg-destructive/10 px-3 py-2 rounded-lg border border-destructive/20">{error}</p>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button onClick={() => setStep("pick")} className="px-4 py-1.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
+                    ← Back
+                  </button>
+                  <button
+                    onClick={handleCreate}
+                    disabled={!name.trim() || saving}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-primary/20 border border-primary/30 text-sm text-primary font-bold hover:bg-primary/30 transition-colors disabled:opacity-40"
+                  >
+                    {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</> : <><Plus className="w-3.5 h-3.5" /> Create Skill</>}
+                  </button>
+                </div>
               </div>
             )}
           </div>
-
-          {error && (
-            <p className="text-[11px] text-destructive bg-destructive/10 px-3 py-2 rounded-lg border border-destructive/20">{error}</p>
-          )}
-        </div>
-
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
-          <button onClick={onClose} className="px-4 py-1.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
-            Cancel
-          </button>
-          <button
-            onClick={handleCreate}
-            disabled={!name.trim() || saving}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-primary/20 border border-primary/30 text-sm text-primary font-bold hover:bg-primary/30 transition-colors disabled:opacity-40"
-          >
-            {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</> : <><Plus className="w-3.5 h-3.5" /> Create Skill</>}
-          </button>
         </div>
       </div>
-    </div>
+
+      {/* ADLC full template picker overlay */}
+      {showAdlcPicker && (
+        <TemplatePicker
+          mode="skill"
+          onSelect={(content, _name) => {
+            // Parse SKILL.md frontmatter for name, description
+            const fm = content.match(/^---\s*\n([\s\S]*?)\n---/)
+            const fmBody = fm?.[1] ?? ""
+            const extractedSlug = fmBody.match(/^name:\s*([^\s\n]+)/m)?.[1]?.trim() || ""
+            // description may be quoted or unquoted
+            const rawDesc = fmBody.match(/^description:\s*"?([^"\n]+)"?/m)?.[1]?.trim() || ""
+            const fakeTpl: SkillTemplate = {
+              id: "adlc-custom",
+              name: _name,
+              icon: "📄",
+              description: rawDesc,
+              category: "workflow",
+              suggestedSlug: extractedSlug,
+              suggestedDescription: rawDesc,
+              content,
+            }
+            setShowAdlcPicker(false)
+            setSelectedTemplate(fakeTpl)
+            if (extractedSlug) setName(extractedSlug)
+            setDescription(rawDesc)
+            setStep("form")
+          }}
+          onClose={() => setShowAdlcPicker(false)}
+        />
+      )}
+    </>
   )
 }
 
