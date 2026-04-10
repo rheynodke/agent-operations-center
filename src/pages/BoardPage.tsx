@@ -5,7 +5,7 @@ import { KanbanBoard, KanbanColumnDef } from "@/components/board/KanbanBoard"
 import { TaskCard } from "@/components/board/TaskCard"
 import { TaskFilterBar } from "@/components/board/TaskFilterBar"
 import { TaskCreateModal } from "@/components/board/TaskCreateModal"
-import { TaskDetailDrawer } from "@/components/board/TaskDetailDrawer"
+import { TaskDetailModal } from "@/components/board/TaskDetailModal"
 import { useTaskStore, useAgentStore } from "@/stores"
 import { api } from "@/lib/api"
 import { Task, TaskStatus } from "@/types"
@@ -14,6 +14,7 @@ const COLUMNS: KanbanColumnDef[] = [
   { id: "backlog",     label: "Backlog",     emoji: "📥" },
   { id: "todo",        label: "Todo",        emoji: "📋" },
   { id: "in_progress", label: "In Progress", emoji: "⚡" },
+  { id: "in_review",   label: "In Review",   emoji: "🔍" },
   { id: "blocked",     label: "Blocked",     emoji: "🚫" },
   { id: "done",        label: "Done",        emoji: "✅" },
 ]
@@ -147,8 +148,8 @@ export default function BoardPage() {
         onClose={() => { setCreateOpen(false); setEditTask(null) }}
       />
 
-      {/* Detail Drawer */}
-      <TaskDetailDrawer
+      {/* Detail Modal */}
+      <TaskDetailModal
         task={detailTask}
         agents={agents}
         open={!!detailTask}

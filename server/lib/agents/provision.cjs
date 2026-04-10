@@ -2,7 +2,7 @@
 const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
-const { ensureUpdateTaskScript, toggleAgentCustomTool } = require('../scripts.cjs');
+const { ensureUpdateTaskScript, toggleAgentCustomTool, ensureCheckTasksScript, injectHeartbeatTaskCheck } = require('../scripts.cjs');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -450,14 +450,16 @@ function provisionAgent(opts, userId) {
   console.log(`[provision]   Workspace: ${workspacePath}`);
   console.log(`[provision]   Bindings: ${addedBindings.map(b => `${b.channel}/${b.accountId}`).join(', ')}`);
 
-  // Auto-install update_task.sh for the new agent
+  // Auto-install update_task.sh and inject HEARTBEAT task check for the new agent
   try {
     ensureUpdateTaskScript();
+    ensureCheckTasksScript();
     const getFileFn  = (_id, filename) => fs.readFileSync(path.join(workspacePath, filename), 'utf-8');
     const saveFileFn = (_id, filename, content) => fs.writeFileSync(path.join(workspacePath, filename), content, 'utf-8');
     toggleAgentCustomTool(id, 'update_task.sh', true, 'shared', getFileFn, saveFileFn);
+    injectHeartbeatTaskCheck(id, workspacePath);
   } catch (e) {
-    console.warn('[provision] update_task setup failed:', e.message);
+    console.warn('[provision] agent setup failed:', e.message);
   }
 
   return {
