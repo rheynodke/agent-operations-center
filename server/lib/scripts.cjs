@@ -417,6 +417,91 @@ function ensureUpdateTaskScript() {
   console.log('[scripts] Created shared update_task.sh script');
 }
 
+const CHECK_TASKS_SCRIPT_NAME = 'check_tasks.sh';
+const CHECK_TASKS_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# check_tasks — List todo tasks assigned to this agent, sorted by priority
+# Called automatically via HEARTBEAT.md
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
+
+[ -z "$AOC_AGENT_ID" ] && exit 0   # no agent id configured, skip silently
+
+TASKS=$(curl -sf "$AOC_URL/api/tasks?agentId=$AOC_AGENT_ID&status=todo" \\
+  -H "Authorization: Bearer $AOC_TOKEN" 2>/dev/null) || exit 0
+
+echo "$TASKS" | python3 -c "
+import json, sys
+tasks = json.load(sys.stdin).get('tasks', [])
+if not tasks:
+    print('No pending tasks.')
+    sys.exit(0)
+order = {'urgent': 0, 'high': 1, 'medium': 2, 'low': 3}
+for t in sorted(tasks, key=lambda t: order.get(t.get('priority', 'medium'), 2)):
+    print(f\\"[{t.get('priority','medium').upper()}] {t['title']}\\")
+    print(f\\"  ID: {t['id']}\\")
+    print(f\\"  Description: {t.get('description', '(none)')[:120]}\\")
+    print()
+"
+`;
+
+function ensureCheckTasksScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, CHECK_TASKS_SCRIPT_NAME);
+  if (fs.existsSync(scriptPath)) return; // idempotent
+
+  fs.writeFileSync(scriptPath, CHECK_TASKS_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[CHECK_TASKS_SCRIPT_NAME] = {
+    name: 'check_tasks',
+    emoji: '🔍',
+    description: 'List todo tasks assigned to this agent, sorted by priority. Called via HEARTBEAT.md.',
+    execHint: `${SCRIPTS_DIR}/check_tasks.sh`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+
+  console.log('[scripts] Created shared check_tasks.sh script');
+}
+
+const HEARTBEAT_BLOCK_START = '<!-- aoc-task-check -->';
+const HEARTBEAT_BLOCK_END   = '<!-- /aoc-task-check -->';
+const HEARTBEAT_BLOCK_CONTENT = `${HEARTBEAT_BLOCK_START}
+## Autonomous Task Check
+
+Check if you have tasks assigned to you:
+
+1. Run: \`bash ~/.openclaw/scripts/check_tasks.sh\`
+2. If tasks are listed, pick the **highest priority** task (shown first) and start working on it immediately
+3. You may work on **multiple tasks in parallel** — do not wait for current tasks to finish
+4. For each task you start, immediately run:
+   \`update_task.sh <taskId> in_progress "Starting work"\`
+5. When done: \`update_task.sh <taskId> done "Summary of what was done"\`
+6. If blocked: \`update_task.sh <taskId> blocked "Specific reason"\`
+${HEARTBEAT_BLOCK_END}`;
+
+function injectHeartbeatTaskCheck(agentId, workspacePath) {
+  const heartbeatPath = path.join(workspacePath, 'HEARTBEAT.md');
+
+  if (!fs.existsSync(heartbeatPath)) {
+    fs.writeFileSync(heartbeatPath, HEARTBEAT_BLOCK_CONTENT + '\n', 'utf-8');
+    console.log(`[scripts] Created HEARTBEAT.md for agent: ${agentId}`);
+    return;
+  }
+
+  let content = fs.readFileSync(heartbeatPath, 'utf-8');
+  const startIdx = content.indexOf(HEARTBEAT_BLOCK_START);
+  const endIdx   = content.indexOf(HEARTBEAT_BLOCK_END);
+
+  if (startIdx !== -1 && endIdx !== -1) {
+    content = content.slice(0, startIdx) + HEARTBEAT_BLOCK_CONTENT + content.slice(endIdx + HEARTBEAT_BLOCK_END.length);
+  } else {
+    content = content.trimEnd() + '\n\n' + HEARTBEAT_BLOCK_CONTENT + '\n';
+  }
+
+  fs.writeFileSync(heartbeatPath, content, 'utf-8');
+  console.log(`[scripts] Injected HEARTBEAT task check for agent: ${agentId}`);
+}
+
 /**
  * Write (or overwrite) ~/.openclaw/.aoc_env with current AOC_TOKEN + AOC_URL.
  * Called at server startup so the file is always up-to-date.
@@ -455,5 +540,7 @@ module.exports = {
   // Bootstrap helpers
   ensureUpdateTaskScript,
   ensureAocEnvFile,
+  ensureCheckTasksScript,
+  injectHeartbeatTaskCheck,
   SCRIPTS_DIR, ALLOWED_EXT,
 };
