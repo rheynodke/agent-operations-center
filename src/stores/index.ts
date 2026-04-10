@@ -110,10 +110,21 @@ interface TaskFilters {
   q?: string
 }
 
+export interface TaskStatusChange {
+  uid: string          // unique per-event id for React key
+  taskId: string
+  title: string
+  agentId?: string
+  fromStatus: string
+  toStatus: string
+  at: number
+}
+
 interface TaskState {
   tasks: Task[]
   loading: boolean
   filters: TaskFilters
+  recentChanges: TaskStatusChange[]
   setTasks: (tasks: Task[]) => void
   addTask: (task: Task) => void
   updateTask: (id: string, patch: Partial<Task>) => void
@@ -121,13 +132,38 @@ interface TaskState {
   setLoading: (v: boolean) => void
   setFilters: (filters: Partial<TaskFilters>) => void
   clearFilters: () => void
+  dismissChange: (uid: string) => void
 }
 
 export const useTaskStore = create<TaskState>((set) => ({
   tasks: [],
   loading: false,
   filters: {},
-  setTasks:  (tasks) => set({ tasks }),
+  recentChanges: [],
+  setTasks: (tasks) => set((s) => {
+    // Detect status changes between old and new task list (from WS broadcast)
+    const changes: TaskStatusChange[] = []
+    for (const newTask of tasks) {
+      const old = s.tasks.find(t => t.id === newTask.id)
+      if (old && old.status !== newTask.status) {
+        changes.push({
+          uid: `${newTask.id}-${Date.now()}-${Math.random()}`,
+          taskId: newTask.id,
+          title: newTask.title,
+          agentId: newTask.agentId,
+          fromStatus: old.status,
+          toStatus: newTask.status,
+          at: Date.now(),
+        })
+      }
+    }
+    return {
+      tasks,
+      recentChanges: changes.length > 0
+        ? [...s.recentChanges, ...changes].slice(-6) // keep last 6
+        : s.recentChanges,
+    }
+  }),
   addTask:   (task)  => set((s) => ({ tasks: [task, ...s.tasks] })),
   updateTask: (id, patch) =>
     set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) })),
@@ -135,6 +171,9 @@ export const useTaskStore = create<TaskState>((set) => ({
   setLoading: (loading) => set({ loading }),
   setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),
   clearFilters: () => set({ filters: {} }),
+  dismissChange: (uid) => set((s) => ({
+    recentChanges: s.recentChanges.filter(c => c.uid !== uid),
+  })),
 }))
 
 // ─── Cron Store ───────────────────────────────────────────────────────────────

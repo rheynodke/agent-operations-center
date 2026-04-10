@@ -355,3 +355,8 @@
 .animate-thoughtpulse {
   animation: thoughtpulse 2.4s ease-in-out infinite;
 }
+
+@keyframes shrink {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}

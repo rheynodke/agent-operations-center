@@ -5,6 +5,7 @@ import { TaskCard } from "@/components/board/TaskCard"
 import { TaskFilterBar } from "@/components/board/TaskFilterBar"
 import { TaskCreateModal } from "@/components/board/TaskCreateModal"
 import { TaskDetailModal } from "@/components/board/TaskDetailModal"
+import { TaskStatusTicker } from "@/components/board/TaskStatusTicker"
 import { useTaskStore, useAgentStore } from "@/stores"
 import { api } from "@/lib/api"
 import { Task, TaskStatus } from "@/types"
@@ -173,6 +174,9 @@ export default function BoardPage() {
         onClose={() => setDetailTask(null)}
         onUpdate={handleUpdate}
       />
+
+      {/* Realtime status change ticker */}
+      <TaskStatusTicker />
     </div>
   )
 }
