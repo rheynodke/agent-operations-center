@@ -2,10 +2,12 @@ import React, { useEffect, useState } from "react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Task, TaskActivity, Agent } from "@/types"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Zap } from "lucide-react"
 
 const STATUS_LABELS: Record<string, string> = {
   backlog: "Backlog", todo: "Todo", in_progress: "In Progress", done: "Done",
@@ -33,8 +35,26 @@ export function TaskDetailDrawer({ task, agents, open, onClose, onUpdate }: Task
   const [loadingActivity, setLoadingActivity] = useState(false)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [expandedTools, setExpandedTools]   = useState<Set<string>>(new Set())
+  const [dispatching, setDispatching] = useState(false)
+  const [dispatchMsg, setDispatchMsg] = useState("")
 
   const agent = task?.agentId ? agents.find(a => a.id === task.agentId) : null
+
+  async function handleDispatch() {
+    if (!task) return
+    setDispatching(true)
+    setDispatchMsg("")
+    try {
+      await api.dispatchTask(task.id)
+      setDispatchMsg("✓ Task dispatched — agent is working")
+      setTimeout(() => setDispatchMsg(""), 5000)
+    } catch (e: unknown) {
+      setDispatchMsg(`❌ ${(e as Error).message || "Dispatch failed"}`)
+      setTimeout(() => setDispatchMsg(""), 5000)
+    } finally {
+      setDispatching(false)
+    }
+  }
 
   useEffect(() => {
     if (!task || !open) return
@@ -81,7 +101,23 @@ export function TaskDetailDrawer({ task, agents, open, onClose, onUpdate }: Task
             {(task.tags || []).map(tag => (
               <Badge key={tag} variant="secondary" className="text-xs">#{tag}</Badge>
             ))}
+            {task.agentId && (
+              <Button
+                size="sm"
+                variant={task.status === 'in_progress' ? 'outline' : 'default'}
+                className="ml-auto h-7 text-xs gap-1"
+                onClick={handleDispatch}
+                disabled={dispatching}
+                title="Send task to agent via gateway and start a chat session"
+              >
+                <Zap className="h-3 w-3" />
+                {dispatching ? "Dispatching..." : task.sessionId ? "Re-dispatch" : "Dispatch to Agent"}
+              </Button>
+            )}
           </div>
+          {dispatchMsg && (
+            <p className="text-xs mt-1 text-muted-foreground">{dispatchMsg}</p>
+          )}
         </SheetHeader>
 
         <Tabs defaultValue="overview" className="flex-1 min-h-0">

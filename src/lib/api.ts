@@ -237,6 +237,8 @@ export const api = {
     request<{ activity: TaskActivity[] }>(`/tasks/${id}/activity`),
   syncAgentTaskScript: (agentId: string) =>
     request<{ ok: boolean }>(`/agents/${agentId}/sync-task-script`, { method: 'POST' }),
+  dispatchTask: (taskId: string) =>
+    request<{ ok: boolean; sessionKey: string; agentId: string }>(`/tasks/${taskId}/dispatch`, { method: 'POST' }),
 
   // Cron
   getCronJobs: () => request("/cron"),
