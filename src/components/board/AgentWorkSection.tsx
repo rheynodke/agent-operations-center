@@ -5,6 +5,7 @@ import {
   ChevronDown, ChevronRight, Brain, Terminal,
   CheckCircle2, Loader2, Zap, AlertCircle
 } from "lucide-react"
+import { useChatStore } from "@/stores/useChatStore"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -318,11 +319,17 @@ interface AgentWorkSectionProps {
 export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionNoteFallback }: AgentWorkSectionProps) {
   const [messages, setMessages] = useState<GatewayMessage[]>([])
   const [loading, setLoading] = useState(true)
-  const [isLive, setIsLive] = useState(false)
   const [error, setError] = useState("")
   const bottomRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeRef = useRef(false)
+
+  // Real-time: read from useChatStore which is updated by WS gateway events
+  const liveMessages = useChatStore(s => sessionKey ? (s.messages[sessionKey] ?? []) : [])
+  const agentRunning = useChatStore(s => sessionKey ? (s.agentRunning[sessionKey] ?? false) : false)
+
+  // isLive = gateway is actively streaming (WS tells us) OR taskStatus is in_progress
+  const isLive = agentRunning || taskStatus === "in_progress"
 
   async function fetchHistory() {
     if (!activeRef.current) return
@@ -330,7 +337,6 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
       const res = await chatApi.getHistory(sessionKey)
       const msgs = res.messages || []
       setMessages(msgs)
-      setIsLive(msgs.some(m => m.streaming))
       setError("")
     } catch (e: unknown) {
       setError((e as Error).message || "Failed to load session")
@@ -346,9 +352,11 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
     }
     activeRef.current = true
     setLoading(true)
+    // Subscribe so gateway pushes WS events → useChatStore gets updated in real-time
     chatApi.subscribe(sessionKey).catch(() => {})
     fetchHistory()
-    const interval = taskStatus === "in_progress" ? 2000 : 5000
+    // Poll committed history as fallback (slower when done, faster when in_progress)
+    const interval = taskStatus === "in_progress" ? 2000 : 8000
     pollRef.current = setInterval(fetchHistory, interval)
     return () => {
       activeRef.current = false
@@ -356,9 +364,12 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
     }
   }, [isActive, sessionKey, taskStatus])
 
+  // Auto-scroll when new live messages arrive
   useEffect(() => {
-    if (isLive) bottomRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages.length, isLive])
+    if (isLive || liveMessages.length > 0) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+    }
+  }, [messages.length, liveMessages.length, isLive])
 
   if (loading) return (
     <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center">
@@ -388,6 +399,51 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
     )
   }
 
+  // Show live streaming placeholder if agent is running but no committed history yet
+  if (messages.length === 0 && agentRunning) {
+    const streamingMsg = liveMessages.findLast(m => m.role === "agent")
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 py-1.5 px-3 rounded-md bg-muted/20 border border-border/30">
+          <span className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-semibold uppercase tracking-wider">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+            </span>
+            Live — agent working
+          </span>
+        </div>
+        {streamingMsg?.thinking && (
+          <div className="rounded-lg border border-purple-500/20 overflow-hidden bg-purple-500/3 px-3 py-2">
+            <div className="flex items-center gap-2 mb-1">
+              <Brain className="h-3 w-3 text-purple-400" />
+              <span className="text-[10px] text-purple-300/70 font-medium">Thinking…</span>
+              <Loader2 className="h-2.5 w-2.5 animate-spin text-purple-400/60 ml-auto" />
+            </div>
+            <pre className="text-[11px] text-purple-200/60 whitespace-pre-wrap leading-relaxed max-h-32 overflow-hidden">{streamingMsg.thinking}</pre>
+          </div>
+        )}
+        {streamingMsg?.text && (
+          <div className="rounded-lg bg-card border border-border/50 px-3 py-3 text-xs text-foreground/80 whitespace-pre-wrap">
+            {streamingMsg.text}
+            <span className="inline-flex gap-0.5 ml-1 align-middle">
+              <span className="animate-bounce w-1 h-1 rounded-full bg-current inline-block" style={{ animationDelay: "0ms" }} />
+              <span className="animate-bounce w-1 h-1 rounded-full bg-current inline-block" style={{ animationDelay: "150ms" }} />
+              <span className="animate-bounce w-1 h-1 rounded-full bg-current inline-block" style={{ animationDelay: "300ms" }} />
+            </span>
+          </div>
+        )}
+        {!streamingMsg && (
+          <div className="flex items-center gap-2 text-muted-foreground/60 text-xs py-4 justify-center">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>Waiting for agent response…</span>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+    )
+  }
+
   if (messages.length === 0) return (
     <div className="py-8 text-center text-muted-foreground text-sm space-y-1">
       <Zap className="h-5 w-5 mx-auto mb-2 opacity-30" />
@@ -398,6 +454,8 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
 
   const { turns, finalResult, finalIsStreaming } = groupMessagesIntoTurns(messages)
   const toolCount = turns.reduce((n, t) => n + t.toolCalls.length, 0)
+  // Current live streaming message from WS store (if agent is still running)
+  const liveStreamMsg = agentRunning ? liveMessages.findLast(m => m.role === "agent") : null
 
   return (
     <div className="space-y-3">
@@ -432,7 +490,7 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
         </div>
       )}
 
-      {/* Final result */}
+      {/* Final result from committed history */}
       {finalResult && (
         <div className="space-y-1.5">
           {turns.length > 0 && (
@@ -445,6 +503,32 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
             </div>
           )}
           <AgentResultBlock text={finalResult} isStreaming={finalIsStreaming} />
+        </div>
+      )}
+
+      {/* Live streaming layer from WS (useChatStore) — shown when agent is actively running */}
+      {liveStreamMsg && (
+        <div className="space-y-1.5 border-t border-border/20 pt-2 mt-1">
+          {liveStreamMsg.thinking && (
+            <div className="rounded-lg border border-purple-500/20 overflow-hidden bg-purple-500/3 px-3 py-2">
+              <div className="flex items-center gap-2 mb-1">
+                <Brain className="h-3 w-3 text-purple-400" />
+                <span className="text-[10px] text-purple-300/70 font-medium">Thinking…</span>
+                <Loader2 className="h-2.5 w-2.5 animate-spin text-purple-400/60 ml-auto" />
+              </div>
+              <pre className="text-[11px] text-purple-200/60 whitespace-pre-wrap leading-relaxed max-h-32 overflow-hidden">{liveStreamMsg.thinking}</pre>
+            </div>
+          )}
+          {liveStreamMsg.text && (
+            <div className="rounded-lg bg-card border border-emerald-500/20 px-3 py-3 text-xs text-foreground/80 whitespace-pre-wrap">
+              {liveStreamMsg.text}
+              <span className="inline-flex gap-0.5 ml-1 align-middle">
+                <span className="animate-bounce w-1 h-1 rounded-full bg-current inline-block" style={{ animationDelay: "0ms" }} />
+                <span className="animate-bounce w-1 h-1 rounded-full bg-current inline-block" style={{ animationDelay: "150ms" }} />
+                <span className="animate-bounce w-1 h-1 rounded-full bg-current inline-block" style={{ animationDelay: "300ms" }} />
+              </span>
+            </div>
+          )}
         </div>
       )}
 
