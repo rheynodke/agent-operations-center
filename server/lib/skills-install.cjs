@@ -344,7 +344,12 @@ function normalizeSkillsmpResult(s) {
 
   // Skill path within repo — where SKILL.md lives
   const repoPath =
-    s.repoPath || s.repo_path || s.path || s.skillPath || s.skill_path || null;
+    s.repoPath || s.repo_path || s.skillPath || s.skill_path ||
+    s.directory || s.dir || s.subPath || s.sub_path ||
+    s.folderPath || s.folder_path || s.filePath || s.file_path ||
+    // If path ends with SKILL.md, strip that — we want the directory
+    (s.path && typeof s.path === 'string' ? s.path.replace(/\/SKILL\.md$/i, '') : null) ||
+    null;
 
   const slug = s.slug || s.name?.toLowerCase().replace(/\s+/g, '-') || s.id || 'unknown';
 
@@ -389,25 +394,89 @@ function buildSkillMdUrl(githubUrl, repoPath) {
 }
 
 /**
+ * Derive candidate sub-paths within a repo for a given skill slug.
+ * E.g. slug "superpowers-writing-plans" → [
+ *   "skills/superpowers-writing-plans",
+ *   "skills/writing-plans",          ← strip known prefixes
+ *   "superpowers-writing-plans",
+ *   "writing-plans",
+ * ]
+ */
+function slugToCandidatePaths(slug) {
+  if (!slug) return [];
+  const candidates = new Set();
+  const clean = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+
+  // 1. Exact slug in common container dirs
+  candidates.add(`skills/${clean}`);
+  candidates.add(`skill/${clean}`);
+  candidates.add(clean);
+
+  // 2. Strip known common prefixes (repo name, tool name, etc.)
+  // e.g. "superpowers-writing-plans" → "writing-plans"
+  //      "adlc-market-research"      → "market-research"
+  const prefixRe = /^(?:superpowers|adlc|openclaw|agent|skill)-(.+)$/;
+  const m = clean.match(prefixRe);
+  if (m) {
+    candidates.add(`skills/${m[1]}`);
+    candidates.add(m[1]);
+  }
+
+  // 3. Strip trailing version suffix e.g. "-v2"
+  const withoutVersion = clean.replace(/-v\d+$/, '');
+  if (withoutVersion !== clean) {
+    candidates.add(`skills/${withoutVersion}`);
+  }
+
+  return [...candidates];
+}
+
+/**
  * Fetch SKILL.md content for a SkillsMP skill result.
- * Tries main branch, falls back to master.
+ * Tries skillMdUrl first, then falls back to common GitHub repo path patterns.
  */
 async function fetchSkillsmpSkillMd(skillResult) {
   const urls = [];
+
   if (skillResult.skillMdUrl) {
     urls.push(skillResult.skillMdUrl);
     // Also try master branch
     urls.push(skillResult.skillMdUrl.replace('/main/', '/master/'));
   }
-  // Also try directly from githubUrl + SKILL.md at root
+
   if (skillResult.githubUrl) {
-    const u = new URL(skillResult.githubUrl);
-    const parts = u.pathname.replace(/^\/|\.git$/g, '').split('/');
-    if (parts.length >= 2) {
-      const [user, repo] = parts;
-      urls.push(`https://raw.githubusercontent.com/${user}/${repo}/main/SKILL.md`);
-      urls.push(`https://raw.githubusercontent.com/${user}/${repo}/master/SKILL.md`);
-    }
+    try {
+      const u = new URL(skillResult.githubUrl);
+      const parts = u.pathname.replace(/^\/|\.git$/g, '').split('/');
+      if (parts.length >= 2) {
+        const [user, repo] = parts;
+        const branches = ['main', 'master'];
+
+        // Try root SKILL.md
+        for (const b of branches) {
+          urls.push(`https://raw.githubusercontent.com/${user}/${repo}/${b}/SKILL.md`);
+        }
+
+        // Try candidate sub-paths derived from slug
+        const slug = skillResult.slug || skillResult.id || '';
+        for (const subPath of slugToCandidatePaths(slug)) {
+          for (const b of branches) {
+            urls.push(`https://raw.githubusercontent.com/${user}/${repo}/${b}/${subPath}/SKILL.md`);
+          }
+        }
+
+        // If githubUrl itself points to a specific subdirectory path
+        // e.g. https://github.com/obra/superpowers/tree/main/skills/writing-plans
+        if (parts.length >= 5 && (parts[2] === 'tree' || parts[2] === 'blob')) {
+          // parts: ['obra','superpowers','tree','main','skills','writing-plans']
+          const pathInRepo = parts.slice(4).join('/');
+          for (const b of branches) {
+            urls.push(`https://raw.githubusercontent.com/${user}/${repo}/${b}/${pathInRepo}/SKILL.md`);
+            urls.push(`https://raw.githubusercontent.com/${user}/${repo}/${b}/${pathInRepo}`);
+          }
+        }
+      }
+    } catch { /* invalid URL */ }
   }
 
   for (const url of [...new Set(urls)]) {
