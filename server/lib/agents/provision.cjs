@@ -300,6 +300,11 @@ function provisionAgent(opts, userId) {
   // 3. Mutate openclaw.json ──────────────────────────────────────────────────
 
   // 3a. Add to agents.list
+  // Build AOC env vars so the agent can call update_task.sh
+  const aocToken = process.env.DASHBOARD_TOKEN || '';
+  const aocPort = process.env.PORT || '18800';
+  const aocUrl = `http://localhost:${aocPort}`;
+
   const agentEntry = {
     id,
     name,
@@ -313,6 +318,11 @@ function provisionAgent(opts, userId) {
     ...(model ? { model } : {}),
     skills: [],
     ...(fsWorkspaceOnly === false ? { tools: { fs: { workspaceOnly: false } } } : {}),
+    env: {
+      AOC_TOKEN: aocToken,
+      AOC_URL: aocUrl,
+      AOC_AGENT_ID: id,
+    },
   };
 
   if (!config.agents) config.agents = {};
