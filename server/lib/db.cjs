@@ -164,7 +164,7 @@ function normalizeTask(row) {
     priority: row.priority || 'medium',
     agentId: row.agent_id || undefined,
     sessionId: row.session_id || undefined,
-    tags: row.tags ? JSON.parse(row.tags) : [],
+    tags: (() => { try { return row.tags ? JSON.parse(row.tags) : []; } catch { return []; } })(),
     cost: row.cost != null ? row.cost : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -214,6 +214,7 @@ function getTask(id) {
 
 function createTask({ title, description, status = 'backlog', priority = 'medium', agentId, tags = [], sessionId } = {}) {
   if (!db) throw new Error('DB not initialized');
+  if (!title) throw new Error('createTask: title is required');
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.run(
@@ -241,6 +242,8 @@ function updateTask(id, patch) {
   if (patch.cost        !== undefined) { fields.push('cost = ?');        vals.push(patch.cost); }
   if (patch.status === 'done' && before.status !== 'done') {
     fields.push('completed_at = ?'); vals.push(now);
+  } else if (patch.status !== undefined && patch.status !== 'done' && before.status === 'done') {
+    fields.push('completed_at = ?'); vals.push(null);
   }
   vals.push(id);
   db.run(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`, vals);
@@ -257,6 +260,7 @@ function deleteTask(id) {
 
 function addTaskActivity({ taskId, type, fromValue, toValue, actor, note } = {}) {
   if (!db) throw new Error('DB not initialized');
+  if (!taskId || !type || !actor) throw new Error('addTaskActivity: taskId, type, and actor are required');
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.run(
