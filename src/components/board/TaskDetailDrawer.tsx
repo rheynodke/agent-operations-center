@@ -5,9 +5,9 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Task, TaskActivity, Agent } from "@/types"
 import { api } from "@/lib/api"
-import { cn } from "@/lib/utils"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Zap } from "lucide-react"
+import { AgentWorkTab } from "./AgentWorkTab"
 
 const STATUS_LABELS: Record<string, string> = {
   backlog: "Backlog", todo: "Todo", in_progress: "In Progress", done: "Done",
@@ -25,16 +25,15 @@ interface TaskDetailDrawerProps {
   task: Task | null
   agents: Agent[]
   open: boolean
+  isActive?: boolean      // whether the drawer is currently visible (for polling control)
   onClose: () => void
   onUpdate: (id: string, patch: object) => Promise<void>
 }
 
-export function TaskDetailDrawer({ task, agents, open, onClose, onUpdate }: TaskDetailDrawerProps) {
+export function TaskDetailDrawer({ task, agents, open, isActive = true, onClose, onUpdate }: TaskDetailDrawerProps) {
   const [activity, setActivity]   = useState<TaskActivity[]>([])
-  const [messages, setMessages]   = useState<SessionMessage[]>([])
   const [loadingActivity, setLoadingActivity] = useState(false)
-  const [loadingMessages, setLoadingMessages] = useState(false)
-  const [expandedTools, setExpandedTools]   = useState<Set<string>>(new Set())
+  const [activeTab, setActiveTab] = useState("overview")
   const [dispatching, setDispatching] = useState(false)
   const [dispatchMsg, setDispatchMsg] = useState("")
 
@@ -64,18 +63,6 @@ export function TaskDetailDrawer({ task, agents, open, onClose, onUpdate }: Task
       .catch(() => setActivity([]))
       .finally(() => setLoadingActivity(false))
   }, [task?.id, open])
-
-  useEffect(() => {
-    if (!task?.sessionId || !task?.agentId || !open) return
-    setLoadingMessages(true)
-    fetch(`/api/sessions/${task.agentId}/${task.sessionId}/messages`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem('aoc_token') || ''}` }
-    })
-      .then(r => r.json())
-      .then(r => setMessages(r.messages || []))
-      .catch(() => setMessages([]))
-      .finally(() => setLoadingMessages(false))
-  }, [task?.sessionId, task?.agentId, open])
 
   if (!task) return null
 
@@ -120,10 +107,18 @@ export function TaskDetailDrawer({ task, agents, open, onClose, onUpdate }: Task
           )}
         </SheetHeader>
 
-        <Tabs defaultValue="overview" className="flex-1 min-h-0">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 min-h-0">
           <TabsList className="w-full">
             <TabsTrigger value="overview" className="flex-1 text-xs">Overview</TabsTrigger>
-            <TabsTrigger value="agent-work" className="flex-1 text-xs">Agent Work</TabsTrigger>
+            <TabsTrigger value="agent-work" className="flex-1 text-xs">
+              Agent Work
+              {task.status === 'in_progress' && task.sessionId && (
+                <span className="ml-1.5 relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+                </span>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="activity" className="flex-1 text-xs">Activity</TabsTrigger>
           </TabsList>
 
@@ -143,49 +138,22 @@ export function TaskDetailDrawer({ task, agents, open, onClose, onUpdate }: Task
             </div>
           </TabsContent>
 
-          {/* Agent Work */}
-          <TabsContent value="agent-work" className="mt-4">
+          {/* Agent Work — live session viewer */}
+          <TabsContent value="agent-work" className="mt-3">
             {!task.sessionId ? (
-              <div className="text-center py-10 text-muted-foreground text-sm">
-                Agent belum mulai bekerja pada ticket ini.
+              <div className="py-12 text-center space-y-2">
+                <p className="text-sm text-muted-foreground">Agent belum mulai bekerja pada ticket ini.</p>
+                {task.agentId && (
+                  <p className="text-xs text-muted-foreground/60">Klik "Dispatch to Agent" untuk mulai.</p>
+                )}
               </div>
-            ) : loadingMessages ? (
-              <div className="text-center py-10 text-muted-foreground text-xs">Loading session...</div>
-            ) : messages.length === 0 ? (
-              <div className="text-center py-10 text-muted-foreground text-sm">No messages found for this session.</div>
             ) : (
-              <div className="space-y-3">
-                {messages.map((msg, i) => {
-                  const isLast = i === messages.length - 1 && msg.role === 'assistant'
-                  if (msg.role === 'human') return (
-                    <div key={i} className="flex gap-2 justify-end">
-                      <div className="bg-primary/10 text-foreground text-xs rounded-lg px-3 py-2 max-w-[85%] whitespace-pre-wrap">{msg.content}</div>
-                    </div>
-                  )
-                  if (msg.role === 'tool_use') return (
-                    <div key={i} className="border border-border rounded-lg overflow-hidden text-xs">
-                      <button
-                        className="w-full flex items-center gap-2 px-3 py-2 bg-muted/50 hover:bg-muted text-left"
-                        onClick={() => setExpandedTools(p => { const n = new Set(p); n.has(String(i)) ? n.delete(String(i)) : n.add(String(i)); return n })}
-                      >
-                        <span>🔧</span>
-                        <span className="font-mono font-medium">{msg.toolName || "tool_use"}</span>
-                        <span className="ml-auto text-muted-foreground">{expandedTools.has(String(i)) ? "▲" : "▼"}</span>
-                      </button>
-                      {expandedTools.has(String(i)) && (
-                        <pre className="px-3 py-2 text-[11px] overflow-x-auto text-muted-foreground whitespace-pre-wrap">{msg.content}</pre>
-                      )}
-                    </div>
-                  )
-                  if (msg.role === 'tool_result') return null
-                  return (
-                    <div key={i} className={cn("rounded-lg px-3 py-2 text-xs whitespace-pre-wrap", isLast ? "bg-green-500/10 border border-green-500/20" : "bg-card border border-border")}>
-                      {isLast && <p className="text-green-600 dark:text-green-400 font-semibold text-[11px] mb-1">✅ Final Result</p>}
-                      {msg.content}
-                    </div>
-                  )
-                })}
-              </div>
+              <AgentWorkTab
+                sessionKey={task.sessionId}
+                agentId={task.agentId || ""}
+                isActive={isActive && activeTab === "agent-work"}
+                taskStatus={task.status}
+              />
             )}
           </TabsContent>
 
