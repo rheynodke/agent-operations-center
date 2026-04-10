@@ -363,6 +363,50 @@ function toggleAgentCustomTool(agentId, filename, enabled, scope, getAgentFileFn
   }
 }
 
+const UPDATE_TASK_SCRIPT_NAME = 'update_task.sh';
+const UPDATE_TASK_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# update_task — Report task progress to AOC Board
+# Usage: update_task.sh <taskId> <status> [note] [sessionId]
+#
+# status: in_progress | done | blocked | todo
+
+set -euo pipefail
+
+TASK_ID="\${1:?taskId required}"
+STATUS="\${2:?status required}"
+NOTE="\${3:-}"
+SESSION_ID="\${4:-}"
+
+AOC_URL="\${AOC_URL:-http://localhost:18800}"
+AOC_TOKEN="\${AOC_TOKEN:?AOC_TOKEN env var not set}"
+AGENT_ID="\${AOC_AGENT_ID:-}"
+
+curl -sf -X PATCH "$AOC_URL/api/tasks/$TASK_ID" \\
+  -H "Authorization: Bearer $AOC_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"status\\": \\"$STATUS\\", \\"note\\": \\"$NOTE\\", \\"sessionId\\": \\"$SESSION_ID\\", \\"agentId\\": \\"$AGENT_ID\\"}"
+`;
+
+function ensureUpdateTaskScript() {
+  ensureDir(); // ensures SCRIPTS_DIR exists
+  const scriptPath = path.join(SCRIPTS_DIR, UPDATE_TASK_SCRIPT_NAME);
+  if (fs.existsSync(scriptPath)) return; // idempotent
+
+  fs.writeFileSync(scriptPath, UPDATE_TASK_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+
+  // Write metadata to .tools.json
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[UPDATE_TASK_SCRIPT_NAME] = {
+    name: 'update_task',
+    emoji: '📋',
+    description: 'Report task progress to AOC Board. Usage: update_task.sh <taskId> <status> [note] [sessionId]',
+    execHint: `${SCRIPTS_DIR}/update_task.sh <taskId> <status> [note] [sessionId]`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+
+  console.log('[scripts] Created shared update_task.sh script');
+}
+
 module.exports = {
   // Shared scripts (~/.openclaw/scripts)
   listScripts, getScript, saveScript, deleteScript, renameScript, updateScriptMeta,
@@ -370,5 +414,7 @@ module.exports = {
   listAgentScripts, getAgentScript, saveAgentScript, deleteAgentScript, renameAgentScript, updateAgentScriptMeta,
   // Custom tool assignment via TOOLS.md
   listAgentCustomTools, toggleAgentCustomTool,
+  // Bootstrap helpers
+  ensureUpdateTaskScript,
   SCRIPTS_DIR, ALLOWED_EXT,
 };
