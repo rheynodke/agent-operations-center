@@ -7,6 +7,10 @@ import {
 } from "lucide-react"
 import { useChatStore } from "@/stores/useChatStore"
 
+// Stable fallback — module-level constant so the selector returns the same reference when empty,
+// preventing Zustand from triggering re-renders on every call (would cause infinite loop).
+const EMPTY: never[] = []
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function extractText(content: GatewayMessage["content"]): string {
@@ -148,12 +152,12 @@ function ToolCallBlock({ item, index }: { item: ToolCallItem; index: number }) {
 }
 
 function TurnGroup({ turn, isLast }: { turn: Turn; isLast: boolean }) {
-  const [open, setOpen] = useState(turn.isStreaming ?? false)
+  // Always collapsed by default — user opens explicitly
+  const [open, setOpen] = useState(false)
   const hasEvents = turn.thinkingBlocks.length > 0 || turn.toolCalls.length > 0 || !!turn.intermediateText
 
-  const summaryParts: string[] = []
-  if (turn.thinkingBlocks.length > 0) summaryParts.push("🧠 thinking")
-  turn.toolCalls.forEach(tc => summaryParts.push(`🔧 ${tc.name}`))
+  const toolNames = turn.toolCalls.map(tc => tc.name).filter(n => n !== "tool_result")
+  const uniqueTools = [...new Set(toolNames)]
 
   return (
     <div className="rounded-lg border border-border/40 overflow-hidden">
@@ -161,7 +165,8 @@ function TurnGroup({ turn, isLast }: { turn: Turn; isLast: boolean }) {
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-2 px-3 py-2 bg-muted/20 hover:bg-muted/30 text-left transition-colors"
       >
-        <span className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
+        {/* Turn label */}
+        <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
           Turn {turn.id + 1}
           {isLast && turn.isStreaming && (
             <span className="relative inline-flex h-1.5 w-1.5">
@@ -170,13 +175,33 @@ function TurnGroup({ turn, isLast }: { turn: Turn; isLast: boolean }) {
             </span>
           )}
         </span>
-        <span className="text-[11px] text-muted-foreground/60 truncate flex-1">
-          {summaryParts.join("  ·  ") || "—"}
-        </span>
+
+        {/* Summary chips */}
+        <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden">
+          {turn.thinkingBlocks.length > 0 && (
+            <span className="flex items-center gap-1 text-[10px] text-purple-400/80 bg-purple-500/10 border border-purple-500/20 rounded px-1.5 py-0.5 shrink-0">
+              <Brain className="h-2.5 w-2.5" />
+              thinking
+            </span>
+          )}
+          {uniqueTools.slice(0, 4).map((name, i) => (
+            <span key={i} className="flex items-center gap-1 text-[10px] text-amber-400/80 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 shrink-0">
+              <Terminal className="h-2.5 w-2.5" />
+              {name}
+            </span>
+          ))}
+          {(turn.toolCalls.length > uniqueTools.slice(0, 4).length || toolNames.length < turn.toolCalls.length) && (
+            <span className="text-[10px] text-muted-foreground/40 shrink-0">
+              +{turn.toolCalls.length - Math.min(uniqueTools.slice(0, 4).length, turn.toolCalls.length)} more
+            </span>
+          )}
+        </div>
+
         <span className="ml-auto text-muted-foreground/40 shrink-0">
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         </span>
       </button>
+
       {open && hasEvents && (
         <div className="px-3 py-2 space-y-1.5 border-t border-border/30 bg-muted/5">
           {turn.thinkingBlocks.map((text, i) => (
@@ -324,9 +349,11 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeRef = useRef(false)
 
-  // Real-time: read from useChatStore which is updated by WS gateway events
-  const liveMessages = useChatStore(s => sessionKey ? (s.messages[sessionKey] ?? []) : [])
-  const agentRunning = useChatStore(s => sessionKey ? (s.agentRunning[sessionKey] ?? false) : false)
+  // Real-time: read from useChatStore which is updated by WS gateway events.
+  // Use module-level EMPTY constant as fallback — inline `[]` would create a new reference
+  // on every render, causing Zustand to infinitely trigger re-renders.
+  const liveMessages = useChatStore(s => (sessionKey ? s.messages[sessionKey] : null) ?? EMPTY)
+  const agentRunning = useChatStore(s => (sessionKey ? s.agentRunning[sessionKey] : false) ?? false)
 
   // isLive = gateway is actively streaming (WS tells us) OR taskStatus is in_progress
   const isLive = agentRunning || taskStatus === "in_progress"

@@ -8,6 +8,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
+import { PriorityIndicator } from "./PriorityIndicator"
 
 const PRIORITY_BORDER: Record<string, string> = {
   urgent: "border-l-red-500",
@@ -72,9 +73,7 @@ export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isD
             )}
           </span>
         )}
-        <span className={cn("text-xs px-1.5 py-0.5 rounded font-medium ml-auto shrink-0", PRIORITY_BADGE[priority])}>
-          {priority}
-        </span>
+        <PriorityIndicator priority={priority} className="ml-auto shrink-0" />
       </div>
 
       {/* Title */}

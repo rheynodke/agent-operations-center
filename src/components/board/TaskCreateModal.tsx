@@ -6,13 +6,17 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Task, TaskStatus, TaskPriority, Agent } from "@/types"
+import { AgentAvatar } from "@/components/agents/AgentAvatar"
+import { PriorityIndicator } from "./PriorityIndicator"
+import { User } from "lucide-react"
 
-const STATUSES: { value: TaskStatus; label: string }[] = [
-  { value: "backlog",     label: "Backlog" },
-  { value: "todo",        label: "Todo" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "blocked",     label: "🚫 Blocked" },
-  { value: "done",        label: "Done" },
+const STATUSES: { value: TaskStatus; label: string; dot: string; disabled?: boolean }[] = [
+  { value: "backlog",     label: "Backlog",     dot: "bg-zinc-500" },
+  { value: "todo",        label: "Todo",        dot: "bg-blue-400" },
+  { value: "in_progress", label: "In Progress", dot: "bg-amber-400" },
+  { value: "in_review",   label: "In Review",   dot: "bg-purple-400" },
+  { value: "blocked",     label: "Blocked",     dot: "bg-red-500",     disabled: true },
+  { value: "done",        label: "Done",        dot: "bg-emerald-500" },
 ]
 
 const PRIORITIES: { value: TaskPriority; label: string }[] = [
@@ -90,30 +94,80 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
             <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional details..." rows={3} />
           </div>
           <div className="grid grid-cols-2 gap-3">
+            {/* Status — locked to Backlog on create */}
             <div className="space-y-1">
               <Label>Status</Label>
-              <Select value={status} onValueChange={(v) => setStatus(v as TaskStatus)}>
-                <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                <SelectContent>{STATUSES.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}</SelectContent>
-              </Select>
+              <div className="h-8 flex items-center gap-2 px-3 rounded-md border border-border/40 bg-muted/20 cursor-not-allowed select-none">
+                <span className="w-2 h-2 rounded-full bg-zinc-500 shrink-0" />
+                <span className="text-sm text-muted-foreground/70">Backlog</span>
+                <span className="ml-auto text-[10px] text-muted-foreground/35 font-medium uppercase tracking-wide">locked</span>
+              </div>
             </div>
+
+            {/* Priority with level indicator */}
             <div className="space-y-1">
               <Label>Priority</Label>
               <Select value={priority} onValueChange={(v) => setPriority(v as TaskPriority)}>
-                <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                <SelectContent>{PRIORITIES.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}</SelectContent>
+                <SelectTrigger className="h-8 gap-2">
+                  <PriorityIndicator priority={priority} showLabel />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRIORITIES.map(p => (
+                    <SelectItem key={p.value} value={p.value}>
+                      <PriorityIndicator priority={p.value} showLabel />
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
           </div>
           <div className="space-y-1">
             <Label>Assign to Agent</Label>
-            <Select value={assignTo || "__none__"} onValueChange={(v) => setAssignTo(v === "__none__" ? "" : v)}>
-              <SelectTrigger className="h-8"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">Unassigned</SelectItem>
-                {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.emoji || "🤖"} {a.name || a.id}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            {(() => {
+              const selectedAgent = agents.find(a => a.id === assignTo)
+              return (
+                <Select value={assignTo || "__none__"} onValueChange={(v) => setAssignTo(v === "__none__" ? "" : v)}>
+                  <SelectTrigger className="h-8 flex items-center gap-2 px-3">
+                    {selectedAgent ? (
+                      <>
+                        <AgentAvatar
+                          avatarPresetId={selectedAgent.avatarPresetId}
+                          emoji={selectedAgent.emoji}
+                          size="w-5 h-5"
+                          className="rounded-sm shrink-0"
+                        />
+                        <span className="truncate text-sm">{selectedAgent.name || selectedAgent.id}</span>
+                      </>
+                    ) : (
+                      <>
+                        <User className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                        <span className="text-sm text-muted-foreground/60">Unassigned</span>
+                      </>
+                    )}
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      <span className="flex items-center gap-2 text-muted-foreground">
+                        <User className="h-3.5 w-3.5" /> Unassigned
+                      </span>
+                    </SelectItem>
+                    {agents.map(a => (
+                      <SelectItem key={a.id} value={a.id}>
+                        <span className="flex items-center gap-2">
+                          <AgentAvatar
+                            avatarPresetId={a.avatarPresetId}
+                            emoji={a.emoji}
+                            size="w-5 h-5"
+                            className="rounded-sm"
+                          />
+                          {a.name || a.id}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )
+            })()}
           </div>
           <div className="space-y-1">
             <Label>Tags (comma separated)</Label>
