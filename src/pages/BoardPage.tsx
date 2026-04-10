@@ -1,6 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react"
 import { Plus } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { KanbanBoard, KanbanColumnDef } from "@/components/board/KanbanBoard"
 import { TaskCard } from "@/components/board/TaskCard"
 import { TaskFilterBar } from "@/components/board/TaskFilterBar"
@@ -81,11 +80,21 @@ export default function BoardPage() {
   return (
     <div className="flex flex-col h-full p-6 gap-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-foreground">Board</h1>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="h-4 w-4 mr-1" /> New Ticket
-        </Button>
+      <div className="flex flex-wrap items-end justify-between gap-4 mb-2 shrink-0">
+        <div>
+          <h1 className="text-3xl font-display font-bold tracking-tight text-foreground">
+            Task Board
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Assign, dispatch, and track agent tasks in real-time
+          </p>
+        </div>
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs font-semibold hover:bg-primary/20 transition-colors"
+        >
+          <Plus className="h-3.5 w-3.5" /> New Ticket
+        </button>
       </div>
 
       {/* Filter bar */}
@@ -110,29 +119,37 @@ export default function BoardPage() {
           onDragStart={setActiveId}
           onDragEnd={() => setActiveId(null)}
           onItemMove={handleItemMove}
-          renderItem={(task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              agentEmoji={(task as typeof task & { agentEmoji?: string }).agentEmoji}
-              agentName={(task as typeof task & { agentName?: string }).agentName}
-              isDragging={activeId === task.id}
-              onEdit={(t) => { setEditTask(t); setCreateOpen(true) }}
-              onDelete={handleDelete}
-              onClick={setDetailTask}
-            />
-          )}
-          renderDragOverlay={(task) => (
-            <TaskCard
-              task={task}
-              agentEmoji={(task as typeof task & { agentEmoji?: string }).agentEmoji}
-              agentName={(task as typeof task & { agentName?: string }).agentName}
-              isDragging
-              onEdit={() => {}}
-              onDelete={() => {}}
-              onClick={() => {}}
-            />
-          )}
+          renderItem={(task) => {
+            const taskAgent = task.agentId ? agents.find(a => a.id === task.agentId) : null
+            return (
+              <TaskCard
+                key={task.id}
+                task={task}
+                agentEmoji={(task as typeof task & { agentEmoji?: string }).agentEmoji}
+                agentName={(task as typeof task & { agentName?: string }).agentName}
+                agentAvatarPresetId={taskAgent?.avatarPresetId}
+                isDragging={activeId === task.id}
+                onEdit={(t) => { setEditTask(t); setCreateOpen(true) }}
+                onDelete={handleDelete}
+                onClick={setDetailTask}
+              />
+            )
+          }}
+          renderDragOverlay={(task) => {
+            const taskAgent = task.agentId ? agents.find(a => a.id === task.agentId) : null
+            return (
+              <TaskCard
+                task={task}
+                agentEmoji={(task as typeof task & { agentEmoji?: string }).agentEmoji}
+                agentName={(task as typeof task & { agentName?: string }).agentName}
+                agentAvatarPresetId={taskAgent?.avatarPresetId}
+                isDragging
+                onEdit={() => {}}
+                onDelete={() => {}}
+                onClick={() => {}}
+              />
+            )
+          }}
         />
       </div>
 

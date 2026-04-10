@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { Agent, TaskPriority } from "@/types"
+import { AgentAvatar } from "@/components/agents/AgentAvatar"
 
 const PRIORITIES: TaskPriority[] = ["urgent", "high", "medium", "low"]
 
@@ -38,20 +39,29 @@ export function TaskFilterBar({
 
       {/* Agent filter */}
       <div className="flex items-center gap-1 flex-wrap">
-        {agents.slice(0, 6).map((agent) => (
-          <button
-            key={agent.id}
-            onClick={() => onFilterChange("agentId", filterAgentId === agent.id ? undefined : agent.id)}
-            className={cn(
-              "text-xs px-2 py-1 rounded-full border transition-colors",
-              filterAgentId === agent.id
-                ? "bg-primary text-primary-foreground border-primary"
-                : "border-border text-muted-foreground hover:border-primary/50"
-            )}
-          >
-            {agent.emoji || "🤖"} {agent.name || agent.id}
-          </button>
-        ))}
+        {agents.slice(0, 6).map((agent) => {
+          const isActive = filterAgentId === agent.id
+          return (
+            <button
+              key={agent.id}
+              onClick={() => onFilterChange("agentId", isActive ? undefined : agent.id)}
+              className={cn(
+                "flex items-center gap-1.5 text-xs pl-1 pr-2.5 py-1 rounded-full border transition-colors",
+                isActive
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "border-border text-muted-foreground hover:border-primary/50"
+              )}
+            >
+              <AgentAvatar
+                avatarPresetId={agent.avatarPresetId}
+                emoji={agent.emoji}
+                size="w-5 h-5"
+                className="rounded-full"
+              />
+              {agent.name || agent.id}
+            </button>
+          )
+        })}
       </div>
 
       {/* Priority filter */}

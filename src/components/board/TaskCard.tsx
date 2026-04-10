@@ -7,6 +7,7 @@ import { Task } from "@/types"
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { AgentAvatar } from "@/components/agents/AgentAvatar"
 
 const PRIORITY_BORDER: Record<string, string> = {
   urgent: "border-l-red-500",
@@ -26,13 +27,14 @@ interface TaskCardProps {
   task: Task
   agentEmoji?: string
   agentName?: string
+  agentAvatarPresetId?: string | null
   isDragging?: boolean
   onEdit: (task: Task) => void
   onDelete: (task: Task) => void
   onClick: (task: Task) => void
 }
 
-export function TaskCard({ task, agentEmoji, agentName, isDragging, onEdit, onDelete, onClick }: TaskCardProps) {
+export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isDragging, onEdit, onDelete, onClick }: TaskCardProps) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: task.id })
 
   const style = transform
@@ -57,10 +59,17 @@ export function TaskCard({ task, agentEmoji, agentName, isDragging, onEdit, onDe
     >
       {/* Header */}
       <div className="flex items-start justify-between gap-2 mb-1">
-        {(agentEmoji || agentName) && (
-          <span className="text-xs text-muted-foreground flex items-center gap-1 shrink-0">
-            {agentEmoji && <span>{agentEmoji}</span>}
-            {agentName && <span className="truncate max-w-[80px]">{agentName}</span>}
+        {(agentEmoji || agentName || agentAvatarPresetId) && (
+          <span className="flex items-center gap-1.5 shrink-0 min-w-0">
+            <AgentAvatar
+              avatarPresetId={agentAvatarPresetId}
+              emoji={agentEmoji}
+              size="w-5 h-5"
+              className="rounded-md"
+            />
+            {agentName && (
+              <span className="text-xs text-muted-foreground truncate max-w-[72px]">{agentName}</span>
+            )}
           </span>
         )}
         <span className={cn("text-xs px-1.5 py-0.5 rounded font-medium ml-auto shrink-0", PRIORITY_BADGE[priority])}>
