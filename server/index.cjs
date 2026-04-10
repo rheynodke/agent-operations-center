@@ -1395,6 +1395,18 @@ app.post('/api/agents/:id/custom-tools/:filename/toggle', db.authMiddleware, (re
   }
 });
 
+app.post('/api/agents/:id/sync-task-script', db.authMiddleware, (req, res) => {
+  try {
+    const { id } = req.params;
+    parsers.ensureUpdateTaskScript();
+    parsers.toggleAgentCustomTool(id, 'update_task.sh', true, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/sync-task-script]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Agent workspace scripts (agentWorkspace/scripts/) — full CRUD
 app.get('/api/agents/:id/scripts', db.authMiddleware, (req, res) => {
   try { res.json({ scripts: parsers.listAgentScripts(req.params.id) }); }
@@ -1970,10 +1982,35 @@ const heartbeatInterval = setInterval(() => {
 
 wss.on('close', () => clearInterval(heartbeatInterval));
 
+// ─── Sync update_task.sh for all agents ──────────────────────────────────────
+async function syncTaskScriptForAllAgents() {
+  try {
+    parsers.ensureUpdateTaskScript();
+    const agents = parsers.parseAgentRegistry();
+    for (const agent of agents) {
+      try {
+        const tools = parsers.listAgentCustomTools(agent.id, parsers.getAgentFile);
+        const alreadyEnabled = [...(tools.agent || []), ...(tools.shared || [])].some(
+          t => t.name === 'update_task' && t.enabled
+        );
+        if (!alreadyEnabled) {
+          parsers.toggleAgentCustomTool(agent.id, 'update_task.sh', true, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
+          console.log(`[task-sync] Enabled update_task for agent: ${agent.id}`);
+        }
+      } catch (err) {
+        console.warn(`[task-sync] Failed for ${agent.id}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.warn('[task-sync] syncTaskScriptForAllAgents failed:', err.message);
+  }
+}
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   await db.initDatabase();
   feedWatcher.start();
+  syncTaskScriptForAllAgents(); // non-blocking, fire-and-forget
 
   // Ensure all agents have skills: [] field in openclaw.json
   try { parsers.ensureAgentSkillsFields(); } catch (e) { console.warn('[startup] ensureAgentSkillsFields failed:', e.message); }
