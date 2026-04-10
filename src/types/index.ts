@@ -173,6 +173,17 @@ export interface Task {
   cost?: number
 }
 
+export interface TaskActivity {
+  id: string
+  taskId: string
+  type: 'created' | 'status_change' | 'assignment' | 'comment' | 'cost_update'
+  fromValue?: string
+  toValue?: string
+  actor: string   // "user" | agentId
+  note?: string
+  createdAt: string
+}
+
 // ─── Cron Types ──────────────────────────────────────────────────────────────
 
 export type CronJobKind = "cron" | "at" | "every"

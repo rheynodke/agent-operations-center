@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -217,7 +217,26 @@ export const api = {
     request(`/sessions/${agentId}/${sessionId}/messages`),
 
   // Tasks
-  getTasks: () => request("/tasks"),
+  getTasks: (filters?: { agentId?: string; status?: string; priority?: string; tag?: string; q?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.agentId)  params.set('agentId',  filters.agentId);
+    if (filters?.status)   params.set('status',   filters.status);
+    if (filters?.priority) params.set('priority', filters.priority);
+    if (filters?.tag)      params.set('tag',      filters.tag);
+    if (filters?.q)        params.set('q',        filters.q);
+    const qs = params.toString();
+    return request<{ tasks: Task[] }>(`/tasks${qs ? `?${qs}` : ''}`);
+  },
+  createTask: (data: { title: string; description?: string; status?: TaskStatus; priority?: TaskPriority; agentId?: string; tags?: string[] }) =>
+    request<{ task: Task }>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
+  updateTask: (id: string, patch: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'tags' | 'cost' | 'sessionId'>> & { assignTo?: string; note?: string }) =>
+    request<{ task: Task }>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteTask: (id: string) =>
+    request<{ ok: boolean }>(`/tasks/${id}`, { method: 'DELETE' }),
+  getTaskActivity: (id: string) =>
+    request<{ activity: TaskActivity[] }>(`/tasks/${id}/activity`),
+  syncAgentTaskScript: (agentId: string) =>
+    request<{ ok: boolean }>(`/agents/${agentId}/sync-task-script`, { method: 'POST' }),
 
   // Cron
   getCronJobs: () => request("/cron"),

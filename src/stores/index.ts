@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { Agent, Session, Task, CronJob, GatewayRoute, Alert, ActivityEvent, LiveFeedEntry, DashboardOverview, AuthUser } from "@/types"
+import type { Agent, Session, Task, TaskStatus, TaskPriority, CronJob, GatewayRoute, Alert, ActivityEvent, LiveFeedEntry, DashboardOverview, AuthUser } from "@/types"
 
 export * from "./useThemeStore"
 
@@ -102,21 +102,39 @@ export const useSessionStore = create<SessionState>((set) => ({
 }))
 
 // ─── Task Store ───────────────────────────────────────────────────────────────
+interface TaskFilters {
+  agentId?: string
+  status?: string
+  priority?: string
+  tag?: string
+  q?: string
+}
+
 interface TaskState {
   tasks: Task[]
   loading: boolean
+  filters: TaskFilters
   setTasks: (tasks: Task[]) => void
+  addTask: (task: Task) => void
   updateTask: (id: string, patch: Partial<Task>) => void
+  removeTask: (id: string) => void
   setLoading: (v: boolean) => void
+  setFilters: (filters: Partial<TaskFilters>) => void
+  clearFilters: () => void
 }
 
 export const useTaskStore = create<TaskState>((set) => ({
   tasks: [],
   loading: false,
-  setTasks: (tasks) => set({ tasks }),
+  filters: {},
+  setTasks:  (tasks) => set({ tasks }),
+  addTask:   (task)  => set((s) => ({ tasks: [task, ...s.tasks] })),
   updateTask: (id, patch) =>
     set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) })),
+  removeTask: (id) => set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) })),
   setLoading: (loading) => set({ loading }),
+  setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),
+  clearFilters: () => set({ filters: {} }),
 }))
 
 // ─── Cron Store ───────────────────────────────────────────────────────────────
