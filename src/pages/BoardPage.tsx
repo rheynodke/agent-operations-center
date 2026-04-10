@@ -78,7 +78,7 @@ export default function BoardPage() {
   }, [updateTask, setTasks])
 
   return (
-    <div className="flex flex-col h-full p-6 gap-4">
+    <div className="flex flex-col h-full gap-4 animate-fade-in">
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4 mb-2 shrink-0">
         <div>
