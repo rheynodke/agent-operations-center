@@ -118,8 +118,162 @@ async function initDatabase() {
   // Index for fast history lookups per file
   db.run(`CREATE INDEX IF NOT EXISTS idx_file_versions_scope ON file_versions(scope_key, saved_at DESC)`);
 
+  // Tasks — general-purpose ticketing system
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id            TEXT PRIMARY KEY,
+      title         TEXT NOT NULL,
+      description   TEXT,
+      status        TEXT NOT NULL DEFAULT 'backlog',
+      priority      TEXT NOT NULL DEFAULT 'medium',
+      agent_id      TEXT,
+      session_id    TEXT,
+      tags          TEXT DEFAULT '[]',
+      cost          REAL,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      completed_at  TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS task_activity (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      type        TEXT NOT NULL,
+      from_value  TEXT,
+      to_value    TEXT,
+      actor       TEXT NOT NULL,
+      note        TEXT,
+      created_at  TEXT NOT NULL
+    )
+  `);
+
   persist();
   return db;
+}
+
+// ─── Task helpers ──────────────────────────────────────────────────────────────
+function normalizeTask(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description || undefined,
+    status: row.status,
+    priority: row.priority || 'medium',
+    agentId: row.agent_id || undefined,
+    sessionId: row.session_id || undefined,
+    tags: row.tags ? JSON.parse(row.tags) : [],
+    cost: row.cost != null ? row.cost : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at || undefined,
+  };
+}
+
+function normalizeActivity(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    type: row.type,
+    fromValue: row.from_value || undefined,
+    toValue: row.to_value || undefined,
+    actor: row.actor,
+    note: row.note || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function getAllTasks(filters = {}) {
+  if (!db) throw new Error('DB not initialized');
+  const conditions = [];
+  const params = {};
+  if (filters.agentId) { conditions.push('agent_id = :agentId'); params[':agentId'] = filters.agentId; }
+  if (filters.status)  { conditions.push('status = :status');    params[':status']  = filters.status; }
+  if (filters.priority){ conditions.push('priority = :priority');params[':priority']= filters.priority; }
+  if (filters.tag)     { conditions.push('tags LIKE :tag');      params[':tag']     = `%"${filters.tag}"%`; }
+  if (filters.q)       { conditions.push('title LIKE :q');       params[':q']       = `%${filters.q}%`; }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const stmt = db.prepare(`SELECT * FROM tasks ${where} ORDER BY created_at DESC`);
+  if (Object.keys(params).length) stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeTask(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+function getTask(id) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM tasks WHERE id = :id');
+  const row = stmt.getAsObject({ ':id': id });
+  stmt.free();
+  return row.id ? normalizeTask(row) : null;
+}
+
+function createTask({ title, description, status = 'backlog', priority = 'medium', agentId, tags = [], sessionId } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, title, description || null, status, priority, agentId || null, sessionId || null, JSON.stringify(tags || []), now, now]
+  );
+  persist();
+  return getTask(id);
+}
+
+function updateTask(id, patch) {
+  if (!db) throw new Error('DB not initialized');
+  const before = getTask(id);
+  if (!before) return null;
+  const now = new Date().toISOString();
+  const fields = ['updated_at = ?'];
+  const vals = [now];
+  if (patch.title       !== undefined) { fields.push('title = ?');       vals.push(patch.title); }
+  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description || null); }
+  if (patch.status      !== undefined) { fields.push('status = ?');      vals.push(patch.status); }
+  if (patch.priority    !== undefined) { fields.push('priority = ?');    vals.push(patch.priority); }
+  if (patch.agentId     !== undefined) { fields.push('agent_id = ?');    vals.push(patch.agentId || null); }
+  if (patch.sessionId   !== undefined) { fields.push('session_id = ?');  vals.push(patch.sessionId || null); }
+  if (patch.tags        !== undefined) { fields.push('tags = ?');        vals.push(JSON.stringify(patch.tags)); }
+  if (patch.cost        !== undefined) { fields.push('cost = ?');        vals.push(patch.cost); }
+  if (patch.status === 'done' && before.status !== 'done') {
+    fields.push('completed_at = ?'); vals.push(now);
+  }
+  vals.push(id);
+  db.run(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getTask(id);
+}
+
+function deleteTask(id) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('DELETE FROM task_activity WHERE task_id = ?', [id]);
+  db.run('DELETE FROM tasks WHERE id = ?', [id]);
+  persist();
+}
+
+function addTaskActivity({ taskId, type, fromValue, toValue, actor, note } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO task_activity (id, task_id, type, from_value, to_value, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, taskId, type, fromValue || null, toValue || null, actor, note || null, now]
+  );
+  persist();
+}
+
+function getTaskActivity(taskId) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM task_activity WHERE task_id = :taskId ORDER BY created_at ASC');
+  stmt.bind({ ':taskId': taskId });
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeActivity(stmt.getAsObject()));
+  stmt.free();
+  return rows;
 }
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
@@ -378,4 +532,7 @@ module.exports = {
   renameAgentProfile,
   getAllAgentProfiles,
   deleteAgentProfile,
+  // Tasks
+  getAllTasks, getTask, createTask, updateTask, deleteTask,
+  addTaskActivity, getTaskActivity,
 };
