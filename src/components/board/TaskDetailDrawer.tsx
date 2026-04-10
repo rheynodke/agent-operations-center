@@ -71,10 +71,10 @@ export function TaskDetailDrawer({ task, agents, open, onClose, onUpdate }: Task
                 {Object.entries(STATUS_LABELS).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Select value={task.agentId || ""} onValueChange={(v) => onUpdate(task.id, { assignTo: v || null })}>
+            <Select value={task.agentId || "__none__"} onValueChange={(v) => onUpdate(task.id, { assignTo: v === "__none__" ? null : v })}>
               <SelectTrigger className="h-7 text-xs w-36"><SelectValue placeholder="Unassigned" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
+                <SelectItem value="__none__">Unassigned</SelectItem>
                 {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.emoji || "🤖"} {a.name || a.id}</SelectItem>)}
               </SelectContent>
             </Select>

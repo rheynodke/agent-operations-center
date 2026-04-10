@@ -106,10 +106,10 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
           </div>
           <div className="space-y-1">
             <Label>Assign to Agent</Label>
-            <Select value={assignTo} onValueChange={setAssignTo}>
+            <Select value={assignTo || "__none__"} onValueChange={(v) => setAssignTo(v === "__none__" ? "" : v)}>
               <SelectTrigger className="h-8"><SelectValue placeholder="Unassigned" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
+                <SelectItem value="__none__">Unassigned</SelectItem>
                 {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.emoji || "🤖"} {a.name || a.id}</SelectItem>)}
               </SelectContent>
             </Select>
