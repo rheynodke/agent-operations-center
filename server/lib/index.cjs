@@ -25,7 +25,6 @@ module.exports = {
 
   // ── sessions ───────────────────────────────────────────────────────────────
   parseCodeAgentSessions:    sessions.parseCodeAgentSessions,
-  parseDevProgress:          sessions.parseDevProgress,
   parseOpenCodeEvents:       sessions.parseOpenCodeEvents,
   parseOpenCodeResult:       sessions.parseOpenCodeResult,
   parseAgentRegistry:        sessions.parseAgentRegistry,

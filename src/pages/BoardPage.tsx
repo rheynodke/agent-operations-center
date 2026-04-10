@@ -1,148 +1,159 @@
-import { useMemo } from "react"
-import { useTaskStore } from "@/stores"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { cn } from "@/lib/utils"
-import type { Task, TaskStatus } from "@/types"
+import React, { useCallback, useMemo, useState } from "react"
+import { Plus } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { KanbanBoard, KanbanColumnDef } from "@/components/board/KanbanBoard"
+import { TaskCard } from "@/components/board/TaskCard"
+import { TaskFilterBar } from "@/components/board/TaskFilterBar"
+import { TaskCreateModal } from "@/components/board/TaskCreateModal"
+import { TaskDetailDrawer } from "@/components/board/TaskDetailDrawer"
+import { useTaskStore, useAgentStore } from "@/stores"
+import { api } from "@/lib/api"
+import { Task, TaskStatus } from "@/types"
 
-const COLUMNS: { status: TaskStatus; label: string; emoji: string }[] = [
-  { status: "backlog", label: "Backlog", emoji: "📋" },
-  { status: "todo", label: "To Do", emoji: "📌" },
-  { status: "in_progress", label: "In Progress", emoji: "⚡" },
-  { status: "done", label: "Done", emoji: "✅" },
+const COLUMNS: KanbanColumnDef[] = [
+  { id: "backlog",     label: "Backlog",     emoji: "📥" },
+  { id: "todo",        label: "Todo",        emoji: "📋" },
+  { id: "in_progress", label: "In Progress", emoji: "⚡" },
+  { id: "done",        label: "Done",        emoji: "✅" },
 ]
 
-const priorityColors = {
-  urgent: "border-l-[var(--status-error-text)]",
-  high: "border-l-[var(--status-paused-text)]",
-  medium: "border-l-primary/60",
-  low: "border-l-muted-foreground/30",
-}
+export default function BoardPage() {
+  const { tasks, filters, setTasks, addTask, updateTask, removeTask, setFilters, clearFilters } = useTaskStore()
+  const agents = useAgentStore((s) => s.agents)
 
-function TaskCard({ task }: { task: Task }) {
+  const [createOpen, setCreateOpen]   = useState(false)
+  const [editTask, setEditTask]       = useState<Task | null>(null)
+  const [detailTask, setDetailTask]   = useState<Task | null>(null)
+  const [activeId, setActiveId]       = useState<string | null>(null)
+
+  // Enrich tasks with agent info from agents store
+  const enrichedTasks = useMemo(() => tasks.map(t => ({
+    ...t,
+    agentEmoji: t.agentId ? agents.find(a => a.id === t.agentId)?.emoji : undefined,
+    agentName:  t.agentId ? agents.find(a => a.id === t.agentId)?.name : undefined,
+  })), [tasks, agents])
+
+  // Apply client-side filters (server also filters, but this avoids re-fetching on every keystroke)
+  const filteredTasks = useMemo(() => {
+    let result = enrichedTasks
+    if (filters.agentId)  result = result.filter(t => t.agentId === filters.agentId)
+    if (filters.status)   result = result.filter(t => t.status === filters.status)
+    if (filters.priority) result = result.filter(t => t.priority === filters.priority)
+    if (filters.q)        result = result.filter(t => t.title.toLowerCase().includes(filters.q!.toLowerCase()))
+    return result
+  }, [enrichedTasks, filters])
+
+  const hasActiveFilters = !!(filters.agentId || filters.status || filters.priority || filters.q)
+
+  async function handleCreate(data: Partial<Task>) {
+    const res = await api.createTask(data as Parameters<typeof api.createTask>[0])
+    addTask(res.task)
+  }
+
+  async function handleUpdate(id: string, patch: object) {
+    const res = await api.updateTask(id, patch as Parameters<typeof api.updateTask>[1])
+    updateTask(id, res.task)
+    // If detail drawer is open for this task, update it too
+    if (detailTask?.id === id) setDetailTask(res.task)
+  }
+
+  async function handleDelete(task: Task) {
+    if (!confirm(`Delete "${task.title}"?`)) return
+    await api.deleteTask(task.id)
+    removeTask(task.id)
+    if (detailTask?.id === task.id) setDetailTask(null)
+  }
+
+  const handleItemMove = useCallback(async (itemId: string, _from: string, toColumnId: string) => {
+    // Optimistic update
+    updateTask(itemId, { status: toColumnId as TaskStatus })
+    try {
+      await api.updateTask(itemId, { status: toColumnId as TaskStatus })
+    } catch {
+      // Rollback on error: reload all tasks
+      const res = await api.getTasks()
+      setTasks(res.tasks)
+    }
+  }, [updateTask, setTasks])
+
   return (
-    <div
-      className={cn(
-        "p-3 rounded-lg bg-card ghost-border hover:bg-surface-high transition-all cursor-default",
-        "border-l-2",
-        task.priority ? priorityColors[task.priority] : "border-l-transparent"
-      )}
-    >
-      {/* Agent */}
-      {task.agentEmoji && (
-        <div className="flex items-center gap-1.5 mb-2">
-          <span className="text-sm">{task.agentEmoji}</span>
-          <span className="text-xs text-muted-foreground truncate">{task.agentName}</span>
-        </div>
-      )}
-
-      <p className="text-sm text-foreground leading-snug">{task.title}</p>
-
-      {task.description && (
-        <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2">{task.description}</p>
-      )}
-
-      {/* Tags */}
-      {task.tags && task.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-2">
-          {task.tags.slice(0, 3).map((tag) => (
-            <span
-              key={tag}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground"
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Footer */}
-      <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-border/40">
-        {task.priority && (
-          <span
-            className={cn(
-              "text-[10px] font-medium capitalize",
-              task.priority === "urgent" && "text-[var(--status-error-text)]",
-              task.priority === "high" && "text-[var(--status-paused-text)]",
-              task.priority === "medium" && "text-primary/70",
-              task.priority === "low" && "text-muted-foreground/50"
-            )}
-          >
-            {task.priority}
-          </span>
-        )}
-        {task.cost && (
-          <span className="text-[10px] text-muted-foreground tabular-nums ml-auto">
-            ${task.cost.toFixed(3)}
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function KanbanColumn({
-  status, label, emoji, tasks,
-}: {
-  status: TaskStatus
-  label: string
-  emoji: string
-  tasks: Task[]
-}) {
-  return (
-    <div className="flex flex-col gap-3 min-w-[240px] flex-1">
-      {/* Column header */}
-      <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-2">
-          <span>{emoji}</span>
-          <h3 className="font-display text-sm font-semibold text-foreground">{label}</h3>
-        </div>
-        <span className="flex items-center justify-center h-5 min-w-5 rounded-full bg-secondary text-[11px] text-muted-foreground font-medium px-1.5">
-          {tasks.length}
-        </span>
+    <div className="flex flex-col h-full p-6 gap-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold text-foreground">Board</h1>
+        <Button size="sm" onClick={() => setCreateOpen(true)}>
+          <Plus className="h-4 w-4 mr-1" /> New Ticket
+        </Button>
       </div>
 
-      {/* Cards */}
-      <ScrollArea className="h-[calc(100vh-260px)]">
-        <div className="flex flex-col gap-2.5 pr-1 pb-2">
-          {tasks.length === 0 ? (
-            <div className="flex items-center justify-center h-24 rounded-xl bg-secondary/50 text-xs text-muted-foreground border border-dashed border-border/50">
-              No tasks
-            </div>
-          ) : (
-            tasks.map((task) => <TaskCard key={task.id} task={task} />)
+      {/* Filter bar */}
+      <TaskFilterBar
+        agents={agents}
+        filterAgentId={filters.agentId}
+        filterPriority={filters.priority}
+        q={filters.q}
+        onFilterChange={(k, v) => setFilters({ [k]: v })}
+        onQChange={(q) => setFilters({ q: q || undefined })}
+        hasActiveFilters={hasActiveFilters}
+        onClear={clearFilters}
+      />
+
+      {/* Kanban Board */}
+      <div className="flex-1 min-h-0">
+        <KanbanBoard
+          columns={COLUMNS}
+          items={filteredTasks}
+          getColumnId={(t) => t.status}
+          activeId={activeId}
+          onDragStart={setActiveId}
+          onDragEnd={() => setActiveId(null)}
+          onItemMove={handleItemMove}
+          renderItem={(task) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              agentEmoji={(task as typeof task & { agentEmoji?: string }).agentEmoji}
+              agentName={(task as typeof task & { agentName?: string }).agentName}
+              isDragging={activeId === task.id}
+              onEdit={(t) => { setEditTask(t); setCreateOpen(true) }}
+              onDelete={handleDelete}
+              onClick={setDetailTask}
+            />
           )}
-        </div>
-      </ScrollArea>
-    </div>
-  )
-}
-
-export function BoardPage() {
-  const tasks = useTaskStore((s) => s.tasks)
-
-  const grouped = useMemo(() => {
-    const map: Record<TaskStatus, Task[]> = {
-      backlog: [], todo: [], in_progress: [], done: [],
-    }
-    for (const task of tasks) {
-      if (map[task.status]) map[task.status].push(task)
-    }
-    return map
-  }, [tasks])
-
-  return (
-    <div className="animate-fade-in">
-      <div className="flex gap-4 overflow-x-auto pb-4">
-        {COLUMNS.map(({ status, label, emoji }) => (
-          <KanbanColumn
-            key={status}
-            status={status}
-            label={label}
-            emoji={emoji}
-            tasks={grouped[status]}
-          />
-        ))}
+          renderDragOverlay={(task) => (
+            <TaskCard
+              task={task}
+              agentEmoji={(task as typeof task & { agentEmoji?: string }).agentEmoji}
+              agentName={(task as typeof task & { agentName?: string }).agentName}
+              isDragging
+              onEdit={() => {}}
+              onDelete={() => {}}
+              onClick={() => {}}
+            />
+          )}
+        />
       </div>
+
+      {/* Create/Edit Modal */}
+      <TaskCreateModal
+        open={createOpen}
+        task={editTask}
+        agents={agents}
+        onSave={editTask
+          ? (data) => handleUpdate(editTask.id, data)
+          : handleCreate
+        }
+        onClose={() => { setCreateOpen(false); setEditTask(null) }}
+      />
+
+      {/* Detail Drawer */}
+      <TaskDetailDrawer
+        task={detailTask}
+        agents={agents}
+        open={!!detailTask}
+        onClose={() => setDetailTask(null)}
+        onUpdate={handleUpdate}
+      />
     </div>
   )
 }
