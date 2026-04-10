@@ -3939,7 +3939,24 @@ export function AgentDetailPage() {
                     <span className="ml-auto text-[10px] text-muted-foreground/50 italic">Toggles write to tools.deny</span>
                   )}
                   {activeTab === 'custom-tools' && (
-                    <span className="ml-auto text-[10px] text-muted-foreground/50 italic">Toggles inject context into TOOLS.md</span>
+                    <div className="ml-auto flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await api.syncAgentTaskScript(id!)
+                            setSaveMsg("✓ Task script synced")
+                            setTimeout(() => setSaveMsg(""), 3000)
+                          } catch (e) {
+                            setSaveMsg(`❌ Sync failed`)
+                            setTimeout(() => setSaveMsg(""), 4000)
+                          }
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400 font-medium hover:bg-amber-500/20 transition-colors"
+                      >
+                        📋 Sync Task Script
+                      </button>
+                      <span className="text-[10px] text-muted-foreground/50 italic">Toggles inject context into TOOLS.md</span>
+                    </div>
                   )}
                 </div>
 
