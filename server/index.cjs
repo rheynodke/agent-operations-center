@@ -1234,7 +1234,9 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
     if (priority    !== undefined) patch.priority    = priority;
     if (tags        !== undefined) patch.tags        = tags;
     if (cost        !== undefined) patch.cost        = cost;
-    if (sessionId   !== undefined) patch.sessionId   = sessionId;
+    // Only update sessionId if a non-empty value is provided — empty string from
+    // update_task.sh (missing 4th param) must not erase the existing sessionId.
+    if (sessionId !== undefined && sessionId !== '') patch.sessionId = sessionId;
     if (assignTo    !== undefined) patch.agentId     = assignTo || null;
 
     const after = db.updateTask(id, patch);
@@ -1282,26 +1284,20 @@ app.get('/api/tasks/:id/activity', db.authMiddleware, (req, res) => {
   }
 });
 
-// Dispatch task to agent via gateway chat session
-app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
-  try {
-    const task = db.getTask(req.params.id);
-    if (!task) return res.status(404).json({ error: 'Task not found' });
-    if (!task.agentId) return res.status(400).json({ error: 'Task must be assigned to an agent first' });
-    if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
+// ── Shared dispatch logic (called by manual dispatch, PATCH hook, and startup sweep) ──
+async function dispatchTaskToAgent(task) {
+  if (!task.agentId) throw new Error('Task has no assigned agent');
+  if (!gatewayProxy.isConnected) throw new Error('Gateway not connected');
 
-    // Create a new chat session with the assigned agent
-    const sessionResult = await gatewayProxy.sessionsCreate(task.agentId);
-    const sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
-    if (!sessionKey) throw new Error('Gateway did not return a session key');
+  const sessionResult = await gatewayProxy.sessionsCreate(task.agentId);
+  const sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
+  if (!sessionKey) throw new Error('Gateway did not return a session key');
 
-    // Build the task dispatch message
-    const tagsLine = (task.tags || []).length > 0 ? `Tags: ${task.tags.join(', ')}` : '';
-    const aocToken = process.env.DASHBOARD_TOKEN || '';
-    const aocPort  = process.env.PORT || '18800';
-    const aocUrl   = `http://localhost:${aocPort}`;
-    const curlBase = `curl -sf -X PATCH ${aocUrl}/api/tasks/${task.id} -H "Authorization: Bearer ${aocToken}" -H "Content-Type: application/json"`;
-
+  const aocToken = process.env.DASHBOARD_TOKEN || '';
+  const aocPort  = process.env.PORT || '18800';
+  const aocUrl   = `http://localhost:${aocPort}`;
+  const curlBase = `curl -sf -X PATCH ${aocUrl}/api/tasks/${task.id} -H "Authorization: Bearer ${aocToken}" -H "Content-Type: application/json"`;
+  const tagsLine = (task.tags || []).length > 0 ? `Tags: ${task.tags.join(', ')}` : '';
     const message = [
       `📋 **Task Assigned: ${task.title}**`,
       ``,
@@ -1315,40 +1311,51 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
       `IMPORTANT: Report your progress using ONE of these methods:`,
       ``,
       `**Method 1 — Script (preferred):**`,
-      `\`update_task.sh ${task.id} in_progress "Starting..."\``,
-      `\`update_task.sh ${task.id} done "Summary"\``,
-      `\`update_task.sh ${task.id} blocked "Reason"\``,
+      `\`update_task.sh ${task.id} in_progress "Starting..." $SESSION_KEY\``,
+      `\`update_task.sh ${task.id} in_review "Summary of completed work"\``,
+      `\`update_task.sh ${task.id} blocked "Reason here"\``,
       ``,
       `**Method 2 — Direct curl (fallback if script fails):**`,
       `\`${curlBase} -d '{"status":"in_progress","note":"Starting"}'\``,
-      `\`${curlBase} -d '{"status":"done","note":"Summary here"}'\``,
+      `\`${curlBase} -d '{"status":"in_review","note":"Summary here"}'\``,
       `\`${curlBase} -d '{"status":"blocked","note":"Reason here"}'\``,
       ``,
-      `If you cannot complete the task for ANY reason, ALWAYS report it with status "blocked" so the operator knows.`,
+      `When your work is complete, set status to "in_review" — NOT "done". A human will review and approve.`,
+      `If you cannot complete the task for ANY reason, ALWAYS report it as "blocked".`,
     ].filter(l => l !== null && l !== undefined).join('\n');
 
-    // Send the task message to the agent
-    await gatewayProxy.chatSend(sessionKey, message);
 
-    // Update task: store sessionKey, set status to in_progress
-    db.updateTask(task.id, { sessionId: sessionKey, status: 'in_progress' });
-    db.addTaskActivity({
-      taskId: task.id,
-      type: 'status_change',
-      fromValue: task.status,
-      toValue: 'in_progress',
-      actor: 'user',
-      note: `Dispatched to agent ${task.agentId}`,
-    });
+  await gatewayProxy.chatSend(sessionKey, message);
 
-    broadcastTasksUpdate();
-    res.json({ ok: true, sessionKey, agentId: task.agentId });
+  db.updateTask(task.id, { sessionId: sessionKey, status: 'in_progress' });
+  db.addTaskActivity({
+    taskId: task.id,
+    type: 'status_change',
+    fromValue: task.status,
+    toValue: 'in_progress',
+    actor: 'system',
+    note: `Dispatched to agent ${task.agentId}`,
+  });
+  broadcastTasksUpdate();
+
+  console.log(`[dispatch] Task ${task.id} → ${task.agentId} (session: ${sessionKey})`);
+  return { sessionKey, agentId: task.agentId };
+}
+
+// Dispatch task to agent via gateway chat session
+app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
+  try {
+    const task = db.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!task.agentId) return res.status(400).json({ error: 'Task must be assigned to an agent first' });
+    if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
+    const result = await dispatchTaskToAgent(task);
+    res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[api/tasks/dispatch]', err);
     res.status(500).json({ error: err.message });
   }
-});
-
+})
 // Cron — delivery targets (known channels + contacts from sessions)
 app.get('/api/cron/delivery-targets', db.authMiddleware, (req, res) => {
   try {
