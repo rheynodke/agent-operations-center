@@ -1252,6 +1252,14 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
       db.addTaskActivity({ taskId: id, type: 'comment', actor, note });
     }
 
+    // Auto-dispatch: if ticket just moved to 'todo' with an agent assigned, dispatch immediately
+    const justMovedToTodo = status !== undefined && status === 'todo' && before.status !== 'todo';
+    if (justMovedToTodo && after.agentId && gatewayProxy.isConnected) {
+      dispatchTaskToAgent(after).catch(err =>
+        console.warn('[auto-dispatch]', after.id, err.message)
+      );
+    }
+
     broadcastTasksUpdate();
     res.json({ task: after });
   } catch (err) {
