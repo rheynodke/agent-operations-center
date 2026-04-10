@@ -194,6 +194,16 @@ function getGatewayConfig() {
   } catch { return {}; }
 }
 
+// Broadcast helper for task updates
+function broadcastTasksUpdate() {
+  const tasks = db.getAllTasks();
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1 /* OPEN */) {
+      client.send(JSON.stringify({ type: 'tasks:updated', payload: tasks, timestamp: new Date().toISOString() }));
+    }
+  });
+}
+
 function checkGatewayPort(port, host = '127.0.0.1') {
   return new Promise((resolve) => {
     const socket = new net.Socket();
@@ -1177,12 +1187,90 @@ app.get('/api/sessions/:agentId/:sessionId/messages', db.authMiddleware, (req, r
   }
 });
 
-// Tasks (progress)
+// ─── Tasks (ticketing) ────────────────────────────────────────────────────────
+
 app.get('/api/tasks', db.authMiddleware, (req, res) => {
   try {
-    res.json({ tasks: parsers.parseDevProgress() });
+    const { agentId, status, priority, tag, q } = req.query;
+    const tasks = db.getAllTasks({ agentId, status, priority, tag, q });
+    res.json({ tasks });
   } catch (err) {
+    console.error('[api/tasks GET]', err);
     res.status(500).json({ error: 'Failed to fetch tasks' });
+  }
+});
+
+app.post('/api/tasks', db.authMiddleware, (req, res) => {
+  try {
+    const { title, description, status, priority, agentId, tags } = req.body;
+    if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
+    const task = db.createTask({ title: title.trim(), description, status, priority, agentId, tags });
+    db.addTaskActivity({ taskId: task.id, type: 'created', toValue: task.status, actor: 'user' });
+    broadcastTasksUpdate();
+    res.status(201).json({ task });
+  } catch (err) {
+    console.error('[api/tasks POST]', err);
+    res.status(500).json({ error: 'Failed to create task' });
+  }
+});
+
+app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
+  try {
+    const { id } = req.params;
+    // agentId in body = actor identifier (from agent script); assignTo = new assignment (from UI)
+    const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId } = req.body;
+    const before = db.getTask(id);
+    if (!before) return res.status(404).json({ error: 'Task not found' });
+
+    const actor = actorAgentId || 'user';
+    const patch = {};
+    if (title       !== undefined) patch.title       = title;
+    if (description !== undefined) patch.description = description;
+    if (status      !== undefined) patch.status      = status;
+    if (priority    !== undefined) patch.priority    = priority;
+    if (tags        !== undefined) patch.tags        = tags;
+    if (cost        !== undefined) patch.cost        = cost;
+    if (sessionId   !== undefined) patch.sessionId   = sessionId;
+    if (assignTo    !== undefined) patch.agentId     = assignTo || null;
+
+    const after = db.updateTask(id, patch);
+
+    // Write activity entries for meaningful changes
+    if (status && status !== before.status) {
+      db.addTaskActivity({ taskId: id, type: 'status_change', fromValue: before.status, toValue: status, actor, note });
+    } else if (assignTo !== undefined && assignTo !== before.agentId) {
+      db.addTaskActivity({ taskId: id, type: 'assignment', fromValue: before.agentId || null, toValue: assignTo || null, actor });
+    } else if (note && !status) {
+      db.addTaskActivity({ taskId: id, type: 'comment', actor, note });
+    }
+
+    broadcastTasksUpdate();
+    res.json({ task: after });
+  } catch (err) {
+    console.error('[api/tasks PATCH]', err);
+    res.status(500).json({ error: 'Failed to update task' });
+  }
+});
+
+app.delete('/api/tasks/:id', db.authMiddleware, (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!db.getTask(id)) return res.status(404).json({ error: 'Task not found' });
+    db.deleteTask(id);
+    broadcastTasksUpdate();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/tasks DELETE]', err);
+    res.status(500).json({ error: 'Failed to delete task' });
+  }
+});
+
+app.get('/api/tasks/:id/activity', db.authMiddleware, (req, res) => {
+  try {
+    const activity = db.getTaskActivity(req.params.id);
+    res.json({ activity });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch activity' });
   }
 });
 
