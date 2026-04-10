@@ -2004,6 +2004,15 @@ app.get('/{*path}', (req, res) => {
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 const wss = new WebSocketServer({ noServer: true });
+
+// One-shot startup sweep on first gateway connection
+let startupSweepDone = false;
+gatewayProxy.addListener((event) => {
+  if (event.type === 'gateway:connected' && !startupSweepDone) {
+    startupSweepDone = true;
+    sweepPendingTasks().catch(err => console.warn('[startup-sweep]', err.message));
+  }
+});
 const feedWatcher = new LiveFeedWatcher();
 
 server.on('upgrade', (request, socket, head) => {
@@ -2088,12 +2097,48 @@ async function syncTaskScriptForAllAgents() {
   }
 }
 
+function syncHeartbeatForAllAgents() {
+  try {
+    parsers.ensureCheckTasksScript();
+    const agents = parsers.parseAgentRegistry();
+    for (const agent of agents) {
+      try {
+        const workspacePath = agent.workspace || parsers.OPENCLAW_WORKSPACE;
+        parsers.injectHeartbeatTaskCheck(agent.id, workspacePath);
+      } catch (err) {
+        console.warn(`[heartbeat-sync] ${agent.id}:`, err.message);
+      }
+    }
+    console.log(`[heartbeat-sync] Injected task check for ${agents.length} agents`);
+  } catch (err) {
+    console.warn('[heartbeat-sync] failed:', err.message);
+  }
+}
+
+async function sweepPendingTasks() {
+  try {
+    const tasks = db.getAllTasks({ status: 'todo' });
+    const pending = tasks.filter(t => t.agentId);
+    if (pending.length === 0) return;
+    console.log(`[startup-sweep] Found ${pending.length} pending tasks, dispatching...`);
+    for (const task of pending) {
+      await dispatchTaskToAgent(task).catch(err =>
+        console.warn(`[startup-sweep] task ${task.id}:`, err.message)
+      );
+    }
+    console.log('[startup-sweep] Done');
+  } catch (err) {
+    console.warn('[startup-sweep] failed:', err.message);
+  }
+}
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   await db.initDatabase();
   feedWatcher.start();
   parsers.ensureAocEnvFile();   // write ~/.openclaw/.aoc_env with current token
   syncTaskScriptForAllAgents(); // non-blocking, fire-and-forget
+  syncHeartbeatForAllAgents();  // inject HEARTBEAT task check into all agent workspaces
 
   // Ensure all agents have skills: [] field in openclaw.json
   try { parsers.ensureAgentSkillsFields(); } catch (e) { console.warn('[startup] ensureAgentSkillsFields failed:', e.message); }
