@@ -10,7 +10,7 @@ import { Zap } from "lucide-react"
 import { AgentWorkTab } from "./AgentWorkTab"
 
 const STATUS_LABELS: Record<string, string> = {
-  backlog: "Backlog", todo: "Todo", in_progress: "In Progress", done: "Done",
+  backlog: "Backlog", todo: "Todo", in_progress: "In Progress", blocked: "🚫 Blocked", done: "Done",
 }
 
 interface SessionMessage {

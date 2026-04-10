@@ -1297,6 +1297,11 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
 
     // Build the task dispatch message
     const tagsLine = (task.tags || []).length > 0 ? `Tags: ${task.tags.join(', ')}` : '';
+    const aocToken = process.env.DASHBOARD_TOKEN || '';
+    const aocPort  = process.env.PORT || '18800';
+    const aocUrl   = `http://localhost:${aocPort}`;
+    const curlBase = `curl -sf -X PATCH ${aocUrl}/api/tasks/${task.id} -H "Authorization: Bearer ${aocToken}" -H "Content-Type: application/json"`;
+
     const message = [
       `📋 **Task Assigned: ${task.title}**`,
       ``,
@@ -1307,16 +1312,19 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
       task.description ? `**Description:**\n${task.description}` : '',
       ``,
       `---`,
-      `Please work on this task. Report your progress using the update_task script:`,
+      `IMPORTANT: Report your progress using ONE of these methods:`,
       ``,
-      `When you start working:`,
-      `\`update_task.sh ${task.id} in_progress "Starting..." $SESSION_KEY\``,
+      `**Method 1 — Script (preferred):**`,
+      `\`update_task.sh ${task.id} in_progress "Starting..."\``,
+      `\`update_task.sh ${task.id} done "Summary"\``,
+      `\`update_task.sh ${task.id} blocked "Reason"\``,
       ``,
-      `When blocked:`,
-      `\`update_task.sh ${task.id} blocked "Reason here"\``,
+      `**Method 2 — Direct curl (fallback if script fails):**`,
+      `\`${curlBase} -d '{"status":"in_progress","note":"Starting"}'\``,
+      `\`${curlBase} -d '{"status":"done","note":"Summary here"}'\``,
+      `\`${curlBase} -d '{"status":"blocked","note":"Reason here"}'\``,
       ``,
-      `When done:`,
-      `\`update_task.sh ${task.id} done "Summary of completed work"\``,
+      `If you cannot complete the task for ANY reason, ALWAYS report it with status "blocked" so the operator knows.`,
     ].filter(l => l !== null && l !== undefined).join('\n');
 
     // Send the task message to the agent

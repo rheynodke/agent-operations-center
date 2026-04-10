@@ -153,7 +153,7 @@ export interface Message {
 
 // ─── Task Board Types ────────────────────────────────────────────────────────
 
-export type TaskStatus = "backlog" | "todo" | "in_progress" | "done"
+export type TaskStatus = "backlog" | "todo" | "in_progress" | "done" | "blocked"
 export type TaskPriority = "low" | "medium" | "high" | "urgent"
 
 export interface Task {

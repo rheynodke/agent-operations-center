@@ -14,6 +14,7 @@ const COLUMNS: KanbanColumnDef[] = [
   { id: "backlog",     label: "Backlog",     emoji: "📥" },
   { id: "todo",        label: "Todo",        emoji: "📋" },
   { id: "in_progress", label: "In Progress", emoji: "⚡" },
+  { id: "blocked",     label: "Blocked",     emoji: "🚫" },
   { id: "done",        label: "Done",        emoji: "✅" },
 ]
 

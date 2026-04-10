@@ -11,6 +11,7 @@ const STATUSES: { value: TaskStatus; label: string }[] = [
   { value: "backlog",     label: "Backlog" },
   { value: "todo",        label: "Todo" },
   { value: "in_progress", label: "In Progress" },
+  { value: "blocked",     label: "🚫 Blocked" },
   { value: "done",        label: "Done" },
 ]
 

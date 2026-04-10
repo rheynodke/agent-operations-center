@@ -393,12 +393,20 @@ function authMiddleware(req, res, next) {
   }
 
   const token = authHeader.slice(7);
+
+  // Accept DASHBOARD_TOKEN directly — used by agents calling update_task.sh
+  const dashboardToken = process.env.DASHBOARD_TOKEN;
+  if (dashboardToken && token === dashboardToken) {
+    req.user = { userId: 0, username: 'agent', role: 'agent' };
+    return next();
+  }
+
+  // Otherwise verify as JWT (dashboard user session)
   const payload = verifyToken(token);
   if (!payload) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
-  // Attach user info to request
   req.user = payload;
   next();
 }
