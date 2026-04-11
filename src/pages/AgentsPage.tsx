@@ -12,7 +12,7 @@ import { ProvisionAgentWizard } from "@/components/agents/ProvisionAgentWizard"
 import { TemplateEntryModal } from "@/components/agents/TemplateEntryModal"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import type { AgentRoleTemplate } from "@/types"
-import { getTemplateColor, getTemplateLabel } from "@/data/agentRoleTemplates"
+import { getTemplateColor, getTemplateLabel, getTemplateById } from "@/data/agentRoleTemplates"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  RAW SESSION SHAPE (same as SessionsPage)                           */
@@ -60,8 +60,44 @@ function sanitizeFeedMessage(msg: string): string {
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
-/*  AGENT CARD                                                         */
+/*  AGENT CARD  (profile card style)                                   */
 /* ─────────────────────────────────────────────────────────────────── */
+
+function StatusBadge({ status, isProcessing }: { status: string; isProcessing: boolean }) {
+  if (isProcessing) return (
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 backdrop-blur-sm">
+      <span className="relative flex h-1.5 w-1.5">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-400" />
+      </span>
+      <span className="text-[9px] font-bold uppercase tracking-wider text-amber-300">Working</span>
+    </div>
+  )
+  if (status === "active") return (
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 backdrop-blur-sm">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
+      <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-300">Active</span>
+    </div>
+  )
+  if (status === "idle") return (
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-foreground/8 border border-border/60 backdrop-blur-sm">
+      <span className="w-1.5 h-1.5 rounded-full bg-foreground/25" />
+      <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground/50">Idle</span>
+    </div>
+  )
+  if (status === "paused") return (
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/15 border border-sky-500/30 backdrop-blur-sm">
+      <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+      <span className="text-[9px] font-bold uppercase tracking-wider text-sky-300">Paused</span>
+    </div>
+  )
+  return (
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 border border-red-500/30 backdrop-blur-sm">
+      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+      <span className="text-[9px] font-bold uppercase tracking-wider text-red-300">{status}</span>
+    </div>
+  )
+}
 
 function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
   agent: Agent
@@ -69,97 +105,185 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
   activeSessions: number
   onClick: () => void
 }) {
-  const roleColor = agent.role ? getTemplateColor(agent.role) : undefined
-  const roleLabel = agent.role ? getTemplateLabel(agent.role) : undefined
+  const roleTemplate = agent.role ? getTemplateById(agent.role) : undefined
+  const roleColor = roleTemplate?.color
+  const roleLabel = roleTemplate?.role
+  const roleNumber = roleTemplate?.adlcAgentNumber
+  const roleEmoji = roleTemplate?.emoji
+
+  // Derive a subtle hero bg tint — role color > emerald fallback
+  const heroBg = roleColor
+    ? `radial-gradient(ellipse at 50% 0%, ${roleColor}22 0%, transparent 70%)`
+    : isProcessing
+      ? "radial-gradient(ellipse at 50% 0%, rgba(245,158,11,0.12) 0%, transparent 70%)"
+      : "radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.04) 0%, transparent 70%)"
+
+  const borderColor = isProcessing
+    ? "rgba(245,158,11,0.25)"
+    : roleColor
+      ? `${roleColor}40`
+      : undefined
 
   return (
     <div
       onClick={onClick}
       className={cn(
-        "cursor-pointer bg-card hover:bg-foreground/3 border border-border rounded-xl transition-all duration-300 hover:border-foreground/15 group flex flex-col p-5 relative overflow-hidden shadow-sm",
-        isProcessing && "border-amber-500/20 shadow-[0_0_20px_rgba(245,158,11,0.06)]"
+        "cursor-pointer bg-card border border-border rounded-2xl transition-all duration-300",
+        "hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/20",
+        "group flex flex-col relative overflow-hidden",
+        isProcessing && "shadow-[0_0_24px_rgba(245,158,11,0.08)]"
       )}
-      style={roleColor ? { borderLeftWidth: 3, borderLeftColor: roleColor } : undefined}
+      style={borderColor ? { borderColor } : undefined}
     >
-      {/* Processing glow */}
-      {isProcessing && (
-        <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-transparent pointer-events-none" />
+      {/* Role accent strip at top */}
+      {roleColor && (
+        <div
+          className="absolute top-0 left-0 right-0 h-0.5 rounded-t-2xl"
+          style={{ background: `linear-gradient(90deg, transparent, ${roleColor}90, transparent)` }}
+        />
       )}
 
-      <div className="relative z-10">
-        {/* Top row: Avatar & Status */}
-        <div className="flex items-start justify-between mb-4">
-          <AgentAvatar avatarPresetId={agent.avatarPresetId} emoji={agent.emoji} size="w-12 h-12" />
-
-          {isProcessing ? (
-            <div className="flex items-center gap-1.5 px-2 bg-amber-500/10 py-1 border border-amber-500/20 rounded-full">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500" />
-              </span>
-              <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400">Active</span>
-            </div>
-          ) : agent.status === "active" || agent.status === "idle" ? (
-            <div className="flex items-center gap-1.5 px-2 bg-foreground/5 py-1 border border-border rounded-full">
-              <span className={cn(
-                "w-1.5 h-1.5 rounded-full",
-                agent.status === "active" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-foreground/20"
-              )} />
-              <span className={cn(
-                "text-[9px] font-bold uppercase tracking-wider",
-                agent.status === "active" ? "text-emerald-500" : "text-muted-foreground/60"
-              )}>
-                {agent.status === "active" ? "Active" : "Idle"}
-              </span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5 px-2 bg-red-500/10 py-1 border border-red-500/20 rounded-full">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-              <span className="text-[9px] font-bold uppercase tracking-wider text-red-400">{agent.status}</span>
-            </div>
-          )}
+      {/* Hero gradient header */}
+      <div
+        className="relative px-4 pt-5 pb-3 flex flex-col items-center"
+        style={{ background: heroBg }}
+      >
+        {/* Status badge — top-right */}
+        <div className="absolute top-3 right-3">
+          <StatusBadge status={agent.status} isProcessing={isProcessing} />
         </div>
 
-        {/* Name & Role */}
-        <div className="mb-4">
-          <div className="flex items-center gap-2 mb-1.5">
-            <h3 className="font-bold text-foreground text-base tracking-tight leading-none">{agent.name}</h3>
-            {roleLabel && (
+        {/* Agent ID — top-left */}
+        <div className="absolute top-3.5 left-3.5">
+          <span className="text-[8px] font-mono font-bold text-muted-foreground/30 uppercase tracking-widest">
+            #{agent.id.slice(0, 4).toUpperCase()}
+          </span>
+        </div>
+
+        {/* Avatar */}
+        <div className={cn(
+          "mt-1 mb-3 transition-transform duration-300 group-hover:scale-105",
+          isProcessing && "drop-shadow-[0_0_12px_rgba(245,158,11,0.4)]"
+        )}>
+          <AgentAvatar
+            avatarPresetId={agent.avatarPresetId}
+            emoji={agent.emoji}
+            size="w-16 h-16"
+          />
+        </div>
+
+        {/* Name */}
+        <h3 className="font-bold text-foreground text-sm tracking-tight leading-tight text-center mb-1">
+          {agent.name}
+        </h3>
+
+        {/* Role badge */}
+        {roleLabel && roleColor ? (
+          <div className="flex items-center gap-1 max-w-full px-0.5">
+            {/* ADLC number chip */}
+            {roleNumber != null && (
               <span
-                className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
-                style={{ color: roleColor, backgroundColor: `${roleColor}18`, border: `1px solid ${roleColor}30` }}
+                className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-black leading-none"
+                style={{ backgroundColor: roleColor, color: "#000" }}
               >
-                {roleLabel}
+                {roleNumber}
               </span>
             )}
+            {/* emoji */}
+            {roleEmoji && (
+              <span className="text-[10px] leading-none shrink-0">{roleEmoji}</span>
+            )}
+            {/* role name, truncated */}
+            <span
+              className="text-[9px] font-bold uppercase tracking-wider truncate"
+              style={{ color: roleColor }}
+              title={roleLabel}
+            >
+              {roleLabel}
+            </span>
           </div>
-          <p className="text-[11px] text-muted-foreground font-medium leading-snug">
-            {agent.description || "Autonomous Agent"}
-          </p>
-        </div>
+        ) : (
+          <span className="text-[10px] text-muted-foreground/40 font-medium">Autonomous Agent</span>
+        )}
+      </div>
 
-        {/* Active sessions indicator */}
-        {isProcessing && activeSessions > 0 && (
-          <div className="mb-3 flex items-center gap-1.5">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
-            </span>
-            <span className="text-[10px] text-amber-400/80 font-medium">
-              {activeSessions} active session{activeSessions > 1 ? "s" : ""}
-            </span>
-          </div>
+      {/* Divider */}
+      <div className="h-px bg-border/60 mx-4" />
+
+      {/* Body */}
+      <div className="flex flex-col flex-1 px-4 py-3 gap-2.5">
+        {/* Vibe from IDENTITY.md (fallback to description) */}
+        {(agent.vibe || agent.description) ? (
+          <p className="text-[10.5px] text-muted-foreground/60 leading-snug line-clamp-2 text-center min-h-[2.5em] italic">
+            {agent.vibe || agent.description}
+          </p>
+        ) : (
+          <div className="min-h-[2.5em]" />
         )}
 
-        {/* Footer: Model & ID */}
-        <div className="flex items-center justify-between pt-3 border-t border-border/50">
-          <span className="text-[10px] font-medium text-muted-foreground/60 truncate max-w-[60%]">
-            {agent.model || "Default Model"}
-          </span>
-          <span className="text-[10px] font-mono text-muted-foreground/40 tracking-widest uppercase">
-            ID: {agent.id.slice(0, 4).toUpperCase()}
-          </span>
+        {/* Stats row */}
+        <div className="grid grid-cols-3 gap-1.5 mt-auto">
+          <div className="flex flex-col items-center gap-0.5 bg-foreground/3 rounded-lg py-1.5 px-1">
+            <span className={cn(
+              "text-[11px] font-bold tabular-nums leading-none",
+              isProcessing && activeSessions > 0 ? "text-amber-400" : "text-foreground/70"
+            )}>
+              {isProcessing && activeSessions > 0 ? activeSessions : (agent.sessionCount ?? 0)}
+            </span>
+            <span className={cn(
+              "text-[8px] uppercase tracking-wide font-semibold",
+              isProcessing && activeSessions > 0 ? "text-amber-400/60" : "text-muted-foreground/40"
+            )}>
+              {isProcessing && activeSessions > 0 ? "Running" : "Sessions"}
+            </span>
+          </div>
+          <div className="flex flex-col items-center gap-0.5 bg-foreground/3 rounded-lg py-1.5 px-1">
+            <span className="text-[11px] font-bold text-foreground/70 tabular-nums leading-none">
+              {agent.totalCost != null && agent.totalCost > 0
+                ? agent.totalCost >= 1
+                  ? `$${agent.totalCost.toFixed(2)}`
+                  : `$${agent.totalCost.toFixed(4)}`
+                : "—"}
+            </span>
+            <span className="text-[8px] text-muted-foreground/40 uppercase tracking-wide font-semibold">Cost</span>
+          </div>
+          <div className="flex flex-col items-center gap-0.5 bg-foreground/3 rounded-lg py-1.5 px-1">
+            <span className="text-[11px] font-bold text-foreground/70 tabular-nums leading-none">
+              {agent.totalTokens != null && agent.totalTokens > 0
+                ? agent.totalTokens >= 1_000_000
+                  ? `${(agent.totalTokens / 1_000_000).toFixed(1)}M`
+                  : agent.totalTokens >= 1000
+                    ? `${(agent.totalTokens / 1000).toFixed(0)}k`
+                    : agent.totalTokens
+                : "—"}
+            </span>
+            <span className="text-[8px] text-muted-foreground/40 uppercase tracking-wide font-semibold">Tokens</span>
+          </div>
         </div>
+
+        {/* Channel binding indicators */}
+        {agent.channels && agent.channels.length > 0 && (
+          <div className="flex items-center justify-center gap-2 mt-2.5 pt-2.5 border-t border-border/40">
+            <span className="text-[8px] text-muted-foreground/30 uppercase tracking-wider font-semibold mr-0.5">Channels</span>
+            {agent.channels.includes("telegram") && (
+              <img src="/telegram.webp" alt="Telegram" title="Telegram" className="w-4 h-4 rounded object-contain opacity-70 hover:opacity-100 transition-opacity" />
+            )}
+            {agent.channels.includes("whatsapp") && (
+              <img src="/wa.png" alt="WhatsApp" title="WhatsApp" className="w-4 h-4 rounded object-contain opacity-70 hover:opacity-100 transition-opacity" />
+            )}
+            {agent.channels.includes("discord") && (
+              <img src="/discord.png" alt="Discord" title="Discord" className="w-4 h-4 rounded object-contain opacity-70 hover:opacity-100 transition-opacity" />
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Footer: model */}
+      <div className="flex items-center justify-center gap-1.5 px-4 py-2 border-t border-border/40 bg-foreground/[0.015]">
+        <span className="w-1 h-1 rounded-full bg-muted-foreground/25" />
+        <span className="text-[9.5px] font-mono text-muted-foreground/40 truncate max-w-full">
+          {agent.model || "default model"}
+        </span>
       </div>
     </div>
   )
@@ -430,7 +554,7 @@ export function AgentsPage() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {filtered.map((agent) => {
               const activeCount = agentProcessingMap.get(agent.id) || agentProcessingMap.get(agent.name) || 0
               return (

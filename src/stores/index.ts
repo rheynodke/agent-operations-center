@@ -43,8 +43,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   setLoading: (loading) => set({ loading }),
 }))
 
-// DB-sourced fields that should survive a WS overwrite
-const DB_FIELDS = ['avatarPresetId', 'color', 'description', 'hasAvatar'] as const
+// Fields that should survive a WS overwrite (DB-sourced or stats enriched by REST)
+const DB_FIELDS = [
+  'avatarPresetId', 'color', 'description', 'hasAvatar', 'role', 'vibe',
+  'sessionCount', 'totalCost', 'totalTokens', 'channels',
+] as const
 type DbField = typeof DB_FIELDS[number]
 
 interface AgentState {

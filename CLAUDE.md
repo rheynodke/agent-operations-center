@@ -220,3 +220,22 @@ Two marketplace integrations for installing skills from external sources:
 ### SQLite DB Location
 
 In development, the SQLite database (`aoc.db`) is stored at `data/aoc.db` in the project root (not `~/.openclaw/`). This path is controlled by `server/lib/db.cjs`.
+
+### ADLC Role Templates
+
+`src/data/role-templates/` — 7 ADLC role templates (`pm-analyst`, `ux-designer`, `em-architect`, `swe`, `qa-engineer`, `doc-writer`, `biz-analyst`), each a TypeScript file exporting an `AgentRoleTemplate` object.
+
+- **Type:** `src/types/agentRoleTemplate.ts` — `AgentRoleTemplate` interface with `id`, `adlcAgentNumber`, `role`, `emoji`, `color`, `description`, `modelRecommendation`, `agentFiles` (identity/soul/tools/agents strings), `skillSlugs`, `skillContents` (slug → full SKILL.md), `scriptTemplates` (filename + content), `fsWorkspaceOnly: false`.
+- **Barrel:** `src/data/agentRoleTemplates.ts` — exports `ADLC_ROLE_TEMPLATES[]`, `getTemplateById()`, `getTemplateColor()`, `getTemplateLabel()`.
+- **Shell scripts in templates** use `\${...}` (escaped) for bash variables inside TypeScript template literals — `${...}` without escape causes esbuild parse errors.
+
+**Provisioning flow with a template:**
+1. `TemplateEntryModal` (split screen: ADLC Template vs Blank Agent) replaces direct wizard open on `AgentsPage`.
+2. `TemplatePickerGrid` — 7-card grid; selecting a template passes it to `ProvisionAgentWizard` as `template` prop.
+3. `ProvisionAgentWizard` pre-fills emoji/color/description/model from template (name + id left blank for user). On step 1→2 transition, auto-injects soul via `buildRoleSoul()` which substitutes the role name with the user's chosen agent name and prepends an identity line (`You are **{name}**, an ADLC autonomous agent with the role of **{role}**`).
+4. On provision, `handleProvision` adds `adlcRole`, `agentFiles`, `skillSlugs`, `skillContents`, `scriptTemplates` to the POST body.
+5. `server/lib/agents/provision.cjs` handles 4 blocks: override agent files (IDENTITY/SOUL/TOOLS/AGENTS.md) + create `outputs/` dir, install global skills to `~/.openclaw/skills/{slug}/SKILL.md` (idempotent), write agent scripts to `{workspace}/scripts/`, persist `adlcRole` in `openclaw.json`.
+6. `ensureSharedAdlcScripts()` in `scripts.cjs` idempotently writes shared scripts (`notify.sh`, `gdocs-export.sh`, `email-notif.sh`) to `~/.openclaw/scripts/`.
+7. SQLite `agent_profiles` has a `role` column (migration in `db.cjs`). `GET /api/agents` exposes `role` from profile. `AgentCard` uses `getTemplateColor()`/`getTemplateLabel()` for left border + role badge.
+
+**`notify.sh`** is channel-agnostic: queries `AOC_URL/api/agents/$AOC_AGENT_ID/channels` to auto-detect bound channel (priority: Telegram > WhatsApp > Discord), with `--channel` override flag.

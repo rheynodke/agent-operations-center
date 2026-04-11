@@ -31,6 +31,10 @@ export interface Agent {
   fsWorkspaceOnly?: boolean
   // ADLC role (from openclaw.json adlcRole field + SQLite profile)
   role?: string | null
+  // Vibe/theme from IDENTITY.md
+  vibe?: string | null
+  // Active channel bindings (populated by /api/agents list)
+  channels?: string[]
 }
 
 // ─── Agent Channel Management Types ─────────────────────────────────────────
