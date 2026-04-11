@@ -1,4 +1,6 @@
-import { useState, useMemo, useEffect, useRef } from "react"
+import { useState, useMemo, useEffect, useRef, lazy, Suspense } from "react"
+const ReactMarkdown = lazy(() => import("react-markdown").then(m => ({ default: m.default })))
+import remarkGfm from "remark-gfm"
 import { Search, Bot, Plus, Filter, ChevronDown, ChevronUp } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -7,7 +9,10 @@ import { cn } from "@/lib/utils"
 import type { Agent } from "@/types"
 import { useNavigate } from "react-router-dom"
 import { ProvisionAgentWizard } from "@/components/agents/ProvisionAgentWizard"
+import { TemplateEntryModal } from "@/components/agents/TemplateEntryModal"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
+import type { AgentRoleTemplate } from "@/types"
+import { getTemplateColor, getTemplateLabel } from "@/data/agentRoleTemplates"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  RAW SESSION SHAPE (same as SessionsPage)                           */
@@ -43,6 +48,17 @@ function fmtTime(timestamp: number | string): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
 }
 
+/** Strip gateway markers and noise from feed messages */
+function sanitizeFeedMessage(msg: string): string {
+  return msg
+    .replace(/\[\[reply_to_current\]\]/g, "")
+    .replace(/\[\[[\w_]+\]\]/g, "")           // any [[marker]]
+    .replace(/<!--[\s\S]*?-->/g, "")           // HTML comments
+    .replace(/^>\s?/gm, "")                    // leading blockquote markers
+    .replace(/\n{3,}/g, "\n\n")               // collapse excess blank lines
+    .trim()
+}
+
 /* ─────────────────────────────────────────────────────────────────── */
 /*  AGENT CARD                                                         */
 /* ─────────────────────────────────────────────────────────────────── */
@@ -53,6 +69,9 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
   activeSessions: number
   onClick: () => void
 }) {
+  const roleColor = agent.role ? getTemplateColor(agent.role) : undefined
+  const roleLabel = agent.role ? getTemplateLabel(agent.role) : undefined
+
   return (
     <div
       onClick={onClick}
@@ -60,6 +79,7 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
         "cursor-pointer bg-card hover:bg-foreground/3 border border-border rounded-xl transition-all duration-300 hover:border-foreground/15 group flex flex-col p-5 relative overflow-hidden shadow-sm",
         isProcessing && "border-amber-500/20 shadow-[0_0_20px_rgba(245,158,11,0.06)]"
       )}
+      style={roleColor ? { borderLeftWidth: 3, borderLeftColor: roleColor } : undefined}
     >
       {/* Processing glow */}
       {isProcessing && (
@@ -102,7 +122,17 @@ function AgentCard({ agent, isProcessing, activeSessions, onClick }: {
 
         {/* Name & Role */}
         <div className="mb-4">
-          <h3 className="font-bold text-foreground text-base tracking-tight leading-none mb-1.5">{agent.name}</h3>
+          <div className="flex items-center gap-2 mb-1.5">
+            <h3 className="font-bold text-foreground text-base tracking-tight leading-none">{agent.name}</h3>
+            {roleLabel && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
+                style={{ color: roleColor, backgroundColor: `${roleColor}18`, border: `1px solid ${roleColor}30` }}
+              >
+                {roleLabel}
+              </span>
+            )}
+          </div>
           <p className="text-[11px] text-muted-foreground font-medium leading-snug">
             {agent.description || "Autonomous Agent"}
           </p>
@@ -144,6 +174,8 @@ interface FeedEntry {
   timestamp: number | string
   agentName: string
   agentEmoji: string
+  agentId?: string
+  avatarPresetId?: string | null
   message: string
   type: "activity" | "error" | "idle" | "system"
 }
@@ -156,19 +188,48 @@ function LiveFeedEntry({ entry }: { entry: FeedEntry }) {
     system: "text-primary",
   }
 
+  const clean = sanitizeFeedMessage(entry.message)
+
   return (
-    <div className="flex gap-3 py-1.5 px-4 hover:bg-foreground/2 transition-colors text-xs font-mono leading-relaxed">
+    <div className="flex gap-3 py-1.5 px-4 hover:bg-foreground/2 transition-colors text-xs font-mono leading-relaxed items-baseline">
       <span className="shrink-0 text-muted-foreground/40 tabular-nums">
         [{fmtTime(entry.timestamp)}]
       </span>
-      <span className={cn("shrink-0 font-bold", colors[entry.type] || "text-muted-foreground/60")}>
-        {entry.agentEmoji} {entry.agentName}:
+      <span className={cn("shrink-0 font-bold flex items-center gap-1.5 self-start mt-px", colors[entry.type] || "text-muted-foreground/60")}>
+        <AgentAvatar
+          avatarPresetId={entry.avatarPresetId}
+          emoji={entry.agentEmoji}
+          size="w-4 h-4"
+          className="!rounded"
+        />
+        {entry.agentName}:
       </span>
       <span className={cn(
-        "flex-1",
-        entry.type === "idle" ? "text-muted-foreground/50 italic" : "text-foreground/70"
+        "flex-1 min-w-0 wrap-break-word",
+        entry.type === "idle" ? "text-muted-foreground/50" : "text-foreground/70"
       )}>
-        {entry.message}
+        <Suspense fallback={<span>{clean}</span>}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              p: ({ children }) => <span className="inline">{children}</span>,
+              strong: ({ children }) => <strong className="font-semibold text-foreground/90">{children}</strong>,
+              em: ({ children }) => <em className="italic">{children}</em>,
+              code: ({ children }) => <code className="px-1 py-0.5 rounded bg-foreground/8 text-[0.85em]">{children}</code>,
+              a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground transition-colors">{children}</a>,
+              // Flatten block-level nodes to inline for compact feed
+              h1: ({ children }) => <strong className="font-bold">{children}</strong>,
+              h2: ({ children }) => <strong className="font-bold">{children}</strong>,
+              h3: ({ children }) => <strong className="font-semibold">{children}</strong>,
+              ul: ({ children }) => <span className="inline">{children}</span>,
+              ol: ({ children }) => <span className="inline">{children}</span>,
+              li: ({ children }) => <span className="inline before:content-['·_'] before:text-muted-foreground/50">{children}{' '}</span>,
+              blockquote: ({ children }) => <span className="italic text-muted-foreground/60">{children}</span>,
+            }}
+          >
+            {clean}
+          </ReactMarkdown>
+        </Suspense>
       </span>
     </div>
   )
@@ -186,7 +247,9 @@ export function AgentsPage() {
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [feedMinimized, setFeedMinimized] = useState(false)
+  const [showEntryModal, setShowEntryModal] = useState(false)
   const [showWizard, setShowWizard] = useState(false)
+  const [selectedTemplate, setSelectedTemplate] = useState<AgentRoleTemplate | undefined>(undefined)
   const feedEndRef = useRef<HTMLDivElement>(null)
 
   // Auto-refresh tick for live feed timestamps
@@ -221,9 +284,13 @@ export function AgentsPage() {
       })
       .slice(0, 30)
 
+    // Build agent lookup map for avatar resolution
+    const agentMap = new Map(agents.map(a => [a.id, a]))
+
     for (const s of sorted) {
       const emoji = s.agentEmoji || (s.agent === "main" ? "✨" : "🤖")
       const name = s.agentName || s.agent || "Unknown"
+      const agentRecord = s.agent ? agentMap.get(s.agent) : undefined
       const isActive = s.status === "active"
       const isFailed = s.status === "failed" || s.status === "killed"
 
@@ -252,13 +319,15 @@ export function AgentsPage() {
         timestamp: s.updatedAt,
         agentName: name,
         agentEmoji: emoji,
+        agentId: s.agent,
+        avatarPresetId: agentRecord?.avatarPresetId ?? null,
         message,
         type,
       })
     }
 
     return entries
-  }, [sessions])
+  }, [sessions, agents])
 
   // Auto-scroll feed when new entries arrive
   useEffect(() => {
@@ -306,7 +375,7 @@ export function AgentsPage() {
             <Filter className="w-3.5 h-3.5" /> Filter
           </button>
           <button
-            onClick={() => setShowWizard(true)}
+            onClick={() => setShowEntryModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/20 transition-colors"
           >
             <Plus className="w-3.5 h-3.5" /> Provision Agent
@@ -426,11 +495,29 @@ export function AgentsPage() {
         )}
       </div>
 
+      {/* Template Entry Modal */}
+      {showEntryModal && (
+        <TemplateEntryModal
+          onSelectTemplate={(template) => {
+            setSelectedTemplate(template)
+            setShowEntryModal(false)
+            setShowWizard(true)
+          }}
+          onSelectBlank={() => {
+            setSelectedTemplate(undefined)
+            setShowWizard(true)
+          }}
+          onClose={() => setShowEntryModal(false)}
+        />
+      )}
+
       {/* Provision Agent Wizard */}
       {showWizard && (
         <ProvisionAgentWizard
+          template={selectedTemplate}
           onClose={async () => {
             setShowWizard(false)
+            setSelectedTemplate(undefined)
             try {
               const { api } = await import("@/lib/api")
               const data = await api.getAgents() as any

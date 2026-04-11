@@ -448,6 +448,7 @@ app.get('/api/agents', db.authMiddleware, (req, res) => {
       description: profileMap[a.id]?.description || null,
       hasAvatar: !!profileMap[a.id]?.avatar_data,
       avatarPresetId: profileMap[a.id]?.avatar_preset_id || null,
+      role: profileMap[a.id]?.role || null,
     }));
     res.json({ agents: enriched });
   } catch (err) {
@@ -460,7 +461,7 @@ app.get('/api/agents', db.authMiddleware, (req, res) => {
 app.post('/api/agents', db.authMiddleware, (req, res) => {
   try {
     const result = parsers.provisionAgent(req.body, req.user?.userId);
-    // Save profile to SQLite
+    // Save profile to SQLite (including ADLC role if template was used)
     db.upsertAgentProfile({
       agentId: result.agentId,
       displayName: result.agentName,
@@ -471,6 +472,7 @@ app.post('/api/agents', db.authMiddleware, (req, res) => {
       tags: req.body.tags || [],
       notes: null,
       provisionedBy: req.user?.userId || null,
+      role: req.body.adlcRole || null,
     });
     result.profileSaved = true;
     console.log(`[api/agents/provision] Provisioned agent "${result.agentId}" with ${result.bindings.length} binding(s)`);

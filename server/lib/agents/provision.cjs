@@ -2,7 +2,7 @@
 const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
-const { ensureUpdateTaskScript, toggleAgentCustomTool, ensureCheckTasksScript, injectHeartbeatTaskCheck } = require('../scripts.cjs');
+const { ensureUpdateTaskScript, toggleAgentCustomTool, ensureCheckTasksScript, injectHeartbeatTaskCheck, ensureSharedAdlcScripts } = require('../scripts.cjs');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -310,6 +310,12 @@ function provisionAgent(opts, userId) {
     soulContent = '',
     channels = [],
     fsWorkspaceOnly = undefined,
+    // ADLC role template fields
+    adlcRole = '',
+    agentFiles: templateFiles = null,
+    skillSlugs = [],
+    skillContents = {},
+    scriptTemplates = [],
   } = opts;
 
   // 2. Resolve paths
@@ -335,7 +341,10 @@ function provisionAgent(opts, userId) {
     },
     ...(model ? { model } : {}),
     skills: [],
-    ...(fsWorkspaceOnly === false ? { tools: { fs: { workspaceOnly: false } } } : {}),
+    // Block 4: Persist ADLC role before config write
+    ...(adlcRole ? { adlcRole } : {}),
+    // fsWorkspaceOnly: false for ADLC agents (need broad filesystem access)
+    ...(fsWorkspaceOnly === false || adlcRole ? { tools: { fs: { workspaceOnly: false } } } : {}),
   };
 
   if (!config.agents) config.agents = {};
@@ -456,6 +465,86 @@ function provisionAgent(opts, userId) {
     writeFile(path.join(workspacePath, 'USER.md'), mainUserMd);
   }
 
+  // ── Block 1: Override agent files from template ──────────────────────────
+  if (templateFiles) {
+    if (templateFiles.identity) {
+      writeFile(path.join(workspacePath, 'IDENTITY.md'), templateFiles.identity);
+    }
+    if (templateFiles.soul) {
+      writeFile(path.join(workspacePath, 'SOUL.md'), templateFiles.soul);
+      // Re-inject research standard block if not already present
+      try {
+        const soulPath = path.join(workspacePath, 'SOUL.md');
+        const soulContent = fs.readFileSync(soulPath, 'utf-8');
+        if (!soulContent.includes('<!-- aoc:research-standard:start -->')) {
+          fs.writeFileSync(soulPath, soulContent.trimEnd() + RESEARCH_STANDARD_BLOCK + '\n', 'utf-8');
+        }
+      } catch (e) {
+        console.warn('[provision] soul standard inject failed:', e.message);
+      }
+    }
+    if (templateFiles.tools) {
+      writeFile(path.join(workspacePath, 'TOOLS.md'), templateFiles.tools);
+    }
+    if (templateFiles.agents) {
+      writeFile(path.join(workspacePath, 'AGENTS.md'), templateFiles.agents);
+    }
+  }
+
+  // Create outputs/ directory for ADLC agents (markdown-first output convention)
+  if (adlcRole) {
+    ensureDir(path.join(workspacePath, 'outputs'));
+  }
+
+  // ── Block 2: Install skills to global dir (idempotent) ─────────────────
+  if (skillSlugs.length > 0) {
+    const globalSkillsDir = path.join(OPENCLAW_HOME, 'skills');
+    ensureDir(globalSkillsDir);
+
+    for (const slug of skillSlugs) {
+      const skillDir = path.join(globalSkillsDir, slug);
+      // Only write SKILL.md if dir doesn't exist AND we have content for this slug
+      if (!fs.existsSync(skillDir) && skillContents[slug]) {
+        ensureDir(skillDir);
+        writeFile(path.join(skillDir, 'SKILL.md'), skillContents[slug]);
+        console.log(`[provision] Installed global skill: ${slug}`);
+      }
+      // Add slug to agent's skills[] (if not already present)
+      if (!agentEntry.skills.includes(slug)) {
+        agentEntry.skills.push(slug);
+      }
+    }
+  }
+
+  // ── Block 3: Write script templates to agent workspace ──────────────────
+  if (scriptTemplates.length > 0) {
+    const agentScriptsDir = path.join(workspacePath, 'scripts');
+    ensureDir(agentScriptsDir);
+
+    const metaPath = path.join(agentScriptsDir, '.tools.json');
+    const meta = readJsonSafe(metaPath) || {};
+
+    for (const { filename, content } of scriptTemplates) {
+      const scriptPath = path.join(agentScriptsDir, filename);
+      writeFile(scriptPath, content);
+
+      // chmod +x for shell scripts
+      const ext = path.extname(filename).toLowerCase();
+      if (['.sh', '.bash', '.zsh', '.fish'].includes(ext)) {
+        try { fs.chmodSync(scriptPath, 0o755); } catch {}
+      }
+
+      // Upsert metadata entry
+      const baseName = path.basename(filename, ext);
+      if (!meta[filename]) {
+        meta[filename] = { name: baseName, description: '' };
+      }
+    }
+
+    writeFile(metaPath, JSON.stringify(meta, null, 2));
+    console.log(`[provision] Wrote ${scriptTemplates.length} script template(s)`);
+  }
+
   // 5. Create agent state directory
   ensureDir(agentStatePath);
 
@@ -473,6 +562,15 @@ function provisionAgent(opts, userId) {
     injectHeartbeatTaskCheck(id, workspacePath);
   } catch (e) {
     console.warn('[provision] agent setup failed:', e.message);
+  }
+
+  // Install shared ADLC scripts to ~/.openclaw/scripts/ if this is an ADLC agent
+  if (adlcRole && scriptTemplates.length > 0) {
+    try {
+      ensureSharedAdlcScripts(scriptTemplates);
+    } catch (e) {
+      console.warn('[provision] shared ADLC scripts install failed:', e.message);
+    }
   }
 
   return {

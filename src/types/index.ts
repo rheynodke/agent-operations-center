@@ -1,3 +1,5 @@
+export type { AgentRoleTemplate, AdlcRoleId } from './agentRoleTemplate'
+
 // ─── Core Agent Types ───────────────────────────────────────────────────────
 
 export type AgentStatus = "active" | "idle" | "paused" | "error" | "terminated"
@@ -27,6 +29,8 @@ export interface Agent {
   avatarPresetId?: string | null
   // Security / sandbox settings (from openclaw.json agent entry)
   fsWorkspaceOnly?: boolean
+  // ADLC role (from openclaw.json adlcRole field + SQLite profile)
+  role?: string | null
 }
 
 // ─── Agent Channel Management Types ─────────────────────────────────────────
@@ -88,6 +92,12 @@ export interface ProvisionAgentOpts {
   channels: ChannelBinding[]
   tags?: string[]
   fsWorkspaceOnly?: boolean
+  // ADLC role template fields
+  adlcRole?: string
+  agentFiles?: { identity?: string; soul?: string; tools?: string; agents?: string }
+  skillSlugs?: string[]
+  skillContents?: Record<string, string>
+  scriptTemplates?: Array<{ filename: string; content: string }>
 }
 
 export interface ProvisionResult {
@@ -110,6 +120,7 @@ export interface AgentProfile {
   avatar_mime?: string
   avatar_preset_id?: string
   avatarPresetId?: string  // camelCase alias used in frontend
+  role?: string | null
   color?: string
   description?: string
   tags?: string[]

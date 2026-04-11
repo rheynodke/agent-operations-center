@@ -8,7 +8,7 @@ import {
 import { api } from "@/lib/api"
 import { useAgentStore } from "@/stores"
 import { cn } from "@/lib/utils"
-import type { ChannelBinding, ProvisionAgentOpts } from "@/types"
+import type { ChannelBinding, ProvisionAgentOpts, AgentRoleTemplate } from "@/types"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 
@@ -278,6 +278,17 @@ function Step1Identity({
 
 // ── Step 2: Personality ───────────────────────────────────────────────────────
 
+function buildRoleSoul(name: string | undefined, template: AgentRoleTemplate): string {
+  const agentName = name?.trim() || template.role
+  // Replace role name in heading and opening line, then prepend identity line
+  const body = template.agentFiles.soul
+    .replace(new RegExp(`# Soul of ${template.role}`, 'g'), `# Soul of ${agentName}`)
+    .replace(new RegExp(`You are ${template.role}`, 'g'), `You are ${agentName}`)
+  // Inject identity block right after the heading (first blank line)
+  const identityLine = `\nYou are **${agentName}**, an ADLC autonomous agent with the role of **${template.role}** (${template.emoji}).\n`
+  return body.replace(/^(# Soul of [^\n]+\n)/, `$1${identityLine}`)
+}
+
 function buildSoulTemplate(name?: string, theme?: string, description?: string): string {
   const agentName = name?.trim() || "this agent"
   const parts: string[] = []
@@ -314,15 +325,20 @@ What this agent will NOT do or engage with.`)
 }
 
 function Step2Personality({
-  form, setForm, models, defaultModel
+  form, setForm, models, defaultModel, template
 }: {
   form: Partial<ProvisionAgentOpts>
   setForm: (f: Partial<ProvisionAgentOpts>) => void
   models: { id: string; name: string }[]
   defaultModel: string
+  template?: AgentRoleTemplate
 }) {
   const applyTemplate = () => {
-    setForm({ ...form, soulContent: buildSoulTemplate(form.name, form.theme, form.description) })
+    if (template?.agentFiles.soul) {
+      setForm({ ...form, soulContent: buildRoleSoul(form.name, template) })
+    } else {
+      setForm({ ...form, soulContent: buildSoulTemplate(form.name, form.theme, form.description) })
+    }
   }
 
   return (
@@ -362,7 +378,7 @@ function Step2Personality({
             className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400/70 hover:text-emerald-400 transition-colors px-2 py-1 rounded-md hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20"
           >
             <Sparkles className="w-3 h-3" />
-            Use Template
+            {template ? `Use ${template.role} Soul` : "Use Template"}
           </button>
         </div>
         <WizardTextarea
@@ -733,11 +749,12 @@ function ReviewRow({ label, value, mono }: { label: string; value: string; mono?
 }
 
 function Step4Review({
-  form, restartGateway, setRestartGateway
+  form, restartGateway, setRestartGateway, template
 }: {
   form: Partial<ProvisionAgentOpts>
   restartGateway: boolean
   setRestartGateway: (v: boolean) => void
+  template?: AgentRoleTemplate
 }) {
   const workspacePath = `~/.openclaw/workspaces/${form.id}`
   const agentDirPath  = `~/.openclaw/agents/${form.id}/agent`
@@ -772,6 +789,36 @@ function Step4Review({
           <ReviewRow label="Filesystem" value={form.fsWorkspaceOnly !== false ? "Sandboxed (workspace only)" : "Unrestricted"} />
         </div>
       </div>
+
+      {/* ADLC Template summary */}
+      {template && (
+        <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-base leading-none">{template.emoji}</span>
+            <span className="text-xs font-bold text-emerald-400">ADLC Template: {template.role}</span>
+          </div>
+          {template.skillSlugs.length > 0 && (
+            <div>
+              <p className="text-[10px] text-muted-foreground/60 font-semibold uppercase tracking-wider mb-1.5">Skills to install</p>
+              <div className="flex flex-wrap gap-1.5">
+                {template.skillSlugs.map(slug => (
+                  <span key={slug} className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-[10px] font-mono text-emerald-400">{slug}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {template.scriptTemplates.length > 0 && (
+            <div>
+              <p className="text-[10px] text-muted-foreground/60 font-semibold uppercase tracking-wider mb-1.5">Scripts to create</p>
+              <div className="flex flex-wrap gap-1.5">
+                {template.scriptTemplates.map(s => (
+                  <span key={s.filename} className="px-2 py-0.5 bg-foreground/4 border border-border rounded text-[10px] font-mono text-muted-foreground">{s.filename}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Files to create */}
       <div>
@@ -838,9 +885,10 @@ function Step4Review({
 
 interface Props {
   onClose: () => void
+  template?: AgentRoleTemplate
 }
 
-export function ProvisionAgentWizard({ onClose }: Props) {
+export function ProvisionAgentWizard({ onClose, template }: Props) {
   const navigate = useNavigate()
   const setAgents = useAgentStore(s => s.setAgents)
 
@@ -872,6 +920,22 @@ export function ProvisionAgentWizard({ onClose }: Props) {
     }).catch(() => {})
   }, [])
 
+  // Pre-fill form from ADLC role template (role config only — name/id left for user)
+  useEffect(() => {
+    if (!template) return
+    setForm(f => ({
+      ...f,
+      // Leave name and id blank so user sets their own unique identity
+      // Leave soulContent blank — user should click "Use Template" on step 2 after entering name
+      emoji: template.emoji,
+      color: template.color,
+      description: template.description,
+      model: template.modelRecommendation,
+      soulContent: '',
+      fsWorkspaceOnly: false,
+    }))
+  }, [template])
+
   // ── Validation per step ────────────────────────────────────────────────────
 
   const validateStep = useCallback(() => {
@@ -902,9 +966,13 @@ export function ProvisionAgentWizard({ onClose }: Props) {
 
   const handleNext = () => {
     if (!validateStep()) return
-    // Auto-generate soul template from step 1 context when moving to step 2
+    // Auto-inject soul when moving to step 2
     if (step === 1 && !form.soulContent?.trim()) {
-      setForm(f => ({ ...f, soulContent: buildSoulTemplate(f.name, f.theme, f.description) }))
+      if (template?.agentFiles.soul) {
+        setForm(f => ({ ...f, soulContent: buildRoleSoul(f.name, template) }))
+      } else {
+        setForm(f => ({ ...f, soulContent: buildSoulTemplate(f.name, f.theme, f.description) }))
+      }
     }
     setStep(s => Math.min(s + 1, 4))
   }
@@ -935,6 +1003,17 @@ export function ProvisionAgentWizard({ onClose }: Props) {
       }
 
       if (form.fsWorkspaceOnly === false) opts.fsWorkspaceOnly = false
+
+      // ADLC template fields
+      if (template) {
+        opts.adlcRole = template.id
+        opts.fsWorkspaceOnly = false
+        opts.agentFiles = template.agentFiles
+        opts.skillSlugs = template.skillSlugs
+        opts.skillContents = template.skillContents
+        opts.scriptTemplates = template.scriptTemplates
+      }
+
       const result = await api.provisionAgent(opts)
 
       if (restartGateway) {
@@ -1011,7 +1090,15 @@ export function ProvisionAgentWizard({ onClose }: Props) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 shrink-0">
           <div>
             <h2 className="text-base font-bold text-foreground">Provision Agent</h2>
-            <p className="text-[11px] text-muted-foreground/70">Configure and deploy a new autonomous agent.</p>
+            {template ? (
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-sm leading-none">{template.emoji}</span>
+                <span className="text-[11px] text-muted-foreground/70">Role:</span>
+                <span className="text-[11px] font-semibold" style={{ color: template.color }}>{template.role}</span>
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground/70">Configure and deploy a new autonomous agent.</p>
+            )}
           </div>
           <button onClick={onClose} className="text-muted-foreground/50 hover:text-foreground/70 transition-colors p-1.5 rounded-lg hover:bg-foreground/6">
             <X className="w-4 h-4" />
@@ -1026,9 +1113,9 @@ export function ProvisionAgentWizard({ onClose }: Props) {
         {/* Step content */}
         <div className="flex-1 overflow-y-auto px-6 pb-4">
           {step === 1 && <Step1Identity form={form} setForm={setForm} models={models} defaultModel={defaultModel} />}
-          {step === 2 && <Step2Personality form={form} setForm={setForm} models={models} defaultModel={defaultModel} />}
+          {step === 2 && <Step2Personality form={form} setForm={setForm} models={models} defaultModel={defaultModel} template={template} />}
           {step === 3 && <Step3Channels form={form} setForm={setForm} />}
-          {step === 4 && <Step4Review form={form} restartGateway={restartGateway} setRestartGateway={setRestartGateway} />}
+          {step === 4 && <Step4Review form={form} restartGateway={restartGateway} setRestartGateway={setRestartGateway} template={template} />}
         </div>
 
         {/* Errors */}

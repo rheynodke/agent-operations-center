@@ -90,6 +90,11 @@ async function initDatabase() {
     db.run(`ALTER TABLE agent_profiles ADD COLUMN avatar_preset_id TEXT`);
   } catch (_) { /* column already exists */ }
 
+  // Migration: add role column for ADLC agent role templates
+  try {
+    db.run(`ALTER TABLE agent_profiles ADD COLUMN role TEXT`);
+  } catch (_) { /* column already exists */ }
+
   // Dashboard settings — key/value store for API keys, preferences, etc.
   db.run(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -669,10 +674,11 @@ function getAgentProfile(agentId) {
   try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
   // Add camelCase aliases for frontend consumption
   obj.avatarPresetId = obj.avatar_preset_id ?? null;
+  obj.role = obj.role ?? null;
   return obj;
 }
 
-function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMime, avatarPresetId, color, description, tags, notes, provisionedBy }) {
+function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMime, avatarPresetId, color, description, tags, notes, provisionedBy, role }) {
   if (!db) throw new Error('Database not initialized');
   const existing = getAgentProfile(agentId);
   const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : (tags || '[]');
@@ -688,20 +694,23 @@ function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMim
         description = COALESCE(?, description),
         tags = ?,
         notes = COALESCE(?, notes),
+        role = COALESCE(?, role),
         updated_at = datetime('now')
       WHERE agent_id = ?`,
       [displayName ?? null, emoji ?? null, avatarData ?? null, avatarMime ?? null,
        avatarPresetId ?? existing.avatar_preset_id ?? null,
        color ?? existing.color ?? null,
-       description ?? null, tagsJson, notes ?? null, agentId]
+       description ?? null, tagsJson, notes ?? null,
+       role ?? null, agentId]
     );
   } else {
     db.run(
       `INSERT INTO agent_profiles
-        (agent_id, display_name, emoji, avatar_data, avatar_mime, avatar_preset_id, color, description, tags, notes, provisioned_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (agent_id, display_name, emoji, avatar_data, avatar_mime, avatar_preset_id, color, description, tags, notes, provisioned_by, role)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [agentId, displayName ?? null, emoji ?? null, avatarData ?? null, avatarMime ?? null,
-       avatarPresetId ?? null, color ?? null, description ?? null, tagsJson, notes ?? null, provisionedBy ?? null]
+       avatarPresetId ?? null, color ?? null, description ?? null, tagsJson, notes ?? null,
+       provisionedBy ?? null, role ?? null]
     );
   }
   persist();

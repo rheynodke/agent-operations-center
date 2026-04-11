@@ -3,3 +3,9 @@ dist/
 .env
 *.log
 .playwright-mcp/
+scripts/*
+docs/*
+skills/*
+.DS_Store
+superpowers/*
+data/aoc.db

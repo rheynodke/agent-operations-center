@@ -113,6 +113,7 @@ module.exports = {
   ensureAocEnvFile:         scriptsLib.ensureAocEnvFile,
   ensureCheckTasksScript:   scriptsLib.ensureCheckTasksScript,
   injectHeartbeatTaskCheck: scriptsLib.injectHeartbeatTaskCheck,
+  ensureSharedAdlcScripts:  scriptsLib.ensureSharedAdlcScripts,
 
   // ── hooks / inbound webhooks ───────────────────────────────────────────────
   getHooksConfig:   hooksLib.getHooksConfig,

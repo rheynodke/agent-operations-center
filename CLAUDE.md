@@ -42,7 +42,7 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
 - **Barrel:** `server/lib/index.cjs` — **explicit** named export list; adding a new function to any sub-module requires also adding it here. Does NOT use spread (`...submodule`). Note: `server/lib/agents/index.cjs` is a local sub-barrel that *does* use spread to compose its own files.
 - **Sub-modules:**
   - `server/lib/agents/detail.cjs` — `getAgentDetail`, `updateAgent`, `getAgentChannels`, `addAgentChannel`, `updateAgentChannel`, `removeAgentChannel`
-  - `server/lib/agents/files.cjs` — `getAgentFile`, `saveAgentFile`; editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`
+  - `server/lib/agents/files.cjs` — `getAgentFile`, `saveAgentFile`, `injectSoulStandard`; editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`. `injectSoulStandard()` idempotently appends the AOC research output standard block to an agent's SOUL.md (guarded by `<!-- aoc:research-standard:start -->` marker)
   - `server/lib/agents/skills.cjs` — `getAgentSkills`, `getAllSkills`, `getSkillFile`, `getSkillFileBySlug`, `saveSkillFile`, `saveSkillFileBySlug`, `createSkill`, `createGlobalSkill`, `toggleAgentSkill`
   - `server/lib/agents/tools.cjs` — `BUILTIN_TOOLS`, `getAgentTools`, `getAllTools`, `toggleAgentTool`
   - `server/lib/agents/skillScripts.cjs` — `listSkillScripts`, `getSkillScript`, `saveSkillScript`, `deleteSkillScript`, `getSkillScriptsPath`
@@ -57,6 +57,8 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
   - `server/lib/watchers.cjs` — chokidar file watchers; broadcasts `session:live-event` and `processing_end` WS events with `sessionKey`
   - `server/lib/automation/cron.cjs` — cron CRUD (create/update/delete/toggle/run/runs); tries gateway RPC first, falls back to direct `~/.openclaw/cron/jobs.json` file write. `buildSchedule()` converts form opts to gateway schema (`{kind, everyMs}` etc). `buildJobFromOpts()` produces the full job object.
   - `server/lib/scripts.cjs` — shared workspace scripts (`~/.openclaw/scripts/`) and agent-specific scripts (`{agentWorkspace}/scripts/`). Metadata stored in `.tools.json` per directory. `listAgentCustomTools()` returns `{shared, agent}` enriched with `enabled` from agent's TOOLS.md. `toggleAgentCustomTool()` injects/removes HTML-comment-delimited blocks in TOOLS.md.
+  - `server/lib/versioning.cjs` — file version history in SQLite (max 50 per scope). Scope key conventions: `agent:{agentId}:{fileName}`, `skill:{agentId}:{skillName}`, `skill:global:{slug}`, `skill-script:{agentId}:{skill}:{file}`, `script:agent:{agentId}:{file}`, `script:global:{file}`. Deduplicates by SHA-256 checksum.
+  - `server/lib/integrations/index.cjs` — project integration engine; `init(db, broadcast)` wires up DB + WS broadcast, `syncIntegration(id)` pulls tickets from the adapter and upserts into tasks. Currently supports `google_sheets` adapter (`server/lib/integrations/google-sheets.cjs`). Credentials stored encrypted via `server/lib/integrations/base.cjs`.
 - **Config:** `server/lib/config.cjs` exports `OPENCLAW_HOME`, `OPENCLAW_WORKSPACE`, `AGENTS_DIR`, `readJsonSafe`.
 - **AI generation:** `server/lib/ai.cjs` — `generateStream()` (async generator, SSE via Claude CLI), `getOsContext()`, `FILE_CONTEXTS`.
 - **`server.js` (root)** — legacy file, NOT used. The active entry is `server/index.cjs`.
@@ -65,7 +67,7 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
 
 OpenClaw filesystem → chokidar watchers → Express parsers → REST API + WebSocket broadcasts → Zustand stores → React UI
 
-The backend does NOT own agent data. It reads from OpenClaw's filesystem as the source of truth, and uses SQLite only for dashboard-specific data (user accounts, agent profiles/avatars, UI preferences).
+The backend does NOT own agent data. It reads from OpenClaw's filesystem as the source of truth, and uses SQLite only for dashboard-specific data (user accounts, agent profiles/avatars, UI preferences, tasks, projects, integrations, file versions).
 
 ### Cron / Scheduled Tasks
 
@@ -101,12 +103,12 @@ Channel bindings in `openclaw.json` use two patterns:
 
 `getAgentChannels()` supports both patterns — always check both when discovering existing bindings.
 
-**Discord is architecturally different from Telegram/WhatsApp:**
-- Discord is a **shared top-level channel** — there is no `accounts` sub-object. Config lives at `config.channels.discord` (enabled, token, dmPolicy, groupPolicy).
-- Token is stored as `{ source: 'env', provider: 'default', id: 'DISCORD_BOT_TOKEN' }` — actual value lives in `config.env.DISCORD_BOT_TOKEN`.
-- Binding has **no `accountId`**: `{ type: 'route', agentId, match: { channel: 'discord' } }`.
+**Discord has two coexisting patterns:**
+- **Legacy shared pattern:** Config at `config.channels.discord` (enabled, token, dmPolicy, groupPolicy). Token stored as `{ source: 'env', provider: 'default', id: 'DISCORD_BOT_TOKEN' }`. Binding has no `accountId`: `{ type: 'route', agentId, match: { channel: 'discord' } }`.
+- **Per-account pattern (used by provisioning):** `config.channels.discord.accounts[agentId] = { token, dmPolicy, groupPolicy }`. Binding includes `accountId`: `{ type: 'route', agentId, match: { channel: 'discord', accountId: agentId } }`.
 - OpenClaw validates exact field names — use `groupPolicy` (not `guildPolicy`).
-- Removing a Discord binding does NOT delete `channels.discord` (it's shared across agents).
+- Removing a Discord binding does NOT delete `channels.discord` (it may be shared).
+- `getAgentChannels()` checks both patterns when discovering existing Discord bindings.
 
 ### Agent Detail Page Tab Structure
 
@@ -128,9 +130,11 @@ When an agent's display name changes, `updateAgent` in `detail.cjs` computes a n
 
 ### Agent Provisioning
 
-`ProvisionAgentWizard.tsx` — 4-step modal (Identity → Personality → Channels → Review). On submit, calls `POST /api/agents/provision` which writes the agent entry to `openclaw.json` and scaffolds the workspace with `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `TOOLS.md` (and `USER.md` copied from main workspace if available).
+`ProvisionAgentWizard.tsx` — 4-step modal (Identity → Personality → Channels → Review). On submit, calls `POST /api/agents/provision` which writes the agent entry to `openclaw.json` and scaffolds the workspace with `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` (and `USER.md` copied from main workspace if available). Also auto-installs `update_task.sh` and `check_tasks.sh` shared scripts for the new agent and injects a heartbeat task check into `HEARTBEAT.md`.
 
 The `fsWorkspaceOnly` boolean (defaults true) maps to `tools.fs.workspaceOnly: false` in the agent's `openclaw.json` entry — controls whether the agent's FS tools are restricted to its workspace directory.
+
+Note: per-agent `env` fields are **not** supported in OpenClaw 2026.4.8+. AOC env vars (`AOC_TOKEN`, `AOC_URL`, `AOC_AGENT_ID`) are injected at runtime via the agent's `update_task.sh` script.
 
 ### Skill Resolution Order
 
@@ -169,6 +173,49 @@ Skill scripts live at `{skillDir}/scripts/` and are managed via `skillScripts.cj
 ### Agent World (3D View)
 
 `AgentWorldPage` → `AgentWorldView` → `AgentWorld3D` (in `src/components/world/`). Built with React Three Fiber + `@react-three/drei`. Renders a top-down isometric office scene where each agent gets a desk; agent state (`processing` | `working` | `idle` | `offline`) drives animated character behavior. Theme-aware via `SCENE_THEME` (dark/light palettes for canvas bg, floor, lighting). `AgentWorld3D` accepts `agents`, `agentStates`, and `deskXPcts` props — the wrapper (`AgentWorldView`) derives these from Zustand stores.
+
+### Tasks & Project Board
+
+- Tasks stored in SQLite (`data/aoc.db`). `Task` has: `id`, `title`, `description`, `status` (`open`|`in_progress`|`review`|`done`|`cancelled`), `priority` (`urgent`|`high`|`medium`|`low`), `agentId`, `tags`, `cost`, `sessionId`, `projectId`.
+- **Dispatch model:** `POST /api/tasks/{id}/dispatch` sends the task to the assigned agent via gateway RPC, stores the resulting `sessionKey` on the task. `loadAllJSONLMessagesForTask()` in `server/index.cjs` reconstructs full multi-dispatch history by scanning all JSONL files that mention the `taskId`.
+- `AgentWorkSection.tsx` (`src/components/board/`) — renders the multi-turn agent conversation history for a task inside `TaskDetailModal`. Lazy-loads `react-markdown` + `remark-gfm`. Strips gateway-injected markers (`[[reply_to_current]]`, etc.).
+- `syncAgentTaskScript` (`POST /api/agents/{agentId}/sync-task-script`) — ensures `update_task.sh` is installed for an agent.
+
+### Projects & Integrations
+
+- Projects group tasks. `Project` has: `id`, `name`, `color`, `description`.
+- Project integrations sync external data sources into AOC tasks. Currently `google_sheets` type only.
+- `ProjectIntegration` fields: `id`, `projectId`, `type`, `config` (encrypted credentials + spreadsheetId + sheetName + column mappings), `enabled`, `syncIntervalMs`, `lastSyncAt`.
+- Integration test flow: `POST /api/projects/{id}/integrations/_new/test` validates credentials + returns sheet names. `POST .../headers` fetches column headers for a sheet. `POST .../sync` triggers immediate sync.
+- WS event `project:sync_start` broadcasts when a sync begins (payload: `{integrationId, projectId}`).
+
+### File Versioning
+
+`server/lib/versioning.cjs` — every file save goes through `saveVersion()` which snapshots content in SQLite. Max 50 versions per scope key. Deduplicates by SHA-256 (no snapshot if content unchanged). REST endpoints: `GET /api/versions?scope=...`, `GET /api/versions/{id}`, `POST /api/versions/{id}/restore`, `DELETE /api/versions/{id}`. Frontend: `api.listVersions(scope)`, `api.restoreVersion(id)`.
+
+### Skill Marketplace
+
+Two marketplace integrations for installing skills from external sources:
+
+- **ClawHub** (`/api/skills/clawhub/*`) — install skills from a URL (GitHub raw, direct link). Flow: `clawHubTargets()` → pick agent or global → `clawHubPreview(url)` → `clawHubInstall(url, target, agentId?)`. Supports passing pre-fetched buffer as base64 (`bufferB64`).
+- **SkillsMP** (`/api/skills/skillsmp/*`) — curated skill marketplace. Requires API key stored in settings (`/api/settings/skillsmp`). Flow: `skillsmpSearch(q)` → `skillsmpPreview(skill)` → `skillsmpInstall(skill, target, agentId?)`.
+
+### Inbound Webhooks / Hooks
+
+`/api/hooks/*` — inbound webhook configuration. `getHooksConfig()` returns current config. `saveHooksConfig(updates)` persists. `generateHookToken()` creates a new inbound token. `getHookSessions(limit)` returns recent webhook-triggered sessions.
+
+### Gateway Management
+
+`/api/gateway/*` — manage the OpenClaw Gateway process:
+- `GET /api/gateway/status` — returns `{ running, pids, port, portOpen, mode, bind }`.
+- `POST /api/gateway/restart` — kills existing gateway processes and restarts.
+- `POST /api/gateway/stop` — kills gateway processes without restart.
+
+### OpenClaw Config Management
+
+`/api/config` — read/write `openclaw.json` sections directly:
+- `GET /api/config` — returns sanitized full config + path.
+- `PATCH /api/config/{section}` — merges `value` into the specified top-level section.
 
 ### SQLite DB Location
 

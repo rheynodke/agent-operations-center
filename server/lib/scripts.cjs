@@ -539,6 +539,45 @@ function ensureAocEnvFile() {
   }
 }
 
+// ── Shared ADLC Scripts ──────────────────────────────────────────────────────
+
+// Scripts that appear in multiple ADLC templates and should also be installed
+// to the global ~/.openclaw/scripts/ directory for human operator access.
+const SHARED_ADLC_SCRIPT_NAMES = ['gdocs-export.sh', 'notify.sh', 'email-notif.sh'];
+
+/**
+ * Write shared ADLC scripts to ~/.openclaw/scripts/ if not already present.
+ * Called during ADLC agent provisioning.
+ * @param {Array<{filename: string, content: string}>} scriptTemplates
+ */
+function ensureSharedAdlcScripts(scriptTemplates) {
+  ensureDir();
+  const meta = readMeta(SCRIPTS_DIR);
+  let changed = false;
+
+  for (const { filename, content } of scriptTemplates) {
+    if (!SHARED_ADLC_SCRIPT_NAMES.includes(filename)) continue;
+
+    const targetPath = path.join(SCRIPTS_DIR, filename);
+    if (fs.existsSync(targetPath)) continue; // already installed, skip
+
+    fs.writeFileSync(targetPath, content, 'utf-8');
+    const ext = path.extname(filename).toLowerCase();
+    if (['.sh', '.bash', '.zsh', '.fish'].includes(ext)) {
+      try { fs.chmodSync(targetPath, 0o755); } catch {}
+    }
+
+    const baseName = path.basename(filename, ext);
+    if (!meta[filename]) {
+      meta[filename] = { name: baseName, description: 'ADLC shared script' };
+    }
+    changed = true;
+    console.log(`[scripts] Installed shared ADLC script: ${filename}`);
+  }
+
+  if (changed) writeMeta(SCRIPTS_DIR, meta);
+}
+
 module.exports = {
   // Shared scripts (~/.openclaw/scripts)
   listScripts, getScript, saveScript, deleteScript, renameScript, updateScriptMeta,
@@ -551,5 +590,7 @@ module.exports = {
   ensureAocEnvFile,
   ensureCheckTasksScript,
   injectHeartbeatTaskCheck,
+  // ADLC shared scripts installer
+  ensureSharedAdlcScripts,
   SCRIPTS_DIR, ALLOWED_EXT,
 };
