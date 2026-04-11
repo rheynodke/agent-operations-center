@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react"
 import { useAuthStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useOverviewStore, useActivityStore, useRoutingStore } from "@/stores"
+import { useProjectStore } from '@/stores/useProjectStore'
 import { api } from "@/lib/api"
 import type { ActivityEvent, DashboardOverview } from "@/types"
 
@@ -11,13 +12,14 @@ export function useDataLoader() {
 
   async function loadAll() {
     try {
-      const [agents, sessions, tasks, overview, activity, routes] = await Promise.allSettled([
+      const [agents, sessions, tasks, overview, activity, routes, projects] = await Promise.allSettled([
         api.getAgents(),
         api.getSessions(),
         api.getTasks(),
         api.getOverview(),
         api.getActivity(),
         api.getRoutes(),
+        api.getProjects(),
       ])
 
       if (agents.status === "fulfilled") {
@@ -51,6 +53,11 @@ export function useDataLoader() {
       if (routes.status === "fulfilled") {
         const data = routes.value as { routes: never[] }
         useRoutingStore.getState().setRoutes(data?.routes ?? [])
+      }
+
+      if (projects.status === "fulfilled") {
+        const data = projects.value as { projects: never[] }
+        useProjectStore.getState().setProjects(data?.projects ?? [])
       }
 
       // Load activity events from dedicated endpoint

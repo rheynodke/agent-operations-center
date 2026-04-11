@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react"
 import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore } from "@/stores"
 import { useChatStore, parseMediaAttachments, mediaPathToUrl } from "@/stores/useChatStore"
+import { useProjectStore } from '@/stores/useProjectStore'
 import { api } from "@/lib/api"
 import type { WsMessage, LiveFeedEntry } from "@/types"
 
@@ -236,6 +237,24 @@ export function useWebSocket() {
           break
         }
 
+        case "project:sync_start": {
+          const { integrationId } = msg.payload as { integrationId: string }
+          useProjectStore.getState().setSyncing(integrationId, true)
+          break
+        }
+        case "project:sync_complete": {
+          const { integrationId, projectId } = msg.payload as { integrationId: string; projectId: string }
+          useProjectStore.getState().setSyncing(integrationId, false)
+          useProjectStore.getState().fetchIntegrations(projectId)
+          break
+        }
+        case "project:sync_error": {
+          const { integrationId, projectId } = msg.payload as { integrationId: string; projectId: string }
+          useProjectStore.getState().setSyncing(integrationId, false)
+          useProjectStore.getState().fetchIntegrations(projectId)
+          break
+        }
+
         case "cron:update": {
           // Cron file changed — reload cron jobs
           api.getCronJobs().then((data) => {
@@ -246,7 +265,10 @@ export function useWebSocket() {
         }
 
         case "tasks:updated": {
-          const tasks = (msg.payload as { tasks?: unknown[] })?.tasks
+          // Server sends payload as a direct array: { type: 'tasks:updated', payload: Task[] }
+          const tasks = Array.isArray(msg.payload)
+            ? msg.payload
+            : (msg.payload as { tasks?: unknown[] })?.tasks
           if (Array.isArray(tasks)) useTaskStore.getState().setTasks(tasks as never)
           break
         }

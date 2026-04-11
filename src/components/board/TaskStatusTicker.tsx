@@ -1,25 +1,35 @@
 import React, { useEffect } from "react"
 import { cn } from "@/lib/utils"
-import { X, ArrowRight } from "lucide-react"
+import {
+  X, ArrowRight,
+  Inbox, ListTodo, Zap, ScanSearch, OctagonX, CircleCheckBig,
+} from "lucide-react"
 import { useTaskStore, TaskStatusChange } from "@/stores"
 import { useAgentStore } from "@/stores"
+import { AgentAvatar } from "@/components/agents/AgentAvatar"
 
 // ── Status config ─────────────────────────────────────────────────────────────
 
-const STATUS_META: Record<string, { label: string; emoji: string; color: string; bg: string }> = {
-  backlog:     { label: "Backlog",     emoji: "📥", color: "text-muted-foreground", bg: "bg-muted/40" },
-  todo:        { label: "Todo",        emoji: "📋", color: "text-blue-400",         bg: "bg-blue-500/10" },
-  in_progress: { label: "In Progress", emoji: "⚡", color: "text-amber-400",        bg: "bg-amber-500/10" },
-  in_review:   { label: "In Review",   emoji: "🔍", color: "text-purple-400",       bg: "bg-purple-500/10" },
-  blocked:     { label: "Blocked",     emoji: "🚫", color: "text-red-400",          bg: "bg-red-500/10" },
-  done:        { label: "Done",        emoji: "✅", color: "text-emerald-400",      bg: "bg-emerald-500/10" },
+const STATUS_META: Record<string, {
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  color: string
+  bg: string
+}> = {
+  backlog:     { label: "Backlog",     icon: Inbox,          color: "text-muted-foreground", bg: "bg-muted/40" },
+  todo:        { label: "Todo",        icon: ListTodo,       color: "text-blue-400",         bg: "bg-blue-500/10" },
+  in_progress: { label: "In Progress", icon: Zap,            color: "text-amber-400",        bg: "bg-amber-500/10" },
+  in_review:   { label: "In Review",   icon: ScanSearch,     color: "text-purple-400",       bg: "bg-purple-500/10" },
+  blocked:     { label: "Blocked",     icon: OctagonX,       color: "text-red-400",          bg: "bg-red-500/10" },
+  done:        { label: "Done",        icon: CircleCheckBig, color: "text-emerald-400",      bg: "bg-emerald-500/10" },
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const m = STATUS_META[status] ?? { label: status, emoji: "•", color: "text-muted-foreground", bg: "bg-muted/30" }
+  const m = STATUS_META[status] ?? { label: status, icon: Inbox, color: "text-muted-foreground", bg: "bg-muted/30" }
+  const Icon = m.icon
   return (
     <span className={cn("inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold", m.color, m.bg)}>
-      <span>{m.emoji}</span>
+      <Icon className="h-3 w-3" />
       <span>{m.label}</span>
     </span>
   )
@@ -48,10 +58,14 @@ function TickerItem({ change, onDismiss }: { change: TaskStatusChange; onDismiss
         "max-w-xs w-full"
       )}
     >
-      {/* Agent avatar / emoji */}
-      <span className="text-base shrink-0">
-        {agent?.emoji ?? "📋"}
-      </span>
+      {/* Agent avatar */}
+      <div className="shrink-0">
+        <AgentAvatar
+          avatarPresetId={agent?.avatarPresetId}
+          emoji={agent?.emoji}
+          size="w-7 h-7"
+        />
+      </div>
 
       {/* Task info */}
       <div className="flex-1 min-w-0">

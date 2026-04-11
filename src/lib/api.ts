@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -217,13 +217,14 @@ export const api = {
     request(`/sessions/${agentId}/${sessionId}/messages`),
 
   // Tasks
-  getTasks: (filters?: { agentId?: string; status?: string; priority?: string; tag?: string; q?: string }) => {
+  getTasks: (filters?: { agentId?: string; status?: string; priority?: string; tag?: string; q?: string; projectId?: string }) => {
     const params = new URLSearchParams();
-    if (filters?.agentId)  params.set('agentId',  filters.agentId);
-    if (filters?.status)   params.set('status',   filters.status);
-    if (filters?.priority) params.set('priority', filters.priority);
-    if (filters?.tag)      params.set('tag',      filters.tag);
-    if (filters?.q)        params.set('q',        filters.q);
+    if (filters?.agentId)    params.set('agentId',    filters.agentId);
+    if (filters?.status)     params.set('status',     filters.status);
+    if (filters?.priority)   params.set('priority',   filters.priority);
+    if (filters?.tag)        params.set('tag',        filters.tag);
+    if (filters?.q)          params.set('q',          filters.q);
+    if (filters?.projectId)  params.set('projectId',  filters.projectId);
     const qs = params.toString();
     return request<{ tasks: Task[] }>(`/tasks${qs ? `?${qs}` : ''}`);
   },
@@ -239,6 +240,35 @@ export const api = {
     request<{ ok: boolean }>(`/agents/${agentId}/sync-task-script`, { method: 'POST' }),
   dispatchTask: (taskId: string) =>
     request<{ ok: boolean; sessionKey: string; agentId: string }>(`/tasks/${taskId}/dispatch`, { method: 'POST' }),
+
+  // Projects
+  getProjects: () =>
+    request<{ projects: Project[] }>('/projects'),
+  createProject: (data: { name: string; color?: string; description?: string }) =>
+    request<{ project: Project }>('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  updateProject: (id: string, patch: Partial<Pick<Project, 'name' | 'color' | 'description'>>) =>
+    request<{ project: Project }>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteProject: (id: string) =>
+    request<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
+
+  // Project Integrations
+  getProjectIntegrations: (projectId: string) =>
+    request<{ integrations: ProjectIntegration[] }>(`/projects/${projectId}/integrations`),
+  createIntegration: (projectId: string, data: object) =>
+    request<{ integration: ProjectIntegration }>(`/projects/${projectId}/integrations`, { method: 'POST', body: JSON.stringify(data) }),
+  updateIntegration: (projectId: string, id: string, patch: object) =>
+    request<{ integration: ProjectIntegration }>(`/projects/${projectId}/integrations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteIntegration: (projectId: string, id: string) =>
+    request<{ ok: boolean }>(`/projects/${projectId}/integrations/${id}`, { method: 'DELETE' }),
+  testIntegrationConnection: (projectId: string, data: { type: string; credentials: string; spreadsheetId: string }) =>
+    request<{ ok: boolean; sheets?: string[]; error?: string }>(`/projects/${projectId}/integrations/_new/test`, { method: 'POST', body: JSON.stringify(data) }),
+  getIntegrationHeaders: (projectId: string, data: { credentials?: string; spreadsheetId?: string; sheetName: string; integrationId?: string }) => {
+    const iid = data.integrationId || '_new';
+    const { integrationId: _, ...body } = data;
+    return request<{ headers: string[] }>(`/projects/${projectId}/integrations/${iid}/headers`, { method: 'POST', body: JSON.stringify(body) });
+  },
+  syncIntegrationNow: (projectId: string, id: string) =>
+    request<{ ok: boolean }>(`/projects/${projectId}/integrations/${id}/sync`, { method: 'POST' }),
 
   // Cron
   getCronJobs: () => request("/cron"),

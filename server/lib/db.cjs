@@ -132,9 +132,18 @@ async function initDatabase() {
       cost          REAL,
       created_at    TEXT NOT NULL,
       updated_at    TEXT NOT NULL,
-      completed_at  TEXT
+      completed_at  TEXT,
+      input_tokens  INTEGER,
+      output_tokens INTEGER
     )
   `);
+  // Runtime migration: add columns if they don't exist yet (idempotent)
+  try { db.run('ALTER TABLE tasks ADD COLUMN input_tokens INTEGER'); } catch {}
+  try { db.run('ALTER TABLE tasks ADD COLUMN output_tokens INTEGER'); } catch {}
+  try { db.run("ALTER TABLE tasks ADD COLUMN all_session_ids TEXT DEFAULT '[]'"); } catch {}
+  try { db.run('ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT \'general\''); } catch {}
+  try { db.run('ALTER TABLE tasks ADD COLUMN external_id TEXT'); } catch {}
+  try { db.run('ALTER TABLE tasks ADD COLUMN external_source TEXT'); } catch {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS task_activity (
@@ -148,6 +157,45 @@ async function initDatabase() {
       created_at  TEXT NOT NULL
     )
   `);
+
+  // Projects
+  db.run(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      color       TEXT NOT NULL DEFAULT '#6366f1',
+      description TEXT,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    )
+  `);
+  db.run(`
+    INSERT OR IGNORE INTO projects (id, name, color, created_at, updated_at)
+    VALUES ('general', 'General', '#6366f1', datetime('now'), datetime('now'))
+  `);
+
+  // Project integrations
+  db.run(`
+    CREATE TABLE IF NOT EXISTS project_integrations (
+      id               TEXT PRIMARY KEY,
+      project_id       TEXT NOT NULL,
+      type             TEXT NOT NULL,
+      config           TEXT NOT NULL DEFAULT '{}',
+      sync_interval_ms INTEGER,
+      enabled          INTEGER NOT NULL DEFAULT 1,
+      last_synced_at   TEXT,
+      last_sync_error  TEXT,
+      created_at       TEXT NOT NULL,
+      updated_at       TEXT NOT NULL
+    )
+  `);
+
+  // Tasks migration: add project + external sync columns
+  try { db.run("ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'general'"); } catch (_) {}
+  try { db.run('ALTER TABLE tasks ADD COLUMN external_id TEXT'); } catch (_) {}
+  try { db.run('ALTER TABLE tasks ADD COLUMN external_source TEXT'); } catch (_) {}
+  db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_id, external_source)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`);
 
   persist();
   return db;
@@ -166,6 +214,11 @@ function normalizeTask(row) {
     sessionId: row.session_id || undefined,
     tags: (() => { try { return row.tags ? JSON.parse(row.tags) : []; } catch { return []; } })(),
     cost: row.cost != null ? row.cost : undefined,
+    inputTokens: row.input_tokens != null ? row.input_tokens : undefined,
+    outputTokens: row.output_tokens != null ? row.output_tokens : undefined,
+    projectId: row.project_id || 'general',
+    externalId: row.external_id || undefined,
+    externalSource: row.external_source || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at || undefined,
@@ -186,6 +239,187 @@ function normalizeActivity(row) {
   };
 }
 
+function normalizeProject(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    color: row.color || '#6366f1',
+    description: row.description || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function getAllProjects() {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM projects ORDER BY created_at ASC');
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeProject(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+function getProject(id) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM projects WHERE id = :id');
+  const row = stmt.getAsObject({ ':id': id });
+  stmt.free();
+  return row.id ? normalizeProject(row) : null;
+}
+
+function createProject({ name, color = '#6366f1', description } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!name) throw new Error('createProject: name is required');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO projects (id, name, color, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, name, color, description || null, now, now]
+  );
+  persist();
+  return getProject(id);
+}
+
+function updateProject(id, patch) {
+  if (!db) throw new Error('DB not initialized');
+  const before = getProject(id);
+  if (!before) return null;
+  const now = new Date().toISOString();
+  const fields = ['updated_at = ?'];
+  const vals = [now];
+  if (patch.name        !== undefined) { fields.push('name = ?');        vals.push(patch.name); }
+  if (patch.color       !== undefined) { fields.push('color = ?');       vals.push(patch.color); }
+  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description || null); }
+  vals.push(id);
+  db.run(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getProject(id);
+}
+
+function deleteProject(id) {
+  if (!db) throw new Error('DB not initialized');
+  if (id === 'general') throw new Error('deleteProject: cannot delete the default project');
+  // Reassign orphaned tasks back to 'general'
+  db.run("UPDATE tasks SET project_id = 'general' WHERE project_id = ?", [id]);
+  // Cascade-delete integrations tied to this project
+  db.run('DELETE FROM project_integrations WHERE project_id = ?', [id]);
+  db.run('DELETE FROM projects WHERE id = ?', [id]);
+  persist();
+}
+
+function normalizeIntegration(row) {
+  if (!row || !row.id) return null;
+  let config = {};
+  try { config = JSON.parse(row.config || '{}'); } catch (_) {}
+  const { credentials, ...safeConfig } = config;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    type: row.type,
+    hasCredentials: !!credentials,
+    config: safeConfig,
+    syncIntervalMs: row.sync_interval_ms || undefined,
+    enabled: row.enabled === 1,
+    lastSyncedAt: row.last_synced_at || undefined,
+    lastSyncError: row.last_sync_error || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function _mapIntegrationRaw(row) {
+  let config = {};
+  try { config = JSON.parse(row.config || '{}'); } catch (_) {}
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    type: row.type,
+    config,
+    syncIntervalMs: row.sync_interval_ms || undefined,
+    enabled: row.enabled === 1,
+    lastSyncedAt: row.last_synced_at || undefined,
+    lastSyncError: row.last_sync_error || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// Internal version — includes raw config WITH credentials (for sync orchestrator only)
+function getIntegrationRaw(id) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM project_integrations WHERE id = :id');
+  const row = stmt.getAsObject({ ':id': id });
+  stmt.free();
+  if (!row.id) return null;
+  return _mapIntegrationRaw(row);
+}
+
+function getAllIntegrations() {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM project_integrations ORDER BY created_at ASC');
+  const rows = [];
+  while (stmt.step()) rows.push(_mapIntegrationRaw(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+function getProjectIntegrations(projectId) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM project_integrations WHERE project_id = :pid ORDER BY created_at ASC');
+  stmt.bind({ ':pid': projectId });
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeIntegration(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+function createIntegration({ projectId, type, config, syncIntervalMs, enabled = true } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!projectId) throw new Error('createIntegration: projectId is required');
+  if (!type) throw new Error('createIntegration: type is required');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO project_integrations (id, project_id, type, config, sync_interval_ms, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, projectId, type, JSON.stringify(config || {}), syncIntervalMs || null, enabled ? 1 : 0, now, now]
+  );
+  persist();
+  return getIntegrationRaw(id);
+}
+
+function updateIntegration(id, patch) {
+  if (!db) throw new Error('DB not initialized');
+  const existing = getIntegrationRaw(id);
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  const fields = ['updated_at = ?'];
+  const vals = [now];
+  if (patch.config         !== undefined) { fields.push('config = ?');          vals.push(JSON.stringify(patch.config)); }
+  if (patch.syncIntervalMs !== undefined) { fields.push('sync_interval_ms = ?'); vals.push(patch.syncIntervalMs || null); }
+  if (patch.enabled        !== undefined) { fields.push('enabled = ?');         vals.push(patch.enabled ? 1 : 0); }
+  vals.push(id);
+  db.run(`UPDATE project_integrations SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getIntegrationRaw(id);
+}
+
+function deleteIntegration(id) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('DELETE FROM project_integrations WHERE id = ?', [id]);
+  persist();
+}
+
+function updateIntegrationSyncState(id, { lastSyncedAt, lastSyncError }) {
+  if (!db) throw new Error('DB not initialized');
+  const now = new Date().toISOString();
+  db.run(
+    'UPDATE project_integrations SET last_synced_at = ?, last_sync_error = ?, updated_at = ? WHERE id = ?',
+    [lastSyncedAt || null, lastSyncError || null, now, id]
+  );
+  persist();
+}
+
 function getAllTasks(filters = {}) {
   if (!db) throw new Error('DB not initialized');
   const conditions = [];
@@ -195,6 +429,7 @@ function getAllTasks(filters = {}) {
   if (filters.priority){ conditions.push('priority = :priority');params[':priority']= filters.priority; }
   if (filters.tag)     { conditions.push('tags LIKE :tag');      params[':tag']     = `%"${filters.tag}"%`; }
   if (filters.q)       { conditions.push('title LIKE :q');       params[':q']       = `%${filters.q}%`; }
+  if (filters.projectId) { conditions.push('project_id = :projectId'); params[':projectId'] = filters.projectId; }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const stmt = db.prepare(`SELECT * FROM tasks ${where} ORDER BY created_at DESC`);
   if (Object.keys(params).length) stmt.bind(params);
@@ -212,14 +447,22 @@ function getTask(id) {
   return row.id ? normalizeTask(row) : null;
 }
 
-function createTask({ title, description, status = 'backlog', priority = 'medium', agentId, tags = [], sessionId } = {}) {
+function getTaskByExternalId(externalId, externalSource) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM tasks WHERE external_id = :eid AND external_source = :src LIMIT 1');
+  const row = stmt.getAsObject({ ':eid': externalId, ':src': externalSource });
+  stmt.free();
+  return row.id ? normalizeTask(row) : null;
+}
+
+function createTask({ title, description, status = 'backlog', priority = 'medium', agentId, tags = [], sessionId, projectId = 'general', externalId, externalSource } = {}) {
   if (!db) throw new Error('DB not initialized');
   if (!title) throw new Error('createTask: title is required');
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.run(
-    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, title, description || null, status, priority, agentId || null, sessionId || null, JSON.stringify(tags || []), now, now]
+    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, project_id, external_id, external_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, title, description || null, status, priority, agentId || null, sessionId || null, JSON.stringify(tags || []), projectId, externalId || null, externalSource || null, now, now]
   );
   persist();
   return getTask(id);
@@ -239,7 +482,9 @@ function updateTask(id, patch) {
   if (patch.agentId     !== undefined) { fields.push('agent_id = ?');    vals.push(patch.agentId || null); }
   if (patch.sessionId   !== undefined) { fields.push('session_id = ?');  vals.push(patch.sessionId || null); }
   if (patch.tags        !== undefined) { fields.push('tags = ?');        vals.push(JSON.stringify(patch.tags)); }
-  if (patch.cost        !== undefined) { fields.push('cost = ?');        vals.push(patch.cost); }
+  if (patch.cost         !== undefined) { fields.push('cost = ?');          vals.push(patch.cost); }
+  if (patch.inputTokens  !== undefined) { fields.push('input_tokens = ?');  vals.push(patch.inputTokens  != null ? Number(patch.inputTokens)  : null); }
+  if (patch.outputTokens !== undefined) { fields.push('output_tokens = ?'); vals.push(patch.outputTokens != null ? Number(patch.outputTokens) : null); }
   if (patch.status === 'done' && before.status !== 'done') {
     fields.push('completed_at = ?'); vals.push(now);
   } else if (patch.status !== undefined && patch.status !== 'done' && before.status === 'done') {
@@ -545,6 +790,11 @@ module.exports = {
   getAllAgentProfiles,
   deleteAgentProfile,
   // Tasks
-  getAllTasks, getTask, createTask, updateTask, deleteTask,
+  getAllTasks, getTask, getTaskByExternalId, createTask, updateTask, deleteTask,
   addTaskActivity, getTaskActivity,
+  // Projects
+  getAllProjects, getProject, createProject, updateProject, deleteProject,
+  // Integrations
+  getAllIntegrations, getProjectIntegrations, getIntegrationRaw,
+  createIntegration, updateIntegration, deleteIntegration, updateIntegrationSyncState,
 };

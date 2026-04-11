@@ -369,9 +369,10 @@ const AOC_ENV_FILE = path.join(OPENCLAW_HOME_PATH, '.aoc_env');
 
 const UPDATE_TASK_SCRIPT_CONTENT = `#!/usr/bin/env bash
 # update_task — Report task progress to AOC Board
-# Usage: update_task.sh <taskId> <status> [note] [sessionId]
+# Usage: update_task.sh <taskId> <status> [note] [sessionId] [inputTokens] [outputTokens]
 #
-# status: in_progress | done | blocked | todo
+# status: in_progress | in_review | blocked | todo | done
+# inputTokens / outputTokens: optional token usage for monitoring
 
 set -euo pipefail
 
@@ -386,15 +387,23 @@ TASK_ID="\${1:?taskId required}"
 STATUS="\${2:?status required}"
 NOTE="\${3:-}"
 SESSION_ID="\${4:-}"
+INPUT_TOKENS="\${5:-}"
+OUTPUT_TOKENS="\${6:-}"
 
 AOC_URL="\${AOC_URL:-http://localhost:18800}"
 AOC_TOKEN="\${AOC_TOKEN:?AOC_TOKEN not set. Check ~/.openclaw/.aoc_env}"
 AGENT_ID="\${AOC_AGENT_ID:-}"
 
+# Build JSON payload — only include token fields if provided
+PAYLOAD="{\\"status\\": \\"$STATUS\\", \\"note\\": \\"$NOTE\\", \\"sessionId\\": \\"$SESSION_ID\\", \\"agentId\\": \\"$AGENT_ID\\""
+[ -n "$INPUT_TOKENS"  ] && PAYLOAD="$PAYLOAD, \\"inputTokens\\": $INPUT_TOKENS"
+[ -n "$OUTPUT_TOKENS" ] && PAYLOAD="$PAYLOAD, \\"outputTokens\\": $OUTPUT_TOKENS"
+PAYLOAD="$PAYLOAD}"
+
 curl -sf -X PATCH "$AOC_URL/api/tasks/$TASK_ID" \\
   -H "Authorization: Bearer $AOC_TOKEN" \\
   -H "Content-Type: application/json" \\
-  -d "{\\"status\\": \\"$STATUS\\", \\"note\\": \\"$NOTE\\", \\"sessionId\\": \\"$SESSION_ID\\", \\"agentId\\": \\"$AGENT_ID\\"}"
+  -d "$PAYLOAD"
 `;
 
 function ensureUpdateTaskScript() {
@@ -409,8 +418,8 @@ function ensureUpdateTaskScript() {
   meta[UPDATE_TASK_SCRIPT_NAME] = {
     name: 'update_task',
     emoji: '📋',
-    description: 'Report task progress to AOC Board. Usage: update_task.sh <taskId> <status> [note] [sessionId]',
-    execHint: `${SCRIPTS_DIR}/update_task.sh <taskId> <status> [note] [sessionId]`,
+    description: 'Report task progress to AOC Board. Usage: update_task.sh <taskId> <status> [note] [sessionId] [inputTokens] [outputTokens]',
+    execHint: `${SCRIPTS_DIR}/update_task.sh <taskId> <status> [note] [sessionId] [inputTokens] [outputTokens]`,
   };
   writeMeta(SCRIPTS_DIR, meta);
 

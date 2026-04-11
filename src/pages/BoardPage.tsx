@@ -1,32 +1,51 @@
-import React, { useCallback, useMemo, useState } from "react"
-import { Plus } from "lucide-react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
+import { Plus, Inbox, ListTodo, Zap, ScanSearch, OctagonX, CircleCheckBig } from "lucide-react"
 import { KanbanBoard, KanbanColumnDef } from "@/components/board/KanbanBoard"
 import { TaskCard } from "@/components/board/TaskCard"
 import { TaskFilterBar } from "@/components/board/TaskFilterBar"
 import { TaskCreateModal } from "@/components/board/TaskCreateModal"
 import { TaskDetailModal } from "@/components/board/TaskDetailModal"
 import { TaskStatusTicker } from "@/components/board/TaskStatusTicker"
+import { ProjectSwitcher } from "@/components/board/ProjectSwitcher"
+import { ProjectSettingsPanel } from "@/components/board/ProjectSettingsPanel"
+import { IntegrationWizard } from "@/components/board/IntegrationWizard"
+import { ProjectCreateWizard } from "@/components/board/ProjectCreateWizard"
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { useTaskStore, useAgentStore } from "@/stores"
+import { useProjectStore } from "@/stores/useProjectStore"
 import { api } from "@/lib/api"
-import { Task, TaskStatus } from "@/types"
+import { Task, TaskStatus, ProjectIntegration } from "@/types"
 
 const COLUMNS: KanbanColumnDef[] = [
-  { id: "backlog",     label: "Backlog",     emoji: "📥" },
-  { id: "todo",        label: "Todo",        emoji: "📋" },
-  { id: "in_progress", label: "In Progress", emoji: "⚡" },
-  { id: "in_review",   label: "In Review",   emoji: "🔍" },
-  { id: "blocked",     label: "Blocked",     emoji: "🚫" },
-  { id: "done",        label: "Done",        emoji: "✅" },
+  { id: "backlog",     label: "Backlog",     icon: Inbox,          },
+  { id: "todo",        label: "Todo",        icon: ListTodo,       },
+  { id: "in_progress", label: "In Progress", icon: Zap,            },
+  { id: "in_review",   label: "In Review",   icon: ScanSearch,     },
+  { id: "blocked",     label: "Blocked",     icon: OctagonX,       collapsible: true },
+  { id: "done",        label: "Done",        icon: CircleCheckBig, collapsible: true, defaultCollapsed: true },
 ]
 
 export default function BoardPage() {
   const { tasks, filters, setTasks, addTask, updateTask, removeTask, setFilters, clearFilters } = useTaskStore()
   const agents = useAgentStore((s) => s.agents)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
 
   const [createOpen, setCreateOpen]   = useState(false)
   const [editTask, setEditTask]       = useState<Task | null>(null)
   const [detailTask, setDetailTask]   = useState<Task | null>(null)
   const [activeId, setActiveId]       = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen]         = useState(false)
+  const [wizardOpen, setWizardOpen]             = useState(false)
+  const [createProjectOpen, setCreateProjectOpen] = useState(false)
+  const [editingIntegration, setEditingIntegration] = useState<ProjectIntegration | null>(null)
+  const [deleteTaskTarget, setDeleteTaskTarget] = useState<Task | null>(null)
+  const [deletingTask, setDeletingTask]         = useState(false)
+
+  useEffect(() => {
+    api.getTasks({ projectId: activeProjectId }).then(res => {
+      setTasks(res.tasks)
+    }).catch(console.error)
+  }, [activeProjectId])
 
   // Enrich tasks with agent info from agents store
   const enrichedTasks = useMemo(() => tasks.map(t => ({
@@ -48,7 +67,7 @@ export default function BoardPage() {
   const hasActiveFilters = !!(filters.agentId || filters.status || filters.priority || filters.q)
 
   async function handleCreate(data: Partial<Task>) {
-    const res = await api.createTask(data as Parameters<typeof api.createTask>[0])
+    const res = await api.createTask({ ...data, projectId: activeProjectId } as Parameters<typeof api.createTask>[0])
     addTask(res.task)
   }
 
@@ -59,11 +78,17 @@ export default function BoardPage() {
     if (detailTask?.id === id) setDetailTask(res.task)
   }
 
-  async function handleDelete(task: Task) {
-    if (!confirm(`Delete "${task.title}"?`)) return
-    await api.deleteTask(task.id)
-    removeTask(task.id)
-    if (detailTask?.id === task.id) setDetailTask(null)
+  async function confirmDeleteTask() {
+    if (!deleteTaskTarget) return
+    setDeletingTask(true)
+    try {
+      await api.deleteTask(deleteTaskTarget.id)
+      removeTask(deleteTaskTarget.id)
+      if (detailTask?.id === deleteTaskTarget.id) setDetailTask(null)
+    } finally {
+      setDeletingTask(false)
+      setDeleteTaskTarget(null)
+    }
   }
 
   const handleItemMove = useCallback(async (itemId: string, _from: string, toColumnId: string) => {
@@ -90,12 +115,18 @@ export default function BoardPage() {
             Assign, dispatch, and track agent tasks in real-time
           </p>
         </div>
-        <button
-          onClick={() => setCreateOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs font-semibold hover:bg-primary/20 transition-colors"
-        >
-          <Plus className="h-3.5 w-3.5" /> New Ticket
-        </button>
+        <div className="flex items-center gap-2">
+          <ProjectSwitcher
+            onSettingsOpen={() => setSettingsOpen(true)}
+            onNewProject={() => setCreateProjectOpen(true)}
+          />
+          <button
+            onClick={() => setCreateOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs font-semibold hover:bg-primary/20 transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5" /> New Ticket
+          </button>
+        </div>
       </div>
 
       {/* Filter bar */}
@@ -131,7 +162,7 @@ export default function BoardPage() {
                 agentAvatarPresetId={taskAgent?.avatarPresetId}
                 isDragging={activeId === task.id}
                 onEdit={(t) => { setEditTask(t); setCreateOpen(true) }}
-                onDelete={handleDelete}
+                onDelete={setDeleteTaskTarget}
                 onClick={setDetailTask}
               />
             )
@@ -177,6 +208,33 @@ export default function BoardPage() {
 
       {/* Realtime status change ticker */}
       <TaskStatusTicker />
+
+      <ProjectSettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onAddIntegration={() => { setSettingsOpen(false); setWizardOpen(true) }}
+        onEditIntegration={(i) => { setEditingIntegration(i); setSettingsOpen(false); setWizardOpen(true) }}
+      />
+      <ProjectCreateWizard
+        open={createProjectOpen}
+        onClose={() => setCreateProjectOpen(false)}
+      />
+      <IntegrationWizard
+        open={wizardOpen}
+        onClose={() => { setWizardOpen(false); setEditingIntegration(null) }}
+      />
+
+      {deleteTaskTarget && (
+        <ConfirmDialog
+          title="Delete Ticket"
+          description={`"${deleteTaskTarget.title}" will be permanently deleted and cannot be recovered.`}
+          confirmLabel="Delete"
+          destructive
+          loading={deletingTask}
+          onConfirm={confirmDeleteTask}
+          onCancel={() => setDeleteTaskTarget(null)}
+        />
+      )}
     </div>
   )
 }

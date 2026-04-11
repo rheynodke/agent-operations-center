@@ -8,23 +8,25 @@ import { api } from "@/lib/api"
 import { useAuthStore } from "@/stores"
 import {
   Zap, X, Calendar, User, Clock,
-  CheckCircle2, ArrowRight, ChevronDown
+  CheckCircle2, ArrowRight, ChevronDown,
+  FileText, Bot, History, BarChart3
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { PriorityIndicator } from "./PriorityIndicator"
 import { InReviewBanner } from "./InReviewBanner"
 import { AgentWorkSection } from "./AgentWorkSection"
+import { ExecutionStats } from "./ExecutionStats"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const STATUS_CONFIG: Record<string, { label: string; dot: string; text: string; bg: string; border: string }> = {
-  backlog:     { label: "Backlog",     dot: "bg-zinc-500",    text: "text-zinc-400",    bg: "bg-zinc-500/10",    border: "border-zinc-500/20" },
-  todo:        { label: "Todo",        dot: "bg-blue-400",    text: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/20" },
-  in_progress: { label: "In Progress", dot: "bg-amber-400",   text: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/20" },
-  in_review:   { label: "In Review",   dot: "bg-purple-400",  text: "text-purple-400",  bg: "bg-purple-500/10",  border: "border-purple-500/20" },
-  blocked:     { label: "Blocked",     dot: "bg-red-500",     text: "text-red-400",     bg: "bg-red-500/10",     border: "border-red-500/20" },
-  done:        { label: "Done",        dot: "bg-emerald-500", text: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20" },
+const STATUS_CONFIG: Record<string, { label: string; dot: string; text: string; bg: string; border: string; badge: string }> = {
+  backlog:     { label: "Backlog",     dot: "bg-zinc-500",    text: "text-zinc-400",    bg: "bg-zinc-500/10",    border: "border-zinc-500/20",    badge: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20" },
+  todo:        { label: "Todo",        dot: "bg-blue-400",    text: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/20",    badge: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
+  in_progress: { label: "In Progress", dot: "bg-amber-400",   text: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/20",   badge: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
+  in_review:   { label: "In Review",   dot: "bg-purple-400",  text: "text-purple-400",  bg: "bg-purple-500/10",  border: "border-purple-500/20",  badge: "bg-purple-500/10 text-purple-400 border-purple-500/20" },
+  blocked:     { label: "Blocked",     dot: "bg-red-500",     text: "text-red-400",     bg: "bg-red-500/10",     border: "border-red-500/20",     badge: "bg-red-500/10 text-red-400 border-red-500/20" },
+  done:        { label: "Done",        dot: "bg-emerald-500", text: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", badge: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
 }
 
 const PRIORITY_CONFIG: Record<string, { label: string; icon: string; text: string; bg: string; border: string }> = {
@@ -40,8 +42,8 @@ function PropChip({
   label, children, className,
 }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("flex flex-col gap-0.5", className)}>
-      <span className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/40 px-0.5">
+    <div className={cn("flex flex-col gap-1", className)}>
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-0.5">
         {label}
       </span>
       {children}
@@ -49,40 +51,50 @@ function PropChip({
   )
 }
 
-const PRIORITY_LABELS: Record<string, string> = {
-  low: "Low", medium: "Medium", high: "High", urgent: "Urgent",
-}
-
 const STATUS_LABELS: Record<string, string> = {
   backlog: "Backlog", todo: "Todo", in_progress: "In Progress",
   in_review: "In Review", blocked: "Blocked", done: "Done",
 }
 
-// ── Section header ────────────────────────────────────────────────────────────
+// ── Section wrapper — each section is a bordered card ────────────────────────
 
-function SectionHeader({ label, live }: { label: string; live?: boolean }) {
+function SectionCard({
+  icon: Icon,
+  label,
+  live,
+  children,
+  noPadBody,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  live?: boolean
+  children: React.ReactNode
+  noPadBody?: boolean
+}) {
   return (
-    <div className="flex items-center gap-2 mb-4">
-      <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest">{label}</h3>
-      {live && (
-        <span className="relative flex h-1.5 w-1.5">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+    <div className="rounded-xl border border-border/40 bg-card/40 overflow-hidden">
+      {/* Header bar */}
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border/30 bg-muted/10">
+        <Icon className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+        <span className="text-xs font-semibold text-foreground/80 tracking-wide">
+          {label}
         </span>
-      )}
+        {live && (
+          <span className="relative flex h-1.5 w-1.5 shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+          </span>
+        )}
+      </div>
+      {/* Body */}
+      <div className={noPadBody ? "" : "p-4"}>
+        {children}
+      </div>
     </div>
   )
 }
 
-// ── Activity event renderer ───────────────────────────────────────────────────
-
-function ActivityIcon({ type }: { type: string }) {
-  if (type === "status_change") return <ArrowRight className="h-3 w-3" />
-  if (type === "created") return <Circle className="h-3 w-3" />
-  if (type === "assignment") return <User className="h-3 w-3" />
-  if (type === "comment") return <ChevronRight className="h-3 w-3" />
-  return <Circle className="h-3 w-3" />
-}
+// ── (ActivityIcon removed — unused) ──────────────────────────────────────────
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -102,6 +114,7 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
   const [dispatching, setDispatching] = useState(false)
   const [dispatchMsg, setDispatchMsg] = useState("")
   const [reviewSubmitting, setReviewSubmitting] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
 
   useEffect(() => {
     if (!task || !open) return
@@ -146,7 +159,6 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
 
   const assignedAgent = task.agentId ? agents.find(a => a.id === task.agentId) : null
   const statusCfg = STATUS_CONFIG[task.status] ?? STATUS_CONFIG.backlog
-  const priorityCfg = task.priority ? PRIORITY_CONFIG[task.priority] : null
   const isLive = task.status === "in_progress"
 
   const completionNote = !task.sessionId && (task.status === "done" || task.status === "in_review")
@@ -162,36 +174,47 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
         {/* ── Header ── */}
         <div className="shrink-0 border-b border-border/40 bg-card/50">
 
-          {/* Top bar: close + dispatch */}
-          <div className="flex items-center justify-end gap-2 px-5 pt-4 pb-0">
-            {task.agentId && (
-              <Button
-                size="sm"
-                variant={isLive ? "outline" : "default"}
-                className="h-7 text-xs gap-1.5 px-3"
-                onClick={handleDispatch}
-                disabled={dispatching}
-              >
-                <Zap className="h-3 w-3" />
-                {dispatching ? "Dispatching…" : task.sessionId ? "Re-dispatch" : "Dispatch"}
-              </Button>
-            )}
-            <button
-              onClick={onClose}
-              className="h-7 w-7 rounded-md flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
+          {/* Header: code / title / actions */}
+          <div className="px-5 pt-3 pb-0">
+            {/* Row 1: code */}
+            <span className={cn(
+              "text-[10px] font-mono px-1 py-px rounded",
+              task.externalId
+                ? "text-emerald-500/70 bg-emerald-500/10"
+                : "text-muted-foreground/35 bg-muted/40"
+            )}>
+              {task.externalId ?? `#${task.id.slice(0, 6)}`}
+            </span>
+            {/* Row 2: title + actions */}
+            <div className="flex items-start gap-3 mt-0.5">
+              <h1 className="flex-1 min-w-0 text-lg font-semibold text-foreground leading-snug tracking-tight">
+                {task.title}
+              </h1>
+              <div className="flex items-center gap-2 shrink-0">
+                {task.agentId && (
+                  <Button
+                    size="sm"
+                    variant={isLive ? "outline" : "default"}
+                    className="h-7 text-xs gap-1.5 px-3"
+                    onClick={handleDispatch}
+                    disabled={dispatching}
+                  >
+                    <Zap className="h-3 w-3" />
+                    {dispatching ? "Dispatching…" : task.sessionId ? "Continue" : "Dispatch"}
+                  </Button>
+                )}
+                <button
+                  onClick={onClose}
+                  className="h-7 w-7 rounded-md flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-muted/50 transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
           </div>
 
-          {/* Title */}
-          <div className="px-6 pt-2 pb-5">
-            <h1 className="text-xl font-semibold text-foreground leading-snug tracking-tight mb-4">
-              {task.title}
-            </h1>
-
-            {/* Property grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3">
+          <div className="px-6 pt-3 pb-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3 p-3 rounded-xl bg-muted/10 border border-border/30">
 
               {/* Status */}
               <PropChip label="Status">
@@ -202,7 +225,6 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                   )}>
                     <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", statusCfg.dot)} />
                     <span>{statusCfg.label}</span>
-                    <ChevronDown className="h-3 w-3 ml-auto shrink-0 opacity-60" />
                   </SelectTrigger>
                   <SelectContent>
                     {Object.entries(STATUS_CONFIG).map(([v, cfg]) => (
@@ -222,7 +244,6 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                 <Select value={task.priority || "medium"} onValueChange={v => onUpdate(task.id, { priority: v })}>
                   <SelectTrigger className="h-7 text-xs font-medium rounded-md border border-border/40 px-2.5 gap-2 w-full focus:ring-0 focus:ring-offset-0 bg-muted/20">
                     <PriorityIndicator priority={task.priority || "medium"} showLabel />
-                    <ChevronDown className="h-3 w-3 ml-auto shrink-0 opacity-60" />
                   </SelectTrigger>
                   <SelectContent>
                     {["urgent", "high", "medium", "low"].map(v => (
@@ -252,13 +273,11 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                         <span className="font-medium text-foreground/90 truncate">
                           {assignedAgent.name || assignedAgent.id}
                         </span>
-                        <ChevronDown className="h-3 w-3 ml-auto shrink-0 opacity-60" />
                       </>
                     ) : (
                       <>
                         <User className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
                         <span className="text-muted-foreground/60">Unassigned</span>
-                        <ChevronDown className="h-3 w-3 ml-auto shrink-0 opacity-60" />
                       </>
                     )}
                   </SelectTrigger>
@@ -312,6 +331,17 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
               </div>
             )}
 
+            {/* Sync source badge */}
+            {task.externalSource && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/30 border border-border/40 rounded px-2 py-1 w-fit mt-3">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-emerald-400 shrink-0">
+                  <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+                </svg>
+                <span>Synced from {task.externalSource === 'google_sheets' ? 'Google Sheets' : task.externalSource}</span>
+                {task.externalId && <span className="font-mono opacity-60">· {task.externalId}</span>}
+              </div>
+            )}
+
             {/* Dispatch feedback */}
             {dispatchMsg && (
               <p className="text-xs mt-2 text-muted-foreground flex items-center gap-1.5">
@@ -323,7 +353,7 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
         </div>
 
         {/* ── Body ── */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-7 min-h-0">
+        <div className="flex-1 overflow-y-auto min-h-0 px-6 py-5 space-y-4">
 
           {/* In Review Banner */}
           {task.status === "in_review" && (
@@ -334,21 +364,43 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
             />
           )}
 
+          {/* Execution Stats — collapsible */}
+          {(task.sessionId || task.inputTokens != null || task.cost != null) && (
+            <div className="rounded-xl border border-border/40 bg-card/40 overflow-hidden">
+              <button
+                onClick={() => setStatsOpen(o => !o)}
+                className="w-full flex items-center gap-2.5 px-4 py-2.5 border-b border-border/30 bg-muted/10 hover:bg-muted/20 transition-colors"
+              >
+                <BarChart3 className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                <span className="text-xs font-semibold text-foreground/80 tracking-wide">
+                  Execution Stats
+                </span>
+                <ChevronDown className={cn(
+                  "h-3 w-3 text-muted-foreground/40 transition-transform ml-auto shrink-0",
+                  statsOpen && "rotate-180"
+                )} />
+              </button>
+              {statsOpen && (
+                <div className="p-4">
+                  <ExecutionStats task={task} activity={activity} />
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Description */}
           {task.description && (
-            <section>
-              <SectionHeader label="Description" />
+            <SectionCard icon={FileText} label="Description">
               <p className="text-sm text-foreground/80 leading-relaxed whitespace-pre-wrap">
                 {task.description}
               </p>
-            </section>
+            </SectionCard>
           )}
 
           {/* Agent Work */}
-          <section>
-            <SectionHeader label="Agent Work" live={isLive && !!task.sessionId} />
+          <SectionCard icon={Bot} label="Agent Work" live={isLive && !!task.sessionId} noPadBody>
             {!hasAgentWork ? (
-              <div className="rounded-lg border border-border/30 bg-muted/10 py-10 text-center space-y-2">
+              <div className="py-10 text-center space-y-2">
                 <div className="w-8 h-8 rounded-full bg-muted/30 flex items-center justify-center mx-auto mb-3">
                   <Zap className="h-4 w-4 text-muted-foreground/40" />
                 </div>
@@ -360,18 +412,20 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                 )}
               </div>
             ) : (
-              <AgentWorkSection
-                sessionKey={task.sessionId || ""}
-                isActive={isActive && open}
-                taskStatus={task.status}
-                completionNoteFallback={completionNote}
-              />
+              <div className="p-4">
+                <AgentWorkSection
+                  sessionKey={task.sessionId || ""}
+                  taskId={task.id}
+                  isActive={isActive && open}
+                  taskStatus={task.status}
+                  completionNoteFallback={completionNote}
+                />
+              </div>
             )}
-          </section>
+          </SectionCard>
 
           {/* Activity */}
-          <section>
-            <SectionHeader label="Activity" />
+          <SectionCard icon={History} label="Activity">
             {loadingActivity ? (
               <div className="flex items-center gap-2 text-xs text-muted-foreground/50 py-4 justify-center">
                 <Clock className="h-3.5 w-3.5 animate-pulse" />
@@ -469,7 +523,7 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                 </div>
               </div>
             )}
-          </section>
+          </SectionCard>
 
         </div>
       </DialogContent>

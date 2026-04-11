@@ -13,7 +13,10 @@ import { KanbanColumn } from "./KanbanColumn"
 export interface KanbanColumnDef {
   id: string
   label: string
-  emoji: string
+  emoji?: string
+  icon?: React.ComponentType<{ className?: string }>
+  collapsible?: boolean
+  defaultCollapsed?: boolean
 }
 
 interface KanbanBoardProps<T extends { id: string }> {
@@ -69,7 +72,16 @@ export function KanbanBoard<T extends { id: string }>({
         {columns.map((col) => {
           const colItems = items.filter((i) => getColumnId(i) === col.id)
           return (
-            <KanbanColumn key={col.id} id={col.id} label={col.label} emoji={col.emoji} count={colItems.length}>
+            <KanbanColumn
+              key={col.id}
+              id={col.id}
+              label={col.label}
+              emoji={col.emoji}
+              icon={col.icon}
+              count={colItems.length}
+              collapsible={col.collapsible}
+              defaultCollapsed={col.defaultCollapsed}
+            >
               {colItems.map((item) => renderItem(item))}
             </KanbanColumn>
           )

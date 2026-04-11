@@ -300,10 +300,9 @@ function provisionAgent(opts, userId) {
   // 3. Mutate openclaw.json ──────────────────────────────────────────────────
 
   // 3a. Add to agents.list
-  // Build AOC env vars so the agent can call update_task.sh
-  const aocToken = process.env.DASHBOARD_TOKEN || '';
-  const aocPort = process.env.PORT || '18800';
-  const aocUrl = `http://localhost:${aocPort}`;
+  // Note: per-agent "env" is not supported in OpenClaw 2026.4.8+
+  // AOC env vars (AOC_TOKEN, AOC_URL, AOC_AGENT_ID) are injected at runtime
+  // via the agent's update_task.sh script, not via openclaw.json agent config.
 
   const agentEntry = {
     id,
@@ -318,11 +317,6 @@ function provisionAgent(opts, userId) {
     ...(model ? { model } : {}),
     skills: [],
     ...(fsWorkspaceOnly === false ? { tools: { fs: { workspaceOnly: false } } } : {}),
-    env: {
-      AOC_TOKEN: aocToken,
-      AOC_URL: aocUrl,
-      AOC_AGENT_ID: id,
-    },
   };
 
   if (!config.agents) config.agents = {};

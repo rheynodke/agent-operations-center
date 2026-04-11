@@ -171,6 +171,11 @@ export interface Task {
   completedAt?: string
   tags?: string[]
   cost?: number
+  inputTokens?: number
+  outputTokens?: number
+  projectId?: string
+  externalId?: string
+  externalSource?: string
 }
 
 export interface TaskActivity {
@@ -577,4 +582,43 @@ export interface FileVersion {
 
 export interface FileVersionDetail extends FileVersion {
   content: string
+}
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+export interface Project {
+  id: string
+  name: string
+  color: string
+  description?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface IntegrationColumnMapping {
+  external_id: string
+  title: string
+  description?: string
+  priority?: string
+  status?: string
+  tags?: string
+}
+
+export interface IntegrationConfig {
+  spreadsheetId: string
+  sheetName: string
+  mapping: IntegrationColumnMapping
+}
+
+export interface ProjectIntegration {
+  id: string
+  projectId: string
+  type: 'google_sheets'
+  hasCredentials: boolean
+  config: IntegrationConfig
+  syncIntervalMs?: number
+  enabled: boolean
+  lastSyncedAt?: string
+  lastSyncError?: string
+  createdAt: string
 }

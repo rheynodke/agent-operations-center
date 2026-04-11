@@ -6,12 +6,77 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { WebSocketServer } = require('ws');
 const path = require('path');
+const fs = require('fs');
 const parsers = require('./lib/index.cjs'); // modular barrel — replaces parsers.cjs
 const { LiveFeedWatcher } = require('./lib/watchers.cjs');
 const db = require('./lib/db.cjs');
 const { gatewayProxy } = require('./lib/gateway-ws.cjs');
 const aiLib = require('./lib/ai.cjs');
 const versioning = require('./lib/versioning.cjs');
+const integrations = require('./lib/integrations/index.cjs');
+const { AGENTS_DIR } = require('./lib/config.cjs');
+
+/**
+ * Find all gateway JSONL session files for an agent that contain a given taskId,
+ * parse them, and return a combined chronologically-ordered message array.
+ * Used to reconstruct full multi-dispatch history for a ticket (1 Ticket = 1 Session,
+ * but gateway creates a new JSONL file per chatSend round).
+ */
+function loadAllJSONLMessagesForTask(agentId, taskId) {
+  try {
+    const sessionsDir = path.join(AGENTS_DIR, agentId, 'sessions');
+    if (!fs.existsSync(sessionsDir)) return [];
+
+    const files = fs.readdirSync(sessionsDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => path.join(sessionsDir, f));
+
+    // Filter files that mention the taskId (agent tools return task context containing taskId)
+    const matchingFiles = files.filter(f => {
+      try { return fs.readFileSync(f, 'utf8').includes(taskId); }
+      catch { return false; }
+    });
+
+    if (matchingFiles.length === 0) return [];
+
+    // Parse each file and normalize messages to GatewayMessage-compatible format
+    const allMessages = [];
+    for (const file of matchingFiles) {
+      const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type !== 'message' || !entry.message) continue;
+          const { role, content, toolCallId, toolName } = entry.message;
+          if (!role) continue;
+          allMessages.push({
+            id: entry.id,
+            role,
+            content,
+            toolCallId,
+            toolName,
+            timestamp: entry.timestamp ? new Date(entry.timestamp).getTime() : 0,
+            _file: path.basename(file, '.jsonl'), // for dedup
+          });
+        } catch { /* skip malformed lines */ }
+      }
+    }
+
+    // Deduplicate by id, sort chronologically
+    const seen = new Set();
+    const deduped = allMessages.filter(m => {
+      if (!m.id || seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
+    deduped.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+    return deduped;
+  } catch (err) {
+    console.warn('[loadAllJSONLMessagesForTask]', err.message);
+    return [];
+  }
+}
 
 /** Shorthand: save a version snapshot after a successful file write */
 function vSave(scopeKey, content, req, op = 'edit') {
@@ -1195,8 +1260,8 @@ app.get('/api/sessions/:agentId/:sessionId/messages', db.authMiddleware, (req, r
 
 app.get('/api/tasks', db.authMiddleware, (req, res) => {
   try {
-    const { agentId, status, priority, tag, q } = req.query;
-    const tasks = db.getAllTasks({ agentId, status, priority, tag, q });
+    const { agentId, status, priority, tag, q, projectId } = req.query;
+    const tasks = db.getAllTasks({ agentId, status, priority, tag, q, projectId });
     res.json({ tasks });
   } catch (err) {
     console.error('[api/tasks GET]', err);
@@ -1222,7 +1287,7 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
   try {
     const { id } = req.params;
     // agentId in body = actor identifier (from agent script); assignTo = new assignment (from UI)
-    const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId } = req.body;
+    const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId, inputTokens, outputTokens } = req.body;
     const before = db.getTask(id);
     if (!before) return res.status(404).json({ error: 'Task not found' });
 
@@ -1232,8 +1297,10 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
     if (description !== undefined) patch.description = description;
     if (status      !== undefined) patch.status      = status;
     if (priority    !== undefined) patch.priority    = priority;
-    if (tags        !== undefined) patch.tags        = tags;
-    if (cost        !== undefined) patch.cost        = cost;
+    if (tags         !== undefined) patch.tags         = tags;
+    if (cost         !== undefined) patch.cost         = cost;
+    if (inputTokens  !== undefined && inputTokens  !== '') patch.inputTokens  = inputTokens;
+    if (outputTokens !== undefined && outputTokens !== '') patch.outputTokens = outputTokens;
     // Only update sessionId if a non-empty value is provided — empty string from
     // update_task.sh (missing 4th param) must not erase the existing sessionId.
     if (sessionId !== undefined && sessionId !== '') patch.sessionId = sessionId;
@@ -1252,16 +1319,38 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
       db.addTaskActivity({ taskId: id, type: 'comment', actor, note });
     }
 
-    // Auto-dispatch: if ticket just moved to 'todo' with an agent assigned, dispatch immediately
-    const justMovedToTodo = status !== undefined && status === 'todo' && before.status !== 'todo';
-    if (justMovedToTodo && after.agentId && gatewayProxy.isConnected) {
-      dispatchTaskToAgent(after).catch(err =>
+    // Auto-dispatch: if ticket moved to 'todo' or back to 'in_progress' (change request), auto-continue
+    const shouldAutoDispatch =
+      status !== undefined &&
+      (status === 'todo' || (status === 'in_progress' && before.status === 'in_review')) &&
+      before.status !== status &&
+      after.agentId &&
+      after.sessionId &&
+      gatewayProxy.isConnected;
+    if (shouldAutoDispatch) {
+      const changeRequestNote = note || null;
+      dispatchTaskToAgent(after, { changeRequestNote }).catch(err =>
         console.warn('[auto-dispatch]', after.id, err.message)
       );
     }
 
     broadcastTasksUpdate();
     res.json({ task: after });
+
+    // Fire-and-forget: push status change to external source if applicable
+    if (patch.status && patch.status !== before.status && after.externalId && after.externalSource) {
+      const projectIntegrationsList = db.getProjectIntegrations(after.projectId || 'general');
+      const integration = projectIntegrationsList.find(i => i.type === after.externalSource);
+      if (integration) {
+        const raw = db.getIntegrationRaw(integration.id);
+        if (raw) {
+          const adapter = integrations.getAdapter(raw.type);
+          adapter.pushStatus(raw.config, after.externalId, patch.status).catch(err => {
+            console.error('[integrations] pushStatus failed:', err.message);
+          });
+        }
+      }
+    }
   } catch (err) {
     console.error('[api/tasks PATCH]', err);
     res.status(500).json({ error: 'Failed to update task' });
@@ -1293,21 +1382,36 @@ app.get('/api/tasks/:id/activity', db.authMiddleware, (req, res) => {
 });
 
 // ── Shared dispatch logic (called by manual dispatch, PATCH hook, and startup sweep) ──
-async function dispatchTaskToAgent(task) {
+async function dispatchTaskToAgent(task, opts = {}) {
   if (!task.agentId) throw new Error('Task has no assigned agent');
   if (!gatewayProxy.isConnected) throw new Error('Gateway not connected');
 
-  const sessionResult = await gatewayProxy.sessionsCreate(task.agentId);
-  const sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
-  if (!sessionKey) throw new Error('Gateway did not return a session key');
+  // ── 1 Ticket = 1 Session: reuse existing session if available ──
+  const isFirstDispatch = !task.sessionId;
+  let sessionKey;
+
+  if (isFirstDispatch) {
+    // First dispatch → create new session
+    const sessionResult = await gatewayProxy.sessionsCreate(task.agentId);
+    sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
+    if (!sessionKey) throw new Error('Gateway did not return a session key');
+  } else {
+    // Subsequent dispatch → reuse the same session (context preserved)
+    sessionKey = task.sessionId;
+  }
 
   const aocToken = process.env.DASHBOARD_TOKEN || '';
   const aocPort  = process.env.PORT || '18800';
   const aocUrl   = `http://localhost:${aocPort}`;
   const curlBase = `curl -sf -X PATCH ${aocUrl}/api/tasks/${task.id} -H "Authorization: Bearer ${aocToken}" -H "Content-Type: application/json"`;
   const tagsLine = (task.tags || []).length > 0 ? `Tags: ${task.tags.join(', ')}` : '';
-    const message = [
-      `📋 **Task Assigned: ${task.title}**`,
+
+  let message;
+
+  if (isFirstDispatch) {
+    // Full task briefing for first dispatch
+    message = [
+      `📋 **Task: ${task.title}**`,
       ``,
       `Task ID: \`${task.id}\``,
       `Priority: ${task.priority || 'medium'}`,
@@ -1320,33 +1424,58 @@ async function dispatchTaskToAgent(task) {
       ``,
       `**Method 1 — Script (preferred):**`,
       `\`update_task.sh ${task.id} in_progress "Starting..." $SESSION_KEY\``,
-      `\`update_task.sh ${task.id} in_review "Summary of completed work"\``,
+      `\`update_task.sh ${task.id} in_review "Summary" "" <input_tokens> <output_tokens>\``,
       `\`update_task.sh ${task.id} blocked "Reason here"\``,
+      ``,
+      `Replace <input_tokens> and <output_tokens> with your actual token usage if available (integers, omit if unknown).`,
       ``,
       `**Method 2 — Direct curl (fallback if script fails):**`,
       `\`${curlBase} -d '{"status":"in_progress","note":"Starting"}'\``,
-      `\`${curlBase} -d '{"status":"in_review","note":"Summary here"}'\``,
+      `\`${curlBase} -d '{"status":"in_review","note":"Summary","inputTokens":1234,"outputTokens":567}'\``,
       `\`${curlBase} -d '{"status":"blocked","note":"Reason here"}'\``,
       ``,
       `When your work is complete, set status to "in_review" — NOT "done". A human will review and approve.`,
       `If you cannot complete the task for ANY reason, ALWAYS report it as "blocked".`,
     ].filter(l => l !== null && l !== undefined).join('\n');
-
+  } else {
+    // Continue message for re-dispatch — agent already has full context from prior messages
+    const changeNote = opts.changeRequestNote;
+    message = changeNote
+      ? [
+          `---`,
+          `⚠️ **Change Request from reviewer:**`,
+          changeNote,
+          ``,
+          `Please address the feedback above. You already have the full context from your previous work on this ticket.`,
+          `When done, update status to "in_review" again.`,
+        ].join('\n')
+      : [
+          `---`,
+          `🔄 **Continue working on this ticket.**`,
+          ``,
+          `You already have the full context from your previous work. Please continue where you left off.`,
+          `When done, update status to "in_review".`,
+        ].join('\n');
+  }
 
   await gatewayProxy.chatSend(sessionKey, message);
 
-  db.updateTask(task.id, { sessionId: sessionKey, status: 'in_progress' });
+  // Update task — always use the same sessionId (no allSessionIds tracking)
+  const patch = { sessionId: sessionKey, status: 'in_progress' };
+  db.updateTask(task.id, patch);
   db.addTaskActivity({
     taskId: task.id,
     type: 'status_change',
     fromValue: task.status,
     toValue: 'in_progress',
     actor: 'system',
-    note: `Dispatched to agent ${task.agentId}`,
+    note: isFirstDispatch
+      ? `Dispatched to agent ${task.agentId}`
+      : `Continued by agent ${task.agentId}${opts.changeRequestNote ? ' (change request)' : ''}`,
   });
   broadcastTasksUpdate();
 
-  console.log(`[dispatch] Task ${task.id} → ${task.agentId} (session: ${sessionKey})`);
+  console.log(`[dispatch] Task ${task.id} → ${task.agentId} (session: ${sessionKey}, first: ${isFirstDispatch})`);
   return { sessionKey, agentId: task.agentId };
 }
 
@@ -1364,6 +1493,178 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 })
+
+// ─── Projects ─────────────────────────────────────────────────────────────────
+app.get('/api/projects', db.authMiddleware, (_req, res) => {
+  res.json({ projects: db.getAllProjects() });
+});
+
+app.post('/api/projects', db.authMiddleware, (req, res) => {
+  try {
+    const { name, color, description } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const project = db.createProject({ name, color, description });
+    res.json({ project });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/projects/:id', db.authMiddleware, (req, res) => {
+  try {
+    const { name, color, description } = req.body;
+    const project = db.updateProject(req.params.id, { name, color, description });
+    if (!project) return res.status(404).json({ error: 'not found' });
+    res.json({ project });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/projects/:id', db.authMiddleware, (req, res) => {
+  try {
+    if (req.params.id === 'general') return res.status(403).json({ error: 'Cannot delete the default project' });
+    db.deleteProject(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Project Integrations ──────────────────────────────────────────────────────
+app.get('/api/projects/:id/integrations', db.authMiddleware, (req, res) => {
+  res.json({ integrations: db.getProjectIntegrations(req.params.id) });
+});
+
+app.post('/api/projects/:id/integrations', db.authMiddleware, async (req, res) => {
+  try {
+    const { type, credentials, spreadsheetId, sheetName, mapping, syncIntervalMs, enabled } = req.body;
+    if (!type) return res.status(400).json({ error: 'type is required' });
+
+    const adapter = integrations.getAdapter(type);
+
+    // Encrypt credentials before storing
+    const encryptedCredentials = credentials ? integrations.encrypt(
+      typeof credentials === 'string' ? credentials : JSON.stringify(credentials)
+    ) : undefined;
+
+    const config = { spreadsheetId, sheetName, mapping };
+    if (encryptedCredentials) config.credentials = encryptedCredentials;
+
+    const validation = adapter.validateConfig(config);
+    if (!validation.valid) return res.status(400).json({ error: validation.error });
+
+    const integration = db.createIntegration({
+      projectId: req.params.id,
+      type,
+      config,
+      syncIntervalMs: syncIntervalMs || null,
+      enabled: enabled !== false,
+    });
+
+    // Schedule if interval set
+    if (integration.syncIntervalMs && integration.enabled) {
+      integrations.scheduleIntegration(integration);
+    }
+
+    // Strip credentials before returning
+    const { credentials: _c, ...safeConfig } = integration.config;
+    res.json({ integration: { ...integration, config: safeConfig, hasCredentials: !!integration.config.credentials } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/projects/:id/integrations/:iid', db.authMiddleware, async (req, res) => {
+  try {
+    const existing = db.getIntegrationRaw(req.params.iid);
+    if (!existing) return res.status(404).json({ error: 'not found' });
+
+    const { credentials, spreadsheetId, sheetName, mapping, syncIntervalMs, enabled } = req.body;
+
+    const newConfig = { ...existing.config };
+    if (spreadsheetId !== undefined) newConfig.spreadsheetId = spreadsheetId;
+    if (sheetName     !== undefined) newConfig.sheetName = sheetName;
+    if (mapping       !== undefined) newConfig.mapping = mapping;
+    if (credentials) {
+      newConfig.credentials = integrations.encrypt(
+        typeof credentials === 'string' ? credentials : JSON.stringify(credentials)
+      );
+    }
+
+    const patch = { config: newConfig };
+    if (syncIntervalMs !== undefined) patch.syncIntervalMs = syncIntervalMs || null;
+    if (enabled        !== undefined) patch.enabled = enabled;
+
+    const updated = db.updateIntegration(req.params.iid, patch);
+    integrations.scheduleIntegration(updated); // reschedule (handles enable/disable/interval change)
+    const { credentials: _c, ...safeConfig } = updated.config;
+    res.json({ integration: { ...updated, config: safeConfig, hasCredentials: !!updated.config.credentials } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/projects/:id/integrations/:iid', db.authMiddleware, (req, res) => {
+  try {
+    integrations.unscheduleIntegration(req.params.iid);
+    db.deleteIntegration(req.params.iid);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Test connection — credentials passed in body, not yet saved
+app.post('/api/projects/:id/integrations/:iid/test', db.authMiddleware, async (req, res) => {
+  try {
+    const { type, credentials, spreadsheetId } = req.body;
+    const adapterType = type || 'google_sheets';
+    const adapter = integrations.getAdapter(adapterType);
+    const encCreds = credentials ? integrations.encrypt(
+      typeof credentials === 'string' ? credentials : JSON.stringify(credentials)
+    ) : undefined;
+    const result = await adapter.testConnection({ spreadsheetId, credentials: encCreds });
+    res.json(result);
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// Get column headers for a given sheet name
+// iid can be '_new' (during wizard before integration is saved) or an existing integration id
+app.post('/api/projects/:id/integrations/:iid/headers', db.authMiddleware, async (req, res) => {
+  try {
+    const { sheetName, credentials, spreadsheetId } = req.body;
+    let config;
+    if (req.params.iid === '_new') {
+      const encCreds = credentials ? integrations.encrypt(
+        typeof credentials === 'string' ? credentials : JSON.stringify(credentials)
+      ) : undefined;
+      config = { spreadsheetId, credentials: encCreds };
+    } else {
+      const raw = db.getIntegrationRaw(req.params.iid);
+      if (!raw) return res.status(404).json({ error: 'not found' });
+      config = raw.config;
+    }
+    const adapter = integrations.getAdapter('google_sheets');
+    const headers = await adapter.getHeaders(config, sheetName);
+    res.json({ headers });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual sync trigger — responds immediately, runs sync async
+app.post('/api/projects/:id/integrations/:iid/sync', db.authMiddleware, async (req, res) => {
+  const integration = db.getIntegrationRaw(req.params.iid);
+  if (!integration) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true, message: 'Sync started' });
+  integrations.syncIntegration(req.params.iid).catch(err => {
+    console.error('[integrations] manual sync error:', err.message);
+  });
+});
+
 // Cron — delivery targets (known channels + contacts from sessions)
 app.get('/api/cron/delivery-targets', db.authMiddleware, (req, res) => {
   try {
@@ -1903,16 +2204,67 @@ app.post('/api/chat/sessions', db.authMiddleware, async (req, res) => {
   }
 });
 
+// Get merged chat history for all sessions of a task
+app.get('/api/chat/history-multi', db.authMiddleware, async (req, res) => {
+  try {
+    if (!gatewayProxy.isConnected) {
+      return res.status(503).json({ error: 'Not connected to Gateway' });
+    }
+    const sessionKeys = (req.query.keys || '').split(',').map(k => k.trim()).filter(Boolean);
+    if (!sessionKeys.length) return res.json({ messages: [], sessions: [] });
+
+    const maxChars = parseInt(req.query.maxChars || '40000', 10);
+    const results = await Promise.allSettled(
+      sessionKeys.map(key =>
+        gatewayProxy.chatHistory(key, maxChars).then(r => ({ key, messages: r.messages || [] }))
+      )
+    );
+
+    // Subscribe to latest session for real-time updates
+    const lastKey = sessionKeys[sessionKeys.length - 1];
+    gatewayProxy.sessionsMessagesSubscribe(lastKey).catch(() => {});
+
+    const sessions = results.map((r, i) => ({
+      key: sessionKeys[i],
+      messages: r.status === 'fulfilled' ? r.value.messages : [],
+      ok: r.status === 'fulfilled',
+    }));
+
+    res.json({ sessions });
+  } catch (err) {
+    console.error('[api/chat/history-multi]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get chat history for a session
 app.get('/api/chat/history/:sessionKey', db.authMiddleware, async (req, res) => {
   try {
     if (!gatewayProxy.isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
+    const { sessionKey } = req.params;
+    const taskId = req.query.taskId;
     const maxChars = parseInt(req.query.maxChars || '80000', 10);
-    const result = await gatewayProxy.chatHistory(req.params.sessionKey, maxChars);
+
     // Also subscribe to real-time updates
-    gatewayProxy.sessionsMessagesSubscribe(req.params.sessionKey).catch(() => {});
+    gatewayProxy.sessionsMessagesSubscribe(sessionKey).catch(() => {});
+
+    // If taskId provided, merge all JSONL dispatch files for this task.
+    // Gateway creates a new JSONL file per chatSend round, so each "Continue"
+    // dispatch lives in a separate file — we need to combine them all.
+    if (taskId) {
+      // Extract agentId from session key: "agent:tadaki:dashboard:..." → "tadaki"
+      const agentId = sessionKey.split(':')[1];
+      if (agentId) {
+        const merged = loadAllJSONLMessagesForTask(agentId, taskId);
+        if (merged.length > 0) {
+          return res.json({ messages: merged });
+        }
+      }
+    }
+
+    const result = await gatewayProxy.chatHistory(sessionKey, maxChars);
     res.json(result);
   } catch (err) {
     console.error('[api/chat/history]', err);
@@ -2135,6 +2487,17 @@ async function sweepPendingTasks() {
 // ─── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   await db.initDatabase();
+
+  function broadcast(event) {
+    const msg = JSON.stringify({ ...event, timestamp: event.timestamp || new Date().toISOString() });
+    wss.clients.forEach(client => {
+      if (client.readyState === client.OPEN) client.send(msg);
+    });
+  }
+
+  integrations.init(db, broadcast);
+  integrations.startScheduler();
+
   feedWatcher.start();
   parsers.ensureAocEnvFile();   // write ~/.openclaw/.aoc_env with current token
   syncTaskScriptForAllAgents(); // non-blocking, fire-and-forget

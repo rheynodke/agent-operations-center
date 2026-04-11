@@ -24,6 +24,15 @@ function isSystemMessage(text: string): boolean {
   return /^HEARTBEAT_OK$/i.test(t) || /^\[HEARTBEAT\]$/i.test(t) || t === ""
 }
 
+/** Strip provider-injected markers from assistant response text */
+function sanitizeResult(text: string): string {
+  return text
+    .replace(/\[\[reply_to_current\]\]/gi, "")
+    .replace(/\[\[.*?\]\]/g, "")        // any [[...]] marker
+    .replace(/^---\s*\n/gm, "")         // stray dividers
+    .trim()
+}
+
 // ── Markdown ──────────────────────────────────────────────────────────────────
 
 const ReactMarkdown = lazy(() => import("react-markdown"))
@@ -74,11 +83,16 @@ interface ToolCallItem {
   isError?: boolean
 }
 
+// Unified ordered event — preserves sequence of thinking / tool calls / intermediate texts
+type TurnEvent =
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; item: ToolCallItem }
+  | { kind: "intermediate"; text: string }
+
 interface Turn {
   id: number
-  thinkingBlocks: string[]
-  toolCalls: ToolCallItem[]
-  intermediateText?: string
+  events: TurnEvent[]      // ordered: thinking → tools → intermediate texts, in actual sequence
+  intermediateText?: string // final result text (last assistant response in this turn)
   isStreaming?: boolean
 }
 
@@ -111,7 +125,11 @@ function ThinkingBlock({ text }: { text: string }) {
 
 function ToolCallBlock({ item, index }: { item: ToolCallItem; index: number }) {
   const [open, setOpen] = useState(false)
-  const inputStr = typeof item.input === "object" ? JSON.stringify(item.input, null, 2) : (item.input || "")
+
+  const rawInput = item.input
+  const inputStr = rawInput == null || (typeof rawInput === "object" && Object.keys(rawInput as object).length === 0)
+    ? ""
+    : typeof rawInput === "object" ? JSON.stringify(rawInput, null, 2) : String(rawInput)
   const resultStr = typeof item.result === "object" ? JSON.stringify(item.result, null, 2) : (item.result || "")
   return (
     <div className={cn("rounded-md border overflow-hidden", item.isError ? "border-destructive/30 bg-destructive/3" : "border-amber-500/20 bg-amber-500/3")}>
@@ -151,71 +169,122 @@ function ToolCallBlock({ item, index }: { item: ToolCallItem; index: number }) {
   )
 }
 
-function TurnGroup({ turn, isLast }: { turn: Turn; isLast: boolean }) {
-  // Always collapsed by default — user opens explicitly
+function ProcessLogs({ events }: { events: TurnEvent[] }) {
   const [open, setOpen] = useState(false)
-  const hasEvents = turn.thinkingBlocks.length > 0 || turn.toolCalls.length > 0 || !!turn.intermediateText
-
-  const toolNames = turn.toolCalls.map(tc => tc.name).filter(n => n !== "tool_result")
-  const uniqueTools = [...new Set(toolNames)]
-
+  const toolCount = events.filter(e => e.kind === "tool").length
+  if (events.length === 0) return null
   return (
-    <div className="rounded-lg border border-border/40 overflow-hidden">
+    <div>
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-muted/20 hover:bg-muted/30 text-left transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/20 text-left transition-colors"
       >
-        {/* Turn label */}
-        <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
-          Turn {turn.id + 1}
-          {isLast && turn.isStreaming && (
-            <span className="relative inline-flex h-1.5 w-1.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
-            </span>
-          )}
+        <Terminal className="h-3 w-3 text-muted-foreground/40 shrink-0" />
+        <span className="text-[10px] text-muted-foreground/50 font-medium">Process logs</span>
+        {toolCount > 0 && (
+          <span className="text-[10px] text-muted-foreground/35 font-mono tabular-nums">
+            {toolCount} tool{toolCount !== 1 ? "s" : ""}
+          </span>
+        )}
+        <span className="ml-auto text-muted-foreground/35 shrink-0">
+          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         </span>
-
-        {/* Summary chips */}
-        <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden">
-          {turn.thinkingBlocks.length > 0 && (
-            <span className="flex items-center gap-1 text-[10px] text-purple-400/80 bg-purple-500/10 border border-purple-500/20 rounded px-1.5 py-0.5 shrink-0">
-              <Brain className="h-2.5 w-2.5" />
-              thinking
-            </span>
-          )}
-          {uniqueTools.slice(0, 4).map((name, i) => (
-            <span key={i} className="flex items-center gap-1 text-[10px] text-amber-400/80 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 shrink-0">
-              <Terminal className="h-2.5 w-2.5" />
-              {name}
-            </span>
-          ))}
-          {(turn.toolCalls.length > uniqueTools.slice(0, 4).length || toolNames.length < turn.toolCalls.length) && (
-            <span className="text-[10px] text-muted-foreground/40 shrink-0">
-              +{turn.toolCalls.length - Math.min(uniqueTools.slice(0, 4).length, turn.toolCalls.length)} more
-            </span>
-          )}
+      </button>
+      {open && (
+        <div className="px-3 pb-2 space-y-1.5 border-t border-border/20 bg-muted/5 pt-2">
+          {events.map((ev, i) => {
+            if (ev.kind === "thinking") return <ThinkingBlock key={i} text={ev.text} />
+            if (ev.kind === "tool")     return <ToolCallBlock key={i} item={ev.item} index={i} />
+            // intermediate — collapsed note
+            return (
+              <IntermediateNote key={i} index={i} text={ev.text} />
+            )
+          })}
         </div>
+      )}
+    </div>
+  )
+}
 
+function IntermediateNote({ text, index }: { text: string; index: number }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-md border border-border/20 bg-muted/10 overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-muted/20 text-left transition-colors"
+      >
+        <span className="flex items-center justify-center w-4 h-4 rounded text-[9px] font-bold shrink-0 bg-muted/30 text-muted-foreground/60">
+          {index + 1}
+        </span>
+        <span className="text-[11px] font-medium text-muted-foreground/60 italic truncate">intermediate note</span>
         <span className="ml-auto text-muted-foreground/40 shrink-0">
+          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 py-2 border-t border-border/20 bg-muted/5">
+          <p className="text-[11px] text-muted-foreground/70 whitespace-pre-wrap leading-relaxed">
+            {sanitizeResult(text)}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TurnGroup({ turn, isLast, label, hideLabel }: { turn: Turn; isLast: boolean; label?: string; hideLabel?: boolean }) {
+  // Last turn starts open (focus on latest), previous turns collapsed (history)
+  const [open, setOpen] = useState(isLast)
+  const hasEvents = turn.events.length > 0 || !!turn.intermediateText
+
+  return (
+    <div className={cn(
+      "rounded-lg border overflow-hidden",
+      isLast ? "border-emerald-500/25" : "border-border/40"
+    )}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={cn(
+          "w-full flex items-center gap-2 px-3 py-2 text-left transition-colors",
+          isLast ? "bg-emerald-500/5 hover:bg-emerald-500/8" : "bg-muted/20 hover:bg-muted/30"
+        )}
+      >
+        {/* Turn label — hidden when single turn */}
+        {!hideLabel && (
+          <span className={cn(
+            "text-[10px] font-semibold uppercase tracking-wider shrink-0 flex items-center gap-1.5",
+            isLast ? "text-emerald-400/70" : "text-muted-foreground/50"
+          )}>
+            {label || `Turn ${turn.id + 1}`}
+            {isLast && <span className="text-[9px] font-normal opacity-60">· latest</span>}
+          </span>
+        )}
+        {isLast && turn.isStreaming && (
+          <span className="relative inline-flex h-1.5 w-1.5 shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+          </span>
+        )}
+
+        <span className="flex-1" />
+
+        <span className={cn("text-muted-foreground/40 shrink-0", isLast && "text-emerald-400/40")}>
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         </span>
       </button>
 
       {open && hasEvents && (
-        <div className="px-3 py-2 space-y-1.5 border-t border-border/30 bg-muted/5">
-          {turn.thinkingBlocks.map((text, i) => (
-            <ThinkingBlock key={`th-${i}`} text={text} />
-          ))}
-          {turn.toolCalls.map((tc, i) => (
-            <ToolCallBlock key={`tc-${i}`} item={tc} index={i} />
-          ))}
+        <div className="border-t border-border/30 divide-y divide-border/20">
+          {/* Result — shown first and prominently */}
           {turn.intermediateText && (
-            <div className="rounded-md border border-border/30 bg-muted/10 px-3 py-2">
-              <p className="text-[9px] text-muted-foreground/50 uppercase tracking-widest mb-1 font-semibold">Intermediate Response</p>
-              <p className="text-xs text-foreground/70 whitespace-pre-wrap leading-relaxed">{turn.intermediateText}</p>
+            <div className="px-3 py-3">
+              <MarkdownContent>{turn.intermediateText}</MarkdownContent>
             </div>
           )}
+
+          {/* Process logs — ordered events (thinking, tools, intermediate notes) */}
+          {turn.events.length > 0 && <ProcessLogs events={turn.events} />}
         </div>
       )}
     </div>
@@ -257,91 +326,189 @@ function AgentResultBlock({ text, isStreaming }: { text: string; isStreaming: bo
 
 // ── Turn grouping ─────────────────────────────────────────────────────────────
 
+/** Extract thinking string from message — handles both direct field and content blocks */
+function extractThinkingFromMessage(m: GatewayMessage): string {
+  if (m.thinking) return m.thinking
+  if (!Array.isArray(m.content)) return ""
+  for (const block of m.content as Array<{ type?: string; thinking?: string; text?: string }>) {
+    if (block?.type === "thinking" && block.thinking) return block.thinking
+    if (block?.type === "thinking" && block.text)     return block.text
+  }
+  return ""
+}
+
+/** Extract tool_use blocks from assistant content array */
+function extractToolUseBlocks(m: GatewayMessage): Array<{ id: string; name: string; input: unknown }> {
+  if (!Array.isArray(m.content)) return []
+  return (m.content as Array<{
+    type?: string; id?: string; name?: string
+    input?: unknown; arguments?: unknown; parameters?: unknown
+    function?: { name?: string; arguments?: unknown }
+  }>)
+    .filter(b => b?.type === "tool_use" || b?.type === "tool_call" || b?.type === "toolCall")
+    .map(b => {
+      // Try all known input field names; leave undefined if nothing found
+      const input = b.input ?? b.arguments ?? b.parameters ?? b.function?.arguments
+      return { id: b.id || "", name: b.name || b.function?.name || "unknown", input }
+    })
+}
+
+/** Extract tool_result blocks from a user message (Anthropic raw format) */
+function extractToolResultBlocks(m: GatewayMessage): Array<{ toolUseId: string; content: unknown; isError?: boolean }> {
+  if (m.role !== "user" || !Array.isArray(m.content)) return []
+  return (m.content as Array<{ type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>)
+    .filter(b => b?.type === "tool_result")
+    .map(b => ({ toolUseId: b.tool_use_id || "", content: b.content, isError: !!b.is_error }))
+}
+
+/** Returns true if a user message is a real dispatch message, not a tool_result carrier */
+function isRealUserMessage(m: GatewayMessage): boolean {
+  if (m.role !== "user") return false
+  if (!Array.isArray(m.content)) return !!m.content
+  // Pure tool_result carrier — skip
+  const blocks = m.content as Array<{ type?: string }>
+  return !blocks.every(b => b?.type === "tool_result")
+}
+
 function groupMessagesIntoTurns(messages: GatewayMessage[]): {
   turns: Turn[]
   finalResult: string | null
   finalIsStreaming: boolean
 } {
+  // ── Pre-pass: build toolResult map (Anthropic raw format) ────────────────
+  const toolResultMap = new Map<string, { content: unknown; isError?: boolean }>()
+  for (const m of messages) {
+    for (const r of extractToolResultBlocks(m)) {
+      if (r.toolUseId) toolResultMap.set(r.toolUseId, { content: r.content, isError: r.isError })
+    }
+  }
+
+  // ── Segment messages into turns by real user messages ────────────────────
+  // Each dispatch = 1 user message → 1 turn. All intermediate assistant texts
+  // within one dispatch cycle go into process logs, not separate turns.
+  const segments: GatewayMessage[][] = []
+  let seg: GatewayMessage[] = []
+
+  for (const m of messages) {
+    if (isRealUserMessage(m)) {
+      // New dispatch = new turn boundary
+      if (seg.length > 0) segments.push(seg)
+      seg = [m]
+    } else {
+      seg.push(m)
+    }
+  }
+  if (seg.length > 0) segments.push(seg)
+
+  // ── Process each segment into a Turn ────────────────────────────────────
   const turns: Turn[] = []
-  let current: Turn = { id: 0, thinkingBlocks: [], toolCalls: [] }
-  const allAssistantTexts: { text: string; streaming: boolean }[] = []
-  const pairedResultIds = new Set<string>()
 
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i]
-    if (m.role === "user") continue
+  for (const segment of segments) {
+    const events: TurnEvent[] = []
+    const pairedResultKeys = new Set<string>()
+    const assistantTexts: { text: string; streaming: boolean; eventIdx: number }[] = []
+    let isStreaming = false
 
-    if (m.thinking) {
-      current.thinkingBlocks.push(m.thinking)
-      continue
-    }
+    for (let i = 0; i < segment.length; i++) {
+      const m = segment[i]
 
-    if (m.role === "tool" && m.toolName) {
-      const resultMsg = messages.slice(i + 1).find(
-        r => r.role === "toolResult" && (r.toolCallId === m.toolCallId || r.toolCallId === m.id)
-      )
-      if (resultMsg?.id) pairedResultIds.add(resultMsg.id)
-      current.toolCalls.push({
-        name: m.toolName,
-        input: m.toolInput,
-        result: resultMsg?.toolResult ?? resultMsg?.content,
-        isError: m.isError || resultMsg?.isError,
-      })
-      continue
-    }
+      if (m.role === "user") continue
 
-    if (m.role === "toolResult") {
-      if (!pairedResultIds.has(m.id || "")) {
-        current.toolCalls.push({
-          name: "tool_result",
-          result: m.toolResult ?? m.content,
-          isError: m.isError,
-        })
+      const thinking = extractThinkingFromMessage(m)
+
+      if (m.role === "tool" && m.toolName) {
+        const resultMsg = segment.slice(i + 1).find(
+          r => r.role === "toolResult" && (r.toolCallId === m.toolCallId || r.toolCallId === m.id)
+        )
+        if (resultMsg?.id)         pairedResultKeys.add(resultMsg.id)
+        if (resultMsg?.toolCallId) pairedResultKeys.add(resultMsg.toolCallId)
+        events.push({ kind: "tool", item: {
+          name: m.toolName,
+          input: m.toolInput,
+          result: resultMsg?.toolResult ?? resultMsg?.content,
+          isError: m.isError || resultMsg?.isError,
+        }})
+        continue
       }
-      continue
+
+      if (m.role === "toolResult") {
+        const alreadyPaired =
+          pairedResultKeys.has(m.id || "__never__") ||
+          pairedResultKeys.has(m.toolCallId || "__never__") ||
+          (m.toolCallId ? toolResultMap.has(m.toolCallId) : false)
+        if (!alreadyPaired) {
+          events.push({ kind: "tool", item: {
+            name: m.toolName || "tool_result",
+            result: m.toolResult ?? m.content,
+            isError: m.isError,
+          }})
+        }
+        continue
+      }
+
+      if (m.role === "assistant") {
+        if (thinking) events.push({ kind: "thinking", text: thinking })
+
+        const toolUseBlocks = extractToolUseBlocks(m)
+        for (const tc of toolUseBlocks) {
+          const resultEntry = toolResultMap.get(tc.id)
+          if (tc.id) pairedResultKeys.add(tc.id)
+          events.push({ kind: "tool", item: {
+            name: tc.name,
+            input: tc.input as GatewayMessage["toolInput"],
+            result: resultEntry?.content as GatewayMessage["toolResult"],
+            isError: resultEntry?.isError,
+          }})
+        }
+
+        const text = extractText(m.content) || m.text || ""
+        if (!isSystemMessage(text) && text) {
+          // Record position in events so intermediate texts appear in sequence
+          assistantTexts.push({ text, streaming: !!m.streaming, eventIdx: events.length })
+          events.push({ kind: "intermediate", text }) // placeholder — will be removed if it's the final
+          isStreaming = !!m.streaming
+        }
+      }
     }
 
-    if (m.role === "assistant") {
-      const text = extractText(m.content) || m.text || ""
-      if (isSystemMessage(text)) continue
+    // Last assistant text = final result (shown as the turn's prominent result block)
+    // All earlier assistant texts = stay as "intermediate" events in process logs
+    let intermediateText: string | undefined
+    if (assistantTexts.length > 0) {
+      const last = assistantTexts[assistantTexts.length - 1]
+      intermediateText = sanitizeResult(last.text)
+      isStreaming = last.streaming
+      // Remove the placeholder event for the final text (it's shown outside process logs)
+      events.splice(last.eventIdx, 1)
+    }
 
-      allAssistantTexts.push({ text, streaming: !!m.streaming })
-      current.intermediateText = text
-      current.isStreaming = !!m.streaming
-      turns.push({ ...current, thinkingBlocks: [...current.thinkingBlocks], toolCalls: [...current.toolCalls] })
-      current = { id: turns.length, thinkingBlocks: [], toolCalls: [] }
+    if (events.length > 0 || intermediateText) {
+      turns.push({ id: turns.length, events, intermediateText, isStreaming })
     }
   }
 
-  // Flush dangling events (streaming turn without assistant response yet)
-  if (current.thinkingBlocks.length > 0 || current.toolCalls.length > 0) {
-    current.isStreaming = true
-    turns.push({ ...current, thinkingBlocks: [...current.thinkingBlocks], toolCalls: [...current.toolCalls] })
-  }
+  // Flush: if last segment had no user message (e.g. streaming mid-turn)
+  // already handled above via segments
 
-  const lastAssistant = allAssistantTexts[allAssistantTexts.length - 1] ?? null
-  const finalResult = lastAssistant?.text ?? null
-  const finalIsStreaming = lastAssistant?.streaming ?? false
-
-  // Remove intermediateText from the last closed turn — it's shown in Result section
-  if (finalResult) {
-    const lastTurnWithText = [...turns].reverse().find(t => t.intermediateText === finalResult)
-    if (lastTurnWithText) delete lastTurnWithText.intermediateText
-  }
+  const lastTurn = turns[turns.length - 1] ?? null
+  const finalResult = lastTurn?.intermediateText ?? null
+  const finalIsStreaming = lastTurn?.isStreaming ?? false
 
   return { turns, finalResult, finalIsStreaming }
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
+// 1 Ticket = 1 Session — no multi-session tracking
 
 interface AgentWorkSectionProps {
   sessionKey: string
+  taskId?: string
   isActive: boolean
   taskStatus?: string
   completionNoteFallback?: string
 }
 
-export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionNoteFallback }: AgentWorkSectionProps) {
+export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, completionNoteFallback }: AgentWorkSectionProps) {
   const [messages, setMessages] = useState<GatewayMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
@@ -349,21 +516,16 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeRef = useRef(false)
 
-  // Real-time: read from useChatStore which is updated by WS gateway events.
-  // Use module-level EMPTY constant as fallback — inline `[]` would create a new reference
-  // on every render, causing Zustand to infinitely trigger re-renders.
+  // Real-time from WS
   const liveMessages = useChatStore(s => (sessionKey ? s.messages[sessionKey] : null) ?? EMPTY)
   const agentRunning = useChatStore(s => (sessionKey ? s.agentRunning[sessionKey] : false) ?? false)
-
-  // isLive = gateway is actively streaming (WS tells us) OR taskStatus is in_progress
   const isLive = agentRunning || taskStatus === "in_progress"
 
   async function fetchHistory() {
-    if (!activeRef.current) return
+    if (!activeRef.current || !sessionKey) return
     try {
-      const res = await chatApi.getHistory(sessionKey)
-      const msgs = res.messages || []
-      setMessages(msgs)
+      const res = await chatApi.getHistory(sessionKey, { taskId })
+      setMessages(res.messages || [])
       setError("")
     } catch (e: unknown) {
       setError((e as Error).message || "Failed to load session")
@@ -379,16 +541,15 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
     }
     activeRef.current = true
     setLoading(true)
-    // Subscribe so gateway pushes WS events → useChatStore gets updated in real-time
     chatApi.subscribe(sessionKey).catch(() => {})
     fetchHistory()
-    // Poll committed history as fallback (slower when done, faster when in_progress)
     const interval = taskStatus === "in_progress" ? 2000 : 8000
     pollRef.current = setInterval(fetchHistory, interval)
     return () => {
       activeRef.current = false
       if (pollRef.current) clearInterval(pollRef.current)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, sessionKey, taskStatus])
 
   // Auto-scroll when new live messages arrive
@@ -479,9 +640,9 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
     </div>
   )
 
+  // Group messages from single session into turns
   const { turns, finalResult, finalIsStreaming } = groupMessagesIntoTurns(messages)
-  const toolCount = turns.reduce((n, t) => n + t.toolCalls.length, 0)
-  // Current live streaming message from WS store (if agent is still running)
+  const totalTools = turns.reduce((n, t) => n + t.events.filter(e => e.kind === "tool").length, 0)
   const liveStreamMsg = agentRunning ? liveMessages.findLast(m => m.role === "agent") : null
 
   return (
@@ -498,44 +659,19 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
           </span>
         ) : (
           <span className="text-[10px] text-muted-foreground/50 font-medium uppercase tracking-wider">
-            {taskStatus === "done" || taskStatus === "in_review" ? "Completed" : "Session Replay"}
+            {taskStatus === "done" || taskStatus === "in_review" ? "Completed" : "Session"}
           </span>
         )}
         <span className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground/40 font-mono">
           {turns.length > 0 && <span>{turns.length} turn{turns.length !== 1 ? "s" : ""}</span>}
-          {toolCount > 0 && <span>· {toolCount} tool{toolCount !== 1 ? "s" : ""}</span>}
+          {totalTools > 0 && <span>· {totalTools} tool{totalTools !== 1 ? "s" : ""}</span>}
           <span>· {sessionKey.slice(-8)}</span>
         </span>
       </div>
 
-      {/* Turn groups */}
-      {turns.length > 0 && (
-        <div className="space-y-1.5">
-          {turns.map((turn, i) => (
-            <TurnGroup key={turn.id} turn={turn} isLast={i === turns.length - 1} />
-          ))}
-        </div>
-      )}
-
-      {/* Final result from committed history */}
-      {finalResult && (
-        <div className="space-y-1.5">
-          {turns.length > 0 && (
-            <div className="flex items-center gap-2">
-              <div className="h-px flex-1 bg-emerald-500/20" />
-              <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-500/50">
-                {taskStatus === "done" ? "Final Result" : "Result"}
-              </span>
-              <div className="h-px flex-1 bg-emerald-500/20" />
-            </div>
-          )}
-          <AgentResultBlock text={finalResult} isStreaming={finalIsStreaming} />
-        </div>
-      )}
-
-      {/* Live streaming layer from WS (useChatStore) — shown when agent is actively running */}
+      {/* ── Live streaming (when agent is actively running) ── */}
       {liveStreamMsg && (
-        <div className="space-y-1.5 border-t border-border/20 pt-2 mt-1">
+        <div className="space-y-1.5">
           {liveStreamMsg.thinking && (
             <div className="rounded-lg border border-purple-500/20 overflow-hidden bg-purple-500/3 px-3 py-2">
               <div className="flex items-center gap-2 mb-1">
@@ -558,6 +694,39 @@ export function AgentWorkSection({ sessionKey, isActive, taskStatus, completionN
           )}
         </div>
       )}
+
+      {/* ── Turns — last turn on top (focus), previous turns below (history) ── */}
+      {turns.length > 0 && (() => {
+        const lastTurn = turns[turns.length - 1]
+        const prevTurns = turns.slice(0, -1)
+        return (
+          <div className="space-y-1.5">
+            {/* Latest turn — always on top, open by default */}
+            <TurnGroup
+              key={lastTurn.id}
+              turn={lastTurn}
+              isLast
+              hideLabel={turns.length === 1}
+            />
+            {/* Previous turns — history, collapsed */}
+            {prevTurns.length > 0 && (
+              <>
+                <p className="text-[10px] text-muted-foreground/40 uppercase tracking-widest font-medium px-1 pt-1">
+                  History
+                </p>
+                {[...prevTurns].reverse().map(turn => (
+                  <TurnGroup
+                    key={turn.id}
+                    turn={turn}
+                    isLast={false}
+                    hideLabel={false}
+                  />
+                ))}
+              </>
+            )}
+          </div>
+        )
+      })()}
 
       <div ref={bottomRef} />
     </div>

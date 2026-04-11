@@ -24,8 +24,17 @@ export const chatApi = {
       method: "POST",
       body: JSON.stringify({ agentId, channel }),
     }),
-  getHistory: (sessionKey: string, maxChars?: number) =>
-    request<{ messages?: GatewayMessage[] }>(`/chat/history/${encodeURIComponent(sessionKey)}${maxChars ? `?maxChars=${maxChars}` : ""}`),
+  getHistory: (sessionKey: string, opts?: { maxChars?: number; taskId?: string }) => {
+    const params = new URLSearchParams()
+    if (opts?.maxChars) params.set("maxChars", String(opts.maxChars))
+    if (opts?.taskId) params.set("taskId", opts.taskId)
+    const qs = params.toString()
+    return request<{ messages?: GatewayMessage[] }>(`/chat/history/${encodeURIComponent(sessionKey)}${qs ? `?${qs}` : ""}`)
+  },
+  getHistoryMulti: (sessionKeys: string[], maxChars?: number) =>
+    request<{ sessions?: Array<{ key: string; messages: GatewayMessage[]; ok: boolean }> }>(
+      `/chat/history-multi?keys=${sessionKeys.map(encodeURIComponent).join(",")}${maxChars ? `&maxChars=${maxChars}` : ""}`
+    ),
   sendMessage: (sessionKey: string, text: string, agentId?: string, images?: string[]) =>
     request<{ ok?: boolean; status?: string }>("/chat/send", {
       method: "POST",

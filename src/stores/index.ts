@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware"
 import type { Agent, Session, Task, TaskStatus, TaskPriority, CronJob, GatewayRoute, Alert, ActivityEvent, LiveFeedEntry, DashboardOverview, AuthUser } from "@/types"
 
 export * from "./useThemeStore"
+export { useProjectStore } from './useProjectStore'
 
 // ─── Auth Store ───────────────────────────────────────────────────────────────
 interface AuthState {
