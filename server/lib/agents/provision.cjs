@@ -48,20 +48,39 @@ function generateIdentityMd({ name, emoji, theme, description }) {
   ].filter(l => l !== null).join('\n') + '\n';
 }
 
+const RESEARCH_STANDARD_BLOCK = `
+<!-- aoc:research-standard:start -->
+## Output Standard: Research & Web Search
+
+Whenever you perform web searches, browse URLs, or gather information from external sources, **always include a Sources section at the end of your response**.
+
+**Format:**
+
+**Sources:**
+- https://example.com/article-you-read
+- https://another-source.com/reference
+
+**Rules:**
+- List every URL you actually accessed, read, or referenced
+- Only include URLs you genuinely visited — never fabricate sources
+- If no web search or URL retrieval was performed in this response, omit the Sources section entirely
+- Sources allow humans to verify your findings and build trust in your work
+<!-- aoc:research-standard:end -->`;
+
 function generateSoulMd({ name, theme, soulContent }) {
-  if (soulContent && soulContent.trim()) {
-    return `# Soul of ${name}\n\n${soulContent.trim()}\n`;
-  }
-  return [
-    `# Soul of ${name}`,
-    '',
-    `_${theme || 'A focused, reliable autonomous agent'}_`,
-    '',
-    `**Clear.** Gives precise, actionable responses without unnecessary filler.`,
-    `**Reliable.** Follows through on tasks completely before reporting back.`,
-    `**Adaptive.** Adjusts tone and depth to what the situation actually needs.`,
-    '',
-  ].join('\n');
+  const base = (soulContent && soulContent.trim())
+    ? `# Soul of ${name}\n\n${soulContent.trim()}`
+    : [
+        `# Soul of ${name}`,
+        '',
+        `_${theme || 'A focused, reliable autonomous agent'}_`,
+        '',
+        `**Clear.** Gives precise, actionable responses without unnecessary filler.`,
+        `**Reliable.** Follows through on tasks completely before reporting back.`,
+        `**Adaptive.** Adjusts tone and depth to what the situation actually needs.`,
+      ].join('\n');
+
+  return base.trimEnd() + RESEARCH_STANDARD_BLOCK + '\n';
 }
 
 function generateAgentsMd({ name }) {

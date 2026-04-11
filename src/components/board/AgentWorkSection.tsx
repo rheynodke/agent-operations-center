@@ -3,7 +3,7 @@ import { chatApi, GatewayMessage } from "@/lib/chat-api"
 import { cn } from "@/lib/utils"
 import {
   ChevronDown, ChevronRight, Brain, Terminal,
-  CheckCircle2, Loader2, Zap, AlertCircle
+  CheckCircle2, Loader2, Zap, AlertCircle, ExternalLink, Link2
 } from "lucide-react"
 import { useChatStore } from "@/stores/useChatStore"
 
@@ -233,6 +233,61 @@ function IntermediateNote({ text, index }: { text: string; index: number }) {
   )
 }
 
+/** Extract unique, clean URLs from a text blob */
+function extractUrls(text: string): string[] {
+  // Capture both plain URLs and markdown link URLs [text](url)
+  const mdUrls = [...text.matchAll(/\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g)].map(m => m[2])
+  const plainUrls = text.replace(/\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, " ").match(/https?:\/\/[^\s\)\]\>\"\'\`<]+/g) || []
+  const all = [...mdUrls, ...plainUrls]
+  const cleaned = all.map(u => u.replace(/[.,;:!?\)\]\>\"\'`]+$/, ""))
+  return [...new Set(cleaned)].filter(u => {
+    try { new URL(u); return true } catch { return false }
+  })
+}
+
+function SourcesSection({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const urls = extractUrls(text)
+  if (urls.length === 0) return null
+
+  return (
+    <div className="border-t border-border/20">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/20 text-left transition-colors"
+      >
+        <Link2 className="h-3 w-3 text-blue-400/50 shrink-0" />
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400/60">Sources</span>
+        <span className="text-[10px] text-muted-foreground/35 font-mono tabular-nums ml-1">{urls.length}</span>
+        <span className="ml-auto text-muted-foreground/35 shrink-0">
+          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-2.5 pt-1 space-y-1 bg-blue-500/2">
+          {urls.map((url, i) => {
+            let domain = url
+            try { domain = new URL(url).hostname.replace(/^www\./, "") } catch {}
+            return (
+              <a
+                key={i}
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-muted/20 hover:bg-blue-500/8 border border-border/20 hover:border-blue-500/20 transition-colors group"
+              >
+                <ExternalLink className="h-3 w-3 text-muted-foreground/40 group-hover:text-blue-400/70 shrink-0" />
+                <span className="text-[11px] font-medium text-muted-foreground/60 group-hover:text-blue-300/80 shrink-0">{domain}</span>
+                <span className="text-[10px] text-muted-foreground/30 truncate font-mono">{url}</span>
+              </a>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TurnGroup({ turn, isLast, label, hideLabel }: { turn: Turn; isLast: boolean; label?: string; hideLabel?: boolean }) {
   // Last turn starts open (focus on latest), previous turns collapsed (history)
   const [open, setOpen] = useState(isLast)
@@ -282,6 +337,9 @@ function TurnGroup({ turn, isLast, label, hideLabel }: { turn: Turn; isLast: boo
               <MarkdownContent>{turn.intermediateText}</MarkdownContent>
             </div>
           )}
+
+          {/* Sources — auto-extracted URLs from result text */}
+          {turn.intermediateText && <SourcesSection text={turn.intermediateText} />}
 
           {/* Process logs — ordered events (thinking, tools, intermediate notes) */}
           {turn.events.length > 0 && <ProcessLogs events={turn.events} />}
@@ -512,7 +570,7 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
   const [messages, setMessages] = useState<GatewayMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const livePreviewRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeRef = useRef(false)
 
@@ -552,10 +610,10 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, sessionKey, taskStatus])
 
-  // Auto-scroll when new live messages arrive
+  // Auto-scroll to live preview (result area) on new polling data — NOT to bottom
   useEffect(() => {
     if (isLive || liveMessages.length > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+      livePreviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     }
   }, [messages.length, liveMessages.length, isLive])
 
@@ -627,7 +685,6 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
             <span>Waiting for agent response…</span>
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
     )
   }
@@ -668,6 +725,9 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
           <span>· {sessionKey.slice(-8)}</span>
         </span>
       </div>
+
+      {/* Scroll anchor — auto-scroll lands here (shows live preview / latest turn result, not process logs) */}
+      <div ref={livePreviewRef} />
 
       {/* ── Live streaming (when agent is actively running) ── */}
       {liveStreamMsg && (
@@ -728,7 +788,6 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
         )
       })()}
 
-      <div ref={bottomRef} />
     </div>
   )
 }

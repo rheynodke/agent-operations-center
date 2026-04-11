@@ -43,6 +43,7 @@ module.exports = {
   updateAgent:       agents.updateAgent,
   getAgentFile:      agents.getAgentFile,
   saveAgentFile:     agents.saveAgentFile,
+  injectSoulStandard: agents.injectSoulStandard,
   getAgentSkills:       agents.getAgentSkills,
   getAllSkills:          agents.getAllSkills,
   getSkillFile:         agents.getSkillFile,

@@ -63,4 +63,49 @@ function saveAgentFile(agentId, filename, content) {
   return { agentId, filename: normalizedFilename, path: filePath };
 }
 
-module.exports = { ALLOWED_FILES, normalizeFilename, getAgentFile, saveAgentFile };
+// ── Research Output Standard injection ───────────────────────────────────────
+
+const SOUL_STANDARD_MARKER = '<!-- aoc:research-standard:start -->';
+
+const RESEARCH_STANDARD_BLOCK = `
+
+<!-- aoc:research-standard:start -->
+## Output Standard: Research & Web Search
+
+Whenever you perform web searches, browse URLs, or gather information from external sources, **always include a Sources section at the end of your response**.
+
+**Format:**
+
+**Sources:**
+- https://example.com/article-you-read
+- https://another-source.com/reference
+
+**Rules:**
+- List every URL you actually accessed, read, or referenced
+- Only include URLs you genuinely visited — never fabricate sources
+- If no web search or URL retrieval was performed in this response, omit the Sources section entirely
+- Sources allow humans to verify your findings and build trust in your work
+<!-- aoc:research-standard:end -->`;
+
+/**
+ * Idempotently inject the AOC research output standard into an agent's SOUL.md.
+ * Returns { agentId, status: 'injected' | 'already_applied' | 'error', error? }.
+ */
+function injectSoulStandard(agentId) {
+  try {
+    const fileInfo = getAgentFile(agentId, 'SOUL.md');
+    const content = fileInfo.content || '';
+
+    if (content.includes(SOUL_STANDARD_MARKER)) {
+      return { agentId, status: 'already_applied' };
+    }
+
+    const updated = content.trimEnd() + RESEARCH_STANDARD_BLOCK + '\n';
+    fs.writeFileSync(fileInfo.path, updated, 'utf-8');
+    return { agentId, status: 'injected' };
+  } catch (err) {
+    return { agentId, status: 'error', error: err.message };
+  }
+}
+
+module.exports = { ALLOWED_FILES, normalizeFilename, getAgentFile, saveAgentFile, injectSoulStandard, SOUL_STANDARD_MARKER };

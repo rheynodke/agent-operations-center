@@ -484,6 +484,23 @@ app.post('/api/agents', db.authMiddleware, (req, res) => {
   }
 });
 
+// Apply research output standard to all agents (idempotent)
+app.post('/api/agents/soul-standard', db.authMiddleware, (req, res) => {
+  try {
+    const { agentIds } = req.body || {};
+    const config = require('./lib/config.cjs').readJsonSafe(require('path').join(require('./lib/config.cjs').OPENCLAW_HOME, 'openclaw.json'));
+    const allAgents = config?.agents?.list || [];
+    const targets = agentIds?.length
+      ? allAgents.filter(a => agentIds.includes(a.id))
+      : allAgents;
+    const results = targets.map(a => parsers.injectSoulStandard(a.id));
+    res.json({ ok: true, results });
+  } catch (err) {
+    console.error('[api/agents/soul-standard]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/agents/:id', db.authMiddleware, (req, res) => {
   try {
     const agents = parsers.parseAgentRegistry();
@@ -543,6 +560,16 @@ app.delete('/api/agents/:id', db.authMiddleware, (req, res) => {
   } catch (err) {
     console.error('[api/agents/delete]', err);
     res.status(err.message?.includes('not found') ? 404 : 500).json({ error: err.message });
+  }
+});
+
+// Inject research output standard into a single agent's SOUL.md (idempotent)
+app.post('/api/agents/:id/soul-standard', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.injectSoulStandard(req.params.id);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

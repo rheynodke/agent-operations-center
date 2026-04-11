@@ -91,6 +91,15 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ content }),
     }),
+  /** Inject AOC research output standard into a single agent's SOUL.md */
+  applySoulStandard: (id: string) =>
+    request<{ ok: boolean; status: "injected" | "already_applied" | "error"; error?: string }>(`/agents/${id}/soul-standard`, { method: "POST" }),
+  /** Bulk inject research output standard into all (or specified) agents */
+  applyAllSoulStandard: (agentIds?: string[]) =>
+    request<{ ok: boolean; results: Array<{ agentId: string; status: string; error?: string }> }>("/agents/soul-standard", {
+      method: "POST",
+      body: JSON.stringify(agentIds ? { agentIds } : {}),
+    }),
 
   // Skills
   getAgentSkills: (id: string) =>

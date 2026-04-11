@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -115,6 +115,8 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
   const [dispatchMsg, setDispatchMsg] = useState("")
   const [reviewSubmitting, setReviewSubmitting] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
+  const [activityOpen, setActivityOpen] = useState(false)
+  const agentWorkRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!task || !open) return
@@ -124,6 +126,15 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
       .catch(() => setActivity([]))
       .finally(() => setLoadingActivity(false))
   }, [task?.id, open])
+
+  // Auto-focus Agent Work section when ticket opens (if session exists)
+  useEffect(() => {
+    if (!open || !task?.sessionId) return
+    const t = setTimeout(() => {
+      agentWorkRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }, 180)
+    return () => clearTimeout(t)
+  }, [open, task?.id])
 
   async function handleDispatch() {
     if (!task) return
@@ -398,6 +409,7 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
           )}
 
           {/* Agent Work */}
+          <div ref={agentWorkRef}>
           <SectionCard icon={Bot} label="Agent Work" live={isLive && !!task.sessionId} noPadBody>
             {!hasAgentWork ? (
               <div className="py-10 text-center space-y-2">
@@ -423,9 +435,26 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
               </div>
             )}
           </SectionCard>
+          </div>
 
-          {/* Activity */}
-          <SectionCard icon={History} label="Activity">
+          {/* Activity — collapsed by default */}
+          <div className="rounded-xl border border-border/40 bg-card/40 overflow-hidden">
+            <button
+              onClick={() => setActivityOpen(o => !o)}
+              className="w-full flex items-center gap-2.5 px-4 py-2.5 border-b border-border/30 bg-muted/10 hover:bg-muted/20 transition-colors"
+            >
+              <History className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+              <span className="text-xs font-semibold text-foreground/80 tracking-wide">Activity</span>
+              {activity.length > 0 && (
+                <span className="text-[10px] text-muted-foreground/40 font-mono tabular-nums">{activity.length}</span>
+              )}
+              <ChevronDown className={cn(
+                "h-3 w-3 text-muted-foreground/40 transition-transform ml-auto shrink-0",
+                activityOpen && "rotate-180"
+              )} />
+            </button>
+            {activityOpen && (
+              <div className="p-4">
             {loadingActivity ? (
               <div className="flex items-center gap-2 text-xs text-muted-foreground/50 py-4 justify-center">
                 <Clock className="h-3.5 w-3.5 animate-pulse" />
@@ -523,7 +552,9 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                 </div>
               </div>
             )}
-          </SectionCard>
+              </div>
+            )}
+          </div>
 
         </div>
       </DialogContent>

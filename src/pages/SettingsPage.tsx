@@ -4,7 +4,7 @@ import { api } from "@/lib/api"
 import {
   Shield, Info, Wifi, BrainCircuit, Wrench, KeyRound,
   Code2, Save, RefreshCw, Eye, EyeOff, Plus, Trash2,
-  CheckCircle2, AlertCircle, ChevronRight,
+  CheckCircle2, AlertCircle, ChevronRight, Link2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -487,6 +487,73 @@ const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "raw",     label: "Raw JSON", icon: <Code2 className="h-4 w-4" /> },
 ]
 
+// ─── Agent Standards Card ─────────────────────────────────────────────────────
+
+function AgentStandardsCard() {
+  const [applying, setApplying] = useState(false)
+  const [results, setResults] = useState<Array<{ agentId: string; status: string }> | null>(null)
+  const [error, setError] = useState("")
+
+  async function handleApplyAll() {
+    setApplying(true)
+    setResults(null)
+    setError("")
+    try {
+      const res = await api.applyAllSoulStandard()
+      setResults(res.results)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const injected = results?.filter(r => r.status === "injected").length ?? 0
+  const already = results?.filter(r => r.status === "already_applied").length ?? 0
+  const errored = results?.filter(r => r.status === "error").length ?? 0
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Link2 className="h-4 w-4 text-blue-400" />
+          Agent Output Standards
+        </CardTitle>
+        <CardDescription className="text-xs">
+          Inject the Research Output Standard into agent SOUL.md files. Agents will be instructed
+          to always include a <span className="font-mono">Sources</span> section when performing web searches or research tasks.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs text-muted-foreground space-y-1">
+          <p className="font-semibold text-foreground/70">What gets injected into SOUL.md:</p>
+          <p>A marker-delimited block instructing the agent to append a <span className="font-mono font-medium">**Sources:**</span> list of all URLs accessed when responding to research or web search tasks. Injection is idempotent — running it multiple times is safe.</p>
+        </div>
+        {results && (
+          <div className="flex items-center gap-3 text-xs">
+            {injected > 0 && <span className="text-blue-400 font-medium">✓ {injected} injected</span>}
+            {already > 0 && <span className="text-muted-foreground">{already} already applied</span>}
+            {errored > 0 && <span className="text-destructive">{errored} errors</span>}
+          </div>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleApplyAll}
+          disabled={applying}
+          className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10 hover:border-blue-500/50"
+        >
+          {applying
+            ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Applying…</>
+            : <><Link2 className="h-3.5 w-3.5 mr-1.5" />Apply Research Standard to All Agents</>
+          }
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function SettingsPage() {
   const { clearAuth, user } = useAuthStore()
   const [tab, setTab] = useState<Tab>("account")
@@ -570,6 +637,7 @@ export function SettingsPage() {
                 <p className="text-xs font-mono text-muted-foreground/60">v2.0.0 — Vite + React + Tailwind v4 + shadcn/ui</p>
               </CardContent>
             </Card>
+            <AgentStandardsCard />
           </div>
         )}
 

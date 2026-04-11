@@ -304,6 +304,8 @@ function InlineFilePanel({
   const [editMode, setEditMode] = useState(false)
   const [isNew, setIsNew] = useState(false)
   const [showAiPanel, setShowAiPanel] = useState(false)
+  const [injectingStandard, setInjectingStandard] = useState(false)
+  const [standardStatus, setStandardStatus] = useState<"injected" | "already_applied" | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -367,6 +369,27 @@ function InlineFilePanel({
     }
   }, [editMode])
 
+  async function handleInjectStandard() {
+    setInjectingStandard(true)
+    setStandardStatus(null)
+    try {
+      const result = await api.applySoulStandard(agentId)
+      setStandardStatus(result.status === "already_applied" ? "already_applied" : "injected")
+      if (result.status === "injected") {
+        // Reload file content to reflect injection
+        const data = await api.getAgentFile(agentId, filename)
+        setContent(data.content)
+        setOriginalContent(data.content)
+        onSaved()
+      }
+      setTimeout(() => setStandardStatus(null), 3000)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setInjectingStandard(false)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Panel header */}
@@ -427,6 +450,33 @@ function InlineFilePanel({
             </>
           ) : (
             <>
+              {/* Research standard injection — only shown on SOUL.md */}
+              {filename === "SOUL.md" && (
+                <>
+                  {standardStatus && (
+                    <span className={cn(
+                      "text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border",
+                      standardStatus === "injected"
+                        ? "text-blue-400 bg-blue-400/10 border-blue-400/20"
+                        : "text-muted-foreground bg-muted/30 border-border/30"
+                    )}>
+                      {standardStatus === "injected" ? "✓ Standard injected" : "Already applied"}
+                    </span>
+                  )}
+                  <button
+                    onClick={handleInjectStandard}
+                    disabled={injectingStandard}
+                    title="Inject AOC Research Output Standard into SOUL.md"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-blue-400 hover:border-blue-500/30 hover:bg-blue-500/8 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {injectingStandard
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <Shield className="w-3 h-3" />
+                    }
+                    Research Std
+                  </button>
+                </>
+              )}
               <button
                 onClick={() => setShowHistory(true)}
                 className="flex items-center gap-1 px-2 py-1 rounded-md border border-foreground/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
