@@ -68,7 +68,7 @@ export function KanbanBoard<T extends { id: string }>({
       onDragStart={(e) => onDragStart?.(String(e.active.id))}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex gap-4 overflow-x-auto pb-4 h-full">
+      <div className="flex gap-2.5 sm:gap-4 overflow-x-auto pb-4 h-full">
         {columns.map((col) => {
           const colItems = items.filter((i) => getColumnId(i) === col.id)
           return (

@@ -1,4 +1,4 @@
-import { Bell, Zap, LogOut, Sun, Moon } from "lucide-react"
+import { Bell, Zap, LogOut, Sun, Moon, Menu } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useAlertStore, useAuthStore, useLiveFeedStore, useThemeStore, useWsStore } from "@/stores"
 import { cn } from "@/lib/utils"
@@ -8,13 +8,20 @@ export function TopBar() {
   const unreadAlerts = allAlerts.filter((a) => !a.acknowledged)
   const { clearAuth, user } = useAuthStore()
   const { toggleFeed, isOpen } = useLiveFeedStore()
-  const { theme, toggleTheme } = useThemeStore()
+  const { theme, toggleTheme, setMobileNavOpen, setFeedSheetOpen } = useThemeStore()
   const wsStatus = useWsStore((s) => s.status)
 
   return (
     <header className="flex items-center justify-between h-12 px-6 shrink-0 border-b border-border/50">
       {/* Left: connection status */}
       <div className="flex items-center gap-2">
+        <button
+          className="md:hidden p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+          onClick={() => setMobileNavOpen(true)}
+          title="Open navigation"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
         <span
           className={cn(
             "h-1.5 w-1.5 rounded-full",
@@ -47,11 +54,21 @@ export function TopBar() {
           variant="ghost"
           size="icon-sm"
           onClick={toggleFeed}
-          className={cn(isOpen && "text-primary bg-accent/10")}
+          className={cn("hidden md:inline-flex", isOpen && "text-primary bg-accent/10")}
           title="Toggle Live Feed"
         >
           <Zap className="h-4 w-4" />
         </Button>
+
+        {/* Mobile Feed button */}
+        <button
+          className="md:hidden flex items-center gap-1.5 px-2 py-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent"
+          onClick={() => setFeedSheetOpen(true)}
+          title="Open live feed"
+        >
+          <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+          <span className="text-xs">Feed</span>
+        </button>
 
         {/* Alerts */}
         <Button variant="ghost" size="icon-sm" className="relative" title="Alerts">
@@ -71,7 +88,7 @@ export function TopBar() {
                 {(user.displayName || user.username).charAt(0)}
               </span>
             </div>
-            <span className="text-xs text-muted-foreground font-medium">
+            <span className="text-xs text-muted-foreground font-medium hidden sm:inline">
               {user.displayName || user.username}
             </span>
           </div>

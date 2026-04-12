@@ -440,9 +440,12 @@ export function OverviewPage() {
   return (
     <div className="flex flex-col gap-0 animate-fade-in max-w-[1600px] mx-auto">
       {/* ── Dashboard Header ── */}
-      <div className={`flex items-end justify-between ${activeTab === "world" ? "mb-2" : "mb-6"}`}>
+      <div className={cn(
+        "flex flex-col sm:flex-row sm:items-end gap-3",
+        activeTab === "world" ? "mb-2" : "mb-4 sm:mb-6"
+      )}>
         {activeTab === "dashboard" && (
-          <h1 className="text-4xl font-display font-bold tracking-tight text-foreground">
+          <h1 className="text-2xl sm:text-4xl font-display font-bold tracking-tight text-foreground">
             System Overview
           </h1>
         )}
@@ -451,14 +454,14 @@ export function OverviewPage() {
             <span className="text-sm font-semibold text-muted-foreground uppercase tracking-widest">Agent World</span>
           </div>
         )}
-        {/* Tab switcher */}
-        <div className="flex items-center gap-1 p-1 rounded-xl bg-surface-low border border-white/5">
+        {/* Tab switcher — full-width on mobile, auto-width on desktop */}
+        <div className="flex items-center gap-1 p-1 rounded-xl bg-surface-low border border-white/5 sm:ml-auto">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
               className={cn(
-                "flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-150",
+                "flex-1 sm:flex-none flex items-center justify-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-150",
                 activeTab === id
                   ? "bg-surface-high text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
@@ -471,9 +474,9 @@ export function OverviewPage() {
         </div>
       </div>
 
-      {/* ── Agent World Tab ── full-bleed: reclaim p-6 horizontal padding ── */}
+      {/* ── Agent World Tab ── full-bleed: reclaim horizontal padding ── */}
       {activeTab === "world" && (
-        <div style={{ margin: "0 -24px" }}>
+        <div className="-mx-3 md:-mx-6">
           <AgentWorldView />
         </div>
       )}

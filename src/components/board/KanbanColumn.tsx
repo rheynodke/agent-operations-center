@@ -44,7 +44,7 @@ export function KanbanColumn({
   const countBgClass = COLUMN_COUNT_BG[id] || "bg-muted/60 text-muted-foreground"
 
   return (
-    <div className={cn("flex flex-col shrink-0 transition-all duration-200", collapsed ? "w-14" : "w-[272px]")}>
+    <div className={cn("flex flex-col shrink-0 transition-all duration-200", collapsed ? "w-14" : "w-[220px] sm:w-[272px]")}>
       {/* Column header */}
       <div
         className={cn(

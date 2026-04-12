@@ -684,7 +684,7 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
   return (
     <div className="flex flex-col h-full">
       {/* Chat header */}
-      <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border bg-background/60 backdrop-blur-sm shrink-0">
+      <div className="flex items-center gap-3.5 px-3 md:px-6 py-4 border-b border-border bg-background/60 backdrop-blur-sm shrink-0">
         {agent && (
           <AgentAvatar
             avatarPresetId={agent.avatarPresetId}
@@ -718,7 +718,7 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
-        <div className="px-6 py-8 space-y-8">
+        <div className="px-3 py-6 md:px-6 md:py-8 space-y-8">
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground/40">
               <Loader2 className="w-7 h-7 animate-spin" />
@@ -790,6 +790,7 @@ export function ChatPage() {
   } = useChatStore()
   const [newChatOpen, setNewChatOpen] = useState(false)
   const [creatingSession, setCreatingSession] = useState(false)
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false)
 
   // Poll gateway status + sessions
   useEffect(() => {
@@ -861,14 +862,36 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Sidebar */}
-      <ChatSidebar
-        onSelectSession={handleSelectSession}
-        onNewChat={handleNewChat}
-      />
+      {/* Sidebar — desktop static, mobile overlay */}
+      {chatSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 md:hidden"
+          onClick={() => setChatSidebarOpen(false)}
+        />
+      )}
+      <div className={cn(
+        "h-full shrink-0 z-50",
+        "hidden md:flex",
+        chatSidebarOpen ? "flex! fixed inset-y-0 left-0 bg-card border-r border-border" : ""
+      )}>
+        <ChatSidebar
+          onSelectSession={(key) => { handleSelectSession(key); setChatSidebarOpen(false) }}
+          onNewChat={() => { handleNewChat(); setChatSidebarOpen(false) }}
+        />
+      </div>
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-background/40">
+        {/* Mobile header — Switch Agent button */}
+        <div className="md:hidden flex items-center justify-between px-4 py-2 border-b border-border shrink-0 bg-background/60">
+          <span className="text-sm font-medium text-foreground/80">Chat</span>
+          <button
+            onClick={() => setChatSidebarOpen(true)}
+            className="text-xs text-primary font-medium px-2 py-1 rounded hover:bg-primary/10"
+          >
+            Switch Agent
+          </button>
+        </div>
         {showPicker ? (
           creatingSession ? (
             <div className="flex-1 flex items-center justify-center">

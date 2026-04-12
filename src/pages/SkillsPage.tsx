@@ -611,8 +611,12 @@ function SkillFilesPanel({ slug, editable }: { slug: string; editable: boolean }
 
   return (
     <div className="flex h-full min-h-0">
-      {/* File tree — left panel */}
-      <div className="w-52 shrink-0 border-r border-border overflow-y-auto py-1.5">
+      {/* File tree — full-width on mobile, sidebar on desktop */}
+      <div className={cn(
+        "shrink-0 border-r border-border overflow-y-auto py-1.5",
+        "w-full md:w-52",
+        selectedPath ? "hidden md:block" : "block"
+      )}>
         {loading ? (
           <div className="flex justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>
         ) : tree.length === 0 ? (
@@ -624,16 +628,27 @@ function SkillFilesPanel({ slug, editable }: { slug: string; editable: boolean }
         )}
       </div>
 
-      {/* File viewer — right panel */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      {/* File viewer — hidden on mobile when no file selected */}
+      <div className={cn(
+        "flex-1 min-w-0 flex flex-col overflow-hidden",
+        selectedPath ? "flex" : "hidden md:flex"
+      )}>
         {!selectedPath ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-6">
             <FileText className="w-8 h-8 text-foreground/8 mb-3" />
-            <p className="text-[12px] text-muted-foreground/40">Pilih file untuk melihat isinya</p>
+            <p className="text-[12px] text-muted-foreground/40">Select a file to view its contents</p>
             <p className="text-[10px] text-muted-foreground/30 mt-1">assets/ · references/ · scripts/ · SKILL.md</p>
           </div>
         ) : (
           <>
+            {/* Mobile back button */}
+            <button
+              onClick={() => setSelectedPath(null)}
+              className="md:hidden flex items-center gap-1.5 px-4 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border shrink-0 bg-foreground/2 w-full"
+            >
+              <ChevronRight className="w-3 h-3 rotate-180" />
+              <span>Files</span>
+            </button>
             {/* File header */}
             <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-border bg-foreground/2">
               <span className="text-[11px] font-mono text-foreground/70 flex-1 truncate">{selectedPath}</span>
@@ -725,10 +740,18 @@ function SkillDetail({
 
   return (
     <div className="flex flex-col h-full">
+      {/* Mobile back button */}
+      <button
+        onClick={onClose}
+        className="md:hidden flex items-center gap-1.5 px-4 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border shrink-0 bg-foreground/2 w-full"
+      >
+        <ChevronRight className="w-3 h-3 rotate-180" />
+        <span>Skills</span>
+      </button>
       {/* Header */}
-      <div className="shrink-0 px-5 py-3 border-b border-white/5 flex items-start justify-between gap-3">
+      <div className="shrink-0 px-4 md:px-5 py-3 border-b border-foreground/5 flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
-          <span className="text-2xl leading-none mt-0.5 shrink-0">{skill.emoji ?? "📦"}</span>
+          <span className="text-xl md:text-2xl leading-none mt-0.5 shrink-0">{skill.emoji ?? "📦"}</span>
           <div className="min-w-0">
             <h3 className="font-semibold text-foreground text-sm leading-snug truncate">{skill.name}</h3>
             <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">{skill.description || "No description"}</p>
@@ -771,7 +794,7 @@ function SkillDetail({
       </div>
 
       {/* Sub-tabs */}
-      <div className="shrink-0 flex items-center gap-0.5 px-4 pt-2 pb-0 border-b border-white/5">
+      <div className="shrink-0 flex items-center gap-0.5 px-3 md:px-4 pt-2 pb-0 border-b border-foreground/5 overflow-x-auto scrollbar-none">
         <button
           onClick={() => setDetailTab("info")}
           className={cn(
@@ -949,8 +972,12 @@ function SkillsTab({
 
   return (
     <div className="flex flex-1 min-h-0 gap-0">
-      {/* Left panel */}
-      <div className="flex flex-col w-72 shrink-0 border-r border-white/5 min-h-0">
+      {/* Left panel — full-width on mobile, fixed sidebar on desktop */}
+      <div className={cn(
+        "flex flex-col shrink-0 border-r border-foreground/5 min-h-0",
+        "w-full md:w-72",
+        selectedSkill ? "hidden md:flex" : "flex"
+      )}>
         {/* Search + Create */}
         <div className="shrink-0 px-3 pt-3 pb-2 flex gap-2">
           <div className="relative flex-1">
@@ -960,7 +987,7 @@ function SkillsTab({
               placeholder="Search skills…"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-white/4 border border-white/8 text-[12px] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/30 transition-colors"
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-foreground/4 border border-foreground/8 text-[12px] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/30 transition-colors"
             />
           </div>
           <button
@@ -972,11 +999,11 @@ function SkillsTab({
           </button>
         </div>
 
-        {/* Source filters */}
-        <div className="shrink-0 px-3 pb-2 flex flex-col gap-0.5">
+        {/* Source filters — horizontal scroll on mobile, vertical on desktop */}
+        <div className="shrink-0 px-3 pb-2 flex md:flex-col gap-1 md:gap-0.5 overflow-x-auto md:overflow-x-visible scrollbar-none">
           <button
             onClick={() => setSourceFilter("all")}
-            className={cn("flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left",
+            className={cn("flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left whitespace-nowrap shrink-0",
               sourceFilter === "all" ? "bg-surface-high text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary")}
           >
             <div className="flex items-center gap-2"><Layers className="w-3.5 h-3.5" />All Sources</div>
@@ -989,7 +1016,7 @@ function SkillsTab({
               <button
                 key={source}
                 onClick={() => setSourceFilter(source)}
-                className={cn("flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left",
+                className={cn("flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left whitespace-nowrap shrink-0",
                   sourceFilter === source ? "bg-surface-high text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary")}
               >
                 <div className={cn("flex items-center gap-2", sourceFilter === source ? cfg.color : "")}>
@@ -1001,7 +1028,7 @@ function SkillsTab({
           })}
         </div>
 
-        <div className="shrink-0 mx-3 border-t border-white/5" />
+        <div className="shrink-0 mx-3 border-t border-foreground/5 hidden md:block" />
 
         {/* Skill list */}
         <div className="flex-1 overflow-y-auto min-h-0 px-3 py-2 space-y-0.5">
@@ -1042,8 +1069,11 @@ function SkillsTab({
         </div>
       </div>
 
-      {/* Right panel */}
-      <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
+      {/* Right panel — hidden on mobile when no skill selected */}
+      <div className={cn(
+        "flex-1 min-w-0 min-h-0 overflow-hidden",
+        selectedSkill ? "flex flex-col" : "hidden md:flex md:flex-col"
+      )}>
         {selectedSkill ? (
           <SkillDetail
             skill={selectedSkill}
@@ -1096,9 +1126,10 @@ function ToolsTab({ tools, agents }: { tools: GlobalToolInfo[]; agents: { id: st
   }, [filtered])
 
   return (
-    <div className="flex flex-1 min-h-0 gap-0">
-      <div className="flex flex-col w-52 shrink-0 border-r border-white/5 min-h-0">
-        <div className="shrink-0 px-3 pt-3 pb-2">
+    <div className="flex flex-col md:flex-row flex-1 min-h-0 gap-0">
+      {/* Group filter — horizontal scroll on mobile, vertical sidebar on desktop */}
+      <div className="flex md:flex-col md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-foreground/5 min-h-0">
+        <div className="shrink-0 px-3 pt-3 pb-2 w-full">
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/40" />
             <input
@@ -1106,14 +1137,14 @@ function ToolsTab({ tools, agents }: { tools: GlobalToolInfo[]; agents: { id: st
               placeholder="Search tools…"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-white/4 border border-white/8 text-[12px] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/30 transition-colors"
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-foreground/4 border border-foreground/8 text-[12px] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/30 transition-colors"
             />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto min-h-0 px-3 pb-3 space-y-0.5">
+        <div className="flex md:flex-col flex-1 overflow-x-auto md:overflow-x-visible md:overflow-y-auto min-h-0 px-3 pb-2 md:pb-3 gap-0.5 scrollbar-none">
           <button
             onClick={() => setGroupFilter("all")}
-            className={cn("w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left",
+            className={cn("flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left whitespace-nowrap shrink-0",
               groupFilter === "all" ? "bg-surface-high text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary")}
           >
             <div className="flex items-center gap-2"><span>🔧</span>All Tools</div>
@@ -1125,7 +1156,7 @@ function ToolsTab({ tools, agents }: { tools: GlobalToolInfo[]; agents: { id: st
               <button
                 key={group}
                 onClick={() => setGroupFilter(group)}
-                className={cn("w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left",
+                className={cn("flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors text-left whitespace-nowrap shrink-0",
                   groupFilter === group ? "bg-surface-high text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary")}
               >
                 <div className="flex items-center gap-2"><span>{cfg.emoji}</span>{cfg.label}</div>
@@ -1136,7 +1167,7 @@ function ToolsTab({ tools, agents }: { tools: GlobalToolInfo[]; agents: { id: st
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto min-h-0 min-w-0 px-5 py-4 space-y-6">
+      <div className="flex-1 overflow-y-auto min-h-0 min-w-0 px-3 md:px-5 py-4 space-y-6">
         {agents.length === 0 && (
           <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/15 text-[12px] text-yellow-400/80">
             <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -1157,7 +1188,7 @@ function ToolsTab({ tools, agents }: { tools: GlobalToolInfo[]; agents: { id: st
                   const allEnabled = tool.agentAssignments.every(a => a.enabled)
                   const noneEnabled = tool.totalAgents > 0 && tool.agentAssignments.every(a => !a.enabled)
                   return (
-                    <div key={tool.name} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-white/1 border border-white/5 hover:border-white/10 hover:bg-white/2 transition-colors">
+                    <div key={tool.name} className="flex items-start gap-2 sm:gap-3 px-3 sm:px-4 py-3 rounded-xl bg-foreground/1 border border-foreground/5 hover:border-foreground/10 hover:bg-foreground/2 transition-colors">
                       <div className="mt-0.5 shrink-0">
                         {noneEnabled
                           ? <span className="w-2 h-2 rounded-full bg-muted-foreground/20 block mt-1" />
@@ -1166,11 +1197,11 @@ function ToolsTab({ tools, agents }: { tools: GlobalToolInfo[]; agents: { id: st
                             : <span className="w-2 h-2 rounded-full bg-yellow-400/60 block mt-1" />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[12px] font-semibold text-foreground font-mono">{tool.name}</span>
-                          <span className="text-[11px] text-muted-foreground shrink-0">{tool.label}</span>
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-2">
+                          <span className="text-[12px] font-semibold text-foreground font-mono truncate">{tool.name}</span>
+                          <span className="text-[10px] sm:text-[11px] text-muted-foreground shrink-0">{tool.label}</span>
                         </div>
-                        <p className="text-[11px] text-muted-foreground/60 mt-0.5">{tool.description}</p>
+                        <p className="text-[11px] text-muted-foreground/60 mt-0.5 line-clamp-2">{tool.description}</p>
                         {tool.agentAssignments.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-2">
                             {tool.agentAssignments.map(a => (
@@ -1212,7 +1243,7 @@ function ToolsTab({ tools, agents }: { tools: GlobalToolInfo[]; agents: { id: st
 
 function StatBadge({ label, value, icon: Icon, color }: { label: string; value: number; icon: React.ElementType; color?: string }) {
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/2 border border-white/5">
+    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-foreground/2 border border-foreground/5 shrink-0 whitespace-nowrap">
       <Icon className={cn("w-3 h-3 text-muted-foreground/60", color)} />
       <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-semibold">{label}</span>
       <span className={cn("text-[12px] font-bold text-foreground tabular-nums", color)}>{value}</span>
@@ -1291,81 +1322,82 @@ export function SkillsPage() {
       )}
 
       {/* Header */}
-      <div className="shrink-0 flex items-center justify-between mb-4">
-        <div>
-          <h1 className="text-xl font-bold text-foreground font-display">Skills & Tools Library</h1>
-          <p className="text-[12px] text-muted-foreground mt-0.5">Global registry of skills and built-in tools across all agents</p>
+      <div className="shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-xl font-bold text-foreground font-display">Skills & Tools</h1>
+          <p className="text-[11px] sm:text-[12px] text-muted-foreground mt-0.5 hidden sm:block">Global registry of skills and built-in tools across all agents</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             onClick={() => setShowInstall(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400 hover:bg-amber-500/20 transition-colors"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] sm:text-[12px] text-amber-400 hover:bg-amber-500/20 transition-colors"
           >
-            <Download className="w-3.5 h-3.5" /> Install from External
+            <Download className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Install from</span> External
           </button>
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-[12px] text-primary hover:bg-primary/25 transition-colors"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-[11px] sm:text-[12px] text-primary hover:bg-primary/25 transition-colors"
           >
-            <Plus className="w-3.5 h-3.5" /> New Skill
+            <Plus className="w-3.5 h-3.5" /> New
           </button>
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/3 border border-white/8 text-[12px] text-muted-foreground hover:text-foreground hover:bg-white/6 transition-colors disabled:opacity-40"
+            className="flex items-center justify-center w-8 h-8 sm:w-auto sm:h-auto sm:gap-1.5 sm:px-3 sm:py-1.5 rounded-lg bg-foreground/3 border border-foreground/8 text-[12px] text-muted-foreground hover:text-foreground hover:bg-foreground/6 transition-colors disabled:opacity-40"
           >
             <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
-            Refresh
+            <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>
       </div>
 
       {/* Stats strip */}
       {!loading && !error && (
-        <div className="shrink-0 flex items-center gap-3 mb-4 flex-wrap">
-          <StatBadge label="Total Skills" value={skills.length} icon={BookOpen} />
+        <div className="shrink-0 flex items-center gap-2 sm:gap-3 mb-4 overflow-x-auto scrollbar-none">
+          <StatBadge label="Skills" value={skills.length} icon={BookOpen} />
           <StatBadge label="Enabled" value={globallyEnabled} icon={CheckCircle2} color="text-status-active-text" />
           <StatBadge label="Sources" value={uniqueSources} icon={Layers} />
           <StatBadge label="Agents" value={agents.length} icon={Package} />
-          <StatBadge label="Built-in Tools" value={tools.length} icon={Wrench} />
+          <StatBadge label="Tools" value={tools.length} icon={Wrench} />
         </div>
       )}
 
       {/* Main card */}
-      <div className="flex-1 min-h-0 bg-white/1 border border-white/5 rounded-2xl overflow-hidden shadow-sm flex flex-col">
+      <div className="flex-1 min-h-0 bg-foreground/1 border border-foreground/5 rounded-2xl overflow-hidden shadow-sm flex flex-col">
         {/* Tabs */}
-        <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-0 border-b border-white/5">
+        <div className="shrink-0 flex items-center gap-0.5 sm:gap-1 px-3 sm:px-4 pt-3 pb-0 border-b border-foreground/5 overflow-x-auto scrollbar-none">
           <button
             onClick={() => setTab("skills")}
-            className={cn("flex items-center gap-1.5 px-3 py-2 text-[12px] font-medium border-b-2 transition-colors -mb-px",
+            className={cn("flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 text-[11px] sm:text-[12px] font-medium border-b-2 transition-colors -mb-px whitespace-nowrap",
               tab === "skills" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
           >
             <BookOpen className="w-3.5 h-3.5" />
             Skills
             {skills.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/8 text-[9px] text-muted-foreground tabular-nums">{skills.length}</span>
+              <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-foreground/8 text-[9px] text-muted-foreground tabular-nums">{skills.length}</span>
             )}
           </button>
           <button
             onClick={() => setTab("tools")}
-            className={cn("flex items-center gap-1.5 px-3 py-2 text-[12px] font-medium border-b-2 transition-colors -mb-px",
+            className={cn("flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 text-[11px] sm:text-[12px] font-medium border-b-2 transition-colors -mb-px whitespace-nowrap",
               tab === "tools" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
           >
             <Wrench className="w-3.5 h-3.5" />
-            Built-in Tools
+            <span className="sm:hidden">Built-in</span>
+            <span className="hidden sm:inline">Built-in Tools</span>
             {tools.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/8 text-[9px] text-muted-foreground tabular-nums">{tools.length}</span>
+              <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-foreground/8 text-[9px] text-muted-foreground tabular-nums">{tools.length}</span>
             )}
           </button>
           <button
             onClick={() => setTab("custom-tools")}
-            className={cn("flex items-center gap-1.5 px-3 py-2 text-[12px] font-medium border-b-2 transition-colors -mb-px",
+            className={cn("flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 text-[11px] sm:text-[12px] font-medium border-b-2 transition-colors -mb-px whitespace-nowrap",
               tab === "custom-tools" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
           >
             <Terminal className="w-3.5 h-3.5" />
-            Custom Tools
+            Custom
             {scriptCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/8 text-[9px] text-muted-foreground tabular-nums">{scriptCount}</span>
+              <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-foreground/8 text-[9px] text-muted-foreground tabular-nums">{scriptCount}</span>
             )}
           </button>
         </div>

@@ -291,22 +291,24 @@ export function SessionDetailModal({ session, onClose }: Props) {
   const INTERNAL_MODELS = ["unknown", "delivery-mirror", "gateway-injected"]
   const displayModel = session.model || events.find(e => e.model && !INTERNAL_MODELS.includes(e.model))?.model || "—"
 
+  const [mobileTab, setMobileTab] = useState<"timeline" | "info">("timeline")
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-5xl h-[90vh] flex flex-col p-0 gap-0 overflow-hidden bg-background border-border sm:rounded-xl shadow-2xl">
 
         {/* ── Header ── */}
-        <DialogHeader className="px-6 pt-4 pb-3.5 shrink-0 border-b border-border">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 min-w-0">
+        <DialogHeader className="px-4 md:px-6 pt-4 pb-3.5 shrink-0 border-b border-border">
+          <div className="flex items-center gap-2 md:gap-3 min-w-0">
+            <div className="flex items-center gap-1.5 shrink-0">
               <Hash className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
               <span className="font-mono font-semibold text-sm text-foreground">{session.id.split("-")[0]}</span>
             </div>
-            <div className="w-px h-4 bg-border" />
-            <span className="text-sm text-muted-foreground shrink-0">Agent</span>
-            <span className="text-sm font-semibold text-foreground truncate">{session.agentName}</span>
-            <div className="ml-auto flex items-center gap-2 shrink-0">
-              <Badge variant="outline" className="bg-muted/60 text-muted-foreground border-transparent text-[10px] px-2 py-0 uppercase tracking-wider font-mono">
+            <div className="hidden md:block w-px h-4 bg-border shrink-0" />
+            <span className="hidden md:block text-sm text-muted-foreground shrink-0">Agent</span>
+            <span className="text-sm font-semibold text-foreground truncate min-w-0 flex-1">{session.agentName}</span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Badge variant="outline" className="hidden sm:inline-flex bg-muted/60 text-muted-foreground border-transparent text-[10px] px-2 py-0 uppercase tracking-wider font-mono">
                 {session.trigger || "TELEGRAM"}
               </Badge>
               <Badge className={cn(
@@ -326,17 +328,38 @@ export function SessionDetailModal({ session, onClose }: Props) {
           </div>
         </DialogHeader>
 
+        {/* ── Mobile tab switcher (hidden on md+) ── */}
+        <div className="md:hidden flex shrink-0 border-b border-border">
+          {(["timeline", "info"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setMobileTab(tab)}
+              className={cn(
+                "flex-1 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors",
+                mobileTab === tab
+                  ? "text-foreground border-b-2 border-primary -mb-px"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {tab === "timeline" ? `Timeline · ${flatEvents.length}` : "Session Info"}
+            </button>
+          ))}
+        </div>
+
         {/* ── Body ── */}
         <div className="flex flex-1 min-h-0">
 
           {/* Left: Chat / Timeline */}
           <div
-            className="flex-1 flex flex-col min-w-0 overflow-hidden border-r border-border"
+            className={cn(
+              "flex-1 flex-col min-w-0 overflow-hidden border-r border-border",
+              mobileTab === "info" ? "hidden md:flex" : "flex"
+            )}
             ref={scrollAreaRef}
             onScrollCapture={() => { userScrolledRef.current = true }}
           >
-            {/* Sub-header */}
-            <div className="px-5 py-2.5 shrink-0 border-b border-border bg-muted/20 flex items-center justify-between">
+            {/* Sub-header — desktop only (mobile uses the tab strip above) */}
+            <div className="hidden md:flex px-5 py-2.5 shrink-0 border-b border-border bg-muted/20 items-center justify-between">
               <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Timeline</span>
               <span className="text-[10px] font-mono text-muted-foreground">{flatEvents.length} events · oldest first</span>
             </div>
@@ -359,7 +382,7 @@ export function SessionDetailModal({ session, onClose }: Props) {
               </div>
             ) : (
               <ScrollArea className="flex-1" type="scroll">
-                <div className="px-5 py-4 space-y-1">
+                <div className="px-4 md:px-5 py-4 space-y-1">
 
                   {/* Non-fatal background poll error — shown inline, doesn't replace timeline */}
                   {error && detail && (
@@ -403,12 +426,16 @@ export function SessionDetailModal({ session, onClose }: Props) {
           </div>
 
           {/* Right: Session Metadata */}
-          <div className="w-[260px] shrink-0 flex flex-col overflow-hidden">
-            <div className="px-5 py-2.5 shrink-0 border-b border-border bg-muted/20">
+          <div className={cn(
+            "shrink-0 flex-col overflow-hidden",
+            "w-full md:w-[260px] md:border-none",
+            mobileTab === "timeline" ? "hidden md:flex" : "flex"
+          )}>
+            <div className="hidden md:flex px-5 py-2.5 shrink-0 border-b border-border bg-muted/20">
               <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Session Info</span>
             </div>
             <ScrollArea className="flex-1" type="scroll">
-              <div className="px-5 py-4 space-y-4">
+              <div className="px-4 md:px-5 py-4 space-y-4">
 
                 {/* Identity */}
                 <div className="space-y-2">

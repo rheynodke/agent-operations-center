@@ -1930,7 +1930,7 @@ function EditConfigModal({
                   setCfg(c => ({ ...c, channelAccountId: v, channelStreaming: acct?.streaming ?? c.channelStreaming, channelDmPolicy: acct?.dmPolicy ?? c.channelDmPolicy }))
                 }} options={channelOptions} icon={Radio} />
               )}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <SelectField label="Streaming Mode" value={cfg.channelStreaming} onChange={v => setCfg(c => ({ ...c, channelStreaming: v }))} options={streamingOptions} />
                 <SelectField label="DM Policy" value={cfg.channelDmPolicy} onChange={v => setCfg(c => ({ ...c, channelDmPolicy: v }))} options={dmPolicyOptions} />
               </div>
@@ -2170,7 +2170,7 @@ function TelegramChannelCard({
               placeholder="123456:ABC-DEF..."
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
               <select
@@ -2349,7 +2349,7 @@ function WhatsAppChannelCard({
           </div>
         </div>
       ) : (
-        <div className="px-4 py-2.5 grid grid-cols-2 gap-3 text-[11px]">
+        <div className="px-4 py-2.5 grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
           <div>
             <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">DM Policy</span>
             <span className="font-medium text-foreground/80">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
@@ -2456,7 +2456,7 @@ function DiscordChannelCard({
             />
             <p className="text-[10px] text-muted-foreground/40 mt-1">Only fill this if you want to replace the current Discord bot token.</p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
               <select
@@ -2616,7 +2616,7 @@ function AddChannelForm({
               placeholder="123456:ABC-DEF..."
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
               <select value={dmPolicy} onChange={e => setDmPolicy(e.target.value as DmPolicy)}
@@ -2693,7 +2693,7 @@ function AddChannelForm({
             />
             <p className="text-[10px] text-muted-foreground/40 mt-1">Stored in <span className="font-mono">channels.discord.accounts.{agentId}.token</span>.</p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
               <select value={dmPolicy} onChange={e => setDmPolicy(e.target.value as DmPolicy)}
@@ -3482,6 +3482,7 @@ export function AgentDetailPage() {
   // File explorer
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
+  const initialFileAutoSelected = React.useRef(false)
 
   // Skills
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -3552,8 +3553,9 @@ export function AgentDetailPage() {
     try {
       const data = await api.getAgentDetail(id) as AgentDetail
       setDetail(data)
-      // Auto-select first existing file
-      if (!selectedFile) {
+      // Auto-select first existing file only on initial load
+      if (!initialFileAutoSelected.current) {
+        initialFileAutoSelected.current = true
         const first = WORKSPACE_FILES.find(f => data.workspace.files[f.replace(".md", "").toLowerCase()])
         if (first) setSelectedFile(first)
       }
@@ -3562,9 +3564,9 @@ export function AgentDetailPage() {
     } finally {
       setLoading(false)
     }
-  }, [id, selectedFile])
+  }, [id])
 
-  useEffect(() => { loadDetail() }, [loadDetail])
+  useEffect(() => { initialFileAutoSelected.current = false; loadDetail() }, [loadDetail])
 
   // Detect if agent is currently processing
   const isProcessing = detail?.status === "active"
@@ -3719,83 +3721,72 @@ export function AgentDetailPage() {
             Back to Registry
           </button>
 
-          {/* ── Header Card ── */}
-          <div className="px-4 py-3 bg-foreground/1 border border-border rounded-xl shrink-0 mb-3 shadow-sm">
-            <div className="flex items-center gap-3">
-              {/* Avatar */}
-              <AgentAvatar
-                avatarPresetId={detail.profile?.avatarPresetId}
-                emoji={detail.identity.emoji}
-                size="w-11 h-11"
-              />
-              {/* Info */}
+          {/* ── Header Card (compact) ── */}
+          <div className="px-3 py-2.5 bg-foreground/1 border border-border rounded-xl shrink-0 mb-3 shadow-sm">
+
+            {/* Single row: avatar + name/meta + actions */}
+            <div className="flex items-center gap-2.5">
+              <AgentAvatar avatarPresetId={detail.profile?.avatarPresetId} emoji={detail.identity.emoji} size="w-9 h-9" />
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <h2 className="text-lg font-display font-bold text-foreground tracking-tight leading-none">{detail.identity.name}</h2>
-                  <span className="text-[10px] font-mono text-muted-foreground/60 bg-foreground/5 px-1.5 py-0.5 rounded border border-border shrink-0">ID: {detail.id.toUpperCase()}</span>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <h2 className="text-sm font-display font-bold text-foreground tracking-tight leading-none truncate">{detail.identity.name}</h2>
+                  <span className="text-[9px] font-mono text-muted-foreground/50 bg-foreground/5 px-1 py-0.5 rounded border border-border shrink-0">
+                    {detail.id.toUpperCase()}
+                  </span>
                   <span className={cn(
-                    "text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border shrink-0 transition-all",
+                    "text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider border shrink-0",
                     isProcessing
                       ? "text-emerald-400 bg-emerald-500/15 border-emerald-500/20 animate-pulse"
                       : "text-muted-foreground bg-foreground/5 border-foreground/10"
                   )}>
-                    {isProcessing && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1 animate-pulse" />}
                     {isProcessing ? "LIVE" : detail.status}
                   </span>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
-                  <span className="flex items-center gap-1 font-mono text-primary/70 shrink-0"><Cpu className="w-3 h-3" />{detail.model}</span>
+                <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground/60 min-w-0">
+                  <Cpu className="w-2.5 h-2.5 shrink-0" />
+                  <span className="font-mono text-primary/60 truncate">{detail.model}</span>
                   {detail.channel && (
-                    <span className="flex items-center gap-1 shrink-0"><Globe className="w-3 h-3 text-primary/50" />{detail.channel.type} ({detail.channel.accountId})</span>
-                  )}
-                  {detail.identity.vibe && (
-                    <span className="italic text-muted-foreground/40 truncate hidden sm:block max-w-xs">"{detail.identity.vibe}"</span>
+                    <><span className="text-foreground/15">·</span>
+                    <Globe className="w-2.5 h-2.5 shrink-0" />
+                    <span className="truncate">{detail.channel.type}</span></>
                   )}
                 </div>
               </div>
               {/* Actions */}
-              <div className="flex items-center gap-1.5 shrink-0">
-                {saveMsg && <span className="text-xs font-medium text-emerald-400 mr-1">{saveMsg}</span>}
-                <button onClick={loadDetail} className="w-7 h-7 rounded-lg border border-foreground/10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
+              <div className="flex items-center gap-1 shrink-0">
                 <button
                   onClick={handleTestChat}
                   disabled={testingChat}
-                  title={!gatewayConnected ? "Gateway offline — cannot start chat" : undefined}
+                  title={!gatewayConnected ? "Gateway offline" : "Test Chat"}
                   className={cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                    "w-7 h-7 rounded-lg border flex items-center justify-center transition-colors disabled:opacity-50",
                     gatewayConnected
                       ? "bg-emerald-500/15 border-emerald-500/25 text-emerald-500 hover:bg-emerald-500/25"
-                      : "bg-foreground/5 border-foreground/10 text-muted-foreground/50"
+                      : "bg-foreground/5 border-foreground/10 text-muted-foreground/40"
                   )}
                 >
-                  {testingChat
-                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    : gatewayConnected
-                      ? <MessageSquarePlus className="w-3.5 h-3.5" />
-                      : <WifiOff className="w-3.5 h-3.5" />
-                  }
-                  {testingChat ? "Starting…" : "Test Chat"}
+                  {testingChat ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : gatewayConnected ? <MessageSquarePlus className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
                 </button>
-                <button onClick={() => setEditing(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/20 border border-primary/30 text-xs text-primary font-semibold hover:bg-primary/30 transition-colors">
-                  <Pencil className="w-3.5 h-3.5" /> Edit Configuration
+                <button onClick={() => setEditing(true)} title="Edit Configuration"
+                  className="w-7 h-7 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center text-primary hover:bg-primary/30 transition-colors">
+                  <Pencil className="w-3.5 h-3.5" />
                 </button>
-                <button
-                  onClick={() => setShowDeleteModal(true)}
-                  title="Delete this agent"
-                  className="w-7 h-7 rounded-lg border border-red-500/20 flex items-center justify-center text-red-400/50 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/40 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
+                <button onClick={loadDetail}
+                  className="w-7 h-7 rounded-lg border border-foreground/10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+                  <RefreshCw className="w-3 h-3" />
+                </button>
+                <button onClick={() => setShowDeleteModal(true)} title="Delete agent"
+                  className="w-7 h-7 rounded-lg border border-red-500/20 flex items-center justify-center text-red-400/50 hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                  <Trash2 className="w-3 h-3" />
                 </button>
               </div>
             </div>
 
-            {/* Stats */}
-            <div className="flex flex-wrap items-center gap-2 mt-2.5">
+            {/* Stats — single scrollable row */}
+            <div className="flex items-center gap-1.5 mt-2 overflow-x-auto scrollbar-none">
               <StatPill icon={Hash} label="Sessions" value={detail.stats.totalSessions} />
               <StatPill icon={MessageSquare} label="Messages" value={formatTokens(detail.stats.totalMessages)} />
-              <StatPill icon={Wrench} label="Tool Calls" value={formatTokens(detail.stats.totalToolCalls)} />
+              <StatPill icon={Wrench} label="Tools" value={formatTokens(detail.stats.totalToolCalls)} />
               <StatPill icon={Zap} label="Tokens" value={formatTokens(detail.stats.totalTokens)} />
               <StatPill icon={DollarSign} label="Cost" value={`$${detail.stats.totalCost.toFixed(2)}`} />
             </div>
@@ -3828,7 +3819,7 @@ export function AgentDetailPage() {
           <div className="flex-1 min-h-0 flex flex-col bg-foreground/1 border border-border rounded-2xl overflow-hidden shadow-sm">
 
             {/* Tab bar */}
-            <div className="flex items-center gap-0 px-3 border-b border-border bg-foreground/2 shrink-0">
+            <div className="flex items-center gap-0 px-3 border-b border-border bg-foreground/2 shrink-0 overflow-x-auto">
               {([
                 { key: 'files',     label: 'Agent Files',    icon: FolderOpen },
                 { key: 'skills',    label: 'Skills & Tools', icon: Sparkles   },
@@ -3846,7 +3837,7 @@ export function AgentDetailPage() {
                   )}
                 >
                   <Icon className="w-3.5 h-3.5" />
-                  {label}
+                  <span className="hidden sm:inline">{label}</span>
                   {key === 'channels' && (
                     <span className={cn(
                       "ml-1 w-1.5 h-1.5 rounded-full shrink-0",
@@ -3865,7 +3856,7 @@ export function AgentDetailPage() {
             {/* ═══ FILES TAB ═══ */}
             {bodyTab === 'files' && (
               <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                <div className="flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
+                <div className="hidden md:flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
                   {detail.workspace.hasCustomWorkspace && (
                     <span className="text-[9px] font-bold text-amber-400 bg-amber-400/10 border border-amber-400/20 px-1.5 py-0.5 rounded uppercase tracking-wider">Custom Workspace</span>
                   )}
@@ -3881,8 +3872,18 @@ export function AgentDetailPage() {
                   </button>
                 </div>
                 <div className="flex flex-1 min-h-0 overflow-hidden">
-                  {!fileSidebarCollapsed && (
-                    <div className="w-52 border-r border-border shrink-0 py-1.5 overflow-y-auto">
+                  {/* File list
+                      Mobile: always render; hide when a file is selected (full-screen preview)
+                      Desktop: respect fileSidebarCollapsed; always show when file selected (both panels) */}
+                  <div className={cn(
+                    "border-r border-border shrink-0 py-1.5 overflow-y-auto",
+                    // Mobile: full-width; desktop: fixed sidebar width
+                    "w-full md:w-52",
+                    // Mobile hide when viewing a file; desktop show unless collapsed
+                    selectedFile ? "hidden md:block" : "block",
+                    // Desktop collapse toggle (only applies at md+)
+                    fileSidebarCollapsed && "md:hidden"
+                  )}>
                       {WORKSPACE_FILES.map(file => {
                         const fileKey = file.replace(".md", "").toLowerCase()
                         const exists = !!detail.workspace.files[fileKey]
@@ -3913,9 +3914,22 @@ export function AgentDetailPage() {
                           </button>
                         )
                       })}
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0 min-h-0 overflow-y-auto flex flex-col">
+                  </div>
+                  {/* Detail panel — on mobile only show when a file is selected */}
+                  <div className={cn(
+                    "flex-1 min-w-0 min-h-0 overflow-y-auto flex-col",
+                    selectedFile ? "flex" : "hidden md:flex"
+                  )}>
+                    {/* Mobile back button */}
+                    {selectedFile && (
+                      <button
+                        className="md:hidden flex items-center gap-1.5 px-4 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border shrink-0 bg-foreground/2 w-full"
+                        onClick={() => setSelectedFile(null)}
+                      >
+                        <ArrowLeft className="w-3 h-3" />
+                        <span>Files</span>
+                      </button>
+                    )}
                     {selectedFile && id ? (
                       <InlineFilePanel key={`${selectedFile}-${fileRefreshKey}`} agentId={id} filename={selectedFile} onSaved={loadDetail} agentName={detail?.identity?.name || id} />
                     ) : (
@@ -3932,46 +3946,40 @@ export function AgentDetailPage() {
             {/* ═══ SKILLS & TOOLS TAB ═══ */}
             {bodyTab === 'skills' && (
               <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                <div className="flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
-                  <Sparkles className="w-4 h-4 text-primary/60" />
-                  <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5">
+                {/* Sub-tab bar — responsive two-row layout on mobile */}
+                <div className="flex flex-col gap-1.5 px-3 py-2 border-b border-border bg-foreground/2 shrink-0">
+                  {/* Sub-tab pills */}
+                  <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5 overflow-x-auto scrollbar-none">
                     <button
                       onClick={() => setActiveTab('skills')}
-                      className={cn("px-3 py-1 rounded text-[11px] font-bold transition-all",
+                      className={cn("flex-1 sm:flex-none px-3 py-1 rounded text-[11px] font-bold transition-all whitespace-nowrap",
                         activeTab === 'skills' ? "bg-primary/20 text-primary border border-primary/30" : "text-muted-foreground hover:text-foreground")}
                     >
-                      Skills
-                      <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'skills' ? "bg-primary/20 text-primary" : "bg-foreground/5 text-muted-foreground")}>{skills.length}</span>
+                      Skills <span className={cn("ml-1 text-[9px] px-1 py-px rounded", activeTab === 'skills' ? "bg-primary/20 text-primary" : "bg-foreground/5 text-muted-foreground")}>{skills.length}</span>
                     </button>
                     <button
                       onClick={() => setActiveTab('tools')}
-                      className={cn("px-3 py-1 rounded text-[11px] font-bold transition-all",
+                      className={cn("flex-1 sm:flex-none px-3 py-1 rounded text-[11px] font-bold transition-all whitespace-nowrap",
                         activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-300 border border-violet-500/30" : "text-muted-foreground hover:text-foreground")}
                     >
-                      Built-in Tools
-                      <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded", activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-400" : "bg-foreground/5 text-muted-foreground")}>
+                      Built-in <span className={cn("ml-1 text-[9px] px-1 py-px rounded", activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-400" : "bg-foreground/5 text-muted-foreground")}>
                         {tools.filter(t => !t.enabled).length > 0 ? `${tools.filter(t => !t.enabled).length} denied` : tools.length}
                       </span>
                     </button>
                     <button
                       onClick={() => setActiveTab('custom-tools')}
-                      className={cn("px-3 py-1 rounded text-[11px] font-bold transition-all",
+                      className={cn("flex-1 sm:flex-none px-3 py-1 rounded text-[11px] font-bold transition-all whitespace-nowrap",
                         activeTab === 'custom-tools' ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : "text-muted-foreground hover:text-foreground")}
                     >
-                      Custom Tools
-                      {customToolsTotal > 0 && (
-                        <span className={cn("ml-1.5 text-[9px] px-1 py-px rounded",
-                          activeTab === 'custom-tools' ? "bg-amber-500/20 text-amber-400" : "bg-foreground/5 text-muted-foreground")}>
-                          {customToolsTotal}
-                        </span>
-                      )}
+                      Custom {customToolsTotal > 0 && <span className={cn("ml-1 text-[9px] px-1 py-px rounded", activeTab === 'custom-tools' ? "bg-amber-500/20 text-amber-400" : "bg-foreground/5 text-muted-foreground")}>{customToolsTotal}</span>}
                     </button>
                   </div>
+                  {/* Action buttons row */}
                   {activeTab === 'skills' && (
-                    <>
+                    <div className="flex items-center gap-1.5">
                       <button onClick={() => setSkillSidebarCollapsed(c => !c)}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
-                        {skillSidebarCollapsed ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span>Expand</span></> : <><PanelLeftClose className="w-3.5 h-3.5" /><span>Collapse</span></>}
+                        className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
+                        {skillSidebarCollapsed ? <><PanelLeftOpen className="w-3 h-3" /><span>Expand</span></> : <><PanelLeftClose className="w-3 h-3" /><span>Collapse</span></>}
                       </button>
                       <div className="ml-auto flex items-center gap-1.5">
                         <button onClick={() => setShowInstallSkill(true)}
@@ -3980,16 +3988,16 @@ export function AgentDetailPage() {
                         </button>
                         <button onClick={() => setShowCreateSkill(true)}
                           className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 border border-primary/20 text-[11px] text-primary font-bold hover:bg-primary/20 transition-colors">
-                          <Plus className="w-3 h-3" /> New Skill
+                          <Plus className="w-3 h-3" /> New
                         </button>
                       </div>
-                    </>
+                    </div>
                   )}
                   {activeTab === 'tools' && (
-                    <span className="ml-auto text-[10px] text-muted-foreground/50 italic">Toggles write to tools.deny</span>
+                    <p className="text-[10px] text-muted-foreground/40 italic">Toggles write to tools.deny</p>
                   )}
                   {activeTab === 'custom-tools' && (
-                    <div className="ml-auto flex items-center gap-2">
+                    <div className="flex items-center gap-2">
                       <button
                         onClick={async () => {
                           try {
@@ -4005,15 +4013,21 @@ export function AgentDetailPage() {
                       >
                         📋 Sync Task Script
                       </button>
-                      <span className="text-[10px] text-muted-foreground/50 italic">Toggles inject context into TOOLS.md</span>
                     </div>
                   )}
                 </div>
 
                 {activeTab === 'skills' && (
                   <div className="flex flex-1 min-h-0 overflow-hidden">
-                    {!skillSidebarCollapsed && (
-                      <div className="w-52 border-r border-border shrink-0 py-1.5 overflow-y-auto">
+                    {/* Skills list — full-width on mobile, hide when skill selected */}
+                    <div className={cn(
+                      "border-r border-border shrink-0 py-1.5 overflow-y-auto",
+                      "w-full md:w-52",
+                      // Mobile: hide when a skill is open (show detail full-screen)
+                      selectedSkill ? "hidden md:block" : "block",
+                      // Desktop: respect collapse toggle
+                      skillSidebarCollapsed && "md:hidden"
+                    )}>
                         {skillsLoading ? (
                           <div className="flex items-center justify-center h-full"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
                         ) : skills.length === 0 ? (
@@ -4096,9 +4110,22 @@ export function AgentDetailPage() {
                             )
                           })
                         })()}
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+                    </div>
+                    {/* Skill detail — full-width on mobile, hidden when no skill selected */}
+                    <div className={cn(
+                      "min-w-0 min-h-0 flex flex-col overflow-hidden",
+                      "flex-1",
+                      !selectedSkill ? "hidden md:flex" : "flex"
+                    )}>
+                      {/* Mobile back button */}
+                      {selectedSkill && (
+                        <button
+                          className="md:hidden flex items-center gap-1.5 px-4 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border shrink-0 bg-foreground/2 w-full"
+                          onClick={() => setSelectedSkill(null)}
+                        >
+                          <ArrowLeft className="w-3 h-3" /> Skills
+                        </button>
+                      )}
                       {selectedSkill && id ? (
                         <InlineSkillPanel agentId={id} skillSlug={selectedSkill}
                           skill={skills.find(s => s.slug === selectedSkill) || null}

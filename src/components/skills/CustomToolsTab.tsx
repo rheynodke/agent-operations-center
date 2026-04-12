@@ -274,86 +274,91 @@ function ScriptEditor({
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div className="shrink-0 flex items-start justify-between gap-3 px-4 py-3 border-b border-border/40">
-        <div className="flex flex-col gap-1 min-w-0">
-          {renaming ? (
-            <div className="flex items-center gap-2">
-              <input
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setRenaming(false) }}
-                className="bg-secondary border border-border rounded-lg px-2 py-1 text-sm font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
-              />
-              <span className={cn("text-sm font-mono", extColor)}>{script.ext}</span>
-              <button onClick={handleRename} className="p-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
-                <Check className="h-3.5 w-3.5" />
-              </button>
-              <button onClick={() => setRenaming(false)} className="p-1 rounded-md hover:bg-secondary text-muted-foreground transition-colors">
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="text-lg">{script.emoji}</span>
-              <span className="font-mono font-semibold text-foreground truncate">{script.name}</span>
-              <button onClick={() => setRenaming(true)} className="p-1 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-secondary transition-colors">
-                <Pencil className="h-3 w-3" />
-              </button>
-            </div>
-          )}
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span className={cn("font-mono font-semibold", extColor)}>{script.lang}</span>
-            <span>{fmtSize(script.size)}</span>
-            <span>modified {fmtDate(script.mtime)}</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 shrink-0">
-          {dirty && (
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-            >
-              {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
-              Save
-            </button>
-          )}
-          <button
-            onClick={() => setShowTemplatePicker(true)}
-            className="flex items-center gap-1 px-2 py-1.5 rounded-lg border border-border text-xs font-bold text-muted-foreground hover:text-amber-400 hover:border-amber-500/30 hover:bg-amber-500/10 transition-colors"
-            title="ADLC Script Templates"
-          >
-            <LayoutTemplate className="h-3.5 w-3.5" /> Templates
-          </button>
-          <button
-            onClick={() => setShowAiPanel(p => !p)}
-            className={cn("flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs font-bold transition-colors",
-              showAiPanel
-                ? "bg-violet-500/20 border-violet-500/30 text-violet-400"
-                : "border-border text-muted-foreground hover:text-violet-400 hover:border-violet-500/30 hover:bg-violet-500/10"
+      <div className="shrink-0 flex flex-col gap-2 px-3 md:px-4 py-3 border-b border-border/40">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex flex-col gap-1 min-w-0">
+            {renaming ? (
+              <div className="flex items-center gap-2">
+                <input
+                  autoFocus
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setRenaming(false) }}
+                  className="bg-secondary border border-border rounded-lg px-2 py-1 text-sm font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 min-w-0"
+                />
+                <span className={cn("text-sm font-mono", extColor)}>{script.ext}</span>
+                <button onClick={handleRename} className="p-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+                <button onClick={() => setRenaming(false)} className="p-1 rounded-md hover:bg-secondary text-muted-foreground transition-colors">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-lg shrink-0">{script.emoji}</span>
+                <span className="font-mono font-semibold text-foreground text-sm truncate">{script.name}</span>
+                <button onClick={() => setRenaming(true)} className="p-1 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-secondary transition-colors shrink-0">
+                  <Pencil className="h-3 w-3" />
+                </button>
+              </div>
             )}
-            title="AI Assist"
-          >
-            <Wand2 className="h-3.5 w-3.5" /> AI
-          </button>
-          {!confirmDelete ? (
-            <button
-              onClick={() => setConfirmDelete(true)}
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          ) : (
-            <div className="flex items-center gap-1 bg-destructive/10 border border-destructive/20 rounded-lg px-2 py-1">
-              <span className="text-xs text-destructive">Delete?</span>
-              <button onClick={handleDelete} disabled={deleting} className="text-xs font-semibold text-destructive hover:underline ml-1">
-                {deleting ? <Loader2 className="h-3 w-3 animate-spin" /> : "Yes"}
-              </button>
-              <button onClick={() => setConfirmDelete(false)} className="text-xs text-muted-foreground hover:text-foreground ml-1">No</button>
+            <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-xs text-muted-foreground">
+              <span className={cn("font-mono font-semibold", extColor)}>{script.lang}</span>
+              <span>{fmtSize(script.size)}</span>
+              <span className="hidden sm:inline">modified {fmtDate(script.mtime)}</span>
             </div>
-          )}
+          </div>
+
+          {/* Action buttons — compact on mobile */}
+          <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+            {dirty && (
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                <span className="hidden sm:inline">Save</span>
+              </button>
+            )}
+            <button
+              onClick={() => setShowTemplatePicker(true)}
+              className="flex items-center justify-center w-7 h-7 sm:w-auto sm:h-auto sm:gap-1 sm:px-2 sm:py-1.5 rounded-lg border border-border text-xs font-bold text-muted-foreground hover:text-amber-400 hover:border-amber-500/30 hover:bg-amber-500/10 transition-colors"
+              title="ADLC Script Templates"
+            >
+              <LayoutTemplate className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Templates</span>
+            </button>
+            <button
+              onClick={() => setShowAiPanel(p => !p)}
+              className={cn("flex items-center justify-center w-7 h-7 sm:w-auto sm:h-auto sm:gap-1 sm:px-2 sm:py-1.5 rounded-lg border text-xs font-bold transition-colors",
+                showAiPanel
+                  ? "bg-violet-500/20 border-violet-500/30 text-violet-400"
+                  : "border-border text-muted-foreground hover:text-violet-400 hover:border-violet-500/30 hover:bg-violet-500/10"
+              )}
+              title="AI Assist"
+            >
+              <Wand2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">AI</span>
+            </button>
+            {!confirmDelete ? (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <div className="flex items-center gap-1 bg-destructive/10 border border-destructive/20 rounded-lg px-2 py-1">
+                <span className="text-xs text-destructive">Delete?</span>
+                <button onClick={handleDelete} disabled={deleting} className="text-xs font-semibold text-destructive hover:underline ml-1">
+                  {deleting ? <Loader2 className="h-3 w-3 animate-spin" /> : "Yes"}
+                </button>
+                <button onClick={() => setConfirmDelete(false)} className="text-xs text-muted-foreground hover:text-foreground ml-1">No</button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -535,8 +540,12 @@ export function CustomToolsTab({ onScriptSelect, agentId }: CustomToolsTabProps)
         />
       )}
 
-      {/* Left panel */}
-      <div className="w-64 shrink-0 border-r border-border/40 flex flex-col min-h-0">
+      {/* Left panel — full-width on mobile, sidebar on desktop */}
+      <div className={cn(
+        "shrink-0 border-r border-border/40 flex flex-col min-h-0",
+        "w-full md:w-64",
+        selected ? "hidden md:flex" : "flex"
+      )}>
         {/* Toolbar */}
         <div className="shrink-0 flex items-center gap-1.5 px-3 py-3 border-b border-border/30">
           <div className="flex-1 flex items-center gap-1.5 bg-secondary rounded-lg px-2.5 py-1.5">
@@ -642,20 +651,33 @@ export function CustomToolsTab({ onScriptSelect, agentId }: CustomToolsTabProps)
         </div>
       </div>
 
-      {/* Right panel — editor */}
-      <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+      {/* Right panel — editor; hidden on mobile when no script selected */}
+      <div className={cn(
+        "flex-1 min-w-0 min-h-0 flex flex-col",
+        selected ? "flex" : "hidden md:flex"
+      )}>
         {loadingContent ? (
           <div className="flex-1 flex items-center justify-center text-muted-foreground/40">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
         ) : selected ? (
-          <ScriptEditor
-            script={selected}
-            onSaved={handleSaved}
-            onDeleted={handleDeleted}
-            onRenamed={handleRenamed}
-            agentId={agentId}
-          />
+          <>
+            {/* Mobile back button */}
+            <button
+              onClick={() => setSelected(null)}
+              className="md:hidden flex items-center gap-1.5 px-4 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border shrink-0 bg-foreground/2 w-full"
+            >
+              <ChevronRight className="w-3 h-3 rotate-180" />
+              <span>Scripts</span>
+            </button>
+            <ScriptEditor
+              script={selected}
+              onSaved={handleSaved}
+              onDeleted={handleDeleted}
+              onRenamed={handleRenamed}
+              agentId={agentId}
+            />
+          </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground/40">
             <div className="p-5 rounded-2xl bg-secondary/50">

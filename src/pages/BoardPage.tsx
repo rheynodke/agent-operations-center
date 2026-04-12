@@ -104,27 +104,27 @@ export default function BoardPage() {
   }, [updateTask, setTasks])
 
   return (
-    <div className="flex flex-col h-full gap-4 animate-fade-in">
+    <div className="flex flex-col h-full gap-3 sm:gap-4 animate-fade-in">
       {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-4 mb-2 shrink-0">
-        <div>
-          <h1 className="text-3xl font-display font-bold tracking-tight text-foreground">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 sm:gap-4 mb-2 shrink-0">
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-3xl font-display font-bold tracking-tight text-foreground">
             Task Board
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1 hidden sm:block">
             Assign, dispatch, and track agent tasks in real-time
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <ProjectSwitcher
             onSettingsOpen={() => setSettingsOpen(true)}
             onNewProject={() => setCreateProjectOpen(true)}
           />
           <button
             onClick={() => setCreateOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs font-semibold hover:bg-primary/20 transition-colors"
+            className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs font-semibold hover:bg-primary/20 transition-colors"
           >
-            <Plus className="h-3.5 w-3.5" /> New Ticket
+            <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">New</span> Ticket
           </button>
         </div>
       </div>

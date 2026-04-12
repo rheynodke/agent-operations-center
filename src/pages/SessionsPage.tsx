@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect } from "react"
 import { Search, Zap, MessageSquare, Clock, Loader2, Wrench } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { useSessionStore, useAgentStore } from "@/stores"
@@ -113,14 +112,18 @@ function TypeBadge({ type }: { type: string }) {
     webchat: "text-primary bg-primary/10 border-primary/20",
   }
 
+  // Truncate long values (e.g. UUID subtypes) for display
+  const label = type.length > 12 ? type.slice(0, 10) + "…" : type
+
   return (
     <span
       className={cn(
-        "text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border shrink-0",
+        "text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border shrink-0 max-w-[110px] truncate",
         colors[type] ?? "text-muted-foreground bg-surface-highest border-border/50"
       )}
+      title={type}
     >
-      {type}
+      {label}
     </span>
   )
 }
@@ -143,13 +146,13 @@ function SessionRow({ session, isProcessing, avatarPresetId, onClick }: {
     <div
       onClick={onClick}
       className={cn(
-        "p-4 flex items-start gap-4 hover:bg-surface-container transition-colors border-b border-[rgba(72,72,72,0.08)] last:border-0 cursor-pointer",
+        "p-3 sm:p-4 flex items-start gap-3 sm:gap-4 hover:bg-surface-container transition-colors border-b border-[rgba(72,72,72,0.08)] last:border-0 cursor-pointer overflow-hidden min-w-0",
         isProcessing && "bg-amber-500/3 border-l-2 border-l-amber-500/50"
       )}
     >
-      {/* Time */}
+      {/* Time — hidden on mobile */}
       <span className={cn(
-        "font-mono text-[11px] mt-1 shrink-0 w-16 text-right tabular-nums",
+        "hidden sm:block font-mono text-[11px] mt-1 shrink-0 w-16 text-right tabular-nums",
         isProcessing ? "text-amber-400" : "text-muted-foreground"
       )}>
         {time}
@@ -171,8 +174,16 @@ function SessionRow({ session, isProcessing, avatarPresetId, onClick }: {
           <span className="text-muted-foreground">{session.name}</span>
         </p>
 
-        {/* Badges row */}
+        {/* Badges row — time shown inline on mobile */}
         <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+          {time && (
+            <span className={cn(
+              "sm:hidden font-mono text-[10px] tabular-nums",
+              isProcessing ? "text-amber-400" : "text-muted-foreground/60"
+            )}>
+              {time}
+            </span>
+          )}
           {isProcessing ? <ProcessingBadge /> : <StatusBadge status={session.status} />}
           {session.type && <TypeBadge type={session.type} />}
           {session.subtype && <TypeBadge type={session.subtype} />}
@@ -196,7 +207,7 @@ function SessionRow({ session, isProcessing, avatarPresetId, onClick }: {
             </span>
           )}
           {session.model && (
-            <span className="text-[10px] text-muted-foreground/60 font-mono truncate max-w-[160px]">
+            <span className="hidden sm:inline text-[10px] text-muted-foreground/60 font-mono truncate max-w-[140px]">
               {session.model}
             </span>
           )}
@@ -204,7 +215,7 @@ function SessionRow({ session, isProcessing, avatarPresetId, onClick }: {
 
         {/* Last message preview */}
         {session.lastMessage && (
-          <p className="mt-1.5 text-xs text-muted-foreground/70 truncate max-w-[600px]">
+          <p className="mt-1.5 text-xs text-muted-foreground/70 truncate w-full">
             {session.lastMessage}
           </p>
         )}
@@ -316,39 +327,53 @@ export function SessionsPage() {
 
   return (
     <div className="flex flex-col gap-0 animate-fade-in max-w-[1600px] mx-auto">
-      {/* ── Header ── */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-display font-bold tracking-tight text-foreground">
-              Sessions
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Active & historical sessions across all agents
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {activeSessions.length > 0 && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
-                </span>
-                <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">
-                  {activeSessions.length} Active
-                </span>
+      {/* ── Header — desktop full, mobile compact ── */}
+      <div className="hidden sm:flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-3xl font-display font-bold tracking-tight text-foreground">
+            Sessions
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Active & historical sessions across all agents
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {activeSessions.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
               </span>
-            )}
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {filtered.length} session{filtered.length !== 1 ? "s" : ""}
+              <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">
+                {activeSessions.length} Active
+              </span>
             </span>
-          </div>
+          )}
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {filtered.length} session{filtered.length !== 1 ? "s" : ""}
+          </span>
         </div>
       </div>
 
+      {/* Mobile compact header */}
+      <div className="flex sm:hidden items-center gap-2 mb-3 shrink-0">
+        <h1 className="text-xl font-display font-bold tracking-tight text-foreground">Sessions</h1>
+        <span className="text-[11px] text-muted-foreground tabular-nums">{filtered.length}/{sessions.length}</span>
+        {activeSessions.length > 0 && (
+          <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500" />
+            </span>
+            <span className="text-[10px] font-bold text-amber-400">{activeSessions.length} Active</span>
+          </span>
+        )}
+      </div>
+
       {/* ── Filters ── */}
-      <div className="flex items-center gap-3 flex-wrap mb-4">
-        <div className="relative max-w-xs flex-1">
+      <div className="flex flex-col gap-2 mb-4">
+        {/* Search — full width on mobile */}
+        <div className="relative sm:max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input
             placeholder="Search agent, message, model…"
@@ -358,12 +383,12 @@ export function SessionsPage() {
           />
         </div>
 
-        {/* Type filter — dynamic from data */}
-        <div className="flex items-center gap-1">
+        {/* Type filter — scrollable on mobile */}
+        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
           <button
             onClick={() => setTypeFilter("all")}
             className={cn(
-              "px-3 py-1 rounded-full text-xs transition-all",
+              "px-3 py-1 rounded-full text-xs transition-all whitespace-nowrap shrink-0",
               typeFilter === "all"
                 ? "bg-accent/20 text-accent-foreground font-semibold"
                 : "text-muted-foreground hover:text-foreground hover:bg-secondary"
@@ -376,7 +401,7 @@ export function SessionsPage() {
               key={t}
               onClick={() => setTypeFilter(t)}
               className={cn(
-                "px-3 py-1 rounded-full text-xs capitalize transition-all",
+                "px-3 py-1 rounded-full text-xs capitalize transition-all whitespace-nowrap shrink-0",
                 typeFilter === t
                   ? "bg-accent/20 text-accent-foreground font-semibold"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary"
@@ -387,14 +412,14 @@ export function SessionsPage() {
           ))}
         </div>
 
-        {/* Status filter */}
-        <div className="flex items-center gap-1">
+        {/* Status filter — scrollable on mobile */}
+        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
           {["all", "active", "idle", "completed", "failed"].map((s) => (
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
               className={cn(
-                "px-3 py-1 rounded-full text-xs capitalize transition-all",
+                "px-3 py-1 rounded-full text-xs capitalize transition-all whitespace-nowrap shrink-0",
                 statusFilter === s
                   ? "bg-accent/20 text-accent-foreground font-semibold"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary"
@@ -419,7 +444,7 @@ export function SessionsPage() {
             </p>
           </div>
         ) : (
-          <ScrollArea className="h-[calc(100vh-300px)]">
+          <div className="overflow-y-auto overflow-x-hidden h-[calc(100vh-300px)] w-full">
             {filtered.map((session) => (
               <SessionRow
                 key={session.id}
@@ -429,7 +454,7 @@ export function SessionsPage() {
                 onClick={() => openModal(session)}
               />
             ))}
-          </ScrollArea>
+          </div>
         )}
       </div>
 

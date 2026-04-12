@@ -9,6 +9,10 @@ interface ThemeState {
   toggleTheme: () => void
   sidebarCollapsed: boolean
   toggleSidebar: () => void
+  mobileNavOpen: boolean
+  setMobileNavOpen: (v: boolean) => void
+  feedSheetOpen: boolean
+  setFeedSheetOpen: (v: boolean) => void
 }
 
 export const useThemeStore = create<ThemeState>()(
@@ -28,9 +32,14 @@ export const useThemeStore = create<ThemeState>()(
       },
       sidebarCollapsed: false,
       toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+      mobileNavOpen: false,
+      setMobileNavOpen: (v) => set({ mobileNavOpen: v }),
+      feedSheetOpen: false,
+      setFeedSheetOpen: (v) => set({ feedSheetOpen: v }),
     }),
     {
       name: 'aoc-theme-storage',
+      partialize: (state) => ({ theme: state.theme, sidebarCollapsed: state.sidebarCollapsed }),
       onRehydrateStorage: () => (state) => {
         // Run after hydration is complete to apply the saved or default theme
         if (state) {

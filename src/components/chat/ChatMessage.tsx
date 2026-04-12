@@ -19,7 +19,7 @@ interface Props {
 function UserMessage({ text, images }: { text: string; images?: string[] }) {
   return (
     <div className="flex items-end justify-end gap-3">
-      <div className="max-w-[68%] flex flex-col gap-1.5 items-end">
+      <div className="max-w-[85%] md:max-w-[68%] flex flex-col gap-1.5 items-end min-w-0">
         {/* Image previews above the text bubble */}
         {images && images.length > 0 && (
           <div className="flex flex-wrap gap-1.5 justify-end">
@@ -29,7 +29,7 @@ function UserMessage({ text, images }: { text: string; images?: string[] }) {
           </div>
         )}
         {text && (
-          <div className="bg-primary/12 border border-primary/20 rounded-2xl rounded-br-sm px-4 py-3 text-sm text-foreground/90 leading-relaxed">
+          <div className="bg-primary/12 border border-primary/20 rounded-2xl rounded-br-sm px-4 py-3 text-sm text-foreground/90 leading-relaxed break-words overflow-hidden">
             {text}
           </div>
         )}

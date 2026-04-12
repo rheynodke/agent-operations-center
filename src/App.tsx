@@ -3,6 +3,7 @@ import { useEffect, useState } from "react"
 import { Sidebar } from "@/components/layout/Sidebar"
 import { TopBar } from "@/components/layout/TopBar"
 import { LiveFeedPanel } from "@/components/layout/LiveFeedPanel"
+import { MobileFeedSheet } from "@/components/layout/MobileFeedSheet"
 import { LoginScreen } from "@/components/LoginScreen"
 import { SetupScreen } from "@/components/SetupScreen"
 import { useAuthStore } from "@/stores"
@@ -35,7 +36,7 @@ function DashboardShell() {
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
-        <main className={isChatPage ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"}>
+        <main className={isChatPage ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-3 md:p-6"}>
           <Routes>
             {/* Dashboard valid routes */}
             <Route path="/" element={<OverviewPage />} />
@@ -56,6 +57,7 @@ function DashboardShell() {
           </Routes>
         </main>
         <LiveFeedPanel />
+        <MobileFeedSheet />
       </div>
     </div>
   )

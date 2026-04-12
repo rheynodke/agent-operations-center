@@ -9,14 +9,14 @@ import type { LiveFeedEntry } from "@/types"
 
 // ─── Agent Live Feed ──────────────────────────────────────────────────────────
 
-const typeColors = {
+export const typeColors = {
   message: "text-primary/80",
   tool_call: "text-[var(--status-paused-text)]",
   tool_result: "text-[var(--status-active-text)]",
   system: "text-muted-foreground",
   error: "text-[var(--status-error-text)]",
 }
-const typeLabels = {
+export const typeLabels = {
   message: "MSG",
   tool_call: "TOOL",
   tool_result: "RSLT",
@@ -24,7 +24,7 @@ const typeLabels = {
   error: "ERR",
 }
 
-function AgentFeedEntry({ entry }: { entry: LiveFeedEntry }) {
+export function AgentFeedEntry({ entry }: { entry: LiveFeedEntry }) {
   return (
     <div className="flex gap-2 py-1 px-3 hover:bg-foreground/3 transition-colors text-xs font-mono">
       <span className="shrink-0 text-muted-foreground/50 tabular-nums w-16">
@@ -44,7 +44,7 @@ function AgentFeedEntry({ entry }: { entry: LiveFeedEntry }) {
 
 // ─── Gateway Event Log ────────────────────────────────────────────────────────
 
-const EVENT_COLORS: Record<string, string> = {
+export const EVENT_COLORS: Record<string, string> = {
   health: "text-emerald-500",
   tick: "text-muted-foreground/30",
   "session.message": "text-primary/80",
@@ -55,11 +55,11 @@ const EVENT_COLORS: Record<string, string> = {
   chat: "text-sky-400",
 }
 
-function eventColor(evt: string) {
+export function eventColor(evt: string) {
   return EVENT_COLORS[evt] ?? "text-foreground/60"
 }
 
-function GatewayEventRow({ entry }: { entry: GatewayEventEntry }) {
+export function GatewayEventRow({ entry }: { entry: GatewayEventEntry }) {
   const [expanded, setExpanded] = useState(false)
   const dataStr = JSON.stringify(entry.data)
   const preview = dataStr.length > 120 ? dataStr.slice(0, 120) + "…" : dataStr
@@ -91,7 +91,7 @@ function GatewayEventRow({ entry }: { entry: GatewayEventEntry }) {
 
 // ─── Gateway Raw Log ─────────────────────────────────────────────────────────
 
-function GatewayLogRow({ entry }: { entry: GatewayLogEntry }) {
+export function GatewayLogRow({ entry }: { entry: GatewayLogEntry }) {
   const [expanded, setExpanded] = useState(false)
   const preview = entry.line.length > 140 ? entry.line.slice(0, 140) + "…" : entry.line
 
@@ -158,7 +158,7 @@ export function LiveFeedPanel() {
   }
 
   return (
-    <div className="shrink-0 h-64 border-t border-border bg-background flex flex-col animate-slide-in">
+    <div className="hidden md:flex shrink-0 h-64 border-t border-border bg-background flex-col animate-slide-in">
       {/* Header */}
       <div className="flex items-center border-b border-border shrink-0">
         {/* Tabs */}
