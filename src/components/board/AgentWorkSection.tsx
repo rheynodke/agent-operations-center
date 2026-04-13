@@ -3,7 +3,8 @@ import { chatApi, GatewayMessage } from "@/lib/chat-api"
 import { cn } from "@/lib/utils"
 import {
   ChevronDown, ChevronRight, Brain, Terminal,
-  CheckCircle2, Loader2, Zap, AlertCircle, ExternalLink, Link2
+  CheckCircle2, Loader2, Zap, AlertCircle, ExternalLink, Link2,
+  Download, FileText, FileJson
 } from "lucide-react"
 import { useChatStore } from "@/stores/useChatStore"
 
@@ -310,7 +311,189 @@ function SourcesSection({ text }: { text: string }) {
   )
 }
 
-function TurnGroup({ turn, isLast, label, hideLabel }: { turn: Turn; isLast: boolean; label?: string; hideLabel?: boolean }) {
+// ── Export utilities ──────────────────────────────────────────────────────────
+
+interface ExportMeta {
+  taskId: string
+  taskTitle: string
+  agentId: string
+  agentName: string
+  sessionKey: string
+}
+
+interface TurnExportEntry {
+  turnNumber: number
+  finalResponse: string
+  processLogs: {
+    thinking: string[]
+    toolCalls: Array<{ name: string; input: unknown; result: unknown; isError: boolean }>
+    intermediateNotes: string[]
+  }
+}
+
+interface TurnExportData {
+  meta: ExportMeta & { exportedAt: string; turnScope: string }
+  turns: TurnExportEntry[]
+}
+
+function turnToExportEntry(turn: Turn): TurnExportEntry {
+  const thinking: string[] = []
+  const toolCalls: TurnExportEntry["processLogs"]["toolCalls"] = []
+  const intermediateNotes: string[] = []
+  for (const ev of turn.events) {
+    if (ev.kind === "thinking") thinking.push(ev.text)
+    else if (ev.kind === "tool") toolCalls.push({
+      name: ev.item.name,
+      input: ev.item.input ?? null,
+      result: ev.item.result ?? null,
+      isError: !!ev.item.isError,
+    })
+    else if (ev.kind === "intermediate") intermediateNotes.push(ev.text)
+  }
+  return {
+    turnNumber: turn.id + 1,
+    finalResponse: turn.intermediateText || "",
+    processLogs: { thinking, toolCalls, intermediateNotes },
+  }
+}
+
+function buildExportData(turns: Turn[], meta: ExportMeta, scope: "all" | number): TurnExportData {
+  const selected = scope === "all" ? turns : turns.filter(t => t.id + 1 === scope)
+  const turnScope = scope === "all" ? `All Turns (${turns.length})` : `Turn ${scope}`
+  return {
+    meta: { ...meta, exportedAt: new Date().toISOString(), turnScope },
+    turns: selected.map(turnToExportEntry),
+  }
+}
+
+function exportDataToMarkdown(data: TurnExportData): string {
+  const m = data.meta
+  let md = `# Task Export: ${m.taskId}\n\n`
+  if (m.taskTitle) md += `> ${m.taskTitle}\n\n`
+  md += `| Field | Value |\n|-------|-------|\n`
+  md += `| Agent | ${m.agentName || m.agentId || "Unknown"} |\n`
+  md += `| Session | ${m.sessionKey || "Unknown"} |\n`
+  md += `| Exported | ${m.exportedAt} |\n`
+  md += `| Scope | ${m.turnScope} |\n\n---\n\n`
+
+  for (const t of data.turns) {
+    md += `## Turn ${t.turnNumber}\n\n`
+    md += `### Final Response\n\n${t.finalResponse || "_No response_"}\n\n`
+    md += `### Process Logs\n\n`
+
+    if (t.processLogs.thinking.length > 0) {
+      md += `#### Thinking\n\n`
+      t.processLogs.thinking.forEach((th, i) => {
+        if (i > 0) md += "\n---\n\n"
+        md += `${th}\n\n`
+      })
+    }
+
+    if (t.processLogs.toolCalls.length > 0) {
+      md += `#### Tool Calls\n\n`
+      t.processLogs.toolCalls.forEach((tc, i) => {
+        md += `**${i + 1}. ${tc.name}**${tc.isError ? " *(error)*" : ""}\n\n`
+        if (tc.input != null) {
+          const inp = typeof tc.input === "string" ? tc.input : JSON.stringify(tc.input, null, 2)
+          md += `*Input:*\n\`\`\`json\n${inp}\n\`\`\`\n\n`
+        }
+        if (tc.result != null) {
+          const res = typeof tc.result === "string" ? tc.result : JSON.stringify(tc.result, null, 2)
+          md += `*Output${tc.isError ? " (error)" : ""}:*\n\`\`\`json\n${res}\n\`\`\`\n\n`
+        }
+      })
+    }
+
+    if (t.processLogs.intermediateNotes.length > 0) {
+      md += `#### Intermediate Notes\n\n`
+      t.processLogs.intermediateNotes.forEach((n, i) => {
+        md += `${i + 1}. ${n}\n`
+      })
+      md += "\n"
+    }
+
+    if (t.processLogs.thinking.length === 0 && t.processLogs.toolCalls.length === 0 && t.processLogs.intermediateNotes.length === 0) {
+      md += "_No process logs_\n\n"
+    }
+  }
+  return md
+}
+
+function triggerDownload(content: string, filename: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+function makeTimestamp(): string {
+  const d = new Date()
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`
+}
+
+function doExport(turns: Turn[], meta: ExportMeta, scope: "all" | number, format: "md" | "json") {
+  const data = buildExportData(turns, meta, scope)
+  const ts = makeTimestamp()
+  const taskSlug = (meta.taskId || "task").replace(/[^a-zA-Z0-9_-]/g, "")
+  const scopeSlug = scope === "all" ? "all-turns" : `turn${scope}`
+  const filename = `${taskSlug}_${scopeSlug}_${ts}.${format}`
+  if (format === "json") {
+    triggerDownload(JSON.stringify(data, null, 2), filename, "application/json")
+  } else {
+    triggerDownload(exportDataToMarkdown(data), filename, "text/markdown")
+  }
+}
+
+function ExportDropdown({ turns, meta, scope }: { turns: Turn[]; meta: ExportMeta; scope: "all" | number }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", handleClick)
+    return () => document.removeEventListener("mousedown", handleClick)
+  }, [open])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
+        className="flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground/40 hover:text-foreground/70 hover:bg-muted/30 transition-colors"
+        title={scope === "all" ? "Export all turns" : `Export turn ${scope}`}
+      >
+        <Download className="h-3 w-3" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-7 z-50 min-w-[160px] rounded-md border border-border/50 bg-popover shadow-lg py-1">
+          <button
+            onClick={(e) => { e.stopPropagation(); doExport(turns, meta, scope, "md"); setOpen(false) }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-foreground/80 hover:bg-muted/40 transition-colors"
+          >
+            <FileText className="h-3 w-3 text-muted-foreground/60" />
+            Export as Markdown
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); doExport(turns, meta, scope, "json"); setOpen(false) }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-foreground/80 hover:bg-muted/40 transition-colors"
+          >
+            <FileJson className="h-3 w-3 text-muted-foreground/60" />
+            Export as JSON
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TurnGroup({ turn, isLast, label, hideLabel, turns, exportMeta }: { turn: Turn; isLast: boolean; label?: string; hideLabel?: boolean; turns?: Turn[]; exportMeta?: ExportMeta }) {
   // Last turn starts open (focus on latest), previous turns collapsed (history)
   const [open, setOpen] = useState(isLast)
   const hasEvents = turn.events.length > 0 || !!turn.intermediateText
@@ -345,6 +528,10 @@ function TurnGroup({ turn, isLast, label, hideLabel }: { turn: Turn; isLast: boo
         )}
 
         <span className="flex-1" />
+
+        {exportMeta && turns && (
+          <ExportDropdown turns={turns} meta={exportMeta} scope={turn.id + 1} />
+        )}
 
         <span className={cn("text-muted-foreground/40 shrink-0", isLast && "text-emerald-400/40")}>
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
@@ -608,9 +795,12 @@ interface AgentWorkSectionProps {
   isActive: boolean
   taskStatus?: string
   completionNoteFallback?: string
+  taskTitle?: string
+  agentId?: string
+  agentName?: string
 }
 
-export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, completionNoteFallback }: AgentWorkSectionProps) {
+export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, completionNoteFallback, taskTitle, agentId, agentName }: AgentWorkSectionProps) {
   const [messages, setMessages] = useState<GatewayMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
@@ -746,6 +936,14 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
   const totalTools = turns.reduce((n, t) => n + t.events.filter(e => e.kind === "tool").length, 0)
   const liveStreamMsg = agentRunning ? liveMessages.findLast(m => m.role === "agent") : null
 
+  const exportMeta: ExportMeta | undefined = (taskId || taskTitle) ? {
+    taskId: taskId || "unknown",
+    taskTitle: taskTitle || "",
+    agentId: agentId || "",
+    agentName: agentName || "",
+    sessionKey,
+  } : undefined
+
   return (
     <div className="space-y-3">
       {/* Status bar */}
@@ -767,6 +965,9 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
           {turns.length > 0 && <span>{turns.length} turn{turns.length !== 1 ? "s" : ""}</span>}
           {totalTools > 0 && <span>· {totalTools} tool{totalTools !== 1 ? "s" : ""}</span>}
           <span>· {sessionKey.slice(-8)}</span>
+          {exportMeta && turns.length > 0 && (
+            <ExportDropdown turns={turns} meta={exportMeta} scope="all" />
+          )}
         </span>
       </div>
 
@@ -811,6 +1012,8 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
               turn={lastTurn}
               isLast
               hideLabel={turns.length === 1}
+              turns={turns}
+              exportMeta={exportMeta}
             />
             {/* Previous turns — history, collapsed */}
             {prevTurns.length > 0 && (
@@ -824,6 +1027,8 @@ export function AgentWorkSection({ sessionKey, taskId, isActive, taskStatus, com
                     turn={turn}
                     isLast={false}
                     hideLabel={false}
+                    turns={turns}
+                    exportMeta={exportMeta}
                   />
                 ))}
               </>

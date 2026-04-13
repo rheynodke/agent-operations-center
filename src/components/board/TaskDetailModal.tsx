@@ -618,6 +618,9 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                   isActive={isActive && open}
                   taskStatus={task.status}
                   completionNoteFallback={completionNote}
+                  taskTitle={task.title}
+                  agentId={task.agentId || undefined}
+                  agentName={assignedAgent?.name || assignedAgent?.id || undefined}
                 />
               </div>
             )}
