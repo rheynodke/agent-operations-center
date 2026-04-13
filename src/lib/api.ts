@@ -249,6 +249,8 @@ export const api = {
     request<{ ok: boolean }>(`/agents/${agentId}/sync-task-script`, { method: 'POST' }),
   dispatchTask: (taskId: string) =>
     request<{ ok: boolean; sessionKey: string; agentId: string }>(`/tasks/${taskId}/dispatch`, { method: 'POST' }),
+  analyzeTask: (taskId: string) =>
+    request<{ ok: boolean; analysis: import('@/types').TaskAnalysis }>(`/tasks/${taskId}/analyze`, { method: 'POST' }),
 
   // Projects
   getProjects: () =>

@@ -341,6 +341,10 @@ function provisionAgent(opts, userId) {
     },
     ...(model ? { model } : {}),
     skills: [],
+    // Enable heartbeat for this agent (OpenClaw requires explicit config per agent)
+    // Empty {} = use all defaults (every: 30m). Fields are optional overrides:
+    // every, activeHours, model, session, target, to, accountId, prompt, ackMaxChars, lightContext
+    heartbeat: {},
     // Block 4: Persist ADLC role before config write
     ...(adlcRole ? { adlcRole } : {}),
     // fsWorkspaceOnly: false for ADLC agents (need broad filesystem access)
@@ -349,6 +353,16 @@ function provisionAgent(opts, userId) {
 
   if (!config.agents) config.agents = {};
   if (!config.agents.list) config.agents.list = [];
+
+  // Backfill heartbeat config for all existing agents that don't have it.
+  // OpenClaw's heartbeat-runner only enables heartbeat for agents with explicit
+  // `heartbeat` config once ANY agent has it — so all agents need the field.
+  for (const existing of config.agents.list) {
+    if (!existing.heartbeat) {
+      existing.heartbeat = {};
+    }
+  }
+
   config.agents.list.push(agentEntry);
 
   // 3b. Add channel accounts + bindings

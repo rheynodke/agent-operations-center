@@ -229,8 +229,9 @@ export function useWebSocket() {
 
         case "progress:update":
         case "progress:step": {
-          // Dev progress changed — reload tasks
-          api.getTasks().then((data) => {
+          // Dev progress changed — reload tasks for active project only
+          const projId = useProjectStore.getState().activeProjectId
+          api.getTasks(projId ? { projectId: projId } : {}).then((data) => {
             const tasks = (data as { tasks: never[] })?.tasks
             if (Array.isArray(tasks)) useTaskStore.getState().setTasks(tasks)
           }).catch(() => {})
@@ -265,11 +266,17 @@ export function useWebSocket() {
         }
 
         case "tasks:updated": {
-          // Server sends payload as a direct array: { type: 'tasks:updated', payload: Task[] }
-          const tasks = Array.isArray(msg.payload)
+          // Server broadcasts all tasks — filter to active project before setting store
+          const allTasks = Array.isArray(msg.payload)
             ? msg.payload
             : (msg.payload as { tasks?: unknown[] })?.tasks
-          if (Array.isArray(tasks)) useTaskStore.getState().setTasks(tasks as never)
+          if (Array.isArray(allTasks)) {
+            const activePid = useProjectStore.getState().activeProjectId
+            const filtered = activePid
+              ? allTasks.filter((t: { projectId?: string }) => t.projectId === activePid)
+              : allTasks
+            useTaskStore.getState().setTasks(filtered as never)
+          }
           break
         }
 

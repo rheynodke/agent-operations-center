@@ -359,18 +359,17 @@ app.post('/api/ai/generate', db.authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/gateway/restart
+// Reusable gateway restart helper (used by REST endpoint and post-provision)
 let restartLock = false;
-app.post('/api/gateway/restart', db.authMiddleware, (req, res) => {
+function restartGateway(reason) {
   if (restartLock) {
-    return res.status(429).json({ error: 'Restart already in progress' });
+    console.log(`[gateway] Restart skipped (already in progress), reason: ${reason}`);
+    return;
   }
   restartLock = true;
-
-  console.log('[gateway] Restart requested by', req.user.username);
+  console.log(`[gateway] Restart triggered: ${reason}`);
 
   findGatewayPid((pids) => {
-    // Kill existing processes
     for (const pid of pids) {
       try {
         process.kill(pid, 'SIGTERM');
@@ -379,15 +378,12 @@ app.post('/api/gateway/restart', db.authMiddleware, (req, res) => {
       }
     }
 
-    res.json({ ok: true, killedPids: pids, message: 'Gateway restarting…' });
-
-    // Wait a moment for graceful shutdown, then spawn fresh gateway
     setTimeout(() => {
       const fs = require('fs');
       const out = fs.openSync('/tmp/aoc_gw.log', 'a');
       const err = fs.openSync('/tmp/aoc_gw.log', 'a');
       const openclaw = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
-      
+
       const childEnv = { ...process.env };
       delete childEnv.OPENCLAW_HOME;
 
@@ -401,6 +397,18 @@ app.post('/api/gateway/restart', db.authMiddleware, (req, res) => {
       console.log(`[gateway] Restarted (killed PIDs: [${pids.join(', ')}], new process spawned)`);
       restartLock = false;
     }, 1500);
+  });
+}
+
+// POST /api/gateway/restart
+app.post('/api/gateway/restart', db.authMiddleware, (req, res) => {
+  if (restartLock) {
+    return res.status(429).json({ error: 'Restart already in progress' });
+  }
+  console.log('[gateway] Restart requested by', req.user.username);
+  restartGateway(`requested by ${req.user.username}`);
+  findGatewayPid((pids) => {
+    res.json({ ok: true, killedPids: pids, message: 'Gateway restarting…' });
   });
 });
 
@@ -559,6 +567,11 @@ app.post('/api/agents', db.authMiddleware, (req, res) => {
     });
     result.profileSaved = true;
     console.log(`[api/agents/provision] Provisioned agent "${result.agentId}" with ${result.bindings.length} binding(s)`);
+
+    // Restart gateway so heartbeat config for the new agent takes effect
+    restartGateway(`agent provisioned: ${result.agentId}`);
+    result.gatewayRestarted = true;
+
     res.status(201).json(result);
   } catch (err) {
     console.error('[api/agents/provision]', err);
@@ -1383,9 +1396,9 @@ app.get('/api/tasks', db.authMiddleware, (req, res) => {
 
 app.post('/api/tasks', db.authMiddleware, (req, res) => {
   try {
-    const { title, description, status, priority, agentId, tags } = req.body;
+    const { title, description, status, priority, agentId, tags, requestFrom } = req.body;
     if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
-    const task = db.createTask({ title: title.trim(), description, status, priority, agentId, tags });
+    const task = db.createTask({ title: title.trim(), description, status, priority, agentId, tags, requestFrom });
     db.addTaskActivity({ taskId: task.id, type: 'created', toValue: task.status, actor: 'user' });
     broadcastTasksUpdate();
     res.status(201).json({ task });
@@ -1399,7 +1412,7 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
   try {
     const { id } = req.params;
     // agentId in body = actor identifier (from agent script); assignTo = new assignment (from UI)
-    const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId, inputTokens, outputTokens } = req.body;
+    const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId, inputTokens, outputTokens, requestFrom } = req.body;
     const before = db.getTask(id);
     if (!before) return res.status(404).json({ error: 'Task not found' });
 
@@ -1417,6 +1430,7 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
     // update_task.sh (missing 4th param) must not erase the existing sessionId.
     if (sessionId !== undefined && sessionId !== '') patch.sessionId = sessionId;
     if (assignTo    !== undefined) patch.agentId     = assignTo || null;
+    if (requestFrom !== undefined) patch.requestFrom = requestFrom;
 
     const after = db.updateTask(id, patch);
 
@@ -1427,21 +1441,45 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
     if (assignTo !== undefined && assignTo !== before.agentId) {
       db.addTaskActivity({ taskId: id, type: 'assignment', fromValue: before.agentId || null, toValue: assignTo || null, actor });
     }
+
+    // Auto-analyze: when agent assigned to a backlog ticket, run pre-flight analysis
+    const shouldAutoAnalyze =
+      assignTo && assignTo !== before.agentId &&
+      (after.status === 'backlog') &&
+      !after.analysis; // don't re-analyze if already done
+    if (shouldAutoAnalyze) {
+      analyzeTaskForAgent(after).then(analysis => {
+        db.updateTask(id, { analysis });
+        broadcastTasksUpdate();
+        console.log(`[auto-analyze] Task ${id} analyzed for agent ${assignTo}`);
+      }).catch(err => console.warn('[auto-analyze]', id, err.message));
+    }
+
     if (note && status === undefined) {
       db.addTaskActivity({ taskId: id, type: 'comment', actor, note });
     }
 
-    // Auto-dispatch: if ticket moved to 'todo' or back to 'in_progress' (change request), auto-continue
+    // Auto-dispatch: ticket moved to actionable status with an assigned agent
+    // Cases: backlog→todo, blocked→todo, blocked→in_progress, in_review→in_progress (change request)
+    const isMovingToTodo = status === 'todo';
+    const isChangeRequest = status === 'in_progress' && before.status === 'in_review';
+    const isBlockerResolved = (status === 'in_progress' || status === 'todo') && before.status === 'blocked';
     const shouldAutoDispatch =
       status !== undefined &&
-      (status === 'todo' || (status === 'in_progress' && before.status === 'in_review')) &&
+      (isMovingToTodo || isChangeRequest || isBlockerResolved) &&
       before.status !== status &&
       after.agentId &&
-      after.sessionId &&
       gatewayProxy.isConnected;
     if (shouldAutoDispatch) {
-      const changeRequestNote = note || null;
-      dispatchTaskToAgent(after, { changeRequestNote }).catch(err =>
+      const dispatchOpts = {};
+      if (isChangeRequest) {
+        dispatchOpts.changeRequestNote = note || null;
+      } else if (isBlockerResolved) {
+        dispatchOpts.blockerResolvedNote = note || null;
+      } else if (isMovingToTodo) {
+        dispatchOpts.additionalContext = note || null;
+      }
+      dispatchTaskToAgent(after, dispatchOpts).catch(err =>
         console.warn('[auto-dispatch]', after.id, err.message)
       );
     }
@@ -1522,6 +1560,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
 
   if (isFirstDispatch) {
     // Full task briefing for first dispatch
+    const extraContext = opts.additionalContext;
     message = [
       `📋 **Task: ${task.title}**`,
       ``,
@@ -1530,6 +1569,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
       tagsLine,
       ``,
       task.description ? `**Description:**\n${task.description}` : '',
+      extraContext ? `\n**Additional Context from operator:**\n${extraContext}` : '',
       ``,
       `---`,
       `IMPORTANT: Report your progress using ONE of these methods:`,
@@ -1549,25 +1589,61 @@ async function dispatchTaskToAgent(task, opts = {}) {
       `When your work is complete, set status to "in_review" — NOT "done". A human will review and approve.`,
       `If you cannot complete the task for ANY reason, ALWAYS report it as "blocked".`,
     ].filter(l => l !== null && l !== undefined).join('\n');
-  } else {
-    // Continue message for re-dispatch — agent already has full context from prior messages
-    const changeNote = opts.changeRequestNote;
-    message = changeNote
+  } else if (opts.blockerResolvedNote !== undefined) {
+    // Blocker resolved — inform agent the issue is fixed and they should continue
+    const resolvedNote = opts.blockerResolvedNote;
+    message = resolvedNote
       ? [
           `---`,
-          `⚠️ **Change Request from reviewer:**`,
-          changeNote,
+          `✅ **Blocker resolved — please continue.**`,
           ``,
-          `Please address the feedback above. You already have the full context from your previous work on this ticket.`,
-          `When done, update status to "in_review" again.`,
-        ].join('\n')
-      : [
-          `---`,
-          `🔄 **Continue working on this ticket.**`,
+          `The issue that was blocking you has been fixed:`,
+          resolvedNote,
           ``,
           `You already have the full context from your previous work. Please continue where you left off.`,
           `When done, update status to "in_review".`,
+        ].join('\n')
+      : [
+          `---`,
+          `✅ **Blocker resolved — please continue.**`,
+          ``,
+          `The issue that was blocking you has been fixed. You already have the full context from your previous work.`,
+          `Please continue where you left off.`,
+          `When done, update status to "in_review".`,
         ].join('\n');
+  } else {
+    // Continue message for re-dispatch — agent already has full context from prior messages
+    const changeNote = opts.changeRequestNote;
+    const extraContext = opts.additionalContext;
+    if (changeNote) {
+      message = [
+        `---`,
+        `⚠️ **Change Request from reviewer:**`,
+        changeNote,
+        ``,
+        `Please address the feedback above. You already have the full context from your previous work on this ticket.`,
+        `When done, update status to "in_review" again.`,
+      ].join('\n');
+    } else if (extraContext) {
+      message = [
+        `---`,
+        `🔄 **Continue working on this ticket.**`,
+        ``,
+        `**Additional instructions from operator:**`,
+        extraContext,
+        ``,
+        `You already have the full context from your previous work. Please continue where you left off.`,
+        `When done, update status to "in_review".`,
+      ].join('\n');
+    } else {
+      message = [
+        `---`,
+        `🔄 **Continue working on this ticket.**`,
+        ``,
+        `You already have the full context from your previous work. Please continue where you left off.`,
+        `When done, update status to "in_review".`,
+      ].join('\n');
+    }
   }
 
   await gatewayProxy.chatSend(sessionKey, message);
@@ -1592,6 +1668,94 @@ async function dispatchTaskToAgent(task, opts = {}) {
 }
 
 // Dispatch task to agent via gateway chat session
+// ── Pre-flight task analysis (lightweight AI, no gateway needed) ──────────────
+async function analyzeTaskForAgent(task) {
+  if (!task.agentId) throw new Error('Task has no assigned agent');
+
+  // Gather agent's skills & tools for readiness check
+  let agentSkills = [], agentTools = [];
+  try { agentSkills = parsers.getAgentSkills(task.agentId).map(s => s.slug || s.name); } catch {}
+  try { agentTools = parsers.getAgentTools(task.agentId).filter(t => t.enabled).map(t => t.name); } catch {}
+
+  const prompt = [
+    `You are a task analyst for an AI agent operations center. Analyze this task ticket and produce a structured pre-flight analysis in JSON format.`,
+    ``,
+    `## Task`,
+    `Title: ${task.title}`,
+    task.description ? `Description: ${task.description}` : '',
+    task.requestFrom ? `Requested by: ${task.requestFrom}` : '',
+    task.priority ? `Priority: ${task.priority}` : '',
+    (task.tags || []).length > 0 ? `Tags: ${task.tags.join(', ')}` : '',
+    ``,
+    `## Agent Capabilities`,
+    `Agent ID: ${task.agentId}`,
+    `Available skills: ${agentSkills.length > 0 ? agentSkills.join(', ') : '(none)'}`,
+    `Available tools: ${agentTools.length > 0 ? agentTools.join(', ') : '(standard)'}`,
+    ``,
+    `## Instructions`,
+    `Respond with ONLY valid JSON (no markdown fences, no explanation) matching this exact structure:`,
+    `{`,
+    `  "intent": "1-2 sentence summary of what the user actually wants, in business terms",`,
+    `  "dataSources": ["list of likely data sources/tables/APIs needed"],`,
+    `  "executionPlan": ["step 1", "step 2", "...ordered steps the agent will take"],`,
+    `  "estimatedOutput": "describe expected output format and volume",`,
+    `  "potentialIssues": ["any ambiguities, missing info, or risks"],`,
+    `  "readiness": {`,
+    `    "ready": true/false,`,
+    `    "missingSkills": ["skills agent needs but doesn't have"],`,
+    `    "missingTools": ["tools agent needs but doesn't have"],`,
+    `    "availableSkills": ["relevant skills agent already has"]`,
+    `  }`,
+    `}`,
+    ``,
+    `Analyze the ticket thoroughly based on what the task requires and what the agent can do.`,
+    `For dataSources, infer what resources (databases, APIs, files, services, etc.) are likely needed based on the task description.`,
+    `For readiness, compare the task requirements against the agent's available skills and tools listed above. Only flag a skill/tool as missing if the task clearly requires a capability the agent does not have.`,
+    `If the task is general (e.g. writing, research, coding), standard agent tools may be sufficient — don't require specialized skills unnecessarily.`,
+    `Answer in the same language as the ticket (Indonesian if ticket is in Indonesian).`,
+  ].filter(Boolean).join('\n');
+
+  // Direct Claude CLI call — bypass buildPrompt (which is for agent file generation)
+  const { spawn } = require('child_process');
+  const CLAUDE_BIN = process.env.CLAUDE_BIN || '/opt/homebrew/bin/claude';
+  const model = process.env.AI_ASSIST_MODEL || 'haiku';
+  const result = await new Promise((resolve, reject) => {
+    const proc = spawn(CLAUDE_BIN, ['--print', prompt, '--output-format', 'text', '--no-session-persistence', '--model', model], {
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '', stderr = '';
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('close', code => {
+      if (code !== 0) reject(new Error(stderr.trim() || `Claude CLI exited with code ${code}`));
+      else resolve(stdout.trim());
+    });
+  });
+
+  // Parse JSON — strip markdown fences if AI added them
+  const cleaned = result.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const analysis = JSON.parse(cleaned);
+  analysis.analyzedAt = new Date().toISOString();
+  return analysis;
+}
+
+app.post('/api/tasks/:id/analyze', db.authMiddleware, async (req, res) => {
+  try {
+    const task = db.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!task.agentId) return res.status(400).json({ error: 'Task must be assigned to an agent first' });
+
+    const analysis = await analyzeTaskForAgent(task);
+    db.updateTask(task.id, { analysis });
+    broadcastTasksUpdate();
+    res.json({ ok: true, analysis });
+  } catch (err) {
+    console.error('[api/tasks/analyze]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
   try {
     const task = db.getTask(req.params.id);
@@ -1650,7 +1814,7 @@ app.get('/api/projects/:id/integrations', db.authMiddleware, (req, res) => {
 
 app.post('/api/projects/:id/integrations', db.authMiddleware, async (req, res) => {
   try {
-    const { type, credentials, spreadsheetId, sheetName, mapping, syncIntervalMs, enabled } = req.body;
+    const { type, credentials, spreadsheetId, sheetName, mapping, syncIntervalMs, enabled, syncFromRow, syncLimit } = req.body;
     if (!type) return res.status(400).json({ error: 'type is required' });
 
     const adapter = integrations.getAdapter(type);
@@ -1660,7 +1824,11 @@ app.post('/api/projects/:id/integrations', db.authMiddleware, async (req, res) =
       typeof credentials === 'string' ? credentials : JSON.stringify(credentials)
     ) : undefined;
 
-    const config = { spreadsheetId, sheetName, mapping };
+    const config = {
+      spreadsheetId, sheetName, mapping,
+      ...(syncFromRow ? { syncFromRow: Number(syncFromRow) } : {}),
+      ...(syncLimit   ? { syncLimit:   Number(syncLimit)   } : {}),
+    };
     if (encryptedCredentials) config.credentials = encryptedCredentials;
 
     const validation = adapter.validateConfig(config);
@@ -1692,12 +1860,14 @@ app.patch('/api/projects/:id/integrations/:iid', db.authMiddleware, async (req, 
     const existing = db.getIntegrationRaw(req.params.iid);
     if (!existing) return res.status(404).json({ error: 'not found' });
 
-    const { credentials, spreadsheetId, sheetName, mapping, syncIntervalMs, enabled } = req.body;
+    const { credentials, spreadsheetId, sheetName, mapping, syncIntervalMs, enabled, syncFromRow, syncLimit } = req.body;
 
     const newConfig = { ...existing.config };
     if (spreadsheetId !== undefined) newConfig.spreadsheetId = spreadsheetId;
     if (sheetName     !== undefined) newConfig.sheetName = sheetName;
     if (mapping       !== undefined) newConfig.mapping = mapping;
+    if (syncFromRow   !== undefined) newConfig.syncFromRow = syncFromRow ? Number(syncFromRow) : undefined;
+    if (syncLimit     !== undefined) newConfig.syncLimit   = syncLimit   ? Number(syncLimit)   : undefined;
     if (credentials) {
       newConfig.credentials = integrations.encrypt(
         typeof credentials === 'string' ? credentials : JSON.stringify(credentials)
@@ -2579,6 +2749,36 @@ function syncHeartbeatForAllAgents() {
   }
 }
 
+/**
+ * Ensure all agents in openclaw.json have explicit `heartbeat: {}` config.
+ * OpenClaw's heartbeat-runner only enables heartbeat for agents with explicit
+ * heartbeat config once ANY agent has it — without this, only the default
+ * (first) agent gets heartbeat polling.
+ */
+function ensureHeartbeatConfig() {
+  try {
+    const { readJsonSafe, OPENCLAW_HOME } = require('./lib/config.cjs');
+    const configPath = require('path').join(OPENCLAW_HOME, 'openclaw.json');
+    const config = readJsonSafe(configPath);
+    if (!config?.agents?.list) return;
+
+    let patched = 0;
+    for (const agent of config.agents.list) {
+      if (!agent.heartbeat) {
+        agent.heartbeat = {};
+        patched++;
+      }
+    }
+
+    if (patched > 0) {
+      require('fs').writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      console.log(`[heartbeat-config] Backfilled heartbeat config for ${patched} agent(s)`);
+    }
+  } catch (err) {
+    console.warn('[heartbeat-config] failed:', err.message);
+  }
+}
+
 async function sweepPendingTasks() {
   try {
     const tasks = db.getAllTasks({ status: 'todo' });
@@ -2613,6 +2813,7 @@ async function start() {
   feedWatcher.start();
   parsers.ensureAocEnvFile();   // write ~/.openclaw/.aoc_env with current token
   syncTaskScriptForAllAgents(); // non-blocking, fire-and-forget
+  ensureHeartbeatConfig();      // backfill heartbeat: {} in openclaw.json for all agents
   syncHeartbeatForAllAgents();  // inject HEARTBEAT task check into all agent workspaces
 
   // Ensure all agents have skills: [] field in openclaw.json

@@ -191,6 +191,23 @@ export interface Task {
   projectId?: string
   externalId?: string
   externalSource?: string
+  requestFrom?: string
+  analysis?: TaskAnalysis | null
+}
+
+export interface TaskAnalysis {
+  intent: string
+  dataSources: string[]
+  executionPlan: string[]
+  estimatedOutput: string
+  potentialIssues: string[]
+  readiness: {
+    ready: boolean
+    missingSkills: string[]
+    missingTools: string[]
+    availableSkills: string[]
+  }
+  analyzedAt: string
 }
 
 export interface TaskActivity {
@@ -617,12 +634,17 @@ export interface IntegrationColumnMapping {
   priority?: string
   status?: string
   tags?: string
+  request_from?: string
 }
 
 export interface IntegrationConfig {
   spreadsheetId: string
   sheetName: string
   mapping: IntegrationColumnMapping
+  /** Sheet data row to start syncing from (1-based, excludes header row 1). Default: 2 (all rows). */
+  syncFromRow?: number
+  /** Max number of rows to sync per run. Default: 500. */
+  syncLimit?: number
 }
 
 export interface ProjectIntegration {

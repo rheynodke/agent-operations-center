@@ -1,7 +1,7 @@
 import React from "react"
 import { useDraggable } from "@dnd-kit/core"
 import { CSS } from "@dnd-kit/utilities"
-import { MoreHorizontal, Pencil, Trash2, Activity, ExternalLink } from "lucide-react"
+import { MoreHorizontal, Pencil, Trash2, Activity, ExternalLink, User, Search, ShieldCheck, ShieldAlert } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Task } from "@/types"
 import {
@@ -144,6 +144,29 @@ export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isD
           {tags.length > 3 && (
             <span className="text-[10px] text-muted-foreground/60">+{tags.length - 3}</span>
           )}
+        </div>
+      )}
+
+      {/* Request From */}
+      {task.requestFrom && task.requestFrom !== '-' && (
+        <div className="flex items-center gap-1 mb-2.5 text-[10px] text-muted-foreground/60">
+          <User className="h-2.5 w-2.5 shrink-0" />
+          <span className="truncate" title={task.requestFrom}>{task.requestFrom}</span>
+        </div>
+      )}
+
+      {/* Analysis badge */}
+      {task.analysis && (
+        <div className={cn(
+          "flex items-center gap-1.5 mb-2.5 text-[10px] font-medium px-2 py-1 rounded-md border",
+          task.analysis.readiness?.ready
+            ? "bg-emerald-500/8 border-emerald-500/15 text-emerald-400/80"
+            : "bg-amber-500/8 border-amber-500/15 text-amber-400/80"
+        )}>
+          {task.analysis.readiness?.ready
+            ? <><ShieldCheck className="h-2.5 w-2.5 shrink-0" /> Analyzed · Ready</>
+            : <><ShieldAlert className="h-2.5 w-2.5 shrink-0" /> Analyzed · Not Ready</>
+          }
         </div>
       )}
 

@@ -31,6 +31,7 @@ const INTERNAL_FIELDS: { key: keyof IntegrationColumnMapping; label: string; req
   { key: 'priority',    label: 'Priority',          required: false },
   { key: 'status',      label: 'Status',            required: false },
   { key: 'tags',        label: 'Tags (comma-sep)',  required: false },
+  { key: 'request_from', label: 'Request From',    required: false },
 ]
 
 interface IntegrationWizardProps {
@@ -52,13 +53,16 @@ export function IntegrationWizard({ open, onClose }: IntegrationWizardProps) {
   const [headers, setHeaders] = useState<string[]>([])
   const [loadingHeaders, setLoadingHeaders] = useState(false)
   const [mapping, setMapping] = useState<Partial<IntegrationColumnMapping>>({})
+  const [syncFromRow, setSyncFromRow] = useState('')
+  const [syncLimit, setSyncLimit] = useState('500')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   function reset() {
     setStep(1); setType('google_sheets'); setCredentials(''); setSpreadsheetId('')
     setSyncIntervalMs(''); setTesting(false); setTestResult(null); setSelectedSheet('')
-    setHeaders([]); setLoadingHeaders(false); setMapping({}); setSaving(false); setError('')
+    setHeaders([]); setLoadingHeaders(false); setMapping({})
+    setSyncFromRow(''); setSyncLimit('500'); setSaving(false); setError('')
   }
 
   function handleClose() { reset(); onClose() }
@@ -99,6 +103,8 @@ export function IntegrationWizard({ open, onClose }: IntegrationWizardProps) {
         sheetName: selectedSheet,
         mapping,
         syncIntervalMs: syncIntervalMs && syncIntervalMs !== 'manual' ? Number(syncIntervalMs) : null,
+        syncFromRow: syncFromRow ? Number(syncFromRow) : undefined,
+        syncLimit: syncLimit ? Number(syncLimit) : 500,
         enabled: true,
       })
       await fetchIntegrations(activeProjectId)
@@ -163,6 +169,32 @@ export function IntegrationWizard({ open, onClose }: IntegrationWizardProps) {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+            </div>
+
+            {/* Sync cutoff options */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Start from row</Label>
+                <input
+                  type="number" min="2"
+                  value={syncFromRow}
+                  onChange={e => setSyncFromRow(e.target.value)}
+                  placeholder="e.g. 950 (skip history)"
+                  className="flex h-8 w-full rounded-md px-3 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors"
+                />
+                <p className="text-[10px] text-muted-foreground/50">Row 1 = header. Blank = all rows.</p>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Max rows per sync</Label>
+                <input
+                  type="number" min="1" max="5000"
+                  value={syncLimit}
+                  onChange={e => setSyncLimit(e.target.value)}
+                  placeholder="500"
+                  className="flex h-8 w-full rounded-md px-3 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors"
+                />
+                <p className="text-[10px] text-muted-foreground/50">Latest N rows. Default: 500.</p>
               </div>
             </div>
 

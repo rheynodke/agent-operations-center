@@ -24,6 +24,15 @@ function isSystemMessage(text: string): boolean {
   return /^HEARTBEAT_OK$/i.test(t) || /^\[HEARTBEAT\]$/i.test(t) || t === ""
 }
 
+/** Detect if a user message is a heartbeat dispatch (should be hidden from task detail) */
+function isHeartbeatMessage(m: GatewayMessage): boolean {
+  const text = extractText(m.content) || ""
+  const t = text.trim().toLowerCase()
+  return t.includes("[heartbeat]") || t.includes("heartbeat_ok") || t.includes("heartbeat check")
+    || /^\[system[_-]?event\].*heartbeat/i.test(t)
+    || /^heartbeat/i.test(t)
+}
+
 /** Strip provider-injected markers from assistant response text */
 function sanitizeResult(text: string): string {
   return text
@@ -49,23 +58,36 @@ function MarkdownContent({ children }: { children: string }) {
           h1: ({ children }) => <h1 className="text-lg font-bold mb-3 mt-4 first:mt-0 text-foreground border-b border-border/40 pb-1">{children}</h1>,
           h2: ({ children }) => <h2 className="text-base font-semibold mb-2 mt-4 first:mt-0 text-foreground">{children}</h2>,
           h3: ({ children }) => <h3 className="text-sm font-semibold mb-2 mt-3 first:mt-0 text-foreground">{children}</h3>,
-          ul: ({ children }) => <ul className="list-disc list-inside mb-3 space-y-1 pl-1">{children}</ul>,
-          ol: ({ children }) => <ol className="list-decimal list-inside mb-3 space-y-1 pl-1">{children}</ol>,
-          li: ({ children }) => <li className="text-sm text-foreground/90 leading-relaxed">{children}</li>,
-          code: ({ inline, children, ...props }: { inline?: boolean; children?: React.ReactNode } & Record<string, unknown>) =>
+          ul: ({ children }) => <ul className="mb-3 space-y-1.5 pl-4 list-disc marker:text-muted-foreground/40">{children}</ul>,
+          ol: ({ children }) => <ol className="mb-3 space-y-1.5 pl-4 list-decimal marker:text-muted-foreground/50">{children}</ol>,
+          li: ({ children }) => <li className="text-sm text-foreground/90 leading-relaxed pl-1">{children}</li>,
+          code: ({ inline, className: codeClass, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode } & Record<string, unknown>) =>
             inline ? (
-              <code className="bg-muted/60 text-foreground font-mono text-[11px] px-1.5 py-0.5 rounded" {...props}>{children}</code>
+              <code className="bg-primary/8 text-primary/90 font-mono text-[11px] px-1.5 py-0.5 rounded border border-primary/10" {...props}>{children}</code>
             ) : (
-              <code className="block bg-muted/40 text-foreground/85 font-mono text-[11px] p-3 rounded-md overflow-x-auto leading-relaxed whitespace-pre" {...props}>{children}</code>
+              <code className={cn("block bg-muted/50 text-foreground/85 font-mono text-[11px] p-3 rounded-md overflow-x-auto leading-relaxed whitespace-pre border border-border/30", codeClass)} {...props}>{children}</code>
             ),
           pre: ({ children }) => <pre className="mb-3 rounded-md overflow-hidden">{children}</pre>,
           blockquote: ({ children }) => <blockquote className="border-l-2 border-primary/40 pl-3 my-3 text-muted-foreground italic">{children}</blockquote>,
           strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-          table: ({ children }) => <div className="overflow-x-auto mb-3"><table className="w-full text-xs border-collapse">{children}</table></div>,
+          em: ({ children }) => <em className="text-muted-foreground/80">{children}</em>,
+          hr: () => <hr className="my-4 border-border/30" />,
+          table: ({ children }) => <div className="overflow-x-auto mb-3 rounded-md border border-border/30"><table className="w-full text-xs border-collapse">{children}</table></div>,
           thead: ({ children }) => <thead className="bg-muted/40">{children}</thead>,
-          th: ({ children }) => <th className="border border-border/40 px-3 py-1.5 font-semibold text-left text-foreground">{children}</th>,
-          td: ({ children }) => <td className="border border-border/40 px-3 py-1.5 text-foreground/85">{children}</td>,
-          a: ({ children, href }) => <a href={href} className="text-primary underline underline-offset-2 hover:text-primary/80" target="_blank" rel="noopener noreferrer">{children}</a>,
+          th: ({ children }) => <th className="border-b border-border/40 px-3 py-2 font-semibold text-left text-foreground text-[11px] uppercase tracking-wider">{children}</th>,
+          td: ({ children }) => <td className="border-b border-border/20 px-3 py-1.5 text-foreground/85">{children}</td>,
+          tr: ({ children }) => <tr className="hover:bg-muted/20 transition-colors">{children}</tr>,
+          a: ({ children, href }) => (
+            <a
+              href={href}
+              className="inline-flex items-center gap-1 text-primary underline underline-offset-2 decoration-primary/30 hover:decoration-primary/60 hover:text-primary/80 break-all"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {children}
+              <ExternalLink className="h-2.5 w-2.5 shrink-0 inline opacity-50" />
+            </a>
+          ),
         }}
       >
         {children}
@@ -351,8 +373,8 @@ function TurnGroup({ turn, isLast, label, hideLabel }: { turn: Turn; isLast: boo
 
 function AgentResultBlock({ text, isStreaming }: { text: string; isStreaming: boolean }) {
   return (
-    <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-emerald-500/15">
+    <div className="rounded-lg border border-emerald-500/25 bg-linear-to-b from-emerald-500/5 to-transparent overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-emerald-500/15 bg-emerald-500/5">
         {isStreaming ? (
           <>
             <span className="relative flex h-2 w-2 shrink-0">
@@ -368,7 +390,7 @@ function AgentResultBlock({ text, isStreaming }: { text: string; isStreaming: bo
           </>
         )}
       </div>
-      <div className="px-4 py-4">
+      <div className="px-4 py-4 space-y-0">
         <MarkdownContent>{text}</MarkdownContent>
         {isStreaming && (
           <span className="inline-flex gap-0.5 ml-1">
@@ -419,9 +441,10 @@ function extractToolResultBlocks(m: GatewayMessage): Array<{ toolUseId: string; 
     .map(b => ({ toolUseId: b.tool_use_id || "", content: b.content, isError: !!b.is_error }))
 }
 
-/** Returns true if a user message is a real dispatch message, not a tool_result carrier */
+/** Returns true if a user message is a real dispatch message, not a tool_result carrier or heartbeat */
 function isRealUserMessage(m: GatewayMessage): boolean {
   if (m.role !== "user") return false
+  if (isHeartbeatMessage(m)) return false
   if (!Array.isArray(m.content)) return !!m.content
   // Pure tool_result carrier — skip
   const blocks = m.content as Array<{ type?: string }>
@@ -441,13 +464,34 @@ function groupMessagesIntoTurns(messages: GatewayMessage[]): {
     }
   }
 
+  // ── Strip heartbeat sequences from messages ─────────────────────────────
+  // Heartbeat dispatches create noise (read + exec tool calls with no meaningful output).
+  // Remove the heartbeat user message and all subsequent messages until the next real user message.
+  const cleanMessages: GatewayMessage[] = []
+  let skippingHeartbeat = false
+  for (const m of messages) {
+    if (m.role === "user" && isHeartbeatMessage(m)) {
+      skippingHeartbeat = true
+      continue
+    }
+    if (skippingHeartbeat) {
+      // Stop skipping when we hit the next real user message
+      if (m.role === "user" && isRealUserMessage(m)) {
+        skippingHeartbeat = false
+      } else {
+        continue
+      }
+    }
+    cleanMessages.push(m)
+  }
+
   // ── Segment messages into turns by real user messages ────────────────────
   // Each dispatch = 1 user message → 1 turn. All intermediate assistant texts
   // within one dispatch cycle go into process logs, not separate turns.
   const segments: GatewayMessage[][] = []
   let seg: GatewayMessage[] = []
 
-  for (const m of messages) {
+  for (const m of cleanMessages) {
     if (isRealUserMessage(m)) {
       // New dispatch = new turn boundary
       if (seg.length > 0) segments.push(seg)

@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { Plus, Inbox, ListTodo, Zap, ScanSearch, OctagonX, CircleCheckBig } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
 import { KanbanBoard, KanbanColumnDef } from "@/components/board/KanbanBoard"
 import { TaskCard } from "@/components/board/TaskCard"
 import { TaskFilterBar } from "@/components/board/TaskFilterBar"
@@ -40,6 +42,13 @@ export default function BoardPage() {
   const [editingIntegration, setEditingIntegration] = useState<ProjectIntegration | null>(null)
   const [deleteTaskTarget, setDeleteTaskTarget] = useState<Task | null>(null)
   const [deletingTask, setDeletingTask]         = useState(false)
+
+  // Dispatch prompt: intercept certain transitions to let user add context
+  const [dispatchPrompt, setDispatchPrompt] = useState<{
+    itemId: string; from: string; to: string; task: Task
+  } | null>(null)
+  const [dispatchNote, setDispatchNote] = useState('')
+  const [dispatchSubmitting, setDispatchSubmitting] = useState(false)
 
   useEffect(() => {
     api.getTasks({ projectId: activeProjectId }).then(res => {
@@ -91,17 +100,54 @@ export default function BoardPage() {
     }
   }
 
-  const handleItemMove = useCallback(async (itemId: string, _from: string, toColumnId: string) => {
-    // Optimistic update
+  // Transitions that should show the prompt dialog (agent will be auto-dispatched)
+  function needsDispatchPrompt(from: string, to: string, task: Task): boolean {
+    if (!task.agentId) return false // no agent assigned — no dispatch will happen
+    const isToTodo = to === 'todo' && from === 'backlog'
+    const isBlockerResolved = from === 'blocked' && (to === 'in_progress' || to === 'todo')
+    const isChangeRequest = from === 'in_review' && to === 'in_progress'
+    return isToTodo || isBlockerResolved || isChangeRequest
+  }
+
+  async function executeMove(itemId: string, toColumnId: string, note?: string) {
     updateTask(itemId, { status: toColumnId as TaskStatus })
     try {
-      await api.updateTask(itemId, { status: toColumnId as TaskStatus })
+      await api.updateTask(itemId, { status: toColumnId as TaskStatus, note })
     } catch {
-      // Rollback on error: reload all tasks
-      const res = await api.getTasks()
+      const res = await api.getTasks({ projectId: activeProjectId })
       setTasks(res.tasks)
     }
-  }, [updateTask, setTasks])
+  }
+
+  async function handleDispatchConfirm() {
+    if (!dispatchPrompt) return
+    setDispatchSubmitting(true)
+    try {
+      await executeMove(dispatchPrompt.itemId, dispatchPrompt.to, dispatchNote || undefined)
+    } finally {
+      setDispatchSubmitting(false)
+      setDispatchPrompt(null)
+      setDispatchNote('')
+    }
+  }
+
+  function handleDispatchSkip() {
+    if (!dispatchPrompt) return
+    executeMove(dispatchPrompt.itemId, dispatchPrompt.to)
+    setDispatchPrompt(null)
+    setDispatchNote('')
+  }
+
+  const handleItemMove = useCallback(async (itemId: string, fromCol: string, toColumnId: string) => {
+    const task = tasks.find(t => t.id === itemId)
+    if (task && needsDispatchPrompt(fromCol, toColumnId, task)) {
+      // Show prompt dialog instead of moving immediately
+      setDispatchPrompt({ itemId, from: fromCol, to: toColumnId, task })
+      return
+    }
+    // No prompt needed — move directly
+    await executeMove(itemId, toColumnId)
+  }, [tasks, updateTask, setTasks, activeProjectId])
 
   return (
     <div className="flex flex-col h-full gap-3 sm:gap-4 animate-fade-in">
@@ -235,6 +281,70 @@ export default function BoardPage() {
           onCancel={() => setDeleteTaskTarget(null)}
         />
       )}
+
+      {/* Dispatch Prompt Dialog */}
+      <Dialog open={!!dispatchPrompt} onOpenChange={o => { if (!o) { setDispatchPrompt(null); setDispatchNote('') } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              {dispatchPrompt?.from === 'backlog' && dispatchPrompt?.to === 'todo'
+                ? 'Dispatch to Agent'
+                : dispatchPrompt?.from === 'blocked'
+                ? 'Resume from Blocked'
+                : 'Change Request'}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            <div className="text-xs text-muted-foreground space-y-1">
+              <p className="font-medium text-foreground text-sm truncate">{dispatchPrompt?.task.title}</p>
+              <p>
+                {dispatchPrompt?.from === 'backlog'
+                  ? 'Ticket akan di-dispatch ke agent. Tambahkan instruksi tambahan jika diperlukan.'
+                  : dispatchPrompt?.from === 'blocked'
+                  ? 'Jelaskan apa yang sudah diperbaiki agar agent bisa melanjutkan.'
+                  : 'Berikan feedback untuk agent agar bisa memperbaiki hasilnya.'}
+              </p>
+            </div>
+
+            <textarea
+              value={dispatchNote}
+              onChange={e => setDispatchNote(e.target.value)}
+              placeholder={
+                dispatchPrompt?.from === 'backlog'
+                  ? 'e.g. Output ke Google Sheet ID xxx, tab "Report". Fokus data tahun 2025-2026.'
+                  : dispatchPrompt?.from === 'blocked'
+                  ? 'e.g. Skill gws-sheet sudah ditambahkan, silakan lanjut upload ke Google Sheets.'
+                  : 'e.g. Format kolom tanggal harus dd/mm/yyyy, bukan ISO.'
+              }
+              rows={4}
+              className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none"
+            />
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              size="sm" variant="ghost" className="h-7 text-xs mr-auto"
+              onClick={() => { setDispatchPrompt(null); setDispatchNote('') }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm" variant="outline" className="h-7 text-xs"
+              onClick={handleDispatchSkip}
+            >
+              Skip
+            </Button>
+            <Button
+              size="sm" className="h-7 text-xs"
+              onClick={handleDispatchConfirm}
+              disabled={dispatchSubmitting}
+            >
+              {dispatchSubmitting ? 'Dispatching…' : dispatchNote ? 'Send & Dispatch' : 'Dispatch'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

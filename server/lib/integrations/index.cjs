@@ -51,6 +51,7 @@ async function syncIntegration(integrationId) {
           projectId: integration.projectId,
           externalId: ticket.external_id,
           externalSource: integration.type,
+          requestFrom: ticket.request_from || '-',
         });
         created++;
       } else {
@@ -60,6 +61,7 @@ async function syncIntegration(integrationId) {
           description: ticket.description,
           priority,
           tags: ticket.tags || [],
+          requestFrom: ticket.request_from || '-',
         });
         updated++;
       }

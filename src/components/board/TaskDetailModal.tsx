@@ -3,13 +3,14 @@ import { Dialog, DialogContent } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
-import { Task, TaskActivity, Agent } from "@/types"
+import { Task, TaskActivity, TaskAnalysis, Agent } from "@/types"
 import { api } from "@/lib/api"
 import { useAuthStore } from "@/stores"
 import {
   Zap, X, Calendar, User, Clock,
   CheckCircle2, ArrowRight, ChevronDown,
-  FileText, Bot, History, BarChart3
+  FileText, Bot, History, BarChart3,
+  Search, AlertTriangle, Database, ListChecks, RefreshCw, Loader2, ShieldCheck, ShieldAlert
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -94,7 +95,177 @@ function SectionCard({
   )
 }
 
-// ── (ActivityIcon removed — unused) ──────────────────────────────────────────
+// ── Pre-flight Analysis ──────────────────────────────────────────────────────
+
+function AnalysisSection({ task, onUpdate }: { task: Task; onUpdate: (id: string, patch: object) => Promise<void> }) {
+  const [analyzing, setAnalyzing] = useState(false)
+  const analysis = task.analysis
+
+  async function handleAnalyze() {
+    setAnalyzing(true)
+    try {
+      const res = await api.analyzeTask(task.id)
+      if (res.analysis) onUpdate(task.id, { analysis: res.analysis })
+    } catch (e) {
+      console.error('Analysis failed:', e)
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  if (!analysis) {
+    return (
+      <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Search className="h-4 w-4 text-primary/60" />
+            <span className="text-sm font-medium text-foreground/80">Pre-flight Analysis</span>
+          </div>
+          <button
+            onClick={handleAnalyze}
+            disabled={analyzing || !task.agentId}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-primary text-xs font-medium hover:bg-primary/20 transition-colors disabled:opacity-50"
+          >
+            {analyzing ? <><Loader2 className="h-3 w-3 animate-spin" /> Analyzing…</> : <><Search className="h-3 w-3" /> Analyze</>}
+          </button>
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Agent akan menganalisa ticket ini sebelum eksekusi — identifikasi intent, data sources, dan readiness.
+        </p>
+      </div>
+    )
+  }
+
+  const ready = analysis.readiness?.ready
+  const hasMissing = (analysis.readiness?.missingSkills?.length || 0) + (analysis.readiness?.missingTools?.length || 0) > 0
+
+  return (
+    <div className="rounded-xl border border-border/40 bg-card/40 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border/30 bg-muted/10">
+        <Search className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+        <span className="text-xs font-semibold text-foreground/80 tracking-wide">Pre-flight Analysis</span>
+        <span className={cn(
+          "ml-auto flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full",
+          ready ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"
+        )}>
+          {ready ? <><ShieldCheck className="h-3 w-3" /> Ready</> : <><ShieldAlert className="h-3 w-3" /> Not Ready</>}
+        </span>
+        <button
+          onClick={handleAnalyze}
+          disabled={analyzing}
+          className="text-muted-foreground/40 hover:text-foreground/60 transition-colors"
+          title="Re-analyze"
+        >
+          <RefreshCw className={cn("h-3 w-3", analyzing && "animate-spin")} />
+        </button>
+      </div>
+
+      <div className="p-4 space-y-3">
+        {/* Intent */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-wider mb-1">Business Intent</p>
+          <p className="text-sm text-foreground/90 leading-relaxed">{analysis.intent}</p>
+        </div>
+
+        {/* Data Sources */}
+        {analysis.dataSources?.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+              <Database className="h-3 w-3" /> Data Sources
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {analysis.dataSources.map((ds, i) => (
+                <span key={i} className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-400/90 border border-blue-500/15">
+                  {ds}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Execution Plan */}
+        {analysis.executionPlan?.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+              <ListChecks className="h-3 w-3" /> Execution Plan
+            </p>
+            <ol className="space-y-1 pl-1">
+              {analysis.executionPlan.map((step, i) => (
+                <li key={i} className="flex items-start gap-2 text-xs text-foreground/80 leading-relaxed">
+                  <span className="flex items-center justify-center w-4 h-4 rounded-full bg-muted/40 text-[9px] font-bold text-muted-foreground shrink-0 mt-0.5">{i + 1}</span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
+        {/* Estimated Output */}
+        {analysis.estimatedOutput && (
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-wider mb-1">Expected Output</p>
+            <p className="text-xs text-foreground/70 leading-relaxed">{analysis.estimatedOutput}</p>
+          </div>
+        )}
+
+        {/* Potential Issues */}
+        {analysis.potentialIssues?.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-amber-400/70 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+              <AlertTriangle className="h-3 w-3" /> Potential Issues
+            </p>
+            <ul className="space-y-1">
+              {analysis.potentialIssues.map((issue, i) => (
+                <li key={i} className="text-xs text-amber-300/70 flex items-start gap-1.5">
+                  <span className="text-amber-500/50 shrink-0 mt-0.5">!</span>
+                  {issue}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Readiness */}
+        {analysis.readiness && (
+          <div className={cn(
+            "rounded-lg border p-3 space-y-2",
+            ready ? "border-emerald-500/20 bg-emerald-500/5" : "border-amber-500/20 bg-amber-500/5"
+          )}>
+            {analysis.readiness.availableSkills?.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                <span className="text-[10px] text-emerald-400/70 font-semibold uppercase w-full">Available Skills</span>
+                {analysis.readiness.availableSkills.map((s, i) => (
+                  <span key={i} className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400/80 border border-emerald-500/15 font-mono">{s}</span>
+                ))}
+              </div>
+            )}
+            {hasMissing && (
+              <>
+                {analysis.readiness.missingSkills?.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    <span className="text-[10px] text-red-400/70 font-semibold uppercase w-full">Missing Skills</span>
+                    {analysis.readiness.missingSkills.map((s, i) => (
+                      <span key={i} className="text-[11px] px-2 py-0.5 rounded-md bg-red-500/10 text-red-400/80 border border-red-500/15 font-mono">{s}</span>
+                    ))}
+                  </div>
+                )}
+                {analysis.readiness.missingTools?.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    <span className="text-[10px] text-red-400/70 font-semibold uppercase w-full">Missing Tools</span>
+                    {analysis.readiness.missingTools.map((s, i) => (
+                      <span key={i} className="text-[11px] px-2 py-0.5 rounded-md bg-red-500/10 text-red-400/80 border border-red-500/15 font-mono">{s}</span>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -225,7 +396,7 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
           </div>
 
           <div className="px-6 pt-3 pb-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3 p-3 rounded-xl bg-muted/10 border border-border/30">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-4 gap-y-3 p-3 rounded-xl bg-muted/10 border border-border/30">
 
               {/* Status */}
               <PropChip label="Status">
@@ -318,6 +489,17 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                 </div>
               </PropChip>
 
+              {/* Request From */}
+              <PropChip label="Request From">
+                <div
+                  title={task.requestFrom || '-'}
+                  className="h-7 flex items-center gap-1.5 px-2.5 rounded-md border border-border/30 bg-muted/10 text-xs text-muted-foreground/70 cursor-default"
+                >
+                  <User className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{task.requestFrom || '-'}</span>
+                </div>
+              </PropChip>
+
             </div>
 
             {/* Secondary meta: tags, completion, cost */}
@@ -406,6 +588,11 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                 {task.description}
               </p>
             </SectionCard>
+          )}
+
+          {/* Pre-flight Analysis */}
+          {(task.analysis || (task.status === 'backlog' && task.agentId)) && (
+            <AnalysisSection task={task} onUpdate={onUpdate} />
           )}
 
           {/* Agent Work */}

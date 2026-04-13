@@ -89,12 +89,14 @@ const GoogleSheetsAdapter = {
     try {
       const creds = getCredentials(config);
       const sheets = getSheets(creds);
+      // Use A1:ZZ1 to ensure all header columns are captured even if
+      // data rows below haven't been filled yet for newer columns.
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: config.spreadsheetId,
-        range: `'${sheetName}'!1:1`,
+        range: `'${sheetName}'!A1:ZZ1`,
       });
       const firstRow = res.data.values?.[0] || [];
-      return firstRow.map(v => v?.toString() || '').filter(Boolean);
+      return firstRow.map(v => v?.toString().trim() || '').filter(Boolean);
     } catch (err) {
       throw new Error(`getHeaders failed: ${err.message}`);
     }
@@ -103,16 +105,34 @@ const GoogleSheetsAdapter = {
   async fetchTickets(config) {
     const creds = getCredentials(config);
     const sheets = getSheets(creds);
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: config.spreadsheetId,
-      range: `'${config.sheetName}'!A:ZZ`,
-    });
-    const rows = res.data.values || [];
-    if (rows.length < 2) return [];
 
-    const headers = rows[0].map(h => h?.toString() || '');
+    // syncFromRow: 1-based row number in the sheet (row 1 = header).
+    // e.g. syncFromRow=100 means start reading data from sheet row 100.
+    // Internally rows[] index 0 = header, so data starts at index 1.
+    // Sheet row N → rows[] index N-1, so syncFromRow=100 → startIdx=99.
+    const syncFromRow = config.syncFromRow && config.syncFromRow > 1 ? config.syncFromRow : 2;
+    const syncLimit   = config.syncLimit   && config.syncLimit   > 0 ? config.syncLimit   : 500;
+
+    // Fetch only the needed range: row 1 (header) + syncFromRow onward
+    const range = `'${config.sheetName}'!A1:ZZ1,'${config.sheetName}'!A${syncFromRow}:ZZ`;
+
+    // Use batchGet to fetch header row + data rows separately (avoids full sheet load)
+    const batchRes = await sheets.spreadsheets.values.batchGet({
+      spreadsheetId: config.spreadsheetId,
+      ranges: [
+        `'${config.sheetName}'!A1:ZZ1`,
+        `'${config.sheetName}'!A${syncFromRow}:ZZ`,
+      ],
+    });
+
+    const headerRow  = batchRes.data.valueRanges?.[0]?.values?.[0] || [];
+    const dataRows   = batchRes.data.valueRanges?.[1]?.values       || [];
+
+    if (!headerRow.length || !dataRows.length) return [];
+
+    const headers  = headerRow.map(h => h?.toString() || '');
     const colIndex = buildColIndex(headers);
-    const mapping = config.mapping;
+    const mapping  = config.mapping;
 
     const getVal = (row, field) => {
       const colName = mapping[field];
@@ -121,9 +141,13 @@ const GoogleSheetsAdapter = {
       return idx !== undefined ? (row[idx]?.toString().trim() || '') : '';
     };
 
+    // Apply syncLimit — take only the LAST N rows so we always get the most recent tickets
+    const limitedRows = dataRows.length > syncLimit
+      ? dataRows.slice(dataRows.length - syncLimit)
+      : dataRows;
+
     const tickets = [];
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
+    for (const row of limitedRows) {
       const externalId = getVal(row, 'external_id');
       const title = getVal(row, 'title');
       if (!externalId || !title) continue;
@@ -136,6 +160,7 @@ const GoogleSheetsAdapter = {
         priority: getVal(row, 'priority')?.toLowerCase() || undefined,
         status: getVal(row, 'status') || undefined,
         tags: tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : [],
+        request_from: getVal(row, 'request_from') || '-',
       });
     }
     return tickets;

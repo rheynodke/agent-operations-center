@@ -42,6 +42,7 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
   const [priority, setPriority]   = useState<TaskPriority>("medium")
   const [assignTo, setAssignTo]   = useState<string>("")
   const [tagsRaw, setTagsRaw]     = useState("")
+  const [requestFrom, setRequestFrom] = useState("-")
   const [saving, setSaving]       = useState(false)
   const [error, setError]         = useState("")
 
@@ -53,9 +54,10 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
       setPriority(task.priority || "medium")
       setAssignTo(task.agentId || "")
       setTagsRaw((task.tags || []).join(", "))
+      setRequestFrom(task.requestFrom || "-")
     } else {
       setTitle(""); setDescription(""); setStatus(defaultStatus)
-      setPriority("medium"); setAssignTo(""); setTagsRaw("")
+      setPriority("medium"); setAssignTo(""); setTagsRaw(""); setRequestFrom("-")
     }
     setError("")
   }, [task, open])
@@ -68,6 +70,7 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
       await onSave({
         title: title.trim(), description: description.trim() || undefined,
         status, priority, agentId: assignTo || undefined, tags,
+        requestFrom: requestFrom.trim() || '-',
         ...(task ? { assignTo: assignTo || undefined } : {}),
       })
       onClose()
@@ -169,9 +172,15 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
               )
             })()}
           </div>
-          <div className="space-y-1">
-            <Label>Tags (comma separated)</Label>
-            <Input value={tagsRaw} onChange={(e) => setTagsRaw(e.target.value)} placeholder="auth, frontend, bug" />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Tags (comma separated)</Label>
+              <Input value={tagsRaw} onChange={(e) => setTagsRaw(e.target.value)} placeholder="auth, frontend, bug" />
+            </div>
+            <div className="space-y-1">
+              <Label>Request From</Label>
+              <Input value={requestFrom} onChange={(e) => setRequestFrom(e.target.value)} placeholder="-" />
+            </div>
           </div>
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>

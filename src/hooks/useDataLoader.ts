@@ -12,10 +12,11 @@ export function useDataLoader() {
 
   async function loadAll() {
     try {
+      const activeProjectId = useProjectStore.getState().activeProjectId
       const [agents, sessions, tasks, overview, activity, routes, projects] = await Promise.allSettled([
         api.getAgents(),
         api.getSessions(),
-        api.getTasks(),
+        api.getTasks(activeProjectId ? { projectId: activeProjectId } : {}),
         api.getOverview(),
         api.getActivity(),
         api.getRoutes(),

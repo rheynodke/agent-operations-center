@@ -61,6 +61,7 @@ module.exports = {
   toggleAgentTool:   agents.toggleAgentTool,
   provisionAgent:    agents.provisionAgent,
   slugify:           agents.slugify,
+  ensureAgentSkillsFields: agents.ensureAgentSkillsFields,
 
   // ── agent channels ─────────────────────────────────────────────────────────
   getAgentChannels:    agents.getAgentChannels,
