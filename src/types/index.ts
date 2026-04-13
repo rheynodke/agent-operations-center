@@ -647,6 +647,44 @@ export interface IntegrationConfig {
   syncLimit?: number
 }
 
+// ─── Connections (Third-party Data Sources) ──────────────────────────────────
+
+export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website'
+
+export interface ConnectionMetadata {
+  // BigQuery
+  projectId?: string
+  datasets?: string[]
+  // PostgreSQL
+  host?: string
+  port?: number
+  database?: string
+  username?: string
+  sslMode?: string
+  // SSH/VPS
+  sshHost?: string
+  sshPort?: number
+  sshUser?: string
+  // Website
+  url?: string
+  authType?: 'basic' | 'api_key' | 'token' | 'cookie' | 'none'
+  authUsername?: string
+  description?: string
+}
+
+export interface Connection {
+  id: string
+  name: string
+  type: ConnectionType
+  hasCredentials: boolean
+  metadata: ConnectionMetadata
+  enabled: boolean
+  lastTestedAt?: string | null
+  lastTestOk?: boolean | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ProjectIntegration {
   id: string
   projectId: string

@@ -197,6 +197,22 @@ async function initDatabase() {
     )
   `);
 
+  // ── Connections (third-party data sources) ──────────────────────────────────
+  db.run(`
+    CREATE TABLE IF NOT EXISTS connections (
+      id             TEXT PRIMARY KEY,
+      name           TEXT NOT NULL,
+      type           TEXT NOT NULL,
+      credentials    TEXT NOT NULL DEFAULT '',
+      metadata       TEXT NOT NULL DEFAULT '{}',
+      enabled        INTEGER NOT NULL DEFAULT 1,
+      last_tested_at TEXT,
+      last_test_ok   INTEGER,
+      created_at     TEXT NOT NULL,
+      updated_at     TEXT NOT NULL
+    )
+  `);
+
   // Tasks migration: add project + external sync columns
   try { db.run("ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'general'"); } catch (_) {}
   try { db.run('ALTER TABLE tasks ADD COLUMN external_id TEXT'); } catch (_) {}
@@ -755,6 +771,112 @@ function deleteAgentProfile(agentId) {
   persist();
 }
 
+// ─── Connections ─────────────────────────────────────────────────────────────
+
+const { encrypt: encryptConn, decrypt: decryptConn } = require('./integrations/base.cjs');
+
+function normalizeConnection(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    hasCredentials: !!row.credentials,
+    metadata: (() => { try { return row.metadata ? JSON.parse(row.metadata) : {}; } catch { return {}; } })(),
+    enabled: !!row.enabled,
+    lastTestedAt: row.last_tested_at || null,
+    lastTestOk: row.last_test_ok != null ? !!row.last_test_ok : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function getAllConnections() {
+  if (!db) return [];
+  const res = db.exec('SELECT * FROM connections ORDER BY created_at DESC');
+  if (!res.length) return [];
+  const cols = res[0].columns;
+  return res[0].values.map(row => {
+    const obj = {}; cols.forEach((c, i) => { obj[c] = row[i]; });
+    return normalizeConnection(obj);
+  }).filter(Boolean);
+}
+
+function getConnection(id) {
+  if (!db) return null;
+  const res = db.exec('SELECT * FROM connections WHERE id = ?', [id]);
+  if (!res.length || !res[0].values.length) return null;
+  const cols = res[0].columns;
+  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
+  return normalizeConnection(obj);
+}
+
+/** Get raw connection with decrypted credentials (for internal use only — never expose to frontend) */
+function getConnectionRaw(id) {
+  if (!db) return null;
+  const res = db.exec('SELECT * FROM connections WHERE id = ?', [id]);
+  if (!res.length || !res[0].values.length) return null;
+  const cols = res[0].columns;
+  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
+  const meta = (() => { try { return obj.metadata ? JSON.parse(obj.metadata) : {}; } catch { return {}; } })();
+  let creds = '';
+  try { creds = obj.credentials ? decryptConn(obj.credentials) : ''; } catch { creds = ''; }
+  return { ...obj, credentials: creds, metadata: meta };
+}
+
+/** Get all enabled connections with decrypted credentials (for dispatch injection) */
+function getEnabledConnectionsRaw() {
+  if (!db) return [];
+  const res = db.exec('SELECT * FROM connections WHERE enabled = 1');
+  if (!res.length) return [];
+  const cols = res[0].columns;
+  return res[0].values.map(row => {
+    const obj = {}; cols.forEach((c, i) => { obj[c] = row[i]; });
+    const meta = (() => { try { return obj.metadata ? JSON.parse(obj.metadata) : {}; } catch { return {}; } })();
+    let creds = '';
+    try { creds = obj.credentials ? decryptConn(obj.credentials) : ''; } catch { creds = ''; }
+    return { ...obj, credentials: creds, metadata: meta };
+  });
+}
+
+function createConnection({ id, name, type, credentials, metadata, enabled }) {
+  if (!db) throw new Error('DB not initialized');
+  const now = new Date().toISOString();
+  const encCreds = credentials ? encryptConn(credentials) : '';
+  const metaStr = JSON.stringify(metadata || {});
+  db.run(
+    `INSERT INTO connections (id, name, type, credentials, metadata, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, name, type, encCreds, metaStr, enabled !== false ? 1 : 0, now, now]
+  );
+  persist();
+  return getConnection(id);
+}
+
+function updateConnection(id, patch) {
+  if (!db) throw new Error('DB not initialized');
+  const now = new Date().toISOString();
+  const fields = ['updated_at = ?'];
+  const vals = [now];
+  if (patch.name        !== undefined) { fields.push('name = ?');        vals.push(patch.name); }
+  if (patch.type        !== undefined) { fields.push('type = ?');        vals.push(patch.type); }
+  if (patch.credentials !== undefined) { fields.push('credentials = ?'); vals.push(patch.credentials ? encryptConn(patch.credentials) : ''); }
+  if (patch.metadata    !== undefined) { fields.push('metadata = ?');    vals.push(JSON.stringify(patch.metadata)); }
+  if (patch.enabled     !== undefined) { fields.push('enabled = ?');     vals.push(patch.enabled ? 1 : 0); }
+  if (patch.lastTestedAt !== undefined) { fields.push('last_tested_at = ?'); vals.push(patch.lastTestedAt); }
+  if (patch.lastTestOk   !== undefined) { fields.push('last_test_ok = ?');   vals.push(patch.lastTestOk ? 1 : 0); }
+  vals.push(id);
+  db.run(`UPDATE connections SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getConnection(id);
+}
+
+function deleteConnection(id) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('DELETE FROM connections WHERE id = ?', [id]);
+  persist();
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   initDatabase,
@@ -812,4 +934,7 @@ module.exports = {
   // Integrations
   getAllIntegrations, getProjectIntegrations, getIntegrationRaw,
   createIntegration, updateIntegration, deleteIntegration, updateIntegrationSyncState,
+  // Connections
+  getAllConnections, getConnection, getConnectionRaw, getEnabledConnectionsRaw,
+  createConnection, updateConnection, deleteConnection,
 };

@@ -24,6 +24,7 @@ import { RoutingPage } from "@/pages/RoutingPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 import { SkillsPage } from "@/pages/SkillsPage"
 import { ChatPage } from "@/pages/ChatPage"
+import { ConnectionsPage } from "@/pages/ConnectionsPage"
 
 function DashboardShell() {
   useWebSocket()
@@ -48,6 +49,7 @@ function DashboardShell() {
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/routing" element={<RoutingPage />} />
             <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/chat" element={<ChatPage />} />
             {/* If authenticated user goes to login or setup, redirect them to dashboard root */}

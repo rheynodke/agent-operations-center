@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Cable,
   Webhook,
+  Plug,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -54,6 +55,7 @@ const navGroups = [
     label: "Library",
     items: [
       { to: "/skills", label: "Skills & Tools", icon: BookOpen },
+      { to: "/connections", label: "Connections", icon: Plug },
     ],
   },
 ]

@@ -1556,6 +1556,43 @@ async function dispatchTaskToAgent(task, opts = {}) {
   const curlBase = `curl -sf -X PATCH ${aocUrl}/api/tasks/${task.id} -H "Authorization: Bearer ${aocToken}" -H "Content-Type: application/json"`;
   const tagsLine = (task.tags || []).length > 0 ? `Tags: ${task.tags.join(', ')}` : '';
 
+  // Build project context
+  let projectContext = '';
+  if (task.projectId && task.projectId !== 'general') {
+    try {
+      const project = db.getProject(task.projectId);
+      if (project?.description) projectContext = `\n**Project Context:** ${project.description}\n`;
+    } catch {}
+  }
+
+  // Build available connections context for the agent
+  let connectionsContext = '';
+  try {
+    const conns = db.getEnabledConnectionsRaw();
+    if (conns.length > 0) {
+      const lines = conns.map(c => {
+        const meta = c.metadata || {};
+        if (c.type === 'bigquery') {
+          const ds = meta.datasets?.length ? meta.datasets.join(', ') : '(discover via bq ls)';
+          return `  - **${c.name}** (BigQuery): project \`${meta.projectId || '?'}\`, datasets: ${ds}. Auth: \`GOOGLE_APPLICATION_CREDENTIALS\` env var is pre-configured.`;
+        }
+        if (c.type === 'postgres') {
+          return `  - **${c.name}** (PostgreSQL): host \`${meta.host || 'localhost'}\`, port ${meta.port || 5432}, db \`${meta.database || '?'}\`. Auth: \`PGHOST\`/\`PGUSER\`/\`PGPASSWORD\` env vars are pre-configured.`;
+        }
+        if (c.type === 'ssh') {
+          return `  - **${c.name}** (SSH/VPS): \`${meta.sshUser || 'root'}@${meta.sshHost || '?'}\` port ${meta.sshPort || 22}. Auth: SSH key is pre-configured.`;
+        }
+        if (c.type === 'website') {
+          const authLabel = meta.authType === 'none' ? 'public' : `auth: ${meta.authType}${meta.authUsername ? ` (${meta.authUsername})` : ''}`;
+          const desc = meta.description ? ` — ${meta.description}` : '';
+          return `  - **${c.name}** (Website): \`${meta.url || '?'}\` (${authLabel})${desc}`;
+        }
+        return `  - **${c.name}** (${c.type})`;
+      });
+      connectionsContext = `\n**Available Connections:**\n${lines.join('\n')}\n`;
+    }
+  } catch {}
+
   let message;
 
   if (isFirstDispatch) {
@@ -1569,7 +1606,9 @@ async function dispatchTaskToAgent(task, opts = {}) {
       tagsLine,
       ``,
       task.description ? `**Description:**\n${task.description}` : '',
+      projectContext,
       extraContext ? `\n**Additional Context from operator:**\n${extraContext}` : '',
+      connectionsContext,
       ``,
       `---`,
       `IMPORTANT: Report your progress using ONE of these methods:`,
@@ -1677,9 +1716,19 @@ async function analyzeTaskForAgent(task) {
   try { agentSkills = parsers.getAgentSkills(task.agentId).map(s => s.slug || s.name); } catch {}
   try { agentTools = parsers.getAgentTools(task.agentId).filter(t => t.enabled).map(t => t.name); } catch {}
 
+  // Fetch project context
+  let projectContext = '';
+  if (task.projectId && task.projectId !== 'general') {
+    try {
+      const project = db.getProject(task.projectId);
+      if (project?.description) projectContext = project.description;
+    } catch {}
+  }
+
   const prompt = [
     `You are a task analyst for an AI agent operations center. Analyze this task ticket and produce a structured pre-flight analysis in JSON format.`,
     ``,
+    projectContext ? `## Project Context\n${projectContext}\n` : '',
     `## Task`,
     `Title: ${task.title}`,
     task.description ? `Description: ${task.description}` : '',
@@ -1691,6 +1740,25 @@ async function analyzeTaskForAgent(task) {
     `Agent ID: ${task.agentId}`,
     `Available skills: ${agentSkills.length > 0 ? agentSkills.join(', ') : '(none)'}`,
     `Available tools: ${agentTools.length > 0 ? agentTools.join(', ') : '(standard)'}`,
+    ...(() => {
+      try {
+        const conns = db.getAllConnections().filter(c => c.enabled);
+        if (conns.length === 0) return ['', '## Available Connections', '(none registered)'];
+        const lines = conns.map(c => {
+          const m = c.metadata || {};
+          if (c.type === 'bigquery') return `  - ${c.name} (BigQuery): project ${m.projectId || '?'}, datasets: ${(m.datasets || []).join(', ') || '?'}`;
+          if (c.type === 'postgres') return `  - ${c.name} (PostgreSQL): ${m.host || 'localhost'}:${m.port || 5432}/${m.database || '?'}`;
+          if (c.type === 'ssh') return `  - ${c.name} (SSH/VPS): ${m.sshUser || 'root'}@${m.sshHost || '?'}:${m.sshPort || 22}`;
+          if (c.type === 'website') {
+            const auth = m.authType === 'none' ? 'public' : `auth: ${m.authType}`;
+            const desc = m.description ? ` — ${m.description}` : '';
+            return `  - ${c.name} (Website): ${m.url || '?'} (${auth})${desc}`;
+          }
+          return `  - ${c.name} (${c.type})`;
+        });
+        return ['', '## Available Connections', ...lines];
+      } catch { return []; }
+    })(),
     ``,
     `## Instructions`,
     `Respond with ONLY valid JSON (no markdown fences, no explanation) matching this exact structure:`,
@@ -1769,6 +1837,131 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 })
+
+// ─── Connections (third-party data sources) ──────────────────────────────────
+
+app.get('/api/connections', db.authMiddleware, (_req, res) => {
+  res.json({ connections: db.getAllConnections() });
+});
+
+app.get('/api/connections/:id', db.authMiddleware, (req, res) => {
+  const conn = db.getConnection(req.params.id);
+  if (!conn) return res.status(404).json({ error: 'Connection not found' });
+  res.json({ connection: conn });
+});
+
+app.post('/api/connections', db.authMiddleware, (req, res) => {
+  try {
+    const { name, type, credentials, metadata, enabled } = req.body;
+    if (!name || !type) return res.status(400).json({ error: 'name and type are required' });
+    const id = require('crypto').randomUUID();
+    const conn = db.createConnection({ id, name, type, credentials, metadata, enabled });
+    res.json({ ok: true, connection: conn });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/connections/:id', db.authMiddleware, (req, res) => {
+  try {
+    const conn = db.getConnection(req.params.id);
+    if (!conn) return res.status(404).json({ error: 'Connection not found' });
+    const updated = db.updateConnection(req.params.id, req.body);
+    res.json({ connection: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/connections/:id', db.authMiddleware, (req, res) => {
+  try {
+    db.deleteConnection(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/connections/:id/test', db.authMiddleware, async (req, res) => {
+  try {
+    const raw = db.getConnectionRaw(req.params.id);
+    if (!raw) return res.status(404).json({ error: 'Connection not found' });
+
+    const { execSync } = require('child_process');
+    let result = { ok: false, error: 'Unknown type' };
+
+    if (raw.type === 'bigquery') {
+      // Test: bq ls on the project
+      const projectId = raw.metadata.projectId;
+      if (!projectId) return res.json({ ok: false, error: 'projectId not set in metadata' });
+      // Write SA key to temp file for test
+      const tmpKey = `/tmp/aoc-bq-test-${Date.now()}.json`;
+      require('fs').writeFileSync(tmpKey, raw.credentials, 'utf-8');
+      try {
+        // Activate + test
+        execSync(`${process.env.GCLOUD_BIN || 'gcloud'} auth activate-service-account --key-file="${tmpKey}" 2>&1`, { timeout: 15000, encoding: 'utf-8' });
+        const bqBin = process.env.BQ_BIN || 'bq';
+        const output = execSync(`${bqBin} ls --project_id=${projectId} 2>&1 | head -5`, { timeout: 15000, encoding: 'utf-8' });
+        result = { ok: true, message: `Connected to ${projectId}`, preview: output.trim() };
+      } catch (e) {
+        result = { ok: false, error: e.message || e.toString() };
+      } finally {
+        try { require('fs').unlinkSync(tmpKey); } catch {}
+      }
+    } else if (raw.type === 'postgres') {
+      const m = raw.metadata;
+      const connStr = `postgresql://${m.username || 'postgres'}:${encodeURIComponent(raw.credentials)}@${m.host || 'localhost'}:${m.port || 5432}/${m.database || 'postgres'}${m.sslMode ? `?sslmode=${m.sslMode}` : ''}`;
+      try {
+        const output = execSync(`psql "${connStr}" -c "SELECT version();" 2>&1 | head -3`, { timeout: 10000, encoding: 'utf-8' });
+        result = { ok: true, message: 'Connected', preview: output.trim() };
+      } catch (e) {
+        result = { ok: false, error: e.message || e.toString() };
+      }
+    } else if (raw.type === 'ssh') {
+      const m = raw.metadata;
+      const host = m.sshHost; const port = m.sshPort || 22; const user = m.sshUser || 'root';
+      if (!host) return res.json({ ok: false, error: 'sshHost not set' });
+      // Write key to temp file
+      const tmpKey = `/tmp/aoc-ssh-test-${Date.now()}`;
+      require('fs').writeFileSync(tmpKey, raw.credentials, { mode: 0o600 });
+      try {
+        const output = execSync(
+          `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${tmpKey}" -p ${port} ${user}@${host} "hostname && uptime" 2>&1`,
+          { timeout: 15000, encoding: 'utf-8' }
+        );
+        result = { ok: true, message: `Connected to ${host}`, preview: output.trim() };
+      } catch (e) {
+        result = { ok: false, error: e.message || e.toString() };
+      } finally {
+        try { require('fs').unlinkSync(tmpKey); } catch {}
+      }
+    } else if (raw.type === 'website') {
+      const url = raw.metadata.url;
+      if (!url) return res.json({ ok: false, error: 'URL not set in metadata' });
+      try {
+        const https = url.startsWith('https') ? require('https') : require('http');
+        const status = await new Promise((resolve, reject) => {
+          const req = https.get(url, { timeout: 10000 }, (res) => resolve(res.statusCode));
+          req.on('error', reject);
+          req.on('timeout', () => { req.destroy(); reject(new Error('Connection timeout')); });
+        });
+        if (status >= 200 && status < 400) {
+          result = { ok: true, message: `Reachable (HTTP ${status})`, preview: url };
+        } else {
+          result = { ok: false, error: `HTTP ${status}` };
+        }
+      } catch (e) {
+        result = { ok: false, error: e.message || e.toString() };
+      }
+    }
+
+    // Update test state
+    db.updateConnection(req.params.id, { lastTestedAt: new Date().toISOString(), lastTestOk: result.ok });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 app.get('/api/projects', db.authMiddleware, (_req, res) => {

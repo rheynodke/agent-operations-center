@@ -91,10 +91,11 @@ export function ProjectSettingsPanel({ open, onClose, onAddIntegration, onEditIn
   const [tab, setTab] = useState<'general' | 'integrations'>('general')
   const [name, setName] = useState('')
   const [color, setColor] = useState('#6366f1')
+  const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (project) { setName(project.name); setColor(project.color) }
+    if (project) { setName(project.name); setColor(project.color); setDescription(project.description || '') }
   }, [project?.id])
 
   useEffect(() => {
@@ -105,7 +106,7 @@ export function ProjectSettingsPanel({ open, onClose, onAddIntegration, onEditIn
 
   async function handleSave() {
     setSaving(true)
-    try { await updateProject(activeProjectId, { name, color }) } finally { setSaving(false) }
+    try { await updateProject(activeProjectId, { name, color, description: description || undefined }) } finally { setSaving(false) }
   }
 
   async function handleDelete() {
@@ -151,6 +152,17 @@ export function ProjectSettingsPanel({ open, onClose, onAddIntegration, onEditIn
               <div className="space-y-1.5">
                 <Label className="text-xs">Project Name</Label>
                 <Input value={name} onChange={e => setName(e.target.value)} className="h-8 text-sm" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Description</Label>
+                <textarea
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                  placeholder="Jelaskan konteks project ini — apa tujuannya, domain apa, data apa yang terlibat. Info ini akan diberikan ke agent saat analisa dan eksekusi task."
+                  rows={3}
+                  className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none"
+                />
+                <p className="text-[10px] text-muted-foreground/50">Context ini di-inject ke agent saat pre-flight analysis dan dispatch</p>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Color</Label>

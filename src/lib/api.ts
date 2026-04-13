@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -251,6 +251,18 @@ export const api = {
     request<{ ok: boolean; sessionKey: string; agentId: string }>(`/tasks/${taskId}/dispatch`, { method: 'POST' }),
   analyzeTask: (taskId: string) =>
     request<{ ok: boolean; analysis: import('@/types').TaskAnalysis }>(`/tasks/${taskId}/analyze`, { method: 'POST' }),
+
+  // Connections
+  getConnections: () =>
+    request<{ connections: Connection[] }>('/connections'),
+  createConnection: (data: { name: string; type: string; credentials?: string; metadata?: Record<string, unknown>; enabled?: boolean }) =>
+    request<{ ok: boolean; connection: Connection }>('/connections', { method: 'POST', body: JSON.stringify(data) }),
+  updateConnection: (id: string, patch: { name?: string; credentials?: string; metadata?: Record<string, unknown>; enabled?: boolean }) =>
+    request<{ connection: Connection }>(`/connections/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteConnection: (id: string) =>
+    request<{ ok: boolean }>(`/connections/${id}`, { method: 'DELETE' }),
+  testConnection: (id: string) =>
+    request<{ ok: boolean; message?: string; error?: string; preview?: string }>(`/connections/${id}/test`, { method: 'POST' }),
 
   // Projects
   getProjects: () =>
