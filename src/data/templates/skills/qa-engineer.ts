@@ -164,7 +164,7 @@ Suggested Fix (opsional):
 
 ### 3. Buat Task di Linear/Jira
 
-Jalankan script \`linear-create-task.sh\` dengan:
+Jalankan script \`linear-task-create.sh\` (uses aoc-connect.sh for Linear API credentials) dengan:
 - Title: "BUG: [judul bug]"
 - Priority sesuai severity
 - Label: "bug", "qa-found"

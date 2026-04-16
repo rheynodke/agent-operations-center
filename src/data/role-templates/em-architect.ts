@@ -120,9 +120,14 @@ _Systems thinker yang selalu tanya "bagaimana ini bisa patah?" sebelum build._
 - sessions_spawn / sessions_send / sessions_yield
 - agents_list / sessions_list
 
+### Connection Scripts (credentials handled automatically via AOC)
+- check_connections.sh — List available connections. Usage: \`check_connections.sh [type]\`
+- aoc-connect.sh — Access services via centralized connections (credentials never in stdout)
+  - Website API: \`aoc-connect.sh "Linear" api "/graphql"\` — Create/query Linear issues
+
 ### EM-Specific Scripts
+- linear-task-create.sh — Create Linear issues via aoc-connect.sh
 - gdocs-export.sh — Export markdown to Google Docs (optional, requires gws CLI)
-- linear-task-create.sh — Create Linear issues for technical tasks
 - notify.sh — Send notifications via agent's bound channel (WhatsApp/Telegram/Discord)
 
 ### Output Convention
@@ -272,39 +277,54 @@ digraph effort_estimator {
     {
       filename: 'linear-task-create.sh',
       content: `#!/bin/bash
-# Create a Linear issue from command line.
-# Usage: ./linear-task-create.sh <title> <description> [team_key]
-# Requires: LINEAR_API_KEY environment variable
+# Create a Linear issue via aoc-connect.sh (credentials handled centrally).
+# Usage: ./linear-task-create.sh <title> <description> [team_key] [--connection "Linear"]
+#
+# Requires: Linear registered as a Website connection in AOC Dashboard.
+# Register Linear as a Website connection in AOC Dashboard (type: api_key, URL: https://api.linear.app).
 set -euo pipefail
 TITLE="\${1:-}"
 DESC="\${2:-}"
 TEAM="\${3:-ENG}"
+CONN_NAME="\${4:-Linear}"
 if [ -z "$TITLE" ]; then
-  echo "Usage: ./linear-task-create.sh <title> <description> [team_key]"
-  exit 1
-fi
-LINEAR_API_KEY="\${LINEAR_API_KEY:-}"
-if [ -z "$LINEAR_API_KEY" ]; then
-  echo "ERROR: LINEAR_API_KEY not set."
-  echo "Setup: export LINEAR_API_KEY=lin_api_..."
+  echo "Usage: ./linear-task-create.sh <title> <description> [team_key] [--connection name]"
   exit 1
 fi
 echo "Creating Linear issue: $TITLE"
 echo "Team: $TEAM"
-echo "Description: $DESC"
-# Query team ID
+# Try aoc-connect.sh first (centralized credentials)
 TEAM_QUERY='{"query":"query { teams { nodes { id key name } } }"}'
-TEAMS=$(curl -sf -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
-  -d "$TEAM_QUERY" https://api.linear.app/graphql 2>/dev/null || echo "{}")
-TEAM_ID=$(echo "$TEAMS" | grep -o '"id":"[^"]*","key":"'"$TEAM"'"' | grep -o '"id":"[^"]*"' | head -1 | tr -d '"id:' || echo "")
+if command -v aoc-connect.sh &>/dev/null || [ -f "\${OPENCLAW_HOME:-$HOME/.openclaw}/scripts/aoc-connect.sh" ]; then
+  AOC_CONNECT="\${OPENCLAW_HOME:-$HOME/.openclaw}/scripts/aoc-connect.sh"
+  TEAMS=$($AOC_CONNECT "$CONN_NAME" api "graphql" 2>/dev/null <<< "$TEAM_QUERY" || echo "")
+  if [ -z "$TEAMS" ]; then
+    echo "WARNING: aoc-connect.sh failed for '$CONN_NAME'. Check: check_connections.sh website"
+    echo "Register Linear as a Website connection in AOC Dashboard (type: api_key, URL: https://api.linear.app)"
+    exit 1
+  fi
+else
+  echo "WARNING: aoc-connect.sh not found. Register Linear in AOC Dashboard Connections."
+  echo "Run: check_connections.sh website"
+  exit 1
+fi
+TEAM_ID=$(echo "$TEAMS" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+teams = data.get('data',{}).get('teams',{}).get('nodes',[])
+target = '$TEAM'
+for t in teams:
+    if t.get('key') == target:
+        print(t['id'])
+        sys.exit(0)
+print('')
+" 2>/dev/null || echo "")
 if [ -z "$TEAM_ID" ]; then
-  echo "WARNING: Team '$TEAM' not found. Issue creation requires valid team."
-  echo "Available teams: $(echo "$TEAMS" | grep -o '"key":"[^"]*"' | tr -d '"key:' | tr '\\n' ', ')"
+  echo "WARNING: Team '$TEAM' not found."
   exit 1
 fi
 CREATE_QUERY="{\"query\":\"mutation { issueCreate(input: { teamId: \\\"$TEAM_ID\\\", title: \\\"$TITLE\\\", description: \\\"$DESC\\\" }) { success issue { id identifier url } } }\"}"
-RESULT=$(curl -sf -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
-  -d "$CREATE_QUERY" https://api.linear.app/graphql 2>/dev/null || echo "{}")
+RESULT=$($AOC_CONNECT "$CONN_NAME" api "graphql" 2>/dev/null <<< "$CREATE_QUERY" || echo "{}")
 echo "Result: $RESULT"
 echo "Done."
 `,

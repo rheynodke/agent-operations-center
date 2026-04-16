@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const { WebSocketServer } = require('ws');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const parsers = require('./lib/index.cjs'); // modular barrel — replaces parsers.cjs
 const { LiveFeedWatcher } = require('./lib/watchers.cjs');
 const db = require('./lib/db.cjs');
@@ -1565,31 +1566,44 @@ async function dispatchTaskToAgent(task, opts = {}) {
     } catch {}
   }
 
-  // Build available connections context for the agent
+  // Build available connections context for the agent (NO inline credentials, filtered by assignment)
   let connectionsContext = '';
   try {
-    const conns = db.getEnabledConnectionsRaw();
+    const agentConnIds = db.getAgentConnectionIds(task.agentId);
+    const allConns = db.getAllConnections().filter(c => c.enabled);
+    const conns = allConns.filter(c => agentConnIds.includes(c.id));
     if (conns.length > 0) {
       const lines = conns.map(c => {
         const meta = c.metadata || {};
         if (c.type === 'bigquery') {
           const ds = meta.datasets?.length ? meta.datasets.join(', ') : '(discover via bq ls)';
-          return `  - **${c.name}** (BigQuery): project \`${meta.projectId || '?'}\`, datasets: ${ds}. Auth: \`GOOGLE_APPLICATION_CREDENTIALS\` env var is pre-configured.`;
+          return `  - **${c.name}** (BigQuery): project \`${meta.projectId || '?'}\`, datasets: ${ds}\n    → \`aoc-connect.sh "${c.name}" query "SELECT ..."\``;
         }
         if (c.type === 'postgres') {
-          return `  - **${c.name}** (PostgreSQL): host \`${meta.host || 'localhost'}\`, port ${meta.port || 5432}, db \`${meta.database || '?'}\`. Auth: \`PGHOST\`/\`PGUSER\`/\`PGPASSWORD\` env vars are pre-configured.`;
+          return `  - **${c.name}** (PostgreSQL): host \`${meta.host || 'localhost'}\`, port ${meta.port || 5432}, db \`${meta.database || '?'}\`\n    → \`aoc-connect.sh "${c.name}" query "SELECT ..."\``;
         }
         if (c.type === 'ssh') {
-          return `  - **${c.name}** (SSH/VPS): \`${meta.sshUser || 'root'}@${meta.sshHost || '?'}\` port ${meta.sshPort || 22}. Auth: SSH key is pre-configured.`;
+          return `  - **${c.name}** (SSH/VPS): \`${meta.sshUser || 'root'}@${meta.sshHost || '?'}\` port ${meta.sshPort || 22}\n    → \`aoc-connect.sh "${c.name}" exec "command"\``;
         }
         if (c.type === 'website') {
-          const authLabel = meta.authType === 'none' ? 'public' : `auth: ${meta.authType}${meta.authUsername ? ` (${meta.authUsername})` : ''}`;
+          const baseUrl = meta.url || '?';
+          const loginUrl = meta.loginUrl ? `${baseUrl.replace(/\/$/, '')}${meta.loginUrl}` : null;
           const desc = meta.description ? ` — ${meta.description}` : '';
-          return `  - **${c.name}** (Website): \`${meta.url || '?'}\` (${authLabel})${desc}`;
+          const authLabel = meta.authType === 'none' ? 'public' : `auth: ${meta.authType}`;
+          return `  - **${c.name}** (Website): \`${baseUrl}\` (${authLabel})${loginUrl ? ` login: \`${loginUrl}\`` : ''}${desc}\n    → Browse: \`aoc-connect.sh "${c.name}" browse "/path"\`\n    → API: \`aoc-connect.sh "${c.name}" api "/endpoint"\``;
+        }
+        if (c.type === 'github') {
+          const repo = `${meta.repoOwner || '?'}/${meta.repoName || '?'}`;
+          const desc = meta.description ? ` — ${meta.description}` : '';
+          return `  - **${c.name}** (GitHub): \`${repo}\` branch \`${meta.branch || 'main'}\`${desc}\n    → \`aoc-connect.sh "${c.name}" <info|prs|issues|files|diff|clone>\``;
+        }
+        if (c.type === 'odoocli') {
+          const desc = meta.description ? ` — ${meta.description}` : '';
+          return `  - **${c.name}** (Odoo XML-RPC): \`${meta.odooUrl || '?'}\` db \`${meta.odooDb || '?'}\`${desc}\n    → \`aoc-connect.sh "${c.name}" <odoocli-subcommand>\`\n    Example: \`aoc-connect.sh "${c.name}" record search sale.order --domain "[('state','=','draft')]" --fields name,partner_id,amount_total\``;
         }
         return `  - **${c.name}** (${c.type})`;
       });
-      connectionsContext = `\n**Available Connections:**\n${lines.join('\n')}\n`;
+      connectionsContext = `\n**Available Connections** (use \`aoc-connect.sh\` — credentials are handled automatically, never hardcode them):\n${lines.join('\n')}\n\nTo list all connections: \`check_connections.sh\`\n`;
     }
   } catch {}
 
@@ -1742,21 +1756,35 @@ async function analyzeTaskForAgent(task) {
     `Available tools: ${agentTools.length > 0 ? agentTools.join(', ') : '(standard)'}`,
     ...(() => {
       try {
-        const conns = db.getAllConnections().filter(c => c.enabled);
+        const agentConnIds = db.getAgentConnectionIds(task.agentId);
+        const allConns = db.getAllConnections().filter(c => c.enabled);
+        const conns = allConns.filter(c => agentConnIds.includes(c.id));
         if (conns.length === 0) return ['', '## Available Connections', '(none registered)'];
         const lines = conns.map(c => {
           const m = c.metadata || {};
-          if (c.type === 'bigquery') return `  - ${c.name} (BigQuery): project ${m.projectId || '?'}, datasets: ${(m.datasets || []).join(', ') || '?'}`;
-          if (c.type === 'postgres') return `  - ${c.name} (PostgreSQL): ${m.host || 'localhost'}:${m.port || 5432}/${m.database || '?'}`;
-          if (c.type === 'ssh') return `  - ${c.name} (SSH/VPS): ${m.sshUser || 'root'}@${m.sshHost || '?'}:${m.sshPort || 22}`;
+          if (c.type === 'bigquery') return `  - ${c.name} (BigQuery): project ${m.projectId || '?'}, datasets: ${(m.datasets || []).join(', ') || '?'} → aoc-connect.sh "${c.name}" query "SQL"`;
+          if (c.type === 'postgres') return `  - ${c.name} (PostgreSQL): ${m.host || 'localhost'}:${m.port || 5432}/${m.database || '?'} → aoc-connect.sh "${c.name}" query "SQL"`;
+          if (c.type === 'ssh') return `  - ${c.name} (SSH/VPS): ${m.sshUser || 'root'}@${m.sshHost || '?'}:${m.sshPort || 22} → aoc-connect.sh "${c.name}" exec "cmd"`;
           if (c.type === 'website') {
+            const baseUrl = m.url || '?';
+            const loginUrl = m.loginUrl ? `${baseUrl.replace(/\/$/, '')}${m.loginUrl}` : null;
             const auth = m.authType === 'none' ? 'public' : `auth: ${m.authType}`;
+            const loginHint = loginUrl ? ` — browser login at ${loginUrl}` : '';
             const desc = m.description ? ` — ${m.description}` : '';
-            return `  - ${c.name} (Website): ${m.url || '?'} (${auth})${desc}`;
+            return `  - ${c.name} (Website): ${baseUrl} (${auth})${loginHint}${desc} → aoc-connect.sh "${c.name}" browse|api`;
+          }
+          if (c.type === 'github') {
+            const repo = `${m.repoOwner || '?'}/${m.repoName || '?'}`;
+            const desc = m.description ? ` — ${m.description}` : '';
+            return `  - ${c.name} (GitHub): ${repo} branch ${m.branch || 'main'}${desc} → aoc-connect.sh "${c.name}" info|prs|issues|files|diff|clone`;
+          }
+          if (c.type === 'odoocli') {
+            const desc = m.description ? ` — ${m.description}` : '';
+            return `  - ${c.name} (Odoo XML-RPC): ${m.odooUrl || '?'} db ${m.odooDb || '?'}${desc} → aoc-connect.sh "${c.name}" <odoocli subcommand>`;
           }
           return `  - ${c.name} (${c.type})`;
         });
-        return ['', '## Available Connections', ...lines];
+        return ['', '## Available Connections (use aoc-connect.sh — credentials handled automatically)', ...lines];
       } catch { return []; }
     })(),
     ``,
@@ -1842,6 +1870,10 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
 
 app.get('/api/connections', db.authMiddleware, (_req, res) => {
   res.json({ connections: db.getAllConnections() });
+});
+
+app.get('/api/connections/assignments', db.authMiddleware, (_req, res) => {
+  res.json({ assignments: db.getAllAgentConnectionAssignments() });
 });
 
 app.get('/api/connections/:id', db.authMiddleware, (req, res) => {
@@ -1953,11 +1985,141 @@ app.post('/api/connections/:id/test', db.authMiddleware, async (req, res) => {
       } catch (e) {
         result = { ok: false, error: e.message || e.toString() };
       }
+    } else if (raw.type === 'odoocli') {
+      const m = raw.metadata;
+      if (!m.odooUrl) return res.json({ ok: false, error: 'odooUrl not set' });
+      try {
+        const authFlag = m.odooAuthType === 'api_key' ? 'ODOOCLI_API_KEY' : 'ODOOCLI_PASSWORD';
+        const env = `ODOOCLI_URL="${m.odooUrl}" ODOOCLI_DB="${m.odooDb || ''}" ODOOCLI_USERNAME="${m.odooUsername || ''}" ${authFlag}="${raw.credentials || ''}"`;
+        const output = execSync(`${env} odoocli auth test 2>&1`, { timeout: 15000, encoding: 'utf-8', shell: '/bin/bash' });
+        result = { ok: true, message: `Connected to ${m.odooUrl}`, preview: output.trim() };
+      } catch (e) {
+        result = { ok: false, error: e.message || e.toString() };
+      }
+    } else if (raw.type === 'github') {
+      const m = raw.metadata;
+      const repo = `${m.repoOwner || ''}/${m.repoName || ''}`;
+      if (!repo || repo === '/') return res.json({ ok: false, error: 'repoOwner/repoName not set' });
+      try {
+        const token = raw.credentials || '';
+        const cmd = token
+          ? `GH_TOKEN="${token}" gh repo view ${repo} --json name,defaultBranchRef,visibility 2>&1 | head -5`
+          : `gh repo view ${repo} --json name,defaultBranchRef,visibility 2>&1 | head -5`;
+        const output = execSync(cmd, { timeout: 15000, encoding: 'utf-8', shell: '/bin/bash' });
+        result = { ok: true, message: `Connected to ${repo}`, preview: output.trim() };
+      } catch (e) {
+        result = { ok: false, error: e.message || e.toString() };
+      }
     }
 
     // Update test state
     db.updateConnection(req.params.id, { lastTestedAt: new Date().toISOString(), lastTestOk: result.ok });
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Agent ↔ Connection assignments ─────────────────────────────────────────
+
+app.get('/api/agents/:id/connections', db.authMiddleware, (req, res) => {
+  const ids = db.getAgentConnectionIds(req.params.id);
+  const connections = ids.map(id => db.getConnection(id)).filter(Boolean);
+  res.json({ connectionIds: ids, connections });
+});
+
+app.put('/api/agents/:id/connections', db.authMiddleware, (req, res) => {
+  try {
+    const { connectionIds } = req.body;
+    if (!Array.isArray(connectionIds)) return res.status(400).json({ error: 'connectionIds must be an array' });
+    db.setAgentConnections(req.params.id, connectionIds);
+    // Sync connections context into agent's TOOLS.md so it knows about assigned connections during chat
+    try {
+      const allConns = db.getAllConnections();
+      const assigned = allConns.filter(c => connectionIds.includes(c.id));
+      parsers.syncAgentConnectionsContext(req.params.id, assigned, parsers.getAgentFile, parsers.saveAgentFile);
+    } catch (e) {
+      console.warn(`[connections] Failed to sync context for ${req.params.id}:`, e.message);
+    }
+    res.json({ ok: true, connectionIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ─── Agent-readable connections (returns decrypted credentials for agent scripts) ──
+app.get('/api/agent/connections', db.authMiddleware, (req, res) => {
+  try {
+    const agentId = req.query.agentId;
+    if (!agentId) return res.json({ connections: [], error: 'agentId query param required' });
+    const conns = db.getAgentConnectionsRaw(agentId);
+    const result = conns.map(c => {
+      const meta = c.metadata || {};
+      const out = { name: c.name, type: c.type };
+
+      if (c.type === 'bigquery') {
+        out.projectId = meta.projectId || null;
+        out.datasets = meta.datasets || [];
+        out.serviceAccountJson = c.credentials || null;
+        out.hint = 'Write service account JSON to a temp file, activate with gcloud auth, then use bq CLI.';
+      } else if (c.type === 'postgres') {
+        out.host = meta.host || 'localhost';
+        out.port = meta.port || 5432;
+        out.database = meta.database || null;
+        out.username = meta.username || 'postgres';
+        out.password = c.credentials || null;
+        out.sslMode = meta.sslMode || null;
+        out.hint = 'Connect via psql or any PostgreSQL client with these credentials.';
+      } else if (c.type === 'ssh') {
+        out.host = meta.sshHost || null;
+        out.port = meta.sshPort || 22;
+        out.user = meta.sshUser || 'root';
+        out.privateKey = c.credentials || null;
+        out.hint = 'Write private key to a temp file (chmod 600), use ssh -i to connect.';
+      } else if (c.type === 'website') {
+        out.url = meta.url || null;
+        out.loginUrl = meta.loginUrl ? `${(meta.url || '').replace(/\/$/, '')}${meta.loginUrl}` : null;
+        out.authType = meta.authType || 'none';
+        out.username = meta.authUsername || null;
+        out.password = meta.authType !== 'none' ? (c.credentials || null) : null;
+        out.description = meta.description || null;
+        if (meta.authType === 'basic' && meta.loginUrl) {
+          out.hint = `Open browser to ${out.loginUrl}, login with username and password, then navigate the site.`;
+        } else if (meta.authType === 'api_key') {
+          out.hint = `Use header "${meta.authUsername || 'X-API-Key'}: <key>" for API requests.`;
+        } else if (meta.authType === 'token') {
+          out.hint = 'Use header "Authorization: Bearer <token>" for API requests.';
+        } else {
+          out.hint = 'Public website, no authentication required.';
+        }
+      } else if (c.type === 'github') {
+        out.githubMode = meta.githubMode || 'remote';
+        out.branch = meta.branch || 'main';
+        out.description = meta.description || null;
+        if (out.githubMode === 'local') {
+          out.localPath = meta.localPath || null;
+          out.hint = `Local git repo at ${meta.localPath || '?'}. Use git -C "${meta.localPath || '?'}" directly, or aoc-connect.sh "${c.name}" <action>.`;
+        } else {
+          out.repoOwner = meta.repoOwner || null;
+          out.repoName = meta.repoName || null;
+          out.repo = `${meta.repoOwner || ''}/${meta.repoName || ''}`;
+          out.token = c.credentials || null;
+          out.hint = `Use gh CLI with GH_TOKEN env var. Repo: ${out.repo}, branch: ${out.branch}.`;
+        }
+      } else if (c.type === 'odoocli') {
+        out.odooUrl = meta.odooUrl || null;
+        out.odooDb = meta.odooDb || null;
+        out.odooUsername = meta.odooUsername || null;
+        out.odooAuthType = meta.odooAuthType || 'password';
+        out.credential = c.credentials || null;
+        out.description = meta.description || null;
+        out.hint = `Use odoocli CLI. Connection: ${meta.odooUrl} db ${meta.odooDb}.`;
+      }
+
+      return out;
+    });
+    res.json({ connections: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2506,6 +2668,27 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
   'plugins', 'models',
 ]);
 
+// GET /api/browse-dirs — list directories at a given path (for directory picker)
+app.get('/api/browse-dirs', db.authMiddleware, (req, res) => {
+  const targetPath = req.query.path || os.homedir();
+  try {
+    const resolved = path.resolve(targetPath);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      return res.status(400).json({ error: 'Not a valid directory' });
+    }
+    const entries = fs.readdirSync(resolved, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => e.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    // Check if this is a git repo
+    const isGitRepo = fs.existsSync(path.join(resolved, '.git'));
+    res.json({ path: resolved, dirs, isGitRepo, parent: path.dirname(resolved) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/config — returns full openclaw.json
 app.get('/api/config', db.authMiddleware, (req, res) => {
   const { readJsonSafe } = require('./lib/config.cjs');
@@ -2924,6 +3107,38 @@ async function syncTaskScriptForAllAgents() {
   }
 }
 
+function syncConnectionsScriptForAllAgents() {
+  try {
+    parsers.ensureCheckConnectionsScript();
+    parsers.ensureAocConnectScript();
+    const agents = parsers.parseAgentRegistry();
+    const allConns = db.getAllConnections();
+    for (const agent of agents) {
+      try {
+        const tools = parsers.listAgentCustomTools(agent.id, parsers.getAgentFile);
+        const enabledNames = new Set(
+          [...(tools.agent || []), ...(tools.shared || [])].filter(t => t.enabled).map(t => t.name)
+        );
+        // Always force-refresh these blocks so descriptions stay up to date
+        parsers.toggleAgentCustomTool(agent.id, 'check_connections.sh', false, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
+        parsers.toggleAgentCustomTool(agent.id, 'check_connections.sh', true, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
+        parsers.toggleAgentCustomTool(agent.id, 'aoc-connect.sh', false, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
+        parsers.toggleAgentCustomTool(agent.id, 'aoc-connect.sh', true, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
+        // Sync connections context block in TOOLS.md
+        const assignedIds = db.getAgentConnectionIds(agent.id);
+        if (assignedIds.length > 0) {
+          const assigned = allConns.filter(c => assignedIds.includes(c.id));
+          parsers.syncAgentConnectionsContext(agent.id, assigned, parsers.getAgentFile, parsers.saveAgentFile);
+        }
+      } catch (err) {
+        console.warn(`[connections-sync] Failed for ${agent.id}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.warn('[connections-sync] syncConnectionsScriptForAllAgents failed:', err.message);
+  }
+}
+
 function syncHeartbeatForAllAgents() {
   try {
     parsers.ensureCheckTasksScript();
@@ -3006,6 +3221,7 @@ async function start() {
   feedWatcher.start();
   parsers.ensureAocEnvFile();   // write ~/.openclaw/.aoc_env with current token
   syncTaskScriptForAllAgents(); // non-blocking, fire-and-forget
+  syncConnectionsScriptForAllAgents(); // ensure check_connections.sh is available
   ensureHeartbeatConfig();      // backfill heartbeat: {} in openclaw.json for all agents
   syncHeartbeatForAllAgents();  // inject HEARTBEAT task check into all agent workspaces
 

@@ -649,7 +649,7 @@ export interface IntegrationConfig {
 
 // ─── Connections (Third-party Data Sources) ──────────────────────────────────
 
-export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website'
+export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli'
 
 export interface ConnectionMetadata {
   // BigQuery
@@ -667,9 +667,21 @@ export interface ConnectionMetadata {
   sshUser?: string
   // Website
   url?: string
+  loginUrl?: string
   authType?: 'basic' | 'api_key' | 'token' | 'cookie' | 'none'
   authUsername?: string
   description?: string
+  // GitHub
+  githubMode?: 'remote' | 'local'
+  repoOwner?: string
+  repoName?: string
+  branch?: string
+  localPath?: string
+  // OdooCLI
+  odooUrl?: string
+  odooDb?: string
+  odooUsername?: string
+  odooAuthType?: 'password' | 'api_key'
 }
 
 export interface Connection {

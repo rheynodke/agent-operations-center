@@ -213,6 +213,16 @@ async function initDatabase() {
     )
   `);
 
+  // ── Agent ↔ Connection assignments ──────────────────────────────────────────
+  db.run(`
+    CREATE TABLE IF NOT EXISTS agent_connections (
+      agent_id       TEXT NOT NULL,
+      connection_id  TEXT NOT NULL,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (agent_id, connection_id)
+    )
+  `);
+
   // Tasks migration: add project + external sync columns
   try { db.run("ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'general'"); } catch (_) {}
   try { db.run('ALTER TABLE tasks ADD COLUMN external_id TEXT'); } catch (_) {}
@@ -874,7 +884,53 @@ function updateConnection(id, patch) {
 function deleteConnection(id) {
   if (!db) throw new Error('DB not initialized');
   db.run('DELETE FROM connections WHERE id = ?', [id]);
+  db.run('DELETE FROM agent_connections WHERE connection_id = ?', [id]);
   persist();
+}
+
+// ─── Agent ↔ Connection assignments ─────────────────────────────────────────
+
+function getAgentConnectionIds(agentId) {
+  if (!db) return [];
+  const res = db.exec('SELECT connection_id FROM agent_connections WHERE agent_id = ?', [agentId]);
+  if (!res.length) return [];
+  return res[0].values.map(r => r[0]);
+}
+
+function getConnectionAgentIds(connectionId) {
+  if (!db) return [];
+  const res = db.exec('SELECT agent_id FROM agent_connections WHERE connection_id = ?', [connectionId]);
+  if (!res.length) return [];
+  return res[0].values.map(r => r[0]);
+}
+
+function setAgentConnections(agentId, connectionIds) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('DELETE FROM agent_connections WHERE agent_id = ?', [agentId]);
+  const now = new Date().toISOString();
+  for (const cid of connectionIds) {
+    db.run('INSERT INTO agent_connections (agent_id, connection_id, created_at) VALUES (?, ?, ?)', [agentId, cid, now]);
+  }
+  persist();
+}
+
+function getAgentConnectionsRaw(agentId) {
+  if (!db) return [];
+  const ids = getAgentConnectionIds(agentId);
+  if (ids.length === 0) return [];
+  return ids.map(id => getConnectionRaw(id)).filter(c => c && c.enabled);
+}
+
+function getAllAgentConnectionAssignments() {
+  if (!db) return {};
+  const res = db.exec('SELECT agent_id, connection_id FROM agent_connections');
+  if (!res.length) return {};
+  const map = {};
+  for (const [agentId, connId] of res[0].values) {
+    if (!map[connId]) map[connId] = [];
+    map[connId].push(agentId);
+  }
+  return map;
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
@@ -937,4 +993,7 @@ module.exports = {
   // Connections
   getAllConnections, getConnection, getConnectionRaw, getEnabledConnectionsRaw,
   createConnection, updateConnection, deleteConnection,
+  // Agent ↔ Connection assignments
+  getAgentConnectionIds, getConnectionAgentIds, setAgentConnections,
+  getAgentConnectionsRaw, getAllAgentConnectionAssignments,
 };

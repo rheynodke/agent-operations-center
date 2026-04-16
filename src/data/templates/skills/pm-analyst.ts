@@ -170,7 +170,7 @@ Tanyakan atau identifikasi:
 
 ### 2. Pull Data Metrics
 
-Gunakan script \`datadog-query.sh\` atau \`mixpanel-report.sh\` untuk mendapatkan:
+Gunakan \`aoc-connect.sh\` untuk query analytics services yang terdaftar di AOC (jalankan \`check_connections.sh website\` untuk list koneksi). Data yang dibutuhkan:
 
 **Engagement Metrics**
 - Retention rate (D1, D7, D30)

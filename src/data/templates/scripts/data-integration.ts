@@ -13,9 +13,9 @@ export const DATA_INTEGRATION_SCRIPTS: ScriptTemplate[] = [
     categoryEmoji: '📡',
     tags: ['datadog', 'metrics', 'pa-agent', 'adlc'],
     content: `#!/bin/zsh
-# datadog-query.sh — Query Datadog metrics untuk PA Agent (FR-02)
+# datadog-query.sh — Query Datadog metrics via aoc-connect.sh (FR-02)
 # Usage: ./datadog-query.sh <metric_name> <from_hours_ago> [tag_filter]
-# Requires: DD_API_KEY and DD_APP_KEY environment variables
+# Credentials: Managed via AOC Dashboard Connections (register Datadog as Website connection)
 #
 # Examples:
 #   ./datadog-query.sh "avg:web.response_time" 168 "feature:checkout"
@@ -26,9 +26,15 @@ set -euo pipefail
 METRIC="\${1:?Usage: $0 <metric_name> <from_hours_ago> [tag_filter]}"
 HOURS="\${2:?Provide hours ago (e.g. 24, 168 for 7 days)}"
 TAG_FILTER="\${3:-}"
+CONN_NAME="\${DD_CONN_NAME:-Datadog}"
 
-DD_API_KEY="\${DD_API_KEY:?DD_API_KEY is required}"
-DD_APP_KEY="\${DD_APP_KEY:?DD_APP_KEY is required}"
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
+AOC_CONNECT="\${OPENCLAW_HOME:-$HOME/.openclaw}/scripts/aoc-connect.sh"
+
+if [ ! -f "$AOC_CONNECT" ]; then
+  echo "ERROR: aoc-connect.sh not found. Ensure AOC Dashboard connection scripts are installed."
+  exit 1
+fi
 
 NOW=$(date +%s)
 FROM=$(( NOW - HOURS * 3600 ))
@@ -38,10 +44,7 @@ if [[ -n "$TAG_FILTER" ]]; then
   QUERY="$METRIC{$TAG_FILTER}"
 fi
 
-RESPONSE=$(curl -sf "https://api.datadoghq.com/api/v1/query?from=$FROM&to=$NOW&query=$QUERY" \\
-  -H "DD-API-KEY: $DD_API_KEY" \\
-  -H "DD-APPLICATION-KEY: $DD_APP_KEY" \\
-  -H "Content-Type: application/json")
+RESPONSE=$($AOC_CONNECT "$CONN_NAME" api "api/v1/query?from=$FROM&to=$NOW&query=$QUERY" 2>/dev/null || echo "{}")
 
 # Extract and summarize
 echo "$RESPONSE" | python3 -c "
@@ -80,9 +83,9 @@ print(json.dumps({'status': 'ok', 'metric': '$METRIC', 'hours': $HOURS, 'results
     categoryEmoji: '📡',
     tags: ['mixpanel', 'analytics', 'pa-agent', 'adlc'],
     content: `#!/bin/zsh
-# mixpanel-report.sh — Pull user behavior dari Mixpanel untuk PA Agent (FR-02)
+# mixpanel-report.sh — Pull user behavior dari Mixpanel via aoc-connect.sh (FR-02)
 # Usage: ./mixpanel-report.sh <event_name> <from_date> <to_date>
-# Requires: MIXPANEL_SECRET environment variable
+# Credentials: Managed via AOC Dashboard Connections (register Mixpanel as Website connection)
 #
 # Examples:
 #   ./mixpanel-report.sh "checkout_complete" "2026-03-01" "2026-03-31"
@@ -93,18 +96,18 @@ set -euo pipefail
 EVENT="\${1:?Usage: $0 <event_name> <from_date> <to_date>}"
 FROM="\${2:?Provide from date (YYYY-MM-DD)}"
 TO="\${3:?Provide to date (YYYY-MM-DD)}"
+CONN_NAME="\${MIXPANEL_CONN_NAME:-Mixpanel}"
 
-MIXPANEL_SECRET="\${MIXPANEL_SECRET:?MIXPANEL_SECRET is required}"
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
+AOC_CONNECT="\${OPENCLAW_HOME:-$HOME/.openclaw}/scripts/aoc-connect.sh"
 
-# Base64 encode credentials
-CREDS=$(echo -n "$MIXPANEL_SECRET:" | base64)
+if [ ! -f "$AOC_CONNECT" ]; then
+  echo "ERROR: aoc-connect.sh not found. Ensure AOC Dashboard connection scripts are installed."
+  exit 1
+fi
 
-RESPONSE=$(curl -sf "https://data.mixpanel.com/api/2.0/export/" \\
-  -H "Authorization: Basic $CREDS" \\
-  --data-urlencode "event=[\"$EVENT\"]" \\
-  --data-urlencode "from_date=$FROM" \\
-  --data-urlencode "to_date=$TO" \\
-  --data-urlencode "limit=1000")
+ENCODED_EVENT=$(python3 -c "import urllib.parse; print(urllib.parse.quote('[\"$EVENT\"]'))")
+RESPONSE=$($AOC_CONNECT "$CONN_NAME" api "api/2.0/export/?event=$ENCODED_EVENT&from_date=$FROM&to_date=$TO&limit=1000" 2>/dev/null || echo "")
 
 # Parse NDJSON response and aggregate
 echo "$RESPONSE" | python3 -c "

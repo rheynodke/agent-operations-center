@@ -65,9 +65,13 @@ _Rigorous product thinker yang tidak pernah skip data._
 - sessions_spawn / sessions_send / sessions_yield
 - agents_list / sessions_list
 
+### Connection Scripts (credentials handled automatically via AOC)
+- check_connections.sh — List available connections. Usage: \`check_connections.sh [type]\`
+- aoc-connect.sh — Query services via centralized connections (credentials never in stdout)
+  - Website API: \`aoc-connect.sh "Datadog" api "/api/v1/query?..."\`
+  - Website API: \`aoc-connect.sh "Mixpanel" api "/api/2.0/events?..."\`
+
 ### PM-Specific Scripts
-- datadog-query.py — Query Datadog metrics
-- mixpanel-report.py — Pull Mixpanel analytics reports
 - pii-scanner.py — Scan documents for PII before sharing
 - gdocs-export.sh — Export markdown to Google Docs (optional, requires gws CLI)
 - notify.sh — Send notifications via agent's bound channel (WhatsApp/Telegram/Discord)
@@ -249,105 +253,6 @@ Formula: \`Final = RICE * Strategic * TechDebt * Sentiment\` (normalized to 0-10
   },
 
   scriptTemplates: [
-    {
-      filename: 'datadog-query.py',
-      content: `#!/usr/bin/env python3
-"""Query Datadog metrics for product analytics.
-
-Usage: python3 datadog-query.py <metric_name> [--period 7d]
-
-Requires: DD_API_KEY and DD_APP_KEY environment variables.
-"""
-import os
-import sys
-import json
-import urllib.request
-import urllib.parse
-from datetime import datetime, timedelta
-
-DD_API_KEY = os.environ.get('DD_API_KEY', '')
-DD_APP_KEY = os.environ.get('DD_APP_KEY', '')
-
-if not DD_API_KEY or not DD_APP_KEY:
-    print("ERROR: DD_API_KEY and DD_APP_KEY environment variables required.")
-    print("Setup: export DD_API_KEY=your_api_key DD_APP_KEY=your_app_key")
-    sys.exit(1)
-
-metric = sys.argv[1] if len(sys.argv) > 1 else 'system.cpu.user'
-period = sys.argv[2] if len(sys.argv) > 2 else '7d'
-
-days = int(period.replace('d', '')) if period.endswith('d') else 7
-end = int(datetime.now().timestamp())
-start = int((datetime.now() - timedelta(days=days)).timestamp())
-
-url = f"https://api.datadoghq.com/api/v1/query?from={start}&to={end}&query={urllib.parse.quote(metric)}"
-req = urllib.request.Request(url, headers={
-    'DD-API-KEY': DD_API_KEY,
-    'DD-APPLICATION-KEY': DD_APP_KEY,
-})
-
-try:
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read())
-        series = data.get('series', [])
-        if series:
-            points = series[0].get('pointlist', [])
-            print(f"Metric: {metric}")
-            print(f"Period: last {days} days")
-            print(f"Points: {len(points)}")
-            if points:
-                values = [p[1] for p in points if p[1] is not None]
-                print(f"Avg: {sum(values)/len(values):.2f}")
-                print(f"Min: {min(values):.2f}")
-                print(f"Max: {max(values):.2f}")
-        else:
-            print(f"No data found for metric: {metric}")
-except Exception as e:
-    print(f"Error querying Datadog: {e}")
-    sys.exit(1)
-`,
-    },
-    {
-      filename: 'mixpanel-report.py',
-      content: `#!/usr/bin/env python3
-"""Pull Mixpanel analytics reports.
-
-Usage: python3 mixpanel-report.py <event_name> [--days 30]
-
-Requires: MIXPANEL_TOKEN environment variable.
-"""
-import os
-import sys
-from datetime import datetime, timedelta
-
-TOKEN = os.environ.get('MIXPANEL_TOKEN', '')
-
-if not TOKEN:
-    print("ERROR: MIXPANEL_TOKEN environment variable required.")
-    print("Setup: export MIXPANEL_TOKEN=your_project_token")
-    sys.exit(1)
-
-event = sys.argv[1] if len(sys.argv) > 1 else ''
-days = 30
-for i, arg in enumerate(sys.argv):
-    if arg == '--days' and i + 1 < len(sys.argv):
-        days = int(sys.argv[i + 1])
-
-if not event:
-    print("Usage: python3 mixpanel-report.py <event_name> [--days 30]")
-    sys.exit(1)
-
-from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-to_date = datetime.now().strftime('%Y-%m-%d')
-
-print(f"Mixpanel Report: {event}")
-print(f"Period: {from_date} to {to_date}")
-print(f"Token: {TOKEN[:8]}...")
-print()
-print("NOTE: Full Mixpanel API integration requires project-specific setup.")
-print("Configure your Mixpanel project settings and API credentials.")
-`,
-    },
     {
       filename: 'pii-scanner.py',
       content: `#!/usr/bin/env python3

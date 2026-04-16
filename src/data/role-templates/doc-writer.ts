@@ -120,10 +120,14 @@ _Technical writer yang menulis untuk manusia, bukan untuk developer._
 - sessions_spawn / sessions_send / sessions_yield
 - agents_list / sessions_list
 
+### Connection Scripts (credentials handled automatically via AOC)
+- check_connections.sh — List available connections. Usage: \`check_connections.sh [type]\`
+- aoc-connect.sh — Access services via centralized connections (credentials never in stdout)
+
 ### Doc-Specific Scripts
 - gdocs-export.sh — Export markdown to Google Docs (optional, requires gws CLI)
 - notify.sh — Send notifications via agent's bound channel (WhatsApp/Telegram/Discord)
-- email-notif.sh — Send email notifications for doc publication
+- email-notif.sh — Send email notifications via aoc-connect.sh or sendmail fallback
 - deploy-trigger-listener.sh — Listen for deploy events to trigger doc updates
 
 ### Output Convention
@@ -311,36 +315,57 @@ digraph release_notes {
       filename: 'email-notif.sh',
       content: `#!/bin/bash
 # Send an email notification for document publication.
-# Usage: ./email-notif.sh <to> <subject> <body_file>
+# Usage: ./email-notif.sh <to> <subject> <body_file> [--connection "SMTP Server"]
 #
-# Uses sendmail or SMTP via curl. Configure SMTP_* env vars for smtp delivery.
+# Tries aoc-connect.sh first (centralized SMTP credentials), falls back to sendmail.
+# Register your SMTP server as a Website connection in AOC Dashboard.
 set -euo pipefail
 TO="\${1:-}"
 SUBJECT="\${2:-}"
 BODY_FILE="\${3:-}"
+CONN_NAME="\${4:-SMTP}"
 if [ -z "$TO" ] || [ -z "$SUBJECT" ] || [ -z "$BODY_FILE" ]; then
-  echo "Usage: ./email-notif.sh <to> <subject> <body_file>"
+  echo "Usage: ./email-notif.sh <to> <subject> <body_file> [--connection name]"
   exit 1
 fi
 if [ ! -f "$BODY_FILE" ]; then echo "ERROR: Body file not found: $BODY_FILE"; exit 1; fi
-SMTP_HOST="\${SMTP_HOST:-}"
-SMTP_USER="\${SMTP_USER:-}"
-SMTP_PASS="\${SMTP_PASS:-}"
-if [ -n "$SMTP_HOST" ] && [ -n "$SMTP_USER" ]; then
-  echo "Sending email via SMTP: $SMTP_HOST"
-  curl -sf --ssl-reqd \
-    --url "smtps://$SMTP_HOST:465" \
-    --user "$SMTP_USER:$SMTP_PASS" \
-    --mail-from "$SMTP_USER" \
-    --mail-rcpt "$TO" \
-    --upload-file "$BODY_FILE" 2>/dev/null && echo "Email sent." || echo "WARNING: SMTP delivery failed."
-elif command -v sendmail &> /dev/null; then
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
+
+# Try centralized credentials via AOC
+if [ -n "\${AOC_TOKEN:-}" ]; then
+  CONN_JSON=$(curl -sf "$AOC_URL/api/agent/connections" \\
+    -H "Authorization: Bearer $AOC_TOKEN" 2>/dev/null || echo "")
+  SMTP_INFO=$(echo "$CONN_JSON" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for c in data.get('connections', []):
+        if c.get('name','').lower().find('smtp') >= 0 or c.get('name') == '$CONN_NAME':
+            print(f'{c.get(\"url\",\"\")}|{c.get(\"username\",\"\")}|{c.get(\"password\",\"\")}')
+            sys.exit(0)
+except: pass
+" 2>/dev/null || echo "")
+  if [ -n "$SMTP_INFO" ]; then
+    IFS='|' read -r SMTP_HOST SMTP_USER SMTP_PASS <<< "$SMTP_INFO"
+    echo "Sending email via AOC connection: $SMTP_HOST"
+    curl -sf --ssl-reqd \\
+      --url "smtps://$SMTP_HOST:465" \\
+      --user "$SMTP_USER:$SMTP_PASS" \\
+      --mail-from "$SMTP_USER" \\
+      --mail-rcpt "$TO" \\
+      --upload-file "$BODY_FILE" 2>/dev/null && { echo "Email sent."; exit 0; } || echo "WARNING: SMTP delivery failed."
+  fi
+fi
+
+# Fallback to sendmail
+if command -v sendmail &> /dev/null; then
   echo "Sending via sendmail..."
   { echo "To: $TO"; echo "Subject: $SUBJECT"; echo ""; cat "$BODY_FILE"; } | sendmail "$TO"
   echo "Email queued via sendmail."
 else
   echo "WARNING: No email delivery method configured."
-  echo "Set SMTP_HOST + SMTP_USER + SMTP_PASS for SMTP delivery."
+  echo "Register an SMTP connection in AOC Dashboard, or install sendmail."
   echo "To: $TO | Subject: $SUBJECT"
   mkdir -p "\${HOME}/.openclaw/logs"
   echo "$(date -Iseconds) [email-pending] To: $TO Subject: $SUBJECT" >> "\${HOME}/.openclaw/logs/notifications.log" 2>/dev/null || true

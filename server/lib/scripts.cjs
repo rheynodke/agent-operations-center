@@ -432,8 +432,10 @@ const CHECK_TASKS_SCRIPT_CONTENT = `#!/usr/bin/env bash
 # Called automatically via HEARTBEAT.md
 
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
 
-[ -z "$AOC_AGENT_ID" ] && exit 0   # no agent id configured, skip silently
+[ -z "\${AOC_AGENT_ID:-}" ] && exit 0   # no agent id configured, skip silently
 
 TASKS=$(curl -sf "$AOC_URL/api/tasks?agentId=$AOC_AGENT_ID&status=todo" \\
   -H "Authorization: Bearer $AOC_TOKEN" 2>/dev/null) || exit 0
@@ -537,6 +539,655 @@ function ensureAocEnvFile() {
   } catch (err) {
     console.warn('[scripts] Failed to write .aoc_env:', err.message);
   }
+
+  // Write per-agent .aoc_agent_env in each agent's workspace
+  try {
+    const cfg = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+    const agents = cfg.agents?.list || [];
+    for (const agent of agents) {
+      const workspace = agent.workspace || OPENCLAW_WORKSPACE;
+      const agentEnvPath = path.join(workspace, '.aoc_agent_env');
+      const agentContent = [
+        `# AOC agent identity — auto-generated`,
+        `export AOC_AGENT_ID="${agent.id}"`,
+        '',
+      ].join('\n');
+      try {
+        fs.writeFileSync(agentEnvPath, agentContent, { mode: 0o600, encoding: 'utf-8' });
+      } catch {}
+    }
+    console.log(`[scripts] Updated .aoc_agent_env for ${agents.length} agents`);
+  } catch (err) {
+    console.warn('[scripts] Failed to write agent env files:', err.message);
+  }
+}
+
+// ── check_connections.sh ────────────────────────────────────────────────────
+
+const CHECK_CONNECTIONS_SCRIPT_NAME = 'check_connections.sh';
+const CHECK_CONNECTIONS_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# check_connections — List available connections (NO credentials in output)
+# Use aoc-connect.sh to actually USE a connection with credentials.
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
+# Source agent identity (written to workspace by AOC server)
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+
+[ -z "$AOC_TOKEN" ] && { echo "ERROR: AOC_TOKEN not configured"; exit 1; }
+[ -z "\${AOC_AGENT_ID:-}" ] && { echo "ERROR: AOC_AGENT_ID not configured — run from agent workspace"; exit 1; }
+
+export FILTER_TYPE="\${1:-}"  # optional: bigquery, postgres, ssh, website
+
+export TMPFILE=$(mktemp /tmp/aoc-check-conn-XXXXXX.json)
+trap "rm -f $TMPFILE" EXIT
+
+_CONN_URL="$AOC_URL/api/agent/connections?agentId=$AOC_AGENT_ID"
+HTTP_CODE=$(curl -s -o "$TMPFILE" -w "%{http_code}" "$_CONN_URL" \\
+  -H "Authorization: Bearer $AOC_TOKEN" 2>/dev/null) || true
+
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "No connections available or AOC unreachable (HTTP $HTTP_CODE)."
+  exit 0
+fi
+
+python3 << 'PYEOF'
+import json, sys, os
+
+tmpfile = os.environ.get('TMPFILE', '')
+if not tmpfile:
+    print('ERROR: TMPFILE not set')
+    sys.exit(1)
+
+with open(tmpfile) as f:
+    data = json.load(f)
+
+conns = data.get('connections', [])
+filter_type = os.environ.get('FILTER_TYPE', '')
+if filter_type:
+    conns = [c for c in conns if c.get('type') == filter_type]
+if not conns:
+    msg = 'No connections found.'
+    if filter_type:
+        msg += f' (filter: {filter_type})'
+    print(msg)
+    sys.exit(0)
+SAFE_KEYS = {'name','type','hint','projectId','datasets','host','port','database','username',
+             'url','loginUrl','authType','user','description','sslMode',
+             'githubMode','repo','branch','localPath','repoOwner','repoName'}
+for c in conns:
+    t = c.get('type', '?').upper()
+    name = c.get('name', '?')
+    github_mode = c.get('githubMode', 'remote') if c.get('type') == 'github' else None
+    mode_tag = f' [{github_mode}]' if github_mode else ''
+    print(f'[{t}{mode_tag}] {name}')
+    for k, v in c.items():
+        if k not in SAFE_KEYS or k in ('name', 'type', 'hint', 'githubMode'):
+            continue
+        if v is None or v == '':
+            continue
+        print(f'  {k}: {v}')
+    hint = c.get('hint')
+    if hint:
+        print(f'  hint: {hint}')
+    if c.get('type') == 'github' and github_mode == 'local':
+        local_path = c.get('localPath', '')
+        branch = c.get('branch', 'main')
+        print(f'  >>> Direct git: git -C "{local_path}" <command>')
+        print(f'  >>> Or wrapper: aoc-connect.sh "{name}" <action> [args]')
+        print(f'  >>> Actions: info, log [n], status, branch, files [path], diff [target]')
+    else:
+        print(f'  >>> To use: aoc-connect.sh "{name}" <action> [args]')
+    print()
+PYEOF
+`;
+
+function ensureCheckConnectionsScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, CHECK_CONNECTIONS_SCRIPT_NAME);
+
+  // Always overwrite to keep script up to date
+  fs.writeFileSync(scriptPath, CHECK_CONNECTIONS_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[CHECK_CONNECTIONS_SCRIPT_NAME] = {
+    name: 'check_connections',
+    emoji: '🔌',
+    description: 'List available third-party connections (BigQuery, PostgreSQL, SSH, Website, GitHub, Odoo) assigned to this agent. Usage: check_connections.sh [type]',
+    execHint: `${SCRIPTS_DIR}/check_connections.sh [bigquery|postgres|ssh|website|github|odoocli]`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+  console.log('[scripts] Ensured shared check_connections.sh script');
+}
+
+// ── aoc-connect.sh — Generic connection wrapper ─────────────────────────────
+
+const AOC_CONNECT_SCRIPT_NAME = 'aoc-connect.sh';
+const AOC_CONNECT_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# aoc-connect — Generic connection wrapper for AI agents
+# Credentials never appear in stdout — only results.
+#
+# Usage:
+#   aoc-connect.sh <connection-name> <action> [args...]
+#
+# Actions per type:
+#   bigquery  query  "SELECT ..."
+#   postgres  query  "SELECT ..."
+#   ssh       exec   "command"
+#   website   browse [path]      — open browser, prepare credentials for agent login
+#   website   api    [path]      — curl with auth headers
+
+set -euo pipefail
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
+# Source agent identity (written to workspace by AOC server)
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+
+CONN_NAME="\${1:?Usage: aoc-connect.sh <connection-name> <action> [args...]}"
+ACTION="\${2:?Usage: aoc-connect.sh <connection-name> <action> [args...]}"
+shift 2
+ARGS="$*"
+ARGS_ARRAY=()
+[ $# -gt 0 ] && ARGS_ARRAY=("$@")  # preserve quoting for passthrough commands
+
+[ -z "$AOC_TOKEN" ] && { echo "ERROR: AOC_TOKEN not configured"; exit 1; }
+[ -z "\${AOC_AGENT_ID:-}" ] && { echo "ERROR: AOC_AGENT_ID not configured"; exit 1; }
+
+# ── Temp file cleanup trap ─────────────────────────────────────────────────
+TMPFILES=()
+cleanup() { [ \${#TMPFILES[@]} -gt 0 ] && for f in "\${TMPFILES[@]}"; do rm -rf "$f" 2>/dev/null; done; true; }
+trap cleanup EXIT
+
+mktmp() {
+  local f=$(mktemp /tmp/aoc-conn-XXXXXXXX)
+  TMPFILES+=("$f")
+  echo "$f"
+}
+
+# ── Fetch agent-assigned connections to a temp file ────────────────────────
+_CONNS_FILE=$(mktmp ".json")
+_CONN_URL="$AOC_URL/api/agent/connections?agentId=$AOC_AGENT_ID"
+HTTP_CODE=$(curl -s -o "$_CONNS_FILE" -w "%{http_code}" "$_CONN_URL" \\
+  -H "Authorization: Bearer $AOC_TOKEN" 2>/dev/null) || true
+
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "ERROR: Cannot reach AOC Dashboard at $AOC_URL (HTTP $HTTP_CODE)"
+  exit 1
+fi
+
+# ── Extract matching connection + write type-specific temp files via single python call ──
+export _AOC_CONN_NAME="$CONN_NAME"
+export _AOC_ACTION="$ACTION"
+export _AOC_CONNS_FILE="$_CONNS_FILE"
+export _AOC_SA_FILE=$(mktmp ".sa.json")
+export _AOC_KEY_FILE=$(mktmp ".key")
+export _AOC_CRED_ENV=$(mktmp ".env")
+
+eval "$(python3 << 'PYEOF'
+import json, os, sys, shlex, base64
+
+conn_name = os.environ.get('_AOC_CONN_NAME', '')
+action = os.environ.get('_AOC_ACTION', '')
+conns_file = os.environ.get('_AOC_CONNS_FILE', '')
+sa_file = os.environ.get('_AOC_SA_FILE', '')
+key_file = os.environ.get('_AOC_KEY_FILE', '')
+cred_env = os.environ.get('_AOC_CRED_ENV', '')
+
+with open(conns_file) as f:
+    data = json.load(f)
+
+conn = None
+available = []
+for c in data.get('connections', []):
+    available.append(c.get('name', '?'))
+    if c.get('name') == conn_name:
+        conn = c
+
+if not conn:
+    avail_str = ', '.join(available) if available else '(none)'
+    print(f'echo "ERROR: Connection not found: {shlex.quote(conn_name)}"')
+    print(f'echo "Available: {avail_str}"')
+    print('exit 1')
+    sys.exit(0)
+
+def emit(k, v):
+    print(f'_C_{k}={shlex.quote(str(v) if v is not None else "")}')
+
+emit('TYPE', conn.get('type', ''))
+emit('PROJECT_ID', conn.get('projectId', ''))
+emit('HOST', conn.get('host', 'localhost'))
+emit('PORT', conn.get('port', 5432))
+emit('DATABASE', conn.get('database', 'postgres'))
+emit('USERNAME', conn.get('username', ''))
+emit('PASSWORD', conn.get('password', ''))
+emit('SSH_HOST', conn.get('host', ''))
+emit('SSH_PORT', conn.get('port', 22))
+emit('SSH_USER', conn.get('user', 'root'))
+emit('URL', conn.get('url', ''))
+emit('LOGIN_URL', conn.get('loginUrl', ''))
+emit('AUTH_TYPE', conn.get('authType', 'none'))
+# github
+emit('GITHUB_MODE', conn.get('githubMode', 'remote'))
+emit('REPO_OWNER', conn.get('repoOwner', ''))
+emit('REPO_NAME', conn.get('repoName', ''))
+emit('BRANCH', conn.get('branch', 'main'))
+emit('LOCAL_PATH', conn.get('localPath', ''))
+emit('TOKEN', conn.get('token', ''))
+# odoocli
+emit('ODOO_URL', conn.get('odooUrl', ''))
+emit('ODOO_DB', conn.get('odooDb', ''))
+emit('ODOO_USERNAME', conn.get('odooUsername', ''))
+emit('ODOO_AUTH_TYPE', conn.get('odooAuthType', 'password'))
+emit('ODOO_CREDENTIAL', conn.get('credential', ''))
+
+# Write service account JSON directly to file (not through bash variable)
+sa_json = conn.get('serviceAccountJson', '')
+if sa_json and sa_file:
+    with open(sa_file, 'w') as f:
+        f.write(sa_json)
+
+# Write SSH private key directly to file
+pk = conn.get('privateKey', '')
+if pk and key_file:
+    with open(key_file, 'w') as f:
+        f.write(pk)
+
+# Write web credentials to env file
+if conn.get('type') == 'website' and cred_env:
+    u = conn.get('username', '')
+    p = conn.get('password', '')
+    at = conn.get('authType', 'none')
+    base_url = conn.get('url', '')
+    login_url = conn.get('loginUrl', '')
+    with open(cred_env, 'w') as f:
+        f.write('AOC_WEB_USERNAME=' + shlex.quote(u) + chr(10))
+        f.write('AOC_WEB_PASSWORD=' + shlex.quote(p) + chr(10))
+        f.write('AOC_WEB_AUTH_TYPE=' + shlex.quote(at) + chr(10))
+        f.write('AOC_WEB_BASE_URL=' + shlex.quote(base_url) + chr(10))
+        f.write('AOC_WEB_LOGIN_URL=' + shlex.quote(login_url) + chr(10))
+
+# Build auth header for API mode
+if conn.get('type') == 'website' and action == 'api':
+    at = conn.get('authType', 'none')
+    u = conn.get('username', '')
+    p = conn.get('password', '')
+    hdr = ''
+    if at == 'basic':
+        cred = base64.b64encode((u + ':' + p).encode()).decode()
+        hdr = 'Authorization: Basic ' + cred
+    elif at == 'token':
+        hdr = 'Authorization: Bearer ' + p
+    elif at == 'api_key':
+        hdr = (u or 'X-API-Key') + ': ' + p
+    elif at == 'cookie':
+        hdr = 'Cookie: ' + (u or 'session') + '=' + p
+    emit('AUTH_HEADER', hdr)
+PYEOF
+)"
+
+TYPE="$_C_TYPE"
+
+# ── BigQuery ───────────────────────────────────────────────────────────────
+if [ "$TYPE" = "bigquery" ] && [ "$ACTION" = "query" ]; then
+  # Isolate gcloud config per execution to avoid credential race conditions
+  export CLOUDSDK_CONFIG=$(mktemp -d /tmp/aoc-gcloud-XXXXXXXX)
+  TMPFILES+=("$CLOUDSDK_CONFIG")
+  export GOOGLE_APPLICATION_CREDENTIALS="$_AOC_SA_FILE"
+  GCLOUD_BIN="\${GCLOUD_BIN:-gcloud}"
+  BQ_BIN="\${BQ_BIN:-bq}"
+
+  $GCLOUD_BIN auth activate-service-account --key-file="$_AOC_SA_FILE" >/dev/null 2>&1 || true
+
+  # Query and pipe directly to markdown converter (avoid bash variable for large output)
+  _BQ_OUT=$(mktmp ".csv")
+  $BQ_BIN query --project_id="$_C_PROJECT_ID" --use_legacy_sql=false --format=csv --max_rows=999999 "$ARGS" > "$_BQ_OUT" 2>&1
+  BQ_EXIT=$?
+  if [ $BQ_EXIT -ne 0 ]; then
+    echo "ERROR: BigQuery query failed"
+    cat "$_BQ_OUT"
+    exit 1
+  fi
+
+  # Convert CSV to markdown table
+  export _AOC_CSV_FILE="$_BQ_OUT"
+  python3 << 'PYEOF'
+import sys, csv, os
+csvfile = os.environ.get('_AOC_CSV_FILE', '')
+with open(csvfile) as f:
+    text = f.read().strip()
+if not text:
+    print("(empty result)")
+    sys.exit(0)
+import io
+reader = csv.reader(io.StringIO(text))
+rows = list(reader)
+if not rows:
+    print("(empty result)")
+    sys.exit(0)
+header = rows[0]
+data = rows[1:]
+print("| " + " | ".join(header) + " |")
+print("| " + " | ".join(["---"] * len(header)) + " |")
+for row in data:
+    while len(row) < len(header):
+        row.append("")
+    print("| " + " | ".join(r.replace("|", "\\\\|") for r in row) + " |")
+print()
+print(f"_{len(data)} rows returned_")
+PYEOF
+  exit 0
+fi
+
+# ── PostgreSQL ─────────────────────────────────────────────────────────────
+if [ "$TYPE" = "postgres" ] && [ "$ACTION" = "query" ]; then
+  export PGHOST="$_C_HOST"
+  export PGPORT="$_C_PORT"
+  export PGDATABASE="$_C_DATABASE"
+  export PGUSER="$_C_USERNAME"
+  export PGPASSWORD="$_C_PASSWORD"
+
+  # Query and pipe directly to markdown converter
+  _PG_OUT=$(mktmp ".csv")
+  psql --csv -c "$ARGS" > "$_PG_OUT" 2>&1
+  PG_EXIT=$?
+  if [ $PG_EXIT -ne 0 ]; then
+    echo "ERROR: PostgreSQL query failed"
+    cat "$_PG_OUT"
+    exit 1
+  fi
+
+  export _AOC_CSV_FILE="$_PG_OUT"
+  python3 << 'PYEOF'
+import sys, csv, os, io
+csvfile = os.environ.get('_AOC_CSV_FILE', '')
+with open(csvfile) as f:
+    text = f.read().strip()
+if not text:
+    print("(empty result)")
+    sys.exit(0)
+reader = csv.reader(io.StringIO(text))
+rows = list(reader)
+if not rows:
+    print("(empty result)")
+    sys.exit(0)
+header = rows[0]
+data = rows[1:]
+print("| " + " | ".join(header) + " |")
+print("| " + " | ".join(["---"] * len(header)) + " |")
+for row in data:
+    while len(row) < len(header):
+        row.append("")
+    print("| " + " | ".join(r.replace("|", "\\\\|") for r in row) + " |")
+print()
+print(f"_{len(data)} rows returned_")
+PYEOF
+  exit 0
+fi
+
+# ── SSH ────────────────────────────────────────────────────────────────────
+if [ "$TYPE" = "ssh" ] && [ "$ACTION" = "exec" ]; then
+  chmod 600 "$_AOC_KEY_FILE"
+  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$_AOC_KEY_FILE" -p "$_C_SSH_PORT" "$_C_SSH_USER@$_C_SSH_HOST" "$ARGS"
+  exit 0
+fi
+
+# ── Website: browse ────────────────────────────────────────────────────────
+if [ "$TYPE" = "website" ] && [ "$ACTION" = "browse" ]; then
+  TARGET_PATH="\${ARGS:-}"
+  chmod 600 "$_AOC_CRED_ENV"
+
+  OPEN_URL="\${_C_LOGIN_URL:-$_C_URL}"
+  agent-browser open "$OPEN_URL" >/dev/null 2>&1
+
+  echo "=== Browser opened: $OPEN_URL ==="
+  echo ""
+  if [ "$_C_AUTH_TYPE" != "none" ] && [ -n "$_C_LOGIN_URL" ]; then
+    echo "Login required. Credentials available at: $_AOC_CRED_ENV"
+    echo "To login, run these commands:"
+    echo "  source $_AOC_CRED_ENV"
+    echo '  agent-browser fill <username-field-ref> "$AOC_WEB_USERNAME"'
+    echo '  agent-browser fill <password-field-ref> "$AOC_WEB_PASSWORD"'
+    echo '  agent-browser click <login-button-ref>'
+    echo ""
+    echo "Use 'agent-browser snapshot -i' to identify the correct field refs."
+  fi
+  if [ -n "$TARGET_PATH" ]; then
+    echo ""
+    echo "After login, navigate to: \${_C_URL%/}/$TARGET_PATH"
+    echo "  agent-browser open \\"\${_C_URL%/}/$TARGET_PATH\\""
+  fi
+  echo ""
+  echo "--- Current page snapshot ---"
+  agent-browser snapshot 2>/dev/null || echo "(snapshot unavailable)"
+  exit 0
+fi
+
+# ── Website: api ───────────────────────────────────────────────────────────
+if [ "$TYPE" = "website" ] && [ "$ACTION" = "api" ]; then
+  API_PATH="\${ARGS:-/}"
+  BASE="\${_C_URL%/}"
+  FULL_URL="$BASE/$API_PATH"
+
+  if [ -n "\${_C_AUTH_HEADER:-}" ]; then
+    curl -sf -H "$_C_AUTH_HEADER" "$FULL_URL"
+  else
+    curl -sf "$FULL_URL"
+  fi
+  exit 0
+fi
+
+# ── OdooCLI ────────────────────────────────────────────────────────────────
+if [ "$TYPE" = "odoocli" ]; then
+  # Set env vars for odoocli — credentials never in stdout
+  export ODOOCLI_URL="$_C_ODOO_URL"
+  export ODOOCLI_DB="$_C_ODOO_DB"
+  export ODOOCLI_USERNAME="$_C_ODOO_USERNAME"
+  if [ "$_C_ODOO_AUTH_TYPE" = "api_key" ]; then
+    export ODOOCLI_API_KEY="$_C_ODOO_CREDENTIAL"
+  else
+    export ODOOCLI_PASSWORD="$_C_ODOO_CREDENTIAL"
+  fi
+
+  # Pass through all remaining args as odoocli subcommand (preserve quoting)
+  # e.g.: aoc-connect.sh "My Odoo" record search sale.order --domain "[('state','=','draft')]"
+  ODOOCLI_BIN="\${ODOOCLI_BIN:-$(command -v odoocli 2>/dev/null || echo "$HOME/miniforge3/bin/odoocli")}"
+  [ ! -x "$ODOOCLI_BIN" ] && { echo "ERROR: odoocli not found. Install: pip install -e /path/to/odoocli"; exit 1; }
+  if [ \${#ARGS_ARRAY[@]} -gt 0 ]; then
+    "$ODOOCLI_BIN" "$ACTION" "\${ARGS_ARRAY[@]}"
+  else
+    "$ODOOCLI_BIN" "$ACTION"
+  fi
+  exit 0
+fi
+
+# ── GitHub ─────────────────────────────────────────────────────────────────
+if [ "$TYPE" = "github" ]; then
+  GITHUB_MODE="\${_C_GITHUB_MODE:-remote}"
+  BRANCH="\${_C_BRANCH:-main}"
+
+  if [ "$GITHUB_MODE" = "local" ]; then
+    # ── Local mode: git CLI on local filesystem ──────────────────────────
+    LOCAL_PATH="$_C_LOCAL_PATH"
+    if [ -z "$LOCAL_PATH" ]; then
+      echo "ERROR: localPath not configured for connection '$CONN_NAME'."
+      exit 1
+    fi
+    if [ ! -d "$LOCAL_PATH/.git" ] && ! git -C "$LOCAL_PATH" rev-parse --git-dir > /dev/null 2>&1; then
+      echo "ERROR: '$LOCAL_PATH' is not a git repository."
+      exit 1
+    fi
+
+    case "$ACTION" in
+      info)
+        echo "=== Repository: $LOCAL_PATH ==="
+        echo "Current branch: \$(git -C "$LOCAL_PATH" branch --show-current 2>/dev/null || echo unknown)"
+        echo "Configured branch: $BRANCH"
+        echo ""
+        echo "=== Last 3 commits ==="
+        git -C "$LOCAL_PATH" log -3 --format="%h %s (%an, %ar)" 2>&1
+        echo ""
+        echo "=== Working tree status ==="
+        git -C "$LOCAL_PATH" status --short 2>&1 | head -20
+        ;;
+      log)
+        N="\${ARGS:-20}"
+        git -C "$LOCAL_PATH" log -"$N" --format="%h %s (%an, %ar)" 2>&1
+        ;;
+      status)
+        git -C "$LOCAL_PATH" status 2>&1
+        ;;
+      branch)
+        echo "=== Local branches ==="
+        git -C "$LOCAL_PATH" branch -v 2>&1
+        echo ""
+        echo "=== Remote branches ==="
+        git -C "$LOCAL_PATH" branch -rv 2>&1 | head -20
+        ;;
+      files)
+        FILE_PATH="\${ARGS:-}"
+        TARGET_PATH="$LOCAL_PATH\${FILE_PATH:+/$FILE_PATH}"
+        if [ -f "$TARGET_PATH" ]; then
+          cat "$TARGET_PATH"
+        elif [ -d "$TARGET_PATH" ]; then
+          ls -la "$TARGET_PATH" | head -50
+        else
+          echo "ERROR: '$TARGET_PATH' not found"
+          exit 1
+        fi
+        ;;
+      diff)
+        TARGET="\${ARGS:-}"
+        if [ -n "$TARGET" ]; then
+          git -C "$LOCAL_PATH" diff "$TARGET" 2>&1 | head -200
+        else
+          git -C "$LOCAL_PATH" diff 2>&1 | head -200
+        fi
+        ;;
+      *)
+        echo "ERROR: Unknown GitHub local action '$ACTION'"
+        echo "Supported (local mode): info, log [n], status, branch, files [path], diff [target]"
+        exit 1
+        ;;
+    esac
+  else
+    # ── Remote mode: gh CLI against GitHub API ───────────────────────────
+    REPO="\${_C_REPO_OWNER}/\${_C_REPO_NAME}"
+    if [ -z "$_C_TOKEN" ]; then
+      echo "WARNING: No PAT configured for connection '$CONN_NAME'. Only public repos are accessible without a token."
+      echo "         Set a Personal Access Token in AOC Dashboard → Connections → Edit → PAT field."
+      unset GH_TOKEN
+    else
+      export GH_TOKEN="$_C_TOKEN"
+    fi
+
+    case "$ACTION" in
+      info)
+        gh repo view "$REPO" --json name,description,defaultBranchRef,visibility,languages,pushedAt 2>&1 | \\
+          python3 -c "import json,sys; d=json.load(sys.stdin); d['defaultBranchRef']={'name':'$BRANCH'}; print(json.dumps(d,indent=2))" 2>/dev/null || \\
+          gh repo view "$REPO" --json name,description,visibility,languages,pushedAt 2>&1
+        ;;
+      prs)
+        gh pr list --repo "$REPO" --base "$BRANCH" --json number,title,state,author,createdAt --limit 20 2>&1 | python3 << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+if not data:
+    print("No open PRs targeting branch.")
+    sys.exit(0)
+print(f"| # | Title | Author | State | Created |")
+print(f"| --- | --- | --- | --- | --- |")
+for pr in data:
+    n = pr.get("number", "")
+    t = pr.get("title", "").replace("|", "\\\\|")[:60]
+    a = (pr.get("author") or {}).get("login", "?")
+    s = pr.get("state", "?")
+    d = (pr.get("createdAt") or "")[:10]
+    print(f"| {n} | {t} | {a} | {s} | {d} |")
+print()
+print(f"_{len(data)} PRs_")
+PYEOF
+        ;;
+      issues)
+        gh issue list --repo "$REPO" --json number,title,state,author,createdAt --limit 20 2>&1 | python3 << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+if not data:
+    print("No open issues.")
+    sys.exit(0)
+print(f"| # | Title | Author | State | Created |")
+print(f"| --- | --- | --- | --- | --- |")
+for i in data:
+    n = i.get("number", "")
+    t = i.get("title", "").replace("|", "\\\\|")[:60]
+    a = (i.get("author") or {}).get("login", "?")
+    s = i.get("state", "?")
+    d = (i.get("createdAt") or "")[:10]
+    print(f"| {n} | {t} | {a} | {s} | {d} |")
+print()
+print(f"_{len(data)} issues_")
+PYEOF
+        ;;
+      files)
+        FILE_PATH="\${ARGS:-}"
+        if [ -n "$FILE_PATH" ]; then
+          gh api "repos/$REPO/contents/$FILE_PATH?ref=$BRANCH" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || \\
+            gh api "repos/$REPO/contents/$FILE_PATH?ref=$BRANCH" 2>&1
+        else
+          gh api "repos/$REPO/contents/?ref=$BRANCH" --jq '.[].name' 2>&1
+        fi
+        ;;
+      diff)
+        TARGET="\${ARGS:-main}"
+        gh api "repos/$REPO/compare/\${TARGET}...$BRANCH" --jq '.files[] | "\\(.status) \\(.filename) (+\\(.additions)/-\\(.deletions))"' 2>&1 | head -50
+        ;;
+      clone)
+        CLONE_DIR=$(mktemp -d /tmp/aoc-repo-XXXXXXXX)
+        TMPFILES+=("$CLONE_DIR")
+        gh repo clone "$REPO" "$CLONE_DIR" -- --branch "$BRANCH" --single-branch --depth 50 2>&1
+        echo ""
+        echo "Cloned to: $CLONE_DIR"
+        echo "Branch: $BRANCH"
+        echo "Files:"
+        ls -la "$CLONE_DIR" | head -20
+        ;;
+      *)
+        echo "ERROR: Unknown GitHub action '$ACTION'"
+        echo "Supported (remote mode): info, prs, issues, files [path], diff [target-branch], clone"
+        exit 1
+        ;;
+    esac
+  fi
+  exit 0
+fi
+
+echo "ERROR: Unsupported action '$ACTION' for connection type '$TYPE'"
+echo "Supported actions:"
+echo "  bigquery: query"
+echo "  postgres: query"
+echo "  ssh:      exec"
+echo "  website:  browse, api"
+echo "  github (remote): info, prs, issues, files, diff, clone
+  github (local):  info, log, status, branch, files, diff"
+echo "  odoocli:  <odoocli subcommand> (auth, record, model, method, debug, module)"
+exit 1
+`;
+
+function ensureAocConnectScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, AOC_CONNECT_SCRIPT_NAME);
+
+  // Always overwrite to keep script up to date
+  fs.writeFileSync(scriptPath, AOC_CONNECT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[AOC_CONNECT_SCRIPT_NAME] = {
+    name: 'aoc_connect',
+    emoji: '🔗',
+    description: 'Generic connection wrapper — query databases, execute SSH commands, browse websites, access GitHub repos. Credentials never appear in stdout. Usage: aoc-connect.sh <connection-name> <action> [args]',
+    execHint: `${SCRIPTS_DIR}/aoc-connect.sh <connection-name> <action> [args...]`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+  console.log('[scripts] Ensured shared aoc-connect.sh script');
 }
 
 // ── Shared ADLC Scripts ──────────────────────────────────────────────────────
@@ -578,6 +1229,176 @@ function ensureSharedAdlcScripts(scriptTemplates) {
   if (changed) writeMeta(SCRIPTS_DIR, meta);
 }
 
+const CONNECTIONS_CONTEXT_START = '<!-- aoc:connections:start -->';
+const CONNECTIONS_CONTEXT_END = '<!-- aoc:connections:end -->';
+
+/**
+ * Write (or clear) the connections context block in an agent's TOOLS.md.
+ * Called whenever an agent's connection assignments change.
+ *
+ * @param {string} agentId
+ * @param {Array}  connections  — raw connection objects (from db.getAllConnections filtered by assigned ids)
+ * @param {Function} getAgentFileFn   — parsers.getAgentFile
+ * @param {Function} saveAgentFileFn  — parsers.saveAgentFile
+ */
+// Usage guide per connection type (generic, no credentials/URLs)
+const CONN_TYPE_GUIDE = {
+  bigquery: {
+    label: 'BigQuery',
+    actions: [
+      '`aoc-connect.sh "<name>" query "SELECT * FROM dataset.table LIMIT 10"`',
+      '`aoc-connect.sh "<name>" query "SELECT COUNT(*) FROM dataset.table"`',
+    ],
+  },
+  postgres: {
+    label: 'PostgreSQL',
+    actions: [
+      '`aoc-connect.sh "<name>" query "SELECT * FROM table LIMIT 10"`',
+      '`aoc-connect.sh "<name>" query "SHOW TABLES"`',
+    ],
+  },
+  ssh: {
+    label: 'SSH/VPS',
+    actions: [
+      '`aoc-connect.sh "<name>" exec "ls -la"`',
+      '`aoc-connect.sh "<name>" exec "systemctl status <service>"`',
+    ],
+  },
+  website: {
+    label: 'Website',
+    actions: [
+      '`aoc-connect.sh "<name>" browse "/path"`',
+      '`aoc-connect.sh "<name>" api "/api/endpoint"`',
+    ],
+  },
+  github: {
+    label: 'GitHub Repo',
+    // Actions are generated per-connection based on githubMode — see _buildGithubSection()
+    actions: [],
+  },
+  odoocli: {
+    label: 'Odoo',
+    actions: [
+      '`aoc-connect.sh "<name>" record search <model> --domain "[...]" --fields name,state`',
+      '`aoc-connect.sh "<name>" record read <model> <id> --fields name,state`',
+      '`aoc-connect.sh "<name>" record create <model> --values "{...}"`',
+    ],
+  },
+};
+
+/**
+ * Build per-connection GitHub section with mode-specific context and actions.
+ */
+function _buildGithubSection(conn) {
+  const meta = conn.metadata || {};
+  const mode = meta.githubMode || 'remote';
+  const branch = meta.branch || 'main';
+  const name = conn.name;
+  const lines = [];
+
+  if (mode === 'local') {
+    const lp = meta.localPath || '/path/to/repo';
+    lines.push(`**"${name}"** — local repo at \`${lp}\` (branch: \`${branch}\`)`);
+    lines.push('');
+    lines.push(`  You can use git directly: \`git -C "${lp}" <command>\``);
+    lines.push(`  Or use the wrapper: \`aoc-connect.sh "${name}" <action>\``);
+    lines.push('');
+    lines.push(`  \`aoc-connect.sh "${name}" info\`            — commits + working tree status`);
+    lines.push(`  \`aoc-connect.sh "${name}" log [n]\`          — recent git log`);
+    lines.push(`  \`aoc-connect.sh "${name}" status\`           — git status`);
+    lines.push(`  \`aoc-connect.sh "${name}" branch\`           — list branches`);
+    lines.push(`  \`aoc-connect.sh "${name}" files [path]\`     — cat file or ls directory`);
+    lines.push(`  \`aoc-connect.sh "${name}" diff [target]\`    — git diff`);
+  } else {
+    const repo = `${meta.repoOwner || '?'}/${meta.repoName || '?'}`;
+    lines.push(`**"${name}"** — remote \`${repo}\` (branch: \`${branch}\`)`);
+    lines.push('');
+    lines.push(`  \`aoc-connect.sh "${name}" info\`                — repo metadata`);
+    lines.push(`  \`aoc-connect.sh "${name}" prs\`                 — list open PRs`);
+    lines.push(`  \`aoc-connect.sh "${name}" issues\`              — list open issues`);
+    lines.push(`  \`aoc-connect.sh "${name}" files [path]\`        — browse or read a file`);
+    lines.push(`  \`aoc-connect.sh "${name}" diff [base-branch]\`  — compare branch diff`);
+    lines.push(`  \`aoc-connect.sh "${name}" clone\`               — clone to /tmp`);
+  }
+
+  return lines;
+}
+
+function syncAgentConnectionsContext(agentId, connections, getAgentFileFn, saveAgentFileFn) {
+  const enabled = (connections || []).filter(c => c.enabled !== false);
+  let toolsContent = '';
+  try { toolsContent = getAgentFileFn(agentId, 'TOOLS.md').content || ''; } catch {}
+
+  // Build the replacement block
+  let block = '';
+  if (enabled.length > 0) {
+    // Group connections by type
+    const byType = {};
+    for (const c of enabled) {
+      if (!byType[c.type]) byType[c.type] = [];
+      byType[c.type].push(c);
+    }
+
+    const sections = [];
+    for (const [type, conns] of Object.entries(byType)) {
+      const guide = CONN_TYPE_GUIDE[type];
+      const label = guide ? guide.label : type;
+
+      // GitHub gets per-connection sections with mode-specific context
+      if (type === 'github') {
+        sections.push(`### ${label}`);
+        sections.push('');
+        for (const c of conns) {
+          sections.push(..._buildGithubSection(c));
+          sections.push('');
+        }
+        continue;
+      }
+
+      const nameList = conns.map(c => `"${c.name}"`).join(', ');
+      sections.push(`### ${label}`);
+      sections.push(`Available: ${nameList}`);
+      if (guide && guide.actions.length) {
+        sections.push('');
+        for (const action of guide.actions) {
+          sections.push(`  ${action}`);
+        }
+      }
+      sections.push('');
+    }
+
+    block = [
+      CONNECTIONS_CONTEXT_START,
+      '## Connections',
+      '',
+      `You have ${enabled.length} connection(s) assigned. Run \`check_connections.sh\` to see full details.`,
+      'Use `aoc-connect.sh "<connection-name>" <action> [args]` — credentials are handled automatically.',
+      '',
+      ...sections,
+      CONNECTIONS_CONTEXT_END,
+    ].join('\n');
+  } else {
+    // No connections — write empty marker so we can remove stale content
+    block = `${CONNECTIONS_CONTEXT_START}\n${CONNECTIONS_CONTEXT_END}`;
+  }
+
+  // Replace or append the block
+  let updated;
+  if (toolsContent.includes(CONNECTIONS_CONTEXT_START)) {
+    const startIdx = toolsContent.indexOf(CONNECTIONS_CONTEXT_START);
+    const endIdx = toolsContent.indexOf(CONNECTIONS_CONTEXT_END);
+    if (endIdx === -1) {
+      updated = toolsContent.slice(0, startIdx) + block;
+    } else {
+      updated = toolsContent.slice(0, startIdx) + block + toolsContent.slice(endIdx + CONNECTIONS_CONTEXT_END.length);
+    }
+  } else {
+    updated = toolsContent.trimEnd() + '\n\n' + block + '\n';
+  }
+
+  saveAgentFileFn(agentId, 'TOOLS.md', updated);
+}
+
 module.exports = {
   // Shared scripts (~/.openclaw/scripts)
   listScripts, getScript, saveScript, deleteScript, renameScript, updateScriptMeta,
@@ -589,8 +1410,12 @@ module.exports = {
   ensureUpdateTaskScript,
   ensureAocEnvFile,
   ensureCheckTasksScript,
+  ensureCheckConnectionsScript,
+  ensureAocConnectScript,
   injectHeartbeatTaskCheck,
   // ADLC shared scripts installer
   ensureSharedAdlcScripts,
+  // Connection context injector
+  syncAgentConnectionsContext,
   SCRIPTS_DIR, ALLOWED_EXT,
 };

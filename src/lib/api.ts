@@ -252,6 +252,12 @@ export const api = {
   analyzeTask: (taskId: string) =>
     request<{ ok: boolean; analysis: import('@/types').TaskAnalysis }>(`/tasks/${taskId}/analyze`, { method: 'POST' }),
 
+  // Directory browsing
+  browseDirs: (dirPath?: string) =>
+    request<{ path: string; dirs: string[]; isGitRepo: boolean; parent: string }>(
+      `/browse-dirs${dirPath ? `?path=${encodeURIComponent(dirPath)}` : ''}`
+    ),
+
   // Connections
   getConnections: () =>
     request<{ connections: Connection[] }>('/connections'),
@@ -263,6 +269,14 @@ export const api = {
     request<{ ok: boolean }>(`/connections/${id}`, { method: 'DELETE' }),
   testConnection: (id: string) =>
     request<{ ok: boolean; message?: string; error?: string; preview?: string }>(`/connections/${id}/test`, { method: 'POST' }),
+
+  // Agent ↔ Connection assignments
+  getAgentConnections: (agentId: string) =>
+    request<{ connectionIds: string[]; connections: Connection[] }>(`/agents/${agentId}/connections`),
+  setAgentConnections: (agentId: string, connectionIds: string[]) =>
+    request<{ ok: boolean }>(`/agents/${agentId}/connections`, { method: 'PUT', body: JSON.stringify({ connectionIds }) }),
+  getConnectionAssignments: () =>
+    request<{ assignments: Record<string, string[]> }>('/connections/assignments'),
 
   // Projects
   getProjects: () =>

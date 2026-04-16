@@ -6,6 +6,7 @@ export type AdlcRoleId =
   | 'qa-engineer'
   | 'doc-writer'
   | 'biz-analyst'
+  | 'data-analyst'
 
 export interface AgentRoleTemplate {
   id: AdlcRoleId

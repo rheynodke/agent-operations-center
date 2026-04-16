@@ -18,7 +18,7 @@ import {
   Activity, PanelLeftClose, PanelLeftOpen,
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
   Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer, History,
-  Wand2, StopCircle, CornerDownLeft, LayoutTemplate,
+  Wand2, StopCircle, CornerDownLeft, LayoutTemplate, Plug,
 } from "lucide-react"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -3460,6 +3460,115 @@ function DeleteAgentModal({
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/*  AGENT CONNECTIONS TAB                                               */
+/* ─────────────────────────────────────────────────────────────────── */
+
+const CONN_TYPE_META: Record<string, { label: string; color: string }> = {
+  bigquery: { label: 'BigQuery', color: 'text-blue-400' },
+  postgres: { label: 'PostgreSQL', color: 'text-indigo-400' },
+  ssh:      { label: 'SSH/VPS', color: 'text-emerald-400' },
+  website:  { label: 'Website', color: 'text-orange-400' },
+  github:   { label: 'GitHub', color: 'text-purple-400' },
+  odoocli:  { label: 'Odoo', color: 'text-violet-400' },
+}
+
+function AgentConnectionsTab({ agentId }: { agentId: string }) {
+  const [allConns, setAllConns] = useState<import("@/types").Connection[]>([])
+  const [assignedIds, setAssignedIds] = useState<Set<string>>(new Set())
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [connRes, assignRes] = await Promise.all([
+        api.getConnections(),
+        api.getAgentConnections(agentId),
+      ])
+      setAllConns(connRes.connections)
+      setAssignedIds(new Set(assignRes.connectionIds))
+    } catch { /* ignore */ }
+    setLoading(false)
+  }, [agentId])
+
+  useEffect(() => { load() }, [load])
+
+  const toggle = async (connId: string) => {
+    const next = new Set(assignedIds)
+    if (next.has(connId)) next.delete(connId)
+    else next.add(connId)
+    setAssignedIds(next)
+    setSaving(true)
+    try {
+      await api.setAgentConnections(agentId, [...next])
+    } catch { /* revert on error */ setAssignedIds(assignedIds) }
+    setSaving(false)
+  }
+
+  if (loading) return <div className="flex-1 flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+
+  if (allConns.length === 0) return (
+    <div className="flex-1 flex flex-col items-center justify-center py-12 text-center gap-2">
+      <Plug className="w-8 h-8 text-muted-foreground/30" />
+      <p className="text-sm text-muted-foreground">No connections configured yet.</p>
+      <p className="text-xs text-muted-foreground/50">Go to Connections page to add data sources, repos, or services.</p>
+    </div>
+  )
+
+  return (
+    <div className="flex-1 overflow-y-auto min-h-0 px-4 py-4 space-y-2">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-muted-foreground">
+          Toggle connections this agent can access. {saving && <span className="text-primary ml-1">Saving…</span>}
+        </p>
+        <span className="text-xs text-muted-foreground/50">{assignedIds.size}/{allConns.length} assigned</span>
+      </div>
+      {allConns.map(conn => {
+        const assigned = assignedIds.has(conn.id)
+        const meta = conn.metadata || {}
+        const typeMeta = CONN_TYPE_META[conn.type] || { label: conn.type, color: 'text-muted-foreground' }
+        let detail = ''
+        if (conn.type === 'bigquery') detail = meta.projectId || ''
+        else if (conn.type === 'postgres') detail = `${meta.host || 'localhost'}:${meta.port || 5432}/${meta.database || '?'}`
+        else if (conn.type === 'ssh') detail = `${meta.sshUser || 'root'}@${meta.sshHost || '?'}`
+        else if (conn.type === 'website') detail = meta.url || ''
+        else if (conn.type === 'github') detail = `${meta.repoOwner || ''}/${meta.repoName || ''} · ${meta.branch || 'main'}`
+        else if (conn.type === 'odoocli') detail = `${meta.odooUrl || '?'} · ${meta.odooDb || '?'}`
+
+        return (
+          <button
+            key={conn.id}
+            onClick={() => toggle(conn.id)}
+            className={cn(
+              "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-all",
+              assigned
+                ? "border-primary/40 bg-primary/5"
+                : "border-border/40 bg-card/30 opacity-60 hover:opacity-100"
+            )}
+          >
+            <div className={cn("w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+              assigned ? "border-primary bg-primary" : "border-muted-foreground/30"
+            )}>
+              {assigned && <Check className="w-3 h-3 text-primary-foreground" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium truncate">{conn.name}</span>
+                <span className={cn("text-[10px] font-medium", typeMeta.color)}>{typeMeta.label}</span>
+              </div>
+              {detail && <p className="text-[11px] text-muted-foreground/50 font-mono truncate">{detail}</p>}
+            </div>
+            {!conn.enabled && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/30 text-muted-foreground/50 shrink-0">Disabled</span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 /*  MAIN PAGE                                                          */
 /* ─────────────────────────────────────────────────────────────────── */
 
@@ -3505,7 +3614,7 @@ export function AgentDetailPage() {
   const [collapsedSkillGroups, setCollapsedSkillGroups] = useState<Set<string>>(new Set())
 
   // Main body tab
-  const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels' | 'schedules'>('files')
+  const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels' | 'connections' | 'schedules'>('files')
 
   // Live session monitoring
   const [viewingSession, setViewingSession] = useState<Session | null>(null)
@@ -3822,9 +3931,10 @@ export function AgentDetailPage() {
             <div className="flex items-center gap-0 px-3 border-b border-border bg-foreground/2 shrink-0 overflow-x-auto">
               {([
                 { key: 'files',     label: 'Agent Files',    icon: FolderOpen },
-                { key: 'skills',    label: 'Skills & Tools', icon: Sparkles   },
-                { key: 'channels',  label: 'Channels',       icon: Link       },
-                { key: 'schedules', label: 'Schedules',      icon: Timer      },
+                { key: 'skills',      label: 'Skills & Tools', icon: Sparkles   },
+                { key: 'channels',    label: 'Channels',       icon: Link       },
+                { key: 'connections', label: 'Connections',    icon: Plug       },
+                { key: 'schedules',   label: 'Schedules',      icon: Timer      },
               ] as const).map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}
@@ -4270,6 +4380,11 @@ export function AgentDetailPage() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {/* ═══ CONNECTIONS TAB ═══ */}
+            {bodyTab === 'connections' && id && (
+              <AgentConnectionsTab agentId={id} />
             )}
 
             {/* ═══ SCHEDULES TAB ═══ */}

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react"
-import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe } from "lucide-react"
+import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -14,6 +14,8 @@ const CONNECTION_TYPES: { value: ConnectionType; label: string; icon: React.Comp
   { value: "postgres", label: "PostgreSQL", icon: Database, description: "Connect to PostgreSQL database" },
   { value: "ssh", label: "VPS / SSH", icon: Server, description: "Remote server access via SSH" },
   { value: "website", label: "Website / Service", icon: Globe, description: "Web service with auth credentials" },
+  { value: "github", label: "GitHub Repo", icon: GitBranch, description: "Repository access via gh CLI" },
+  { value: "odoocli", label: "Odoo (XML-RPC)", icon: Box, description: "Odoo ERP via odoocli — CRUD, methods, debug" },
 ]
 
 function getTypeIcon(type: string) {
@@ -27,12 +29,13 @@ function getTypeLabel(type: string) {
 // ── Connection Card ──────────────────────────────────────────────────────────
 
 function ConnectionCard({
-  conn, onTest, onDelete, onEdit,
+  conn, onTest, onDelete, onEdit, assignedAgents,
 }: {
   conn: Connection
   onTest: (id: string) => void
   onDelete: (conn: Connection) => void
   onEdit: (conn: Connection) => void
+  assignedAgents?: string[]
 }) {
   const Icon = getTypeIcon(conn.type)
   const meta = conn.metadata || {}
@@ -45,7 +48,15 @@ function ConnectionCard({
   } else if (conn.type === "ssh") {
     detail = `${meta.sshUser || "root"}@${meta.sshHost || "?"}:${meta.sshPort || 22}`
   } else if (conn.type === "website") {
-    detail = meta.url || "?"
+    detail = (meta.url || "?") + (meta.loginUrl ? ` · login: ${meta.loginUrl}` : "")
+  } else if (conn.type === "github") {
+    if (meta.githubMode === "local") {
+      detail = `local: ${meta.localPath || "?"} · ${meta.branch || "main"}`
+    } else {
+      detail = `${meta.repoOwner || "?"}/${meta.repoName || "?"} · ${meta.branch || "main"}`
+    }
+  } else if (conn.type === "odoocli") {
+    detail = `${meta.odooUrl || "?"} · ${meta.odooDb || "?"}`
   }
 
   return (
@@ -59,6 +70,8 @@ function ConnectionCard({
           conn.type === "bigquery" ? "bg-blue-500/10 text-blue-400" :
           conn.type === "postgres" ? "bg-indigo-500/10 text-indigo-400" :
           conn.type === "website" ? "bg-orange-500/10 text-orange-400" :
+          conn.type === "github" ? "bg-purple-500/10 text-purple-400" :
+          conn.type === "odoocli" ? "bg-violet-500/10 text-violet-400" :
           "bg-emerald-500/10 text-emerald-400"
         )}>
           <Icon className="h-5 w-5" />
@@ -72,8 +85,15 @@ function ConnectionCard({
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">{getTypeLabel(conn.type)}</p>
           {detail && <p className="text-[11px] text-muted-foreground/60 font-mono mt-1 truncate">{detail}</p>}
-          {conn.type === "website" && meta.description && (
+          {(conn.type === "website" || conn.type === "github" || conn.type === "odoocli") && meta.description && (
             <p className="text-[11px] text-muted-foreground/50 mt-1 line-clamp-2 leading-relaxed">{meta.description}</p>
+          )}
+          {assignedAgents && assignedAgents.length > 0 && (
+            <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+              {assignedAgents.map(a => (
+                <span key={a} className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary/70 font-medium">{a}</span>
+              ))}
+            </div>
           )}
         </div>
 
@@ -102,6 +122,143 @@ function ConnectionCard({
   )
 }
 
+// ── Directory Picker ─────────────────────────────────────────────────────────
+
+function DirectoryPicker({
+  value, onChange,
+}: {
+  value: string
+  onChange: (path: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [currentPath, setCurrentPath] = useState("")
+  const [dirs, setDirs] = useState<string[]>([])
+  const [parentPath, setParentPath] = useState("")
+  const [isGitRepo, setIsGitRepo] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
+
+  async function browse(dirPath?: string) {
+    setLoading(true)
+    setError("")
+    try {
+      const r = await api.browseDirs(dirPath)
+      setCurrentPath(r.path)
+      setDirs(r.dirs)
+      setParentPath(r.parent)
+      setIsGitRepo(r.isGitRepo)
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function handleOpen() {
+    setOpen(true)
+    browse(value || undefined)
+  }
+
+  function handleSelect() {
+    onChange(currentPath)
+    setOpen(false)
+  }
+
+  if (!open) {
+    return (
+      <div className="flex gap-1.5">
+        <input
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder="/path/to/repo"
+          className="flex-1 h-8 rounded-md px-3 text-xs font-mono bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors"
+        />
+        <button
+          type="button"
+          onClick={handleOpen}
+          className="h-8 px-2.5 rounded-md border border-border/50 bg-input hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+          title="Browse directories"
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-input overflow-hidden">
+      {/* Current path bar */}
+      <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border/30 bg-muted/20">
+        <button
+          type="button"
+          onClick={() => browse(parentPath)}
+          disabled={loading || currentPath === parentPath}
+          className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
+          title="Go up"
+        >
+          <ArrowUp className="h-3.5 w-3.5" />
+        </button>
+        <span className="text-[11px] font-mono text-foreground/80 truncate flex-1">{currentPath}</span>
+        {isGitRepo && (
+          <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full shrink-0">
+            <FolderGit2 className="h-3 w-3" /> git repo
+          </span>
+        )}
+      </div>
+
+      {/* Directory list */}
+      <div className="max-h-40 overflow-y-auto">
+        {loading ? (
+          <div className="flex items-center justify-center py-4">
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : error ? (
+          <div className="text-xs text-red-400 px-3 py-2">{error}</div>
+        ) : dirs.length === 0 ? (
+          <div className="text-xs text-muted-foreground/50 px-3 py-3 text-center">No subdirectories</div>
+        ) : (
+          dirs.map(dir => (
+            <button
+              key={dir}
+              type="button"
+              onClick={() => browse(`${currentPath}/${dir}`)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-muted/30 transition-colors group"
+            >
+              <FolderOpen className="h-3.5 w-3.5 text-muted-foreground/50 group-hover:text-foreground/70 shrink-0" />
+              <span className="truncate text-foreground/80 group-hover:text-foreground">{dir}</span>
+              <ChevronRight className="h-3 w-3 text-muted-foreground/30 ml-auto shrink-0" />
+            </button>
+          ))
+        )}
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 px-2.5 py-1.5 border-t border-border/30 bg-muted/20">
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Cancel
+        </button>
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={handleSelect}
+          className={cn(
+            "text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors",
+            isGitRepo
+              ? "bg-primary/15 text-primary hover:bg-primary/25"
+              : "bg-muted/50 text-foreground/70 hover:bg-muted/80"
+          )}
+        >
+          Select this directory
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Create / Edit Dialog ─────────────────────────────────────────────────────
 
 interface ConnFormState {
@@ -123,9 +280,23 @@ interface ConnFormState {
   sshUser: string
   // Website
   url: string
+  loginUrl: string
   authType: string
   authUsername: string
   siteDescription: string
+  // GitHub
+  githubMode: 'remote' | 'local'
+  repoOwner: string
+  repoName: string
+  branch: string
+  localPath: string
+  ghDescription: string
+  // OdooCLI
+  odooUrl: string
+  odooDb: string
+  odooUsername: string
+  odooAuthType: string
+  odooDescription: string
 }
 
 const emptyForm: ConnFormState = {
@@ -133,7 +304,9 @@ const emptyForm: ConnFormState = {
   projectId: "", datasets: "",
   host: "", port: "5432", database: "", username: "", sslMode: "",
   sshHost: "", sshPort: "22", sshUser: "root",
-  url: "", authType: "basic", authUsername: "", siteDescription: "",
+  url: "", loginUrl: "", authType: "basic", authUsername: "", siteDescription: "",
+  githubMode: "remote", repoOwner: "", repoName: "", branch: "main", localPath: "", ghDescription: "",
+  odooUrl: "", odooDb: "", odooUsername: "", odooAuthType: "password", odooDescription: "",
 }
 
 function ConnectionDialog({
@@ -167,9 +340,21 @@ function ConnectionDialog({
         sshPort: String(m.sshPort || "22"),
         sshUser: m.sshUser || "root",
         url: m.url || "",
+        loginUrl: m.loginUrl || "",
         authType: m.authType || "basic",
         authUsername: m.authUsername || "",
         siteDescription: m.description || "",
+        githubMode: (m.githubMode as 'remote' | 'local') || "remote",
+        repoOwner: m.repoOwner || "",
+        repoName: m.repoName || "",
+        branch: m.branch || "main",
+        localPath: m.localPath || "",
+        ghDescription: m.description || "",
+        odooUrl: m.odooUrl || "",
+        odooDb: m.odooDb || "",
+        odooUsername: m.odooUsername || "",
+        odooAuthType: m.odooAuthType || "password",
+        odooDescription: m.description || "",
       })
     } else {
       setForm(emptyForm)
@@ -201,17 +386,59 @@ function ConnectionDialog({
     if (form.type === "website") {
       return {
         url: form.url,
+        loginUrl: form.loginUrl || undefined,
         authType: form.authType || 'none',
         authUsername: form.authUsername || undefined,
         description: form.siteDescription || undefined,
       }
     }
+    if (form.type === "github") {
+      if (form.githubMode === "local") {
+        return {
+          githubMode: "local" as const,
+          localPath: form.localPath,
+          branch: form.branch || 'main',
+          description: form.ghDescription || undefined,
+        }
+      }
+      return {
+        githubMode: "remote" as const,
+        repoOwner: form.repoOwner,
+        repoName: form.repoName,
+        branch: form.branch || 'main',
+        description: form.ghDescription || undefined,
+      }
+    }
+    if (form.type === "odoocli") {
+      return {
+        odooUrl: form.odooUrl,
+        odooDb: form.odooDb,
+        odooUsername: form.odooUsername,
+        odooAuthType: form.odooAuthType || 'password',
+        description: form.odooDescription || undefined,
+      }
+    }
     return {}
+  }
+
+  async function handleTest() {
+    if (!editConn) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const result = await api.testConnection(editConn.id)
+      setTestResult(result)
+    } catch (e: unknown) {
+      setTestResult({ ok: false, error: (e as Error).message })
+    } finally {
+      setTesting(false)
+    }
   }
 
   async function handleSave() {
     setSaving(true)
     setError("")
+    setTestResult(null)
     try {
       const metadata = buildMetadata()
       if (editConn) {
@@ -374,10 +601,18 @@ function ConnectionDialog({
 
           {f.type === "website" && (
             <>
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">URL</Label>
-                <input value={f.url} onChange={e => set("url", e.target.value)}
-                  placeholder="https://erp.example.com" className={monoInputClass} />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Base URL</Label>
+                  <input value={f.url} onChange={e => set("url", e.target.value)}
+                    placeholder="https://erp.example.com" className={monoInputClass} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Login URL</Label>
+                  <input value={f.loginUrl} onChange={e => set("loginUrl", e.target.value)}
+                    placeholder="/web/login" className={monoInputClass} />
+                  <p className="text-[10px] text-muted-foreground/50">Path login untuk browser agent</p>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
@@ -425,12 +660,153 @@ function ConnectionDialog({
               </div>
             </>
           )}
+
+          {f.type === "github" && (
+            <>
+              {/* Mode toggle */}
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Mode</Label>
+                <div className="flex gap-1.5">
+                  {(["remote", "local"] as const).map(m => (
+                    <button key={m} type="button"
+                      onClick={() => set("githubMode", m)}
+                      className={cn(
+                        "flex-1 h-8 rounded-md text-xs font-medium border transition-colors",
+                        f.githubMode === m
+                          ? "bg-primary/15 border-primary/40 text-primary"
+                          : "bg-input border-border/50 text-muted-foreground hover:text-foreground"
+                      )}>
+                      {m === "remote" ? "Remote (GitHub API)" : "Local (filesystem)"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {f.githubMode === "remote" ? (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Owner / Org</Label>
+                      <input value={f.repoOwner} onChange={e => set("repoOwner", e.target.value)}
+                        placeholder="my-org" className={monoInputClass} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Repository</Label>
+                      <input value={f.repoName} onChange={e => set("repoName", e.target.value)}
+                        placeholder="my-repo" className={monoInputClass} />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Branch</Label>
+                    <input value={f.branch} onChange={e => set("branch", e.target.value)}
+                      placeholder="main" className={monoInputClass} />
+                    <p className="text-[10px] text-muted-foreground/50">Default branch untuk agent — agent terisolasi di branch ini</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Personal Access Token (PAT)</Label>
+                    <input type="password" value={f.credentials} onChange={e => set("credentials", e.target.value)}
+                      placeholder="ghp_xxxxxxxxxxxx" className={monoInputClass} />
+                    {editConn?.hasCredentials && !f.credentials && (
+                      <p className="text-[10px] text-muted-foreground/50">Token stored. Leave blank to keep current.</p>
+                    )}
+                    <p className="text-[10px] text-muted-foreground/50">Perlu scope: repo, read:org. Bisa di-generate di GitHub Settings → Developer settings → PAT</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Local Path</Label>
+                    <DirectoryPicker value={f.localPath} onChange={v => set("localPath", v)} />
+                    <p className="text-[10px] text-muted-foreground/50">Pilih direktori git repository di mesin server</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Branch</Label>
+                    <input value={f.branch} onChange={e => set("branch", e.target.value)}
+                      placeholder="main" className={monoInputClass} />
+                    <p className="text-[10px] text-muted-foreground/50">Branch default yang digunakan agent</p>
+                  </div>
+                </>
+              )}
+
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <textarea value={f.ghDescription} onChange={e => set("ghDescription", e.target.value)}
+                  placeholder="Jelaskan repo ini — staging/production, apa yang di-deploy, kapan agent boleh akses, dll."
+                  rows={2} className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+              </div>
+            </>
+          )}
+
+          {f.type === "odoocli" && (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Odoo URL</Label>
+                  <input value={f.odooUrl} onChange={e => set("odooUrl", e.target.value)}
+                    placeholder="https://odoo.example.com" className={monoInputClass} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Database</Label>
+                  <input value={f.odooDb} onChange={e => set("odooDb", e.target.value)}
+                    placeholder="mydb" className={monoInputClass} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Username</Label>
+                  <input value={f.odooUsername} onChange={e => set("odooUsername", e.target.value)}
+                    placeholder="user@example.com" className={inputClass} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Auth Type</Label>
+                  <Select value={f.odooAuthType} onValueChange={v => set("odooAuthType", v)}>
+                    <SelectTrigger className="h-8 text-xs border-border/50"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="password">Password</SelectItem>
+                      <SelectItem value="api_key">API Key</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">{f.odooAuthType === "api_key" ? "API Key" : "Password"}</Label>
+                <input type="password" value={f.credentials} onChange={e => set("credentials", e.target.value)}
+                  placeholder="••••••••" className={monoInputClass} />
+                {editConn?.hasCredentials && !f.credentials && (
+                  <p className="text-[10px] text-muted-foreground/50">Credential stored. Leave blank to keep current.</p>
+                )}
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <textarea value={f.odooDescription} onChange={e => set("odooDescription", e.target.value)}
+                  placeholder="Jelaskan instance ini — staging/production, module apa yang aktif, data apa yang tersedia"
+                  rows={2} className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+              </div>
+            </>
+          )}
         </div>
+
+        {testResult && (
+          <div className={cn(
+            "flex items-start gap-2 text-xs rounded px-2.5 py-2 shrink-0",
+            testResult.ok ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
+          )}>
+            {testResult.ok
+              ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              : <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
+            <span className="break-all">{testResult.ok ? (testResult.message || "Connection successful") : (testResult.error || "Connection failed")}</span>
+          </div>
+        )}
 
         <DialogFooter className="gap-2 pt-2 border-t border-border/40 shrink-0">
           <Button size="sm" variant="outline" className="h-7 text-xs mr-auto" onClick={onClose}>Cancel</Button>
+          {editConn && (
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={handleTest} disabled={testing || saving}>
+              {testing ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Testing…</> : <><RefreshCw className="h-3 w-3 mr-1" />Test</>}
+            </Button>
+          )}
           <Button size="sm" className="h-7 text-xs" onClick={handleSave}
-            disabled={saving || !f.name || (!editConn && !f.credentials)}>
+            disabled={saving || !f.name || (!editConn && f.type !== "github" && !f.credentials)}>
             {saving ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Saving…</> : editConn ? "Update" : "Create"}
           </Button>
         </DialogFooter>
@@ -449,9 +825,16 @@ export function ConnectionsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
+  const [assignments, setAssignments] = useState<Record<string, string[]>>({})
 
   const load = useCallback(() => {
-    api.getConnections().then(r => setConnections(r.connections)).catch(console.error).finally(() => setLoading(false))
+    Promise.all([
+      api.getConnections(),
+      api.getConnectionAssignments(),
+    ]).then(([r, a]) => {
+      setConnections(r.connections)
+      setAssignments(a.assignments || {})
+    }).catch(console.error).finally(() => setLoading(false))
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -516,16 +899,45 @@ export function ConnectionsPage() {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {connections.map(conn => (
-            <ConnectionCard
-              key={conn.id}
-              conn={conn}
-              onTest={handleTest}
-              onDelete={setDeleteTarget}
-              onEdit={(c) => { setEditConn(c); setDialogOpen(true) }}
-            />
-          ))}
+        <div className="flex flex-col gap-6 overflow-y-auto">
+          {CONNECTION_TYPES.filter(t => connections.some(c => c.type === t.value)).map(typeInfo => {
+            const group = connections.filter(c => c.type === typeInfo.value)
+            const Icon = typeInfo.icon
+            return (
+              <div key={typeInfo.value}>
+                {/* Section header */}
+                <div className="flex items-center gap-2 mb-3">
+                  <div className={cn(
+                    "w-6 h-6 rounded-md flex items-center justify-center shrink-0",
+                    typeInfo.value === "bigquery"  ? "bg-blue-500/10 text-blue-400" :
+                    typeInfo.value === "postgres"  ? "bg-indigo-500/10 text-indigo-400" :
+                    typeInfo.value === "website"   ? "bg-orange-500/10 text-orange-400" :
+                    typeInfo.value === "github"    ? "bg-purple-500/10 text-purple-400" :
+                    typeInfo.value === "odoocli"   ? "bg-violet-500/10 text-violet-400" :
+                    "bg-emerald-500/10 text-emerald-400"
+                  )}>
+                    <Icon className="h-3.5 w-3.5" />
+                  </div>
+                  <span className="text-xs font-semibold text-foreground/70 uppercase tracking-wider">{typeInfo.label}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground/60 font-medium">{group.length}</span>
+                  <div className="flex-1 h-px bg-border/30" />
+                </div>
+                {/* Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {group.map(conn => (
+                    <ConnectionCard
+                      key={conn.id}
+                      conn={conn}
+                      assignedAgents={assignments[conn.id]}
+                      onTest={handleTest}
+                      onDelete={setDeleteTarget}
+                      onEdit={(c) => { setEditConn(c); setDialogOpen(true) }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 

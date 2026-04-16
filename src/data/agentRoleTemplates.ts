@@ -7,6 +7,7 @@ import { SWE_TEMPLATE } from './role-templates/swe'
 import { QA_ENGINEER_TEMPLATE } from './role-templates/qa-engineer'
 import { DOC_WRITER_TEMPLATE } from './role-templates/doc-writer'
 import { BIZ_ANALYST_TEMPLATE } from './role-templates/biz-analyst'
+import { DATA_ANALYST_TEMPLATE } from './role-templates/data-analyst'
 
 export const ADLC_ROLE_TEMPLATES: AgentRoleTemplate[] = [
   PM_ANALYST_TEMPLATE,
@@ -16,6 +17,7 @@ export const ADLC_ROLE_TEMPLATES: AgentRoleTemplate[] = [
   QA_ENGINEER_TEMPLATE,
   DOC_WRITER_TEMPLATE,
   BIZ_ANALYST_TEMPLATE,
+  DATA_ANALYST_TEMPLATE,
 ]
 
 export function getTemplateById(id: string): AgentRoleTemplate | undefined {
