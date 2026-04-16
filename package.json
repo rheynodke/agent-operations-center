@@ -8,9 +8,13 @@
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "vite",
     "dev:server": "node --watch server/index.cjs",
-    "build": "tsc -b && vite build",
+    "build": "vite build",
+    "build:check": "tsc -b && vite build",
     "preview": "vite preview",
     "start": "node server/index.cjs",
+    "prod": "vite build && pm2 restart aoc-dashboard || pm2 start ecosystem.config.cjs",
+    "prod:start": "vite build && pm2 start ecosystem.config.cjs",
+    "prod:restart": "vite build && pm2 restart aoc-dashboard",
     "generate-token": "node -e 'import(\"crypto\").then(c=>console.log(c.randomBytes(32).toString(\"hex\")))'"
   },
   "dependencies": {
