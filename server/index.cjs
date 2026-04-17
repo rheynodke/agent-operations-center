@@ -3516,6 +3516,21 @@ async function start() {
     `);
     // Start periodic Google OAuth health check
     try { parsers.googleHealthCronStart(broadcast); } catch (e) { console.warn('[startup] googleHealthCronStart failed:', e.message); }
+
+    // Idempotently inject SOUL.md standard blocks (research + connection protocol) into all agents
+    try {
+      const cfg = require('./lib/config.cjs');
+      const registry = cfg.readJsonSafe(require('path').join(cfg.OPENCLAW_HOME, 'openclaw.json'));
+      const list = registry?.agents?.list || [];
+      let injected = 0, already = 0, errors = 0;
+      for (const a of list) {
+        const r = parsers.injectSoulStandard(a.id);
+        if (r.status === 'injected') injected++;
+        else if (r.status === 'already_applied') already++;
+        else errors++;
+      }
+      console.log(`[startup] SOUL standards: ${injected} injected, ${already} already applied, ${errors} errors`);
+    } catch (e) { console.warn('[startup] soul-standard injection failed:', e.message); }
   });
 }
 
