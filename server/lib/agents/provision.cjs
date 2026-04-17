@@ -271,11 +271,10 @@ function validateProvision(opts, agentList) {
     throw new Error(`Agent with ID "${id}" already exists`);
   }
   if (!name || !name.trim()) throw new Error('Agent name is required');
-  if (!Array.isArray(channels) || channels.length === 0) {
-    throw new Error('At least one channel binding is required');
-  }
 
-  const telegramChannels = channels.filter(c => c.type === 'telegram');
+  // Channels are optional — agent can be provisioned without any channel binding
+  // and channels can be added later via the Agent Detail page.
+  const telegramChannels = (channels || []).filter(c => c.type === 'telegram');
   for (const ch of telegramChannels) {
     if (!ch.botToken || !ch.botToken.trim()) {
       throw new Error('Telegram bot token is required');

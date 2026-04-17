@@ -71,6 +71,23 @@ export interface AgentChannelsResult {
   discord: AgentChannelDiscord[]
 }
 
+// ─── DM Pairing Types ──────────────────────────────────────────────────────
+
+export interface PairingRequest {
+  id: string
+  code: string
+  createdAt: string
+  lastSeenAt: string
+  accountId: string
+  meta: Record<string, string>
+}
+
+export interface PairingRequestsByChannel {
+  telegram: PairingRequest[]
+  whatsapp: PairingRequest[]
+  discord: PairingRequest[]
+}
+
 // ─── Agent Provisioning Types ────────────────────────────────────────────────
 
 export interface ChannelBinding {

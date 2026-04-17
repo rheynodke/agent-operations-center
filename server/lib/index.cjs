@@ -14,6 +14,7 @@ const { getAvailableModels } = require('./models.cjs');
 const cronLib    = require('./automation/cron.cjs');
 const scriptsLib = require('./scripts.cjs');
 const hooksLib   = require('./hooks.cjs');
+const pairingLib = require('./pairing.cjs');
 
 const { readJsonSafe, OPENCLAW_HOME } = config;
 const { parseRoutes, getChannelsConfig } = require('./routing.cjs');
@@ -124,4 +125,9 @@ module.exports = {
   saveHooksConfig:  hooksLib.saveHooksConfig,
   getHookSessions:  hooksLib.getHookSessions,
   generateToken:    hooksLib.generateToken,
+
+  // ── pairing (DM pairing approval) ─────────────────────────────────────────
+  listPairingRequests:     pairingLib.listPairingRequests,
+  listAllPairingRequests:  pairingLib.listAllPairingRequests,
+  approvePairingCode:      pairingLib.approvePairingCode,
 };

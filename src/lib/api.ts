@@ -417,6 +417,15 @@ export const api = {
   channelLoginWait: (channel: string, account: string) =>
     request<{ ok: boolean; [key: string]: unknown }>(`/channels/${channel}/${account}/login/wait`, { method: "POST" }),
 
+  // DM Pairing approval
+  getAgentPairing: (agentId: string) =>
+    request<import("@/types").PairingRequestsByChannel>(`/agents/${agentId}/pairing`),
+  approvePairing: (channel: string, code: string, accountId?: string) =>
+    request<{ ok: boolean; error?: string }>(`/pairing/${channel}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ code, accountId }),
+    }),
+
   // Gateway management
   getGatewayStatus: () =>
     request<{ running: boolean; pids: number[]; port: number; portOpen: boolean; mode: string; bind: string }>("/gateway/status"),

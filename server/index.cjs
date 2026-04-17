@@ -937,6 +937,49 @@ app.delete('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware
   }
 });
 
+// ─── DM Pairing Approval ─────────────────────────────────────────────────────
+
+// List pending pairing requests for a specific agent (across all channels)
+app.get('/api/agents/:id/pairing', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.listAllPairingRequests(req.params.id);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/pairing/list]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List pending pairing requests for a specific channel (optionally filtered by account)
+app.get('/api/pairing/:channel', db.authMiddleware, (req, res) => {
+  try {
+    const requests = parsers.listPairingRequests(req.params.channel, req.query.account || undefined);
+    res.json({ channel: req.params.channel, requests });
+  } catch (err) {
+    console.error('[api/pairing/list]', err);
+    const code = err.message?.includes('Unsupported') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// Approve a pairing code
+app.post('/api/pairing/:channel/approve', db.authMiddleware, async (req, res) => {
+  try {
+    const { code, accountId } = req.body;
+    if (!code) return res.status(400).json({ error: 'Pairing code is required' });
+
+    const result = await parsers.approvePairingCode(req.params.channel, code, accountId || undefined);
+    if (result.ok) {
+      console.log(`[api/pairing] Approved ${req.params.channel} pairing code ${code}${accountId ? ` (account: ${accountId})` : ''}`);
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[api/pairing/approve]', err);
+    const code = err.message?.includes('Unsupported') || err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
 // ─── ClawHub Skill Install ────────────────────────────────────────────────────
 
 const skillsInstall = require('./lib/skills-install.cjs');

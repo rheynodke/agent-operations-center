@@ -681,7 +681,7 @@ function Step3Channels({
   return (
     <div className="space-y-4">
       <p className="text-[11px] text-muted-foreground/70">
-        Bind this agent to one or more communication channels. At least <strong className="text-foreground/60">one channel</strong> is required.
+        Bind this agent to communication channels. This step is <strong className="text-foreground/60">optional</strong> — you can add channels later from the Agent Detail page.
       </p>
 
       {/* Existing bindings */}
@@ -728,9 +728,9 @@ function Step3Channels({
       </div>
 
       {channels.length === 0 && (
-        <div className="flex items-center gap-2 text-amber-400/60 text-[11px] mt-2">
-          <AlertCircle className="w-3.5 h-3.5" />
-          Add at least one channel to continue.
+        <div className="flex items-center gap-2 text-muted-foreground/50 text-[11px] mt-2">
+          <MessageCircle className="w-3.5 h-3.5" />
+          No channels added. You can still chat with this agent from the dashboard, and add channels later.
         </div>
       )}
     </div>
@@ -785,7 +785,7 @@ function Step4Review({
           <ReviewRow label="Description" value={form.description || ""} />
           <ReviewRow label="Workspace" value={workspacePath} mono />
           <ReviewRow label="Agent Dir" value={agentDirPath} mono />
-          <ReviewRow label="Channels" value={channels.map(c => c.type).join(", ")} />
+          <ReviewRow label="Channels" value={channels.length > 0 ? channels.map(c => c.type).join(", ") : "None (can be added later)"} />
           <ReviewRow label="Filesystem" value={form.fsWorkspaceOnly !== false ? "Sandboxed (workspace only)" : "Unrestricted"} />
         </div>
       </div>
@@ -948,9 +948,7 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
       }
     }
     if (step === 3) {
-      if (!form.channels || form.channels.length === 0) {
-        errs.push("At least one channel binding is required")
-      }
+      // Channels are optional — can be added later via Agent Detail page
       for (const ch of form.channels || []) {
         if (ch.type === "telegram" && !ch.botToken?.trim()) {
           errs.push("Telegram bot token is required")
@@ -1052,6 +1050,9 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
           {done.whatsappPairingRequired && (
             <div className="my-4 bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-left">
               <p className="text-xs font-bold text-amber-300 mb-2">Complete WhatsApp pairing</p>
+              <p className="text-[11px] text-muted-foreground/70 mb-2">
+                Open the agent's <strong className="text-foreground/60">Channels</strong> tab and scan the QR code from the dashboard, or run:
+              </p>
               <div className="flex items-center gap-2 bg-foreground/8 rounded-lg px-3 py-2">
                 <code className="text-[11px] font-mono text-emerald-300 flex-1">
                   openclaw channels login --channel whatsapp --account {done.agentId}
@@ -1060,6 +1061,13 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
                   <Copy className="w-3.5 h-3.5" />
                 </button>
               </div>
+            </div>
+          )}
+          {!done.whatsappPairingRequired && (form.channels || []).length === 0 && (
+            <div className="my-4 bg-foreground/4 border border-border/60 rounded-xl p-4 text-left">
+              <p className="text-[11px] text-muted-foreground/70">
+                No channels configured. You can add Telegram, WhatsApp, or Discord from the agent's <strong className="text-foreground/60">Channels</strong> tab.
+              </p>
             </div>
           )}
           <div className="flex gap-3 mt-6">
