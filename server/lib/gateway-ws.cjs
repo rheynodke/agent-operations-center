@@ -41,19 +41,21 @@ function getGatewayConfig() {
     deviceIdentity = JSON.parse(raw);
   } catch { /* no device identity */ }
 
-  // Device auth token (from pairing — grants full operator scopes)
+  // Device auth token + approved scopes (from pairing)
   let deviceAuthToken = null;
+  let deviceApprovedScopes = null;
   try {
     const raw = fs.readFileSync(path.join(home, 'identity', 'device-auth.json'), 'utf-8');
     const authData = JSON.parse(raw);
     deviceAuthToken = authData.tokens?.operator?.token || null;
+    deviceApprovedScopes = authData.tokens?.operator?.scopes || null;
   } catch { /* no device auth token */ }
 
   if (token) console.log(`[gateway-ws] Passphrase loaded (${token.slice(0, 8)}...), port: ${port}`);
   if (deviceIdentity) console.log(`[gateway-ws] Device identity loaded: ${deviceIdentity.deviceId?.slice(0, 16)}...`);
-  if (deviceAuthToken) console.log(`[gateway-ws] Device token loaded (${deviceAuthToken.slice(0, 8)}...)`);
+  if (deviceAuthToken) console.log(`[gateway-ws] Device token loaded (${deviceAuthToken.slice(0, 8)}...), approved scopes: [${(deviceApprovedScopes || []).join(',')}]`);
 
-  return { port, token, deviceIdentity, deviceAuthToken };
+  return { port, token, deviceIdentity, deviceAuthToken, deviceApprovedScopes };
 }
 
 // ─── Ed25519 Signing ──────────────────────────────────────────────────────────
@@ -156,7 +158,7 @@ class GatewayWsProxy {
   connect() {
     if (this.connecting || this.connected) return;
 
-    const { port, token, deviceIdentity, deviceAuthToken } = getGatewayConfig();
+    const { port, token, deviceIdentity, deviceAuthToken, deviceApprovedScopes } = getGatewayConfig();
 
     if (!token && !deviceAuthToken) {
       console.warn('[gateway-ws] No auth token — skipping gateway connection');
@@ -166,6 +168,7 @@ class GatewayWsProxy {
     this._token = token;
     this._deviceIdentity = deviceIdentity;
     this._deviceAuthToken = deviceAuthToken;
+    this._deviceApprovedScopes = deviceApprovedScopes;
     this._port = port;
     this.connecting = true;
 
@@ -448,8 +451,16 @@ class GatewayWsProxy {
       return;
     }
 
-    // Auth block: passphrase (shared secret) is required
+    // Auth block: passphrase + deviceToken (from pairing)
+    // Per protocol: deviceToken lets gateway reuse approved scopes without re-pairing
     const authBlock = { token: passphrase };
+    if (this._deviceAuthToken) {
+      authBlock.deviceToken = this._deviceAuthToken;
+    }
+
+    // Request all scopes needed by AOC. If scopes exceed the approved baseline,
+    // gateway will trigger scope-upgrade pairing — approve via: openclaw devices approve
+    const effectiveScopes = scopes;
 
     // Device signing: REQUIRED for scopes to be granted
     // Without valid device block, gateway clears scopes to []
@@ -457,13 +468,14 @@ class GatewayWsProxy {
     if (identity && identity.privateKeyPem) {
       const signedAtMs = Date.now();
       // v3 payload: must match exactly what gateway reconstructs for verification
+      // Scopes in signature MUST match scopes sent in connect params
       // platform = process.platform ("darwin"), deviceFamily = "" (empty)
       const payloadStr = buildPayloadString({
         deviceId: identity.deviceId,
         clientId: 'cli',
         clientMode: 'cli',
         role: 'operator',
-        scopes,
+        scopes: effectiveScopes,
         signedAtMs,
         token: passphrase,
         nonce: nonce || '',
@@ -482,7 +494,7 @@ class GatewayWsProxy {
         nonce: nonce || '',
       };
 
-      console.log('[gateway-ws] Auth: passphrase + device signing');
+      console.log('[gateway-ws] Auth: passphrase + device signing + deviceToken');
     } else {
       console.warn('[gateway-ws] No device identity — scopes will be empty');
     }
@@ -497,7 +509,7 @@ class GatewayWsProxy {
         mode: 'cli',
       },
       role: 'operator',
-      scopes,
+      scopes: effectiveScopes,
       caps: [],
       commands: [],
       permissions: {},

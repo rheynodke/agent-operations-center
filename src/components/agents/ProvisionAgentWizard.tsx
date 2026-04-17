@@ -1084,8 +1084,8 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
   // ── Wizard layout ──────────────────────────────────────────────────────────
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(12px)" }}>
-      <div className="bg-card border border-border rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(12px)" }}>
+      <div className="bg-card border border-border rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl my-auto">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 shrink-0">
           <div>
@@ -1111,7 +1111,7 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
         </div>
 
         {/* Step content */}
-        <div className="flex-1 overflow-y-auto px-6 pb-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-4">
           {step === 1 && <Step1Identity form={form} setForm={setForm} models={models} defaultModel={defaultModel} />}
           {step === 2 && <Step2Personality form={form} setForm={setForm} models={models} defaultModel={defaultModel} template={template} />}
           {step === 3 && <Step3Channels form={form} setForm={setForm} />}

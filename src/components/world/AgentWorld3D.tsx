@@ -1839,6 +1839,8 @@ export function AgentWorld3D({ agents, agentStates }: AgentWorld3DProps) {
       performance={{ min: 0.5 }}
       className="w-full h-full"
       style={{ background: t.canvasBg }}
+      onCreated={(state) => console.log('[AgentWorld3D] Canvas created, gl:', state.gl.info)}
+      fallback={<div style={{color:'#fff',padding:20}}>Loading 3D scene...</div>}
     >
       <OrthographicCamera
         makeDefault

@@ -107,10 +107,11 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:"],
-      connectSrc: ["'self'", "ws:", "wss:"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "blob:"],
+      workerSrc: ["'self'", "blob:"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", "ws:", "wss:", "https://cdn.jsdelivr.net"],
       upgradeInsecureRequests: null,
     },
   },
@@ -2532,7 +2533,20 @@ app.post('/api/channels/:channel/:account/login/start', db.authMiddleware, async
     const message = result?.message || null;
 
     if (qrDataUrl) return res.json({ qrDataUrl, message });
-    // No QR = already linked
+
+    // No QR = already linked — mark as authenticated if not already
+    try {
+      const { OPENCLAW_HOME, readJsonSafe } = require('./lib/config.cjs');
+      const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+      const config = readJsonSafe(configPath);
+      const acct = config?.channels?.whatsapp?.accounts?.[account];
+      if (acct && !acct.authenticated) {
+        acct.authenticated = true;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log(`[api/channels/login/start] Marked whatsapp/${account} as authenticated (already linked)`);
+      }
+    } catch (_) {}
+
     return res.json({ qrDataUrl: null, message: message || 'WhatsApp already linked.' });
   } catch (err) {
     console.error('[api/channels/login/start]', err);
@@ -2543,7 +2557,7 @@ app.post('/api/channels/:channel/:account/login/start', db.authMiddleware, async
 // Channel login: wait for QR scan completion (long-poll, up to 3 min)
 // POST /api/channels/:channel/:account/login/wait
 app.post('/api/channels/:channel/:account/login/wait', db.authMiddleware, async (req, res) => {
-  const { account } = req.params;
+  const { channel, account } = req.params;
 
   if (!gatewayProxy.isConnected) {
     return res.status(503).json({ error: 'Gateway not connected' });
@@ -2551,6 +2565,21 @@ app.post('/api/channels/:channel/:account/login/wait', db.authMiddleware, async 
 
   try {
     const result = await gatewayProxy.webLoginWait(account);
+
+    // Mark the channel account as authenticated in openclaw.json
+    try {
+      const { OPENCLAW_HOME, readJsonSafe } = require('./lib/config.cjs');
+      const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+      const config = readJsonSafe(configPath);
+      if (config?.channels?.[channel]?.accounts?.[account]) {
+        config.channels[channel].accounts[account].authenticated = true;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log(`[api/channels/login/wait] Marked ${channel}/${account} as authenticated`);
+      }
+    } catch (cfgErr) {
+      console.warn('[api/channels/login/wait] Failed to update openclaw.json:', cfgErr.message);
+    }
+
     return res.json({ ok: true, ...result });
   } catch (err) {
     console.warn('[api/channels/login/wait] failed:', err.message);

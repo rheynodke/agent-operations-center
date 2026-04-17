@@ -2243,6 +2243,53 @@ function WhatsAppChannelCard({
   const [allowFrom, setAllowFrom] = useState(ch.allowFrom.join(", "))
   const [err, setErr] = useState("")
 
+  // QR pairing state
+  const [qrStatus, setQrStatus] = useState<"idle" | "loading" | "waiting" | "connected" | "error">("idle")
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
+  const [qrError, setQrError] = useState<string | null>(null)
+  const waitingRef = useRef(false)
+
+  const startQr = useCallback(async () => {
+    setQrStatus("loading")
+    setQrError(null)
+    setQrDataUrl(null)
+    try {
+      const res = await api.channelLoginStart("whatsapp", ch.accountId)
+      if (res.qrDataUrl) {
+        setQrDataUrl(res.qrDataUrl)
+        setQrStatus("waiting")
+      } else {
+        setQrStatus("connected")
+      }
+    } catch (e) {
+      setQrError(e instanceof Error ? e.message : "Failed to start WhatsApp login")
+      setQrStatus("error")
+    }
+  }, [ch.accountId])
+
+  // Poll for QR scan completion
+  useEffect(() => {
+    if (qrStatus !== "waiting" || waitingRef.current) return
+    waitingRef.current = true
+    api.channelLoginWait("whatsapp", ch.accountId)
+      .then(() => {
+        setQrStatus("connected")
+        onSaved()
+      })
+      .catch((e: unknown) => {
+        if (waitingRef.current) {
+          setQrError(e instanceof Error ? e.message : "Connection timed out")
+          setQrStatus("error")
+        }
+      })
+    return () => { waitingRef.current = false }
+  }, [qrStatus, ch.accountId, onSaved])
+
+  function handleRefreshQr() {
+    waitingRef.current = false
+    startQr()
+  }
+
   async function handleSave() {
     setSaving(true); setErr("")
     try {
@@ -2274,9 +2321,14 @@ function WhatsAppChannelCard({
         <span className="text-[11px] font-mono text-muted-foreground/60 flex-1 truncate">
           account: {ch.accountId}
         </span>
-        {ch.pairingRequired && (
+        {ch.pairingRequired && qrStatus !== "connected" && (
           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20 uppercase tracking-wider">
             Pairing needed
+          </span>
+        )}
+        {qrStatus === "connected" && (
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
+            Connected
           </span>
         )}
         <div className="flex items-center gap-1">
@@ -2296,14 +2348,82 @@ function WhatsAppChannelCard({
         </div>
       </div>
 
-      {ch.pairingRequired && !editing && (
-        <div className="mx-4 mt-3 flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/6 border border-amber-500/15">
-          <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
-          <div className="text-[11px] text-amber-700 dark:text-amber-300/80 leading-relaxed">
-            <strong>WhatsApp pairing required.</strong> Run this command to authenticate:
-            <code className="block mt-1 font-mono bg-foreground/6 px-2 py-1 rounded text-foreground/70 text-[10px] break-all">
-              openclaw channels login --channel whatsapp --account {ch.accountId}
-            </code>
+      {/* QR Pairing Section */}
+      {ch.pairingRequired && !editing && qrStatus === "idle" && (
+        <div className="mx-4 mt-3 p-3 rounded-lg bg-amber-500/6 border border-amber-500/15">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-300/80">WhatsApp pairing required</p>
+              <p className="text-[10px] text-amber-700/70 dark:text-amber-300/50 mt-0.5">
+                Scan a QR code from your phone to link this agent to WhatsApp.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={startQr}
+            className="mt-2.5 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-green-500/15 border border-green-500/25 text-xs font-semibold text-green-600 dark:text-green-400 hover:bg-green-500/25 transition-colors"
+          >
+            <img src="/wa.png" className="w-3.5 h-3.5 rounded-full" alt="" />
+            Scan QR Code
+          </button>
+        </div>
+      )}
+
+      {qrStatus === "loading" && (
+        <div className="flex flex-col items-center gap-2 py-6">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+          <p className="text-[11px] text-muted-foreground">Generating QR code…</p>
+        </div>
+      )}
+
+      {qrStatus === "error" && (
+        <div className="mx-4 mt-3 p-3 rounded-lg bg-red-500/6 border border-red-500/15">
+          <p className="text-[11px] text-red-600 dark:text-red-400">{qrError}</p>
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={handleRefreshQr}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <RefreshCw className="w-3 h-3" /> Retry
+            </button>
+            <button
+              onClick={() => setQrStatus("idle")}
+              className="px-3 py-1.5 rounded-lg text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {qrStatus === "waiting" && qrDataUrl && (
+        <div className="flex flex-col items-center gap-3 px-4 py-4">
+          <p className="text-[11px] text-muted-foreground text-center">
+            Open <span className="text-foreground font-medium">WhatsApp</span> → <span className="text-foreground font-medium">Linked Devices</span> → scan this QR
+          </p>
+          <div className="p-2.5 rounded-xl border-2 border-green-500/20 bg-green-500/5">
+            <img src={qrDataUrl} alt="WhatsApp QR Code" className="w-48 h-48 rounded-lg" />
+          </div>
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Waiting for scan…
+          </div>
+          <button
+            onClick={handleRefreshQr}
+            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <RefreshCw className="w-3 h-3" /> Refresh QR
+          </button>
+        </div>
+      )}
+
+      {qrStatus === "connected" && (
+        <div className="flex items-center gap-2 mx-4 mt-3 p-2.5 rounded-lg bg-emerald-500/8 border border-emerald-500/20">
+          <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+          <div>
+            <p className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">WhatsApp connected!</p>
+            <p className="text-[10px] text-emerald-600/70 dark:text-emerald-400/60">Agent is now reachable via WhatsApp.</p>
           </div>
         </div>
       )}
@@ -2530,7 +2650,7 @@ function DiscordChannelCard({
 function AddChannelForm({
   agentId, existingTypes, onAdded, onCancel,
 }: {
-  agentId: string; existingTypes: string[]; onAdded: () => void; onCancel: () => void
+  agentId: string; existingTypes: string[]; onAdded: (type: string) => void; onCancel: () => void
 }) {
   const telegramExists = existingTypes.includes("telegram")
   const whatsappExists = existingTypes.includes("whatsapp")
@@ -2548,6 +2668,20 @@ function AddChannelForm({
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState("")
 
+  // Frontend validation
+  const telegramTokenValid = !botToken.trim() || /^\d+:[A-Za-z0-9_-]+$/.test(botToken.trim())
+  const whatsappNumbersValid = (() => {
+    if (!allowFrom.trim()) return true
+    const nums = allowFrom.split(",").map(s => s.trim()).filter(Boolean)
+    return nums.every(n => /^\+\d{7,15}$/.test(n))
+  })()
+
+  const canSubmit = (() => {
+    if (type === "telegram") return !!botToken.trim() && telegramTokenValid
+    if (type === "discord") return !!discordBotToken.trim()
+    return whatsappNumbersValid // whatsapp has no strictly required fields beyond policies
+  })()
+
   async function handleAdd() {
     setSaving(true); setErr("")
     try {
@@ -2559,7 +2693,8 @@ function AddChannelForm({
         ...(type === "discord" ? { botToken: discordBotToken, groupPolicy } : {}),
         dmPolicy,
       })
-      onAdded()
+      const label = type.charAt(0).toUpperCase() + type.slice(1)
+      onAdded(label)
     } catch (e) {
       setErr((e as Error).message)
       setSaving(false)
@@ -2612,9 +2747,15 @@ function AddChannelForm({
             <input
               value={botToken}
               onChange={e => setBotToken(e.target.value)}
-              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              className={cn(
+                "w-full text-xs font-mono bg-foreground/4 border rounded-lg px-3 py-2 outline-none focus:border-primary/40",
+                botToken.trim() && !telegramTokenValid ? "border-red-500/50" : "border-border"
+              )}
               placeholder="123456:ABC-DEF..."
             />
+            {botToken.trim() && !telegramTokenValid && (
+              <p className="text-[10px] text-red-400 mt-1">Invalid format — expected: 123456789:ABCdefGHI...</p>
+            )}
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -2663,9 +2804,15 @@ function AddChannelForm({
             <input
               value={allowFrom}
               onChange={e => setAllowFrom(e.target.value)}
-              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              className={cn(
+                "w-full text-xs font-mono bg-foreground/4 border rounded-lg px-3 py-2 outline-none focus:border-primary/40",
+                allowFrom.trim() && !whatsappNumbersValid ? "border-red-500/50" : "border-border"
+              )}
               placeholder="+62812…, +62813…"
             />
+            {allowFrom.trim() && !whatsappNumbersValid && (
+              <p className="text-[10px] text-red-400 mt-1">Phone numbers must start with + followed by 7-15 digits (e.g. +628123456789)</p>
+            )}
           </div>
         </>
       )}
@@ -2719,7 +2866,7 @@ function AddChannelForm({
       <div className="flex gap-2 pt-1">
         <button
           onClick={handleAdd}
-          disabled={saving || (type === "telegram" ? telegramExists : type === "whatsapp" ? whatsappExists : discordExists)}
+          disabled={saving || !canSubmit}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
         >
           {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link className="w-3 h-3" />}
@@ -3221,9 +3368,15 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
   const [channels, setChannels] = useState<AgentChannelsResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [addingChannel, setAddingChannel] = useState(false)
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  function showToast(msg: string, ok: boolean) {
+    setToast({ msg, ok })
+    setTimeout(() => setToast(null), 3500)
+  }
+
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true)
     try {
       const data = await api.getAgentChannels(agentId)
       setChannels(data)
@@ -3244,13 +3397,33 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
     ...(channels?.discord ?? []),
   ]
 
-  function handleSaved() {
-    load()
+  async function handleSaved(feedbackMsg?: string) {
+    await load(true)
+    if (feedbackMsg) showToast(feedbackMsg, true)
+    onRestart()
+  }
+
+  async function handleRemoved(type: string) {
+    await load(true)
+    showToast(`${type} channel removed`, true)
     onRestart()
   }
 
   return (
     <div className="space-y-3">
+      {/* Toast feedback */}
+      {toast && (
+        <div className={cn(
+          "flex items-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium animate-in fade-in slide-in-from-top-1 duration-200",
+          toast.ok
+            ? "bg-emerald-500/8 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+            : "bg-red-500/8 border-red-500/20 text-red-600 dark:text-red-400"
+        )}>
+          {toast.ok ? <Check className="w-3.5 h-3.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
+          {toast.msg}
+        </div>
+      )}
+
       {/* Gateway status bar */}
       <div className={cn(
         "flex items-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium",
@@ -3284,8 +3457,8 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
               key={ch.accountId}
               ch={ch}
               agentId={agentId}
-              onSaved={handleSaved}
-              onRemove={() => { load(); onRestart() }}
+              onSaved={() => handleSaved("Telegram channel updated")}
+              onRemove={() => handleRemoved("Telegram")}
             />
           ))}
           {channels?.whatsapp.map(ch => (
@@ -3293,8 +3466,8 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
               key={ch.accountId}
               ch={ch}
               agentId={agentId}
-              onSaved={handleSaved}
-              onRemove={() => { load(); onRestart() }}
+              onSaved={() => handleSaved("WhatsApp channel updated")}
+              onRemove={() => handleRemoved("WhatsApp")}
             />
           ))}
           {channels?.discord.map(ch => (
@@ -3302,8 +3475,8 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
               key={ch.accountId}
               ch={ch}
               agentId={agentId}
-              onSaved={handleSaved}
-              onRemove={() => { load(); onRestart() }}
+              onSaved={() => handleSaved("Discord channel updated")}
+              onRemove={() => handleRemoved("Discord")}
             />
           ))}
 
@@ -3311,7 +3484,7 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
             <AddChannelForm
               agentId={agentId}
               existingTypes={existingTypes}
-              onAdded={() => { setAddingChannel(false); handleSaved() }}
+              onAdded={(type) => { setAddingChannel(false); handleSaved(`${type} channel added`) }}
               onCancel={() => setAddingChannel(false)}
             />
           ) : existingTypes.length < 3 && (

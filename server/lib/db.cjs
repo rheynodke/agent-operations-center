@@ -13,7 +13,7 @@ const jwt = require('jsonwebtoken');
 // ─── Config ───────────────────────────────────────────────────────────────────
 const DATA_DIR = process.env.AOC_DATA_DIR || path.join(__dirname, '..', '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'aoc.db');
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+let JWT_SECRET = process.env.JWT_SECRET || null;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -229,6 +229,24 @@ async function initDatabase() {
   try { db.run('ALTER TABLE tasks ADD COLUMN external_source TEXT'); } catch (_) {}
   db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_id, external_source)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`);
+
+  // ── Persist JWT_SECRET so tokens survive server restarts ──────────────────
+  if (!JWT_SECRET) {
+    const secretRow = db.exec("SELECT value FROM settings WHERE key = 'jwt_secret'");
+    if (secretRow.length && secretRow[0].values.length) {
+      JWT_SECRET = secretRow[0].values[0][0];
+      console.log('[db] Loaded JWT_SECRET from database');
+    } else {
+      JWT_SECRET = crypto.randomBytes(32).toString('hex');
+      const stmt = db.prepare(
+        `INSERT INTO settings (key, value, updated_at) VALUES ('jwt_secret', ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      );
+      stmt.run([JWT_SECRET]);
+      stmt.free();
+      console.log('[db] Generated and persisted new JWT_SECRET');
+    }
+  }
 
   persist();
   return db;
