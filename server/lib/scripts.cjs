@@ -614,7 +614,8 @@ if not conns:
     sys.exit(0)
 SAFE_KEYS = {'name','type','hint','projectId','datasets','host','port','database','username',
              'url','loginUrl','authType','user','description','sslMode',
-             'githubMode','repo','branch','localPath','repoOwner','repoName'}
+             'githubMode','repo','branch','localPath','repoOwner','repoName',
+             'linkedEmail','preset','authState','scopes'}
 for c in conns:
     t = c.get('type', '?').upper()
     name = c.get('name', '?')
@@ -630,7 +631,10 @@ for c in conns:
     hint = c.get('hint')
     if hint:
         print(f'  hint: {hint}')
-    if c.get('type') == 'github' and github_mode == 'local':
+    if c.get('type') == 'google_workspace':
+        print(f'  >>> To use: gws-call.sh "{name}" <service> <method> \\'<json-body>\\'')
+        print(f'  >>> Services: drive, docs, sheets, slides, gmail, calendar')
+    elif c.get('type') == 'github' and github_mode == 'local':
         local_path = c.get('localPath', '')
         branch = c.get('branch', 'main')
         print(f'  >>> Direct git: git -C "{local_path}" <command>')
@@ -658,6 +662,154 @@ function ensureCheckConnectionsScript() {
   };
   writeMeta(SCRIPTS_DIR, meta);
   console.log('[scripts] Ensured shared check_connections.sh script');
+}
+
+// ── gws-call.sh ─────────────────────────────────────────────────────────────
+
+const GWS_CALL_SCRIPT_NAME = 'gws-call.sh';
+const GWS_CALL_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# gws-call.sh — Google Workspace API wrapper backed by AOC connections.
+#
+# Usage:
+#   gws-call.sh <connection-id> <service> <method> [json-body]
+#   gws-call.sh <connection-id> --raw <HTTP_METHOD> <URL> [json-body]
+#
+# Services: drive, docs, sheets, slides, gmail, calendar
+# Methods:  <resource>.list | .get | .create | .update | .patch | .delete | .batchUpdate
+#           spreadsheets.values.get | .append | .update (sheets only)
+
+set -euo pipefail
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+
+[ -z "\${AOC_TOKEN:-}" ] && { echo "ERROR: AOC_TOKEN not configured" >&2; exit 1; }
+[ $# -lt 2 ] && { echo "Usage: gws-call.sh <connection-id> <service> <method> [json-body]" >&2; exit 1; }
+
+CONN_ID="$1"; shift
+
+TMPTOK=$(mktemp /tmp/aoc-gws-tok-XXXXXX.json); trap 'rm -f "$TMPTOK"' EXIT
+HTTP_CODE=$(curl -s -o "$TMPTOK" -w "%{http_code}" \\
+  -H "Authorization: Bearer $AOC_TOKEN" \\
+  -H "X-AOC-Agent-Id: \${AOC_AGENT_ID:-}" \\
+  "$AOC_URL/api/connections/$CONN_ID/google-access-token")
+
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "ERROR: failed to obtain token (HTTP $HTTP_CODE)" >&2
+  cat "$TMPTOK" >&2; echo >&2
+  exit 2
+fi
+
+ACCESS_TOKEN=$(python3 -c "import json,sys; print(json.load(open('$TMPTOK'))['accessToken'])")
+
+if [ "$1" = "--raw" ]; then
+  shift
+  METHOD="$1"; URL="$2"; BODY="\${3:-}"
+  if [ -n "$BODY" ]; then
+    curl -sf -X "$METHOD" -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" --data-raw "$BODY" "$URL"
+  else
+    curl -sf -X "$METHOD" -H "Authorization: Bearer $ACCESS_TOKEN" "$URL"
+  fi
+  exit 0
+fi
+
+SERVICE="$1"; shift
+METHOD_STR="$1"; shift
+BODY="\${1:-}"
+
+case "$SERVICE" in
+  drive)     BASE="https://www.googleapis.com/drive/v3"     ; ID_FIELD="fileId"        ;;
+  docs)      BASE="https://docs.googleapis.com/v1"          ; ID_FIELD="documentId"    ;;
+  sheets)    BASE="https://sheets.googleapis.com/v4"        ; ID_FIELD="spreadsheetId" ;;
+  slides)    BASE="https://slides.googleapis.com/v1"        ; ID_FIELD="presentationId";;
+  gmail)     BASE="https://gmail.googleapis.com/gmail/v1/users/me"; ID_FIELD="id"      ;;
+  calendar)  BASE="https://www.googleapis.com/calendar/v3"  ; ID_FIELD="eventId"       ;;
+  *) echo "ERROR: unsupported service: $SERVICE" >&2; exit 1 ;;
+esac
+
+export SERVICE METHOD_STR BODY BASE ID_FIELD ACCESS_TOKEN
+
+python3 << 'PYEOF'
+import json, os, subprocess, sys, urllib.parse
+
+service   = os.environ["SERVICE"]
+method    = os.environ["METHOD_STR"]
+body_raw  = os.environ.get("BODY", "")
+base      = os.environ["BASE"]
+id_field  = os.environ["ID_FIELD"]
+token     = os.environ["ACCESS_TOKEN"]
+
+body = None
+if body_raw.strip():
+    body = json.loads(body_raw)
+
+parts = method.split(".")
+if len(parts) < 2:
+    sys.stderr.write(f"ERROR: method must be <resource>.<action>: {method}\\n"); sys.exit(1)
+
+if service == "sheets" and len(parts) == 3 and parts[1] == "values":
+    resource = parts[0]
+    action   = "values." + parts[2]
+else:
+    resource = parts[0]
+    action   = ".".join(parts[1:])
+
+def req_id():
+    if not body or id_field not in body:
+        sys.stderr.write(f"ERROR: body must contain '{id_field}' for this action\\n"); sys.exit(1)
+    v = body.pop(id_field)
+    return v
+
+path = None; http = None
+if action == "list":                path, http = f"/{resource}", "GET"
+elif action == "get":               path, http = f"/{resource}/{req_id()}", "GET"
+elif action == "create":            path, http = f"/{resource}", "POST"
+elif action == "update":            path, http = f"/{resource}/{req_id()}", "PUT"
+elif action == "patch":             path, http = f"/{resource}/{req_id()}", "PATCH"
+elif action == "delete":            path, http = f"/{resource}/{req_id()}", "DELETE"
+elif action == "batchUpdate":       path, http = f"/{resource}/{req_id()}:batchUpdate", "POST"
+elif action == "values.get":
+    sid = req_id()
+    rng = body.pop("range", "")
+    path, http = f"/spreadsheets/{sid}/values/{urllib.parse.quote(rng)}", "GET"
+elif action == "values.append":
+    sid = req_id()
+    rng = body.pop("range", "")
+    vio = body.pop("valueInputOption", "USER_ENTERED")
+    path, http = f"/spreadsheets/{sid}/values/{urllib.parse.quote(rng)}:append?valueInputOption={vio}", "POST"
+elif action == "values.update":
+    sid = req_id()
+    rng = body.pop("range", "")
+    vio = body.pop("valueInputOption", "USER_ENTERED")
+    path, http = f"/spreadsheets/{sid}/values/{urllib.parse.quote(rng)}?valueInputOption={vio}", "PUT"
+else:
+    sys.stderr.write(f"ERROR: unsupported action: {action}. Use --raw for advanced endpoints.\\n"); sys.exit(1)
+
+url = base + path
+args = ["curl", "-sf", "-X", http, "-H", f"Authorization: Bearer {token}"]
+if http in ("POST", "PUT", "PATCH") or body:
+    args += ["-H", "Content-Type: application/json", "--data-raw", json.dumps(body or {})]
+args.append(url)
+
+r = subprocess.run(args)
+sys.exit(r.returncode)
+PYEOF
+`;
+
+function ensureGwsCallScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, GWS_CALL_SCRIPT_NAME);
+  fs.writeFileSync(scriptPath, GWS_CALL_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[GWS_CALL_SCRIPT_NAME] = {
+    name: 'gws-call',
+    emoji: '📄',
+    description: 'Call Google Workspace APIs via an assigned google_workspace connection. Usage: gws-call.sh <connection-id> <service> <method> [json-body]',
+    execHint: `${SCRIPTS_DIR}/gws-call.sh <connection-id> <service> <method> [json-body]`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+  console.log('[scripts] Ensured shared gws-call.sh script');
 }
 
 // ── aoc-connect.sh — Generic connection wrapper ─────────────────────────────
@@ -1203,6 +1355,7 @@ const SHARED_ADLC_SCRIPT_NAMES = ['gdocs-export.sh', 'notify.sh', 'email-notif.s
  */
 function ensureSharedAdlcScripts(scriptTemplates) {
   ensureDir();
+  ensureGwsCallScript();
   const meta = readMeta(SCRIPTS_DIR);
   let changed = false;
 
@@ -1411,6 +1564,7 @@ module.exports = {
   ensureAocEnvFile,
   ensureCheckTasksScript,
   ensureCheckConnectionsScript,
+  ensureGwsCallScript,
   ensureAocConnectScript,
   injectHeartbeatTaskCheck,
   // ADLC shared scripts installer

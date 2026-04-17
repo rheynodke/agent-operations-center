@@ -261,6 +261,18 @@ function getGatewayConfig() {
   } catch { return {}; }
 }
 
+// Generic broadcast helper — function declaration is hoisted; wss is resolved at call time
+function broadcast(event) {
+  try {
+    const msg = JSON.stringify({ ...event, timestamp: event.timestamp || new Date().toISOString() });
+    wss.clients.forEach((client) => {
+      if (client.readyState === client.OPEN) client.send(msg);
+    });
+  } catch (err) {
+    console.error('[broadcast]', err);
+  }
+}
+
 // Broadcast helper for task updates
 function broadcastTasksUpdate() {
   try {
@@ -1645,6 +1657,12 @@ async function dispatchTaskToAgent(task, opts = {}) {
           const desc = meta.description ? ` — ${meta.description}` : '';
           return `  - **${c.name}** (Odoo XML-RPC): \`${meta.odooUrl || '?'}\` db \`${meta.odooDb || '?'}\`${desc}\n    → \`aoc-connect.sh "${c.name}" <odoocli-subcommand>\`\n    Example: \`aoc-connect.sh "${c.name}" record search sale.order --domain "[('state','=','draft')]" --fields name,partner_id,amount_total\``;
         }
+        if (c.type === 'google_workspace') {
+          const linked = meta.linkedEmail || '(not linked)';
+          const preset = meta.preset || 'custom';
+          const state  = meta.authState || 'unknown';
+          return `  - **${c.name}** (Google Workspace): linked \`${linked}\` · preset \`${preset}\` · state \`${state}\`\n    → \`gws-call.sh "${c.name}" <service> <method> '<json-body>'\`\n    Services: drive, docs, sheets, slides, gmail, calendar. Example: \`gws-call.sh "${c.name}" docs documents.create '{"title":"..."}'\``;
+        }
         return `  - **${c.name}** (${c.type})`;
       });
       connectionsContext = `\n**Available Connections** (use \`aoc-connect.sh\` — credentials are handled automatically, never hardcode them):\n${lines.join('\n')}\n\nTo list all connections: \`check_connections.sh\`\n`;
@@ -1912,6 +1930,17 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
 
 // ─── Connections (third-party data sources) ──────────────────────────────────
 
+// Feature flags for connection types — UI uses this to hide unconfigured options
+app.get('/api/connections/config/features', db.authMiddleware, (_req, res) => {
+  const cfg = require('./lib/config.cjs');
+  res.json({
+    features: {
+      googleWorkspace: !!cfg.GOOGLE_OAUTH_CONFIGURED,
+    },
+    redirectUri: cfg.GOOGLE_OAUTH_CONFIGURED ? parsers.googleRedirectUri() : null,
+  });
+});
+
 app.get('/api/connections', db.authMiddleware, (_req, res) => {
   res.json({ connections: db.getAllConnections() });
 });
@@ -1926,15 +1955,160 @@ app.get('/api/connections/:id', db.authMiddleware, (req, res) => {
   res.json({ connection: conn });
 });
 
-app.post('/api/connections', db.authMiddleware, (req, res) => {
+app.post('/api/connections', db.authMiddleware, async (req, res) => {
   try {
     const { name, type, credentials, metadata, enabled } = req.body;
+    let { id } = req.body;
     if (!name || !type) return res.status(400).json({ error: 'name and type are required' });
-    const id = require('crypto').randomUUID();
+    if (!id) id = require('crypto').randomUUID();
+
+    if (type === 'google_workspace') {
+      const cfgMod = require('./lib/config.cjs');
+      if (!cfgMod.GOOGLE_OAUTH_CONFIGURED) {
+        return res.status(503).json({ error: 'Google Workspace connections not configured' });
+      }
+      const preset = (metadata && metadata.preset) || 'full-workspace';
+      const customScopes = (metadata && metadata.customScopes) || [];
+      const pendingMeta = {
+        linkedEmail: null,
+        scopes: [],
+        preset,
+        customScopes,
+        authState: 'pending',
+      };
+      const conn = db.createConnection({
+        id, name, type,
+        credentials: '',
+        metadata: pendingMeta,
+        enabled: enabled !== false,
+      });
+      try {
+        const { authUrl, codeVerifier, scopes } = parsers.googleBeginAuth({
+          connectionId: id,
+          userId: req.user?.id || 'default',
+          preset,
+          customScopes,
+        });
+        db.updateConnection(id, {
+          metadata: { ...pendingMeta, scopes: scopes.map(s => s.replace(/^https:\/\/www\.googleapis\.com\/auth\//, '')), _pkceVerifier: codeVerifier },
+        });
+        return res.json({ connection: conn, authUrl });
+      } catch (err) {
+        db.deleteConnection(id);
+        throw err;
+      }
+    }
+
     const conn = db.createConnection({ id, name, type, credentials, metadata, enabled });
     res.json({ ok: true, connection: conn });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[api/connections POST]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Re-generate auth URL for an expired or disconnected google_workspace connection
+app.post('/api/connections/:id/google/reauth', db.authMiddleware, (req, res) => {
+  try {
+    const conn = db.getConnection(req.params.id);
+    if (!conn || conn.type !== 'google_workspace') return res.status(404).json({ error: 'Not found' });
+    const meta = conn.metadata || {};
+    const { authUrl, codeVerifier } = parsers.googleBeginAuth({
+      connectionId: req.params.id,
+      userId: req.user?.id || 'default',
+      preset: meta.preset || 'full-workspace',
+      customScopes: meta.customScopes || [],
+    });
+    db.updateConnection(req.params.id, {
+      metadata: { ...meta, authState: 'pending', _pkceVerifier: codeVerifier },
+    });
+    res.json({ authUrl });
+  } catch (err) {
+    console.error('[api/connections/reauth]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Disconnect (revoke + keep row) a google_workspace connection
+app.post('/api/connections/:id/google/disconnect', db.authMiddleware, async (req, res) => {
+  try {
+    await parsers.googleDisconnect(req.params.id, { fullDelete: false });
+    broadcast({ type: 'connection:auth_expired', payload: { connectionId: req.params.id } });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/connections/disconnect]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Manual health check for a google_workspace connection
+app.get('/api/connections/:id/google/health', db.authMiddleware, async (req, res) => {
+  try {
+    const result = await parsers.googleTestConnection(req.params.id);
+    if (!result.ok && result.code === 'invalid_grant') {
+      broadcast({ type: 'connection:auth_expired', payload: { connectionId: req.params.id } });
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[api/connections/health]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// OAuth callback — PUBLIC (protected by signed state JWT)
+app.get('/api/connections/google/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  function renderHtml({ type, connectionId, errorMsg }) {
+    const payload = JSON.stringify({ type, connectionId, error: errorMsg });
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${type === 'oauth-success' ? 'Connected' : 'Error'}</title>
+    <style>body{font-family:system-ui;padding:2rem;text-align:center;color:#222}.ok{color:#0a7a0a}.err{color:#a00}</style></head>
+    <body>
+      <h2 class="${type === 'oauth-success' ? 'ok' : 'err'}">${type === 'oauth-success' ? '\u2713 Connected' : '\u2717 Error'}</h2>
+      <p>${errorMsg || 'You can close this window.'}</p>
+      <script>
+        try { window.opener && window.opener.postMessage(${payload}, '*'); } catch (e) {}
+        setTimeout(function(){ window.close(); }, 1500);
+      </script>
+    </body></html>`;
+  }
+
+  if (error) {
+    return res.status(400).send(renderHtml({ type: 'oauth-error', errorMsg: `Google returned: ${error}` }));
+  }
+  if (!code || !state) {
+    return res.status(400).send(renderHtml({ type: 'oauth-error', errorMsg: 'Missing code or state' }));
+  }
+
+  try {
+    const conn = await parsers.googleCompleteAuth({ stateToken: state, code });
+    broadcast({ type: 'connection:auth_completed', payload: { connectionId: conn.id } });
+    res.send(renderHtml({ type: 'oauth-success', connectionId: conn.id }));
+  } catch (err) {
+    console.error('[oauth/callback]', err);
+    res.status(err.status || 500).send(renderHtml({ type: 'oauth-error', errorMsg: err.message }));
+  }
+});
+
+// Dispense a short-lived Google access token to an assigned agent
+app.get('/api/connections/:id/google-access-token', db.authMiddleware, async (req, res) => {
+  try {
+    const connId = req.params.id;
+    const conn = db.getConnection(connId);
+    if (!conn || conn.type !== 'google_workspace') return res.status(404).json({ error: 'Not found' });
+
+    const agentId = req.user?.agentId || req.get('X-AOC-Agent-Id');
+    if (agentId) {
+      const assigned = db.getAgentConnectionIds(agentId);
+      if (!assigned.includes(connId)) {
+        return res.status(403).json({ error: 'Agent not assigned to this connection' });
+      }
+    }
+    const out = await parsers.googleDispenseToken(connId);
+    res.json(out);
+  } catch (err) {
+    console.error('[api/connections/google-access-token]', err);
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 
@@ -1949,17 +2123,33 @@ app.patch('/api/connections/:id', db.authMiddleware, (req, res) => {
   }
 });
 
-app.delete('/api/connections/:id', db.authMiddleware, (req, res) => {
+app.delete('/api/connections/:id', db.authMiddleware, async (req, res) => {
   try {
-    db.deleteConnection(req.params.id);
+    const conn = db.getConnection(req.params.id);
+    if (conn && conn.type === 'google_workspace') {
+      try { await parsers.googleDisconnect(req.params.id, { fullDelete: true }); }
+      catch (err) { console.warn('[delete] google revoke failed (best-effort):', err.message); }
+    } else {
+      db.deleteConnection(req.params.id);
+    }
     res.json({ ok: true });
   } catch (err) {
+    console.error('[api/connections DELETE]', err);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.post('/api/connections/:id/test', db.authMiddleware, async (req, res) => {
   try {
+    const conn = db.getConnection(req.params.id);
+    if (!conn) return res.status(404).json({ error: 'Not found' });
+    if (conn.type === 'google_workspace') {
+      const result = await parsers.googleTestConnection(req.params.id);
+      if (!result.ok && result.code === 'invalid_grant') {
+        broadcast({ type: 'connection:auth_expired', payload: { connectionId: req.params.id } });
+      }
+      return res.json(result);
+    }
     const raw = db.getConnectionRaw(req.params.id);
     if (!raw) return res.status(404).json({ error: 'Connection not found' });
 
@@ -2159,6 +2349,12 @@ app.get('/api/agent/connections', db.authMiddleware, (req, res) => {
         out.credential = c.credentials || null;
         out.description = meta.description || null;
         out.hint = `Use odoocli CLI. Connection: ${meta.odooUrl} db ${meta.odooDb}.`;
+      } else if (c.type === 'google_workspace') {
+        out.linkedEmail = meta.linkedEmail || null;
+        out.preset = meta.preset || null;
+        out.scopes = meta.scopes || [];
+        out.authState = meta.authState || 'unknown';
+        out.hint = 'Use gws-call.sh <connection-name> <service> <method> [json-body] to call Google APIs. Credentials are handled automatically.';
       }
 
       return out;
@@ -3182,6 +3378,7 @@ async function syncTaskScriptForAllAgents() {
 function syncConnectionsScriptForAllAgents() {
   try {
     parsers.ensureCheckConnectionsScript();
+    parsers.ensureGwsCallScript();
     parsers.ensureAocConnectScript();
     const agents = parsers.parseAgentRegistry();
     const allConns = db.getAllConnections();
@@ -3317,6 +3514,8 @@ async function start() {
 │  Dev:  http://localhost:5173            │
 └─────────────────────────────────────────┘
     `);
+    // Start periodic Google OAuth health check
+    try { parsers.googleHealthCronStart(broadcast); } catch (e) { console.warn('[startup] googleHealthCronStart failed:', e.message); }
   });
 }
 

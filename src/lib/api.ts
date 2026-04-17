@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -262,13 +262,23 @@ export const api = {
   getConnections: () =>
     request<{ connections: Connection[] }>('/connections'),
   createConnection: (data: { name: string; type: string; credentials?: string; metadata?: Record<string, unknown>; enabled?: boolean }) =>
-    request<{ ok: boolean; connection: Connection }>('/connections', { method: 'POST', body: JSON.stringify(data) }),
+    request<{ ok: boolean; connection: Connection; authUrl?: string }>('/connections', { method: 'POST', body: JSON.stringify(data) }),
   updateConnection: (id: string, patch: { name?: string; credentials?: string; metadata?: Record<string, unknown>; enabled?: boolean }) =>
     request<{ connection: Connection }>(`/connections/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteConnection: (id: string) =>
     request<{ ok: boolean }>(`/connections/${id}`, { method: 'DELETE' }),
   testConnection: (id: string) =>
     request<{ ok: boolean; message?: string; error?: string; preview?: string }>(`/connections/${id}/test`, { method: 'POST' }),
+
+  // Google Workspace connection flows
+  getConnectionFeatures: () =>
+    request<{ features: ConnectionFeatureFlags; redirectUri: string | null }>('/connections/config/features'),
+  reauthGoogleConnection: (id: string) =>
+    request<{ authUrl: string }>(`/connections/${encodeURIComponent(id)}/google/reauth`, { method: 'POST' }),
+  disconnectGoogleConnection: (id: string) =>
+    request<{ ok: true }>(`/connections/${encodeURIComponent(id)}/google/disconnect`, { method: 'POST' }),
+  healthCheckGoogleConnection: (id: string) =>
+    request<{ ok: boolean; authState: string; error?: string }>(`/connections/${encodeURIComponent(id)}/google/health`),
 
   // Agent ↔ Connection assignments
   getAgentConnections: (agentId: string) =>

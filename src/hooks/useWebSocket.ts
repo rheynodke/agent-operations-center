@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react"
-import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore } from "@/stores"
+import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore } from "@/stores"
 import { useChatStore, parseMediaAttachments, mediaPathToUrl } from "@/stores/useChatStore"
 import { useProjectStore } from '@/stores/useProjectStore'
 import { api } from "@/lib/api"
@@ -306,6 +306,15 @@ export function useWebSocket() {
 
         case "connected": {
           // Server greeting, no action needed
+          break
+        }
+
+        case "connection:auth_completed":
+        case "connection:auth_expired": {
+          // Google Workspace (or any connection) auth state changed on the server.
+          // Refresh the connections list so UI picks up new authState + linkedEmail.
+          // Payload shape: { connectionId }
+          useConnectionsStore.getState().refresh().catch(() => {})
           break
         }
 

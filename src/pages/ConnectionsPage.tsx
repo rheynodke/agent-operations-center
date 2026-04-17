@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from "react"
-import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2 } from "lucide-react"
+import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { api } from "@/lib/api"
-import { Connection, ConnectionType } from "@/types"
+import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata } from "@/types"
 import { cn } from "@/lib/utils"
+import { useConnectionsStore } from "@/stores"
 
 const CONNECTION_TYPES: { value: ConnectionType; label: string; icon: React.ComponentType<{ className?: string }>; description: string }[] = [
   { value: "bigquery", label: "Google BigQuery", icon: Cloud, description: "Query data warehouse via bq CLI" },
@@ -16,6 +17,7 @@ const CONNECTION_TYPES: { value: ConnectionType; label: string; icon: React.Comp
   { value: "website", label: "Website / Service", icon: Globe, description: "Web service with auth credentials" },
   { value: "github", label: "GitHub Repo", icon: GitBranch, description: "Repository access via gh CLI" },
   { value: "odoocli", label: "Odoo (XML-RPC)", icon: Box, description: "Odoo ERP via odoocli — CRUD, methods, debug" },
+  { value: "google_workspace", label: "Google Workspace", icon: FileText, description: "Docs, Drive, Sheets — OAuth per account" },
 ]
 
 function getTypeIcon(type: string) {
@@ -29,13 +31,14 @@ function getTypeLabel(type: string) {
 // ── Connection Card ──────────────────────────────────────────────────────────
 
 function ConnectionCard({
-  conn, onTest, onDelete, onEdit, assignedAgents,
+  conn, onTest, onDelete, onEdit, assignedAgents, onGoogleOauth,
 }: {
   conn: Connection
   onTest: (id: string) => void
   onDelete: (conn: Connection) => void
   onEdit: (conn: Connection) => void
   assignedAgents?: string[]
+  onGoogleOauth?: (authUrl: string) => Promise<{ connectionId: string } | null>
 }) {
   const Icon = getTypeIcon(conn.type)
   const meta = conn.metadata || {}
@@ -57,6 +60,9 @@ function ConnectionCard({
     }
   } else if (conn.type === "odoocli") {
     detail = `${meta.odooUrl || "?"} · ${meta.odooDb || "?"}`
+  } else if (conn.type === "google_workspace") {
+    const gmeta = (conn.metadata || {}) as Partial<GoogleWorkspaceMetadata>
+    detail = `${gmeta.linkedEmail || '(not linked)'} · ${gmeta.preset || 'custom'}`
   }
 
   return (
@@ -72,6 +78,7 @@ function ConnectionCard({
           conn.type === "website" ? "bg-orange-500/10 text-orange-400" :
           conn.type === "github" ? "bg-purple-500/10 text-purple-400" :
           conn.type === "odoocli" ? "bg-violet-500/10 text-violet-400" :
+          conn.type === "google_workspace" ? "bg-blue-500/10 text-blue-400" :
           "bg-emerald-500/10 text-emerald-400"
         )}>
           <Icon className="h-5 w-5" />
@@ -82,6 +89,15 @@ function ConnectionCard({
             <h3 className="text-sm font-semibold text-foreground truncate">{conn.name}</h3>
             {conn.lastTestOk === true && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />}
             {conn.lastTestOk === false && <XCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />}
+            {conn.type === "google_workspace" && (() => {
+              const gmeta = (conn.metadata || {}) as Partial<GoogleWorkspaceMetadata>
+              const state = gmeta.authState || 'unknown'
+              const cls = state === 'connected' ? 'bg-emerald-500/15 text-emerald-500'
+                       : state === 'expired'   ? 'bg-red-500/15 text-red-500'
+                       : state === 'pending'   ? 'bg-yellow-500/15 text-yellow-500'
+                       : 'bg-muted text-muted-foreground'
+              return <span className={cn("text-[10px] px-1.5 py-0.5 rounded-md font-medium shrink-0", cls)}>{state}</span>
+            })()}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">{getTypeLabel(conn.type)}</p>
           {detail && <p className="text-[11px] text-muted-foreground/60 font-mono mt-1 truncate">{detail}</p>}
@@ -98,6 +114,39 @@ function ConnectionCard({
         </div>
 
         <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+          {conn.type === 'google_workspace' && (() => {
+            const gmeta = (conn.metadata || {}) as Partial<GoogleWorkspaceMetadata>
+            return (
+              <>
+                {(gmeta.authState === 'expired' || gmeta.authState === 'disconnected') && (
+                  <Button size="sm" variant="outline" className="h-7 text-[11px] px-2" onClick={async (e) => {
+                    e.stopPropagation()
+                    try {
+                      const { authUrl } = await api.reauthGoogleConnection(conn.id)
+                      if (onGoogleOauth) {
+                        const result = await onGoogleOauth(authUrl)
+                        if (result) onTest(conn.id)
+                      }
+                    } catch (err) {
+                      alert((err as Error).message)
+                    }
+                  }}>Re-authenticate</Button>
+                )}
+                {gmeta.authState === 'connected' && (
+                  <Button size="sm" variant="ghost" className="h-7 text-[11px] px-2" onClick={async (e) => {
+                    e.stopPropagation()
+                    if (!window.confirm(`Disconnect ${conn.name}? This revokes the token at Google; the connection row is kept.`)) return
+                    try {
+                      await api.disconnectGoogleConnection(conn.id)
+                      onTest(conn.id)
+                    } catch (err) {
+                      alert((err as Error).message)
+                    }
+                  }}>Disconnect</Button>
+                )}
+              </>
+            )
+          })()}
           <button
             onClick={() => onTest(conn.id)}
             className="p-1.5 rounded-md hover:bg-muted/30 text-muted-foreground/50 hover:text-foreground transition-colors"
@@ -297,6 +346,9 @@ interface ConnFormState {
   odooUsername: string
   odooAuthType: string
   odooDescription: string
+  // Google Workspace
+  gwsPreset: 'prd-writer' | 'sheets-analyst' | 'full-workspace' | 'custom'
+  gwsCustomScopes: string
 }
 
 const emptyForm: ConnFormState = {
@@ -307,14 +359,17 @@ const emptyForm: ConnFormState = {
   url: "", loginUrl: "", authType: "basic", authUsername: "", siteDescription: "",
   githubMode: "remote", repoOwner: "", repoName: "", branch: "main", localPath: "", ghDescription: "",
   odooUrl: "", odooDb: "", odooUsername: "", odooAuthType: "password", odooDescription: "",
+  gwsPreset: "full-workspace", gwsCustomScopes: "",
 }
 
 function ConnectionDialog({
-  open, onClose, editConn,
+  open, onClose, editConn, onGoogleOauth, features,
 }: {
   open: boolean
   onClose: () => void
   editConn: Connection | null
+  onGoogleOauth?: (authUrl: string) => Promise<{ connectionId: string } | null>
+  features: ConnectionFeatureFlags
 }) {
   const [form, setForm] = useState<ConnFormState>(emptyForm)
   const [saving, setSaving] = useState(false)
@@ -355,6 +410,8 @@ function ConnectionDialog({
         odooUsername: m.odooUsername || "",
         odooAuthType: m.odooAuthType || "password",
         odooDescription: m.description || "",
+        gwsPreset: ((m as Partial<GoogleWorkspaceMetadata>).preset as ConnFormState['gwsPreset']) || "full-workspace",
+        gwsCustomScopes: ((m as Partial<GoogleWorkspaceMetadata>).customScopes || []).join(", "),
       })
     } else {
       setForm(emptyForm)
@@ -418,6 +475,13 @@ function ConnectionDialog({
         description: form.odooDescription || undefined,
       }
     }
+    if (form.type === "google_workspace") {
+      const meta: Record<string, unknown> = { preset: form.gwsPreset }
+      if (form.gwsPreset === 'custom') {
+        meta.customScopes = form.gwsCustomScopes.split(",").map(s => s.trim()).filter(Boolean)
+      }
+      return meta
+    }
     return {}
   }
 
@@ -445,13 +509,18 @@ function ConnectionDialog({
         const patch: Record<string, unknown> = { name: form.name, metadata }
         if (form.credentials) patch.credentials = form.credentials
         await api.updateConnection(editConn.id, patch)
+        onClose()
       } else {
-        await api.createConnection({
+        const { authUrl } = await api.createConnection({
           name: form.name, type: form.type,
-          credentials: form.credentials, metadata,
+          credentials: form.type === 'google_workspace' ? undefined : form.credentials,
+          metadata,
         })
+        onClose()
+        if (form.type === 'google_workspace' && authUrl && onGoogleOauth) {
+          await onGoogleOauth(authUrl)
+        }
       }
-      onClose()
     } catch (e: unknown) {
       setError((e as Error).message)
     } finally {
@@ -496,9 +565,11 @@ function ConnectionDialog({
                 <Select value={f.type} onValueChange={v => set("type", v)}>
                   <SelectTrigger className="h-8 text-xs border-border/50"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {CONNECTION_TYPES.map(t => (
-                      <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-                    ))}
+                    {CONNECTION_TYPES
+                      .filter(t => t.value !== 'google_workspace' || features.googleWorkspace)
+                      .map(t => (
+                        <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               )}
@@ -784,6 +855,46 @@ function ConnectionDialog({
               </div>
             </>
           )}
+
+          {f.type === "google_workspace" && (
+            <>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Scope preset</Label>
+                <Select
+                  value={f.gwsPreset}
+                  onValueChange={v => setForm(prev => ({ ...prev, gwsPreset: v as ConnFormState['gwsPreset'] }))}
+                >
+                  <SelectTrigger className="h-8 text-xs border-border/50"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="prd-writer">PRD Writer (Docs + Drive.file)</SelectItem>
+                    <SelectItem value="sheets-analyst">Sheets Analyst (Sheets + Drive.file)</SelectItem>
+                    <SelectItem value="full-workspace">Full Workspace (Docs + Sheets + Slides + Drive.file)</SelectItem>
+                    <SelectItem value="custom">Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {f.gwsPreset === 'custom' && (
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Custom scopes (comma-separated)</Label>
+                  <input
+                    value={f.gwsCustomScopes}
+                    onChange={e => set("gwsCustomScopes", e.target.value)}
+                    placeholder="drive.file, docs, spreadsheets"
+                    className={monoInputClass}
+                  />
+                </div>
+              )}
+              {editConn ? (
+                <p className="text-[11px] text-muted-foreground/70">
+                  Use the Re-authenticate button on the card to re-link this account.
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground/70">
+                  After saving, a popup will open to connect your Google account.
+                </p>
+              )}
+            </>
+          )}
         </div>
 
         {testResult && (
@@ -806,8 +917,8 @@ function ConnectionDialog({
             </Button>
           )}
           <Button size="sm" className="h-7 text-xs" onClick={handleSave}
-            disabled={saving || !f.name || (!editConn && f.type !== "github" && !f.credentials)}>
-            {saving ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Saving…</> : editConn ? "Update" : "Create"}
+            disabled={saving || !f.name || (!editConn && f.type !== "github" && f.type !== "google_workspace" && !f.credentials)}>
+            {saving ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Saving…</> : editConn ? "Update" : (f.type === "google_workspace" ? "Connect Google Account" : "Create")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -825,7 +936,36 @@ export function ConnectionsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
+  void testingId // reserved for future per-card loader
   const [assignments, setAssignments] = useState<Record<string, string[]>>({})
+  const [features, setFeatures] = useState<ConnectionFeatureFlags>({ googleWorkspace: false })
+
+  useEffect(() => {
+    api.getConnectionFeatures().then(r => setFeatures(r.features)).catch(() => {})
+  }, [])
+
+  const runGoogleOauth = useCallback(async (authUrl: string): Promise<{ connectionId: string } | null> => {
+    const popup = window.open(authUrl, 'gws-oauth', 'width=600,height=700')
+    if (!popup) { alert('Popup blocked. Please allow popups for this site and retry.'); return null }
+    return await new Promise((resolve) => {
+      const onMsg = (e: MessageEvent) => {
+        if (!e.data || typeof e.data !== 'object') return
+        if (e.data.type === 'oauth-success') {
+          window.removeEventListener('message', onMsg)
+          resolve({ connectionId: e.data.connectionId })
+        } else if (e.data.type === 'oauth-error') {
+          window.removeEventListener('message', onMsg)
+          alert(`OAuth failed: ${e.data.error || 'unknown error'}`)
+          resolve(null)
+        }
+      }
+      window.addEventListener('message', onMsg)
+      const interval = setInterval(() => {
+        if (popup.closed) { clearInterval(interval); window.removeEventListener('message', onMsg); resolve(null) }
+      }, 1000)
+      setTimeout(() => { clearInterval(interval); window.removeEventListener('message', onMsg); resolve(null) }, 5 * 60 * 1000)
+    })
+  }, [])
 
   const load = useCallback(() => {
     Promise.all([
@@ -838,6 +978,12 @@ export function ConnectionsPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Re-load when WS handlers bump the connections store (e.g. OAuth completed/expired)
+  const refreshTick = useConnectionsStore(s => s.refreshTick)
+  useEffect(() => {
+    if (refreshTick > 0) load()
+  }, [refreshTick, load])
 
   async function handleTest(id: string) {
     setTestingId(id)
@@ -932,6 +1078,7 @@ export function ConnectionsPage() {
                       onTest={handleTest}
                       onDelete={setDeleteTarget}
                       onEdit={(c) => { setEditConn(c); setDialogOpen(true) }}
+                      onGoogleOauth={runGoogleOauth}
                     />
                   ))}
                 </div>
@@ -946,6 +1093,8 @@ export function ConnectionsPage() {
         open={dialogOpen}
         onClose={() => { setDialogOpen(false); setEditConn(null); load() }}
         editConn={editConn}
+        onGoogleOauth={runGoogleOauth}
+        features={features}
       />
 
       {/* Delete Confirm */}

@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { Agent, Session, Task, TaskStatus, TaskPriority, CronJob, GatewayRoute, Alert, ActivityEvent, LiveFeedEntry, DashboardOverview, AuthUser } from "@/types"
+import type { Agent, Session, Task, TaskStatus, TaskPriority, CronJob, GatewayRoute, Alert, ActivityEvent, LiveFeedEntry, DashboardOverview, AuthUser, Connection } from "@/types"
 
 export * from "./useThemeStore"
 export { useProjectStore } from './useProjectStore'
@@ -367,4 +367,34 @@ export const useSessionLiveStore = create<SessionLiveState>((set) => ({
   lastEvent: null,
   push: (sessionId, event) => set({ lastEvent: { sessionId, event, ts: Date.now() } }),
   clear: () => set({ lastEvent: null }),
+}))
+
+// ─── Connections Store ───────────────────────────────────────────────────────
+// Lightweight store so WS handlers can trigger a refresh of the Connections UI
+// without coupling to the ConnectionsPage's local state. Consumers subscribe to
+// `refreshTick` to re-fetch on demand.
+interface ConnectionsState {
+  connections: Connection[]
+  refreshTick: number
+  setConnections: (conns: Connection[]) => void
+  refresh: () => Promise<void>
+  /** Bump `refreshTick` so subscribers re-fetch. Use when you don't want to
+   *  await the API call yourself (fire-and-forget from WS handlers). */
+  bumpRefresh: () => void
+}
+
+export const useConnectionsStore = create<ConnectionsState>((set) => ({
+  connections: [],
+  refreshTick: 0,
+  setConnections: (connections) => set({ connections }),
+  refresh: async () => {
+    try {
+      const { api } = await import("@/lib/api")
+      const r = await api.getConnections()
+      set({ connections: r.connections ?? [], refreshTick: Date.now() })
+    } catch (err) {
+      console.warn("[connections] refresh failed", err)
+    }
+  },
+  bumpRefresh: () => set((s) => ({ refreshTick: s.refreshTick + 1 })),
 }))

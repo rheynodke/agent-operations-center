@@ -40,13 +40,14 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
 
 - **Entry:** `server/index.cjs` — Express app with JWT auth, Helmet, CORS, rate limiting.
 - **Barrel:** `server/lib/index.cjs` — **explicit** named export list; adding a new function to any sub-module requires also adding it here. Does NOT use spread (`...submodule`). Note: `server/lib/agents/index.cjs` is a local sub-barrel that *does* use spread to compose its own files.
-- **Sub-modules:**
-  - `server/lib/agents/detail.cjs` — `getAgentDetail`, `updateAgent`, `getAgentChannels`, `addAgentChannel`, `updateAgentChannel`, `removeAgentChannel`
-  - `server/lib/agents/files.cjs` — `getAgentFile`, `saveAgentFile`, `injectSoulStandard`; editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`. `injectSoulStandard()` idempotently appends the AOC research output standard block to an agent's SOUL.md (guarded by `<!-- aoc:research-standard:start -->` marker)
-  - `server/lib/agents/skills.cjs` — `getAgentSkills`, `getAllSkills`, `getSkillFile`, `getSkillFileBySlug`, `saveSkillFile`, `saveSkillFileBySlug`, `createSkill`, `createGlobalSkill`, `toggleAgentSkill`
-  - `server/lib/agents/tools.cjs` — `BUILTIN_TOOLS`, `getAgentTools`, `getAllTools`, `toggleAgentTool`
-  - `server/lib/agents/skillScripts.cjs` — `listSkillScripts`, `getSkillScript`, `saveSkillScript`, `deleteSkillScript`, `getSkillScriptsPath`
+- **Sub-modules:** (see each file for its exact exports — the barrel rule above is the load-bearing invariant)
+  - `server/lib/agents/detail.cjs` — agent CRUD + channel binding management
+  - `server/lib/agents/files.cjs` — editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`. `injectSoulStandard()` idempotently appends the AOC research output standard block (guarded by `<!-- aoc:research-standard:start -->` marker)
+  - `server/lib/agents/skills.cjs` — per-agent + global skill CRUD and toggling
+  - `server/lib/agents/tools.cjs` — `BUILTIN_TOOLS` list + per-agent tool enable/disable
+  - `server/lib/agents/skillScripts.cjs` — scripts under `{skillDir}/scripts/`
   - `server/lib/agents/provision.cjs` — writes new agent to `openclaw.json` + scaffolds workspace
+  - `server/lib/pairing.cjs` — DM pairing approval + allow-list for telegram/whatsapp/discord. Reads `~/.openclaw/credentials/{channel}-pairing.json` and `{channel}[-{accountId}]-allowFrom.json`. 1-hour pending TTL matches OpenClaw's `PAIRING_PENDING_TTL_MS`.
   - `server/lib/sessions/index.cjs` — sessions sub-barrel (composes opencode + gateway via spread)
   - `server/lib/sessions/opencode.cjs` — parses OpenCode JSONL session files from `~/.openclaw/`; `parseCronJobs()` reads `~/.openclaw/cron/jobs.json` and normalizes the schedule object to display string
   - `server/lib/sessions/gateway.cjs` — parses gateway JSONL session files from `~/.openclaw/agents/{agentId}/sessions/`; handles text-encoded tool call markers (`<|tool_calls_section_begin|>`) and strips gateway-injected metadata from user messages
@@ -109,6 +110,15 @@ Channel bindings in `openclaw.json` use two patterns:
 - OpenClaw validates exact field names — use `groupPolicy` (not `guildPolicy`).
 - Removing a Discord binding does NOT delete `channels.discord` (it may be shared).
 - `getAgentChannels()` checks both patterns when discovering existing Discord bindings.
+
+### Channel Login & DM Pairing
+
+- **WhatsApp QR login** (`server/index.cjs` around L2563): `POST /api/channels/:channel/login/start` calls gateway RPC `web.login.start` → returns `{ qrDataUrl, message }`. If `qrDataUrl` is null the account is already linked. `POST /api/channels/:channel/login/wait` long-polls (up to 3 min) for scan completion.
+- **DM pairing approval**: users DM the bot, bot replies with a short-lived code, user enters it in AOC to authorize ongoing DMs.
+  - `GET /api/agents/:id/pairing` — pending requests across all channels for an agent.
+  - `GET /api/pairing/:channel?account=...` — pending requests for a channel (optionally per accountId).
+  - `POST /api/pairing/:channel/approve` `{ code, accountId? }` — approves and adds to allow-list.
+  - Pending requests live in `~/.openclaw/credentials/{channel}-pairing.json`; approvals write to `{channel}[-{accountId}]-allowFrom.json`.
 
 ### Agent Detail Page Tab Structure
 

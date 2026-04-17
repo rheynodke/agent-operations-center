@@ -666,7 +666,24 @@ export interface IntegrationConfig {
 
 // ─── Connections (Third-party Data Sources) ──────────────────────────────────
 
-export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli'
+export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli' | 'google_workspace'
+
+export type GoogleWorkspaceAuthState = 'pending' | 'connected' | 'expired' | 'disconnected'
+
+export interface GoogleWorkspaceMetadata {
+  linkedEmail: string | null
+  scopes: string[]
+  preset: 'prd-writer' | 'sheets-analyst' | 'full-workspace' | 'custom'
+  customScopes?: string[]
+  authState: GoogleWorkspaceAuthState
+  connectedAt?: number
+  lastRefreshAt?: number
+  lastHealthCheckAt?: number
+}
+
+export interface ConnectionFeatureFlags {
+  googleWorkspace: boolean
+}
 
 export interface ConnectionMetadata {
   // BigQuery

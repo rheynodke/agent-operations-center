@@ -15,6 +15,9 @@ const cronLib    = require('./automation/cron.cjs');
 const scriptsLib = require('./scripts.cjs');
 const hooksLib   = require('./hooks.cjs');
 const pairingLib = require('./pairing.cjs');
+const oauthG = require('./oauth/google.cjs');
+const googleConnections = require('./connections/google-workspace.cjs');
+const googleHealthCron = require('./cron/google-health.cjs');
 
 const { readJsonSafe, OPENCLAW_HOME } = config;
 const { parseRoutes, getChannelsConfig } = require('./routing.cjs');
@@ -115,6 +118,7 @@ module.exports = {
   ensureAocEnvFile:         scriptsLib.ensureAocEnvFile,
   ensureCheckTasksScript:   scriptsLib.ensureCheckTasksScript,
   ensureCheckConnectionsScript: scriptsLib.ensureCheckConnectionsScript,
+  ensureGwsCallScript:          scriptsLib.ensureGwsCallScript,
   ensureAocConnectScript:       scriptsLib.ensureAocConnectScript,
   injectHeartbeatTaskCheck: scriptsLib.injectHeartbeatTaskCheck,
   ensureSharedAdlcScripts:  scriptsLib.ensureSharedAdlcScripts,
@@ -130,4 +134,26 @@ module.exports = {
   listPairingRequests:     pairingLib.listPairingRequests,
   listAllPairingRequests:  pairingLib.listAllPairingRequests,
   approvePairingCode:      pairingLib.approvePairingCode,
+
+  // ── google workspace oauth helpers ─────────────────────────────────────────
+  googleBuildScopes:        oauthG.buildScopes,
+  googleSignStateJwt:       oauthG.signStateJwt,
+  googleVerifyStateJwt:     oauthG.verifyStateJwt,
+  googleGenerateAuthUrl:    oauthG.generateAuthUrl,
+  googleGeneratePkce:       oauthG.generatePkce,
+  googleExchangeCode:       oauthG.exchangeCode,
+  googleRefreshAccessToken: oauthG.refreshAccessToken,
+  googleRevokeToken:        oauthG.revokeToken,
+  googleScopePresets:       oauthG.SCOPE_PRESETS,
+  // ── google workspace connection handler ────────────────────────────────────
+  googleBeginAuth:          googleConnections.beginAuth,
+  googleCompleteAuth:       googleConnections.completeAuth,
+  googleDispenseToken:      googleConnections.dispenseToken,
+  googleDisconnect:         googleConnections.disconnect,
+  googleTestConnection:     googleConnections.testConnection,
+  googleRunHealthCheckAll:  googleConnections.runHealthCheckAll,
+  googleRedirectUri:        googleConnections.redirectUri,
+  // ── google workspace cron ──────────────────────────────────────────────────
+  googleHealthCronStart:    googleHealthCron.start,
+  googleHealthCronStop:     googleHealthCron.stop,
 };

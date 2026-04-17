@@ -2,7 +2,7 @@
 const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
-const { ensureUpdateTaskScript, toggleAgentCustomTool, ensureCheckTasksScript, ensureCheckConnectionsScript, ensureAocConnectScript, injectHeartbeatTaskCheck, ensureSharedAdlcScripts } = require('../scripts.cjs');
+const { ensureUpdateTaskScript, toggleAgentCustomTool, ensureCheckTasksScript, ensureCheckConnectionsScript, ensureGwsCallScript, ensureAocConnectScript, injectHeartbeatTaskCheck, ensureSharedAdlcScripts } = require('../scripts.cjs');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -570,6 +570,7 @@ function provisionAgent(opts, userId) {
     ensureUpdateTaskScript();
     ensureCheckTasksScript();
     ensureCheckConnectionsScript();
+    ensureGwsCallScript();
     ensureAocConnectScript();
     const getFileFn  = (_id, filename) => fs.readFileSync(path.join(workspacePath, filename), 'utf-8');
     const saveFileFn = (_id, filename, content) => fs.writeFileSync(path.join(workspacePath, filename), content, 'utf-8');
