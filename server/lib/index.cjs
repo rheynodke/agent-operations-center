@@ -39,6 +39,12 @@ module.exports = {
   parseGatewaySessions:      sessions.parseGatewaySessions,
   parseGatewaySessionEvents: sessions.parseGatewaySessionEvents,
   parseSingleGatewayEntry:   sessions.parseSingleGatewayEntry,
+  parseClaudeCliSessions:            sessions.parseClaudeCliSessions,
+  parseClaudeCliSessionEvents:       sessions.parseClaudeCliSessionEvents,
+  parseClaudeCliSessionEventsByFile: sessions.parseClaudeCliSessionEventsByFile,
+  parseSingleClaudeCliEntry:         sessions.parseSingleClaudeCliEntry,
+  buildAgentClaudeCliMap:            sessions.buildAgentClaudeCliMap,
+  findClaudeCliForGatewaySessionId:  sessions.findClaudeCliForGatewaySessionId,
   getAllSessions:             sessions.getAllSessions,
   getDashboardStats:         sessions.getDashboardStats,
 

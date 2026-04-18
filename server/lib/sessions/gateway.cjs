@@ -513,6 +513,7 @@ module.exports = {
   parseTextToolCalls,
   cleanUserMessage,
   extractSender,
+  extractMediaFiles,
   parseGatewaySessions,
   parseGatewaySessionEvents,
   parseSingleGatewayEntry,

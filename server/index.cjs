@@ -1374,15 +1374,57 @@ app.get('/api/sessions', db.authMiddleware, (req, res) => {
   }
 });
 
+/**
+ * Collect all events for a session, including Claude CLI events when the session is
+ * linked (or IS a claude-cli session). Returns events sorted oldest→newest by timestamp.
+ */
+function collectSessionEvents(sessionId, session) {
+  const gatewayEvents = parsers.parseGatewaySessionEvents(sessionId) || [];
+  let claudeCliEvents = [];
+
+  // 1) Session has an explicit link → fetch by claude-cli UUID
+  if (session?.claudeCliSessionId) {
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(session.claudeCliSessionId) || [];
+  }
+  // 2) Session source is claude-cli (standalone) → the id IS a claude-cli UUID
+  else if (session?.source === 'claude-cli') {
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId) || [];
+  }
+  // 3) No session match yet — try both; whichever finds the id wins
+  else if (!session) {
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId) || [];
+  }
+
+  if (claudeCliEvents.length === 0) return gatewayEvents;
+  if (gatewayEvents.length === 0) return claudeCliEvents;
+
+  // Merge both streams, de-duplicate by (id || timestamp+role), sort by timestamp
+  const seen = new Set();
+  const combined = [];
+  for (const e of [...gatewayEvents, ...claudeCliEvents]) {
+    const key = e.id || `${e.timestamp}:${e.role}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    combined.push(e);
+  }
+  combined.sort((a, b) => {
+    const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return ta - tb;
+  });
+  return combined;
+}
+
 app.get('/api/sessions/:id', db.authMiddleware, (req, res) => {
   try {
     const sessions = parsers.getAllSessions();
     let session = sessions.find(s => s.id === req.params.id);
 
+    let events = collectSessionEvents(req.params.id, session);
+
     // If the session isn't in the list yet (race condition during active writing:
     // sessions.json may not be flushed yet, or the file read got partial data),
     // try to load events directly — if a JSONL file exists, build a minimal session stub.
-    let events = parsers.parseGatewaySessionEvents(req.params.id);
     if (!session && events.length > 0) {
       session = {
         id: req.params.id,
@@ -1413,7 +1455,9 @@ app.get('/api/sessions/:id', db.authMiddleware, (req, res) => {
 // Session messages (for chat view)
 app.get('/api/sessions/:agentId/:sessionId/messages', db.authMiddleware, (req, res) => {
   try {
-    let events = parsers.parseGatewaySessionEvents(req.params.sessionId);
+    const sessions = parsers.getAllSessions();
+    const session = sessions.find(s => s.id === req.params.sessionId);
+    let events = collectSessionEvents(req.params.sessionId, session);
     if (events.length === 0) {
       const numericId = req.params.sessionId.match(/\d+/)?.[0];
       events = numericId ? parsers.parseOpenCodeEvents(numericId) : [];

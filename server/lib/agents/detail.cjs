@@ -3,6 +3,11 @@ const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
 const { parseGatewaySessions } = require('../sessions/gateway.cjs');
+// getAllSessions merges gateway + claude-cli sessions and augments the gateway
+// session status='active' when its linked claude-cli jsonl is currently being
+// written. We use it (not parseGatewaySessions alone) so that an agent running
+// purely on claude-cli shows LIVE on the detail page.
+const { getAllSessions } = require('../sessions/index.cjs');
 
 /**
  * Normalize streaming value: openclaw.json may store it as
@@ -131,7 +136,11 @@ function getAgentDetail(agentId) {
     vibe: identityFields.vibe || agentConfig.identity?.theme || '',
   };
 
-  const allSessions = parseGatewaySessions().filter(s => s.agent === agentId);
+  // Include claude-cli standalone sessions so LIVE status works for agents
+  // running the claude-cli backend (their jsonl lives under ~/.claude/projects,
+  // not the gateway session dir). getAllSessions() also upgrades status='active'
+  // on linked gateway sessions when their claude-cli file is being written.
+  const allSessions = getAllSessions().filter(s => s.agent === agentId);
   const activeSessions = allSessions.filter(s => s.status === 'active');
   const totalCost = allSessions.reduce((sum, s) => sum + (parseFloat(s.cost) || 0), 0);
   const totalTokens = allSessions.reduce((sum, s) => sum + (s.tokensIn || 0) + (s.tokensOut || 0), 0);

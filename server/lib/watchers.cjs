@@ -1,7 +1,13 @@
 const chokidar = require('chokidar');
 const fs = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, parseSingleGatewayEntry } = require('./index.cjs');
+const {
+  OPENCLAW_HOME,
+  OPENCLAW_WORKSPACE,
+  parseSingleGatewayEntry,
+  parseSingleClaudeCliEntry,
+  buildAgentClaudeCliMap,
+} = require('./index.cjs');
 const { readJsonSafe } = require('./config.cjs');
 
 class LiveFeedWatcher {
@@ -56,6 +62,12 @@ class LiveFeedWatcher {
     if (fs.existsSync(agentsDir)) {
       this._startAgentPolling(agentsDir);
     }
+
+    // Watch Claude CLI session logs at ~/.claude/projects/<workspace-slug>/*.jsonl
+    // When an OpenClaw agent uses claude-cli/* as its LLM, the transcript is
+    // written there instead of the gateway session dir, so gateway polling alone
+    // misses all thinking/tool-call/tool-result/final-text events.
+    this._startClaudeCliPolling();
 
     console.log('[watchers] Live feed watchers started');
   }
@@ -206,6 +218,171 @@ class LiveFeedWatcher {
     // Poll every 2 seconds for fast real-time detection
     this._pollInterval = setInterval(poll, 2000);
     console.log('[watchers] Agent session polling started (2s interval)');
+  }
+
+  /**
+   * Build a lookup: claude-cli UUID → { sessionKey, gatewaySessionId } by pairing
+   * each agent's claude-cli jsonls to a gateway sessions.json entry by mtime.
+   * Refreshed periodically from the poll loop.
+   */
+  _buildClaudeCliKeyMap() {
+    const LINK_WINDOW_MS = 5 * 60_000;
+    const map = new Map(); // claudeCliUuid -> { sessionKey, gatewaySessionId, agentId }
+    const agentMap = buildAgentClaudeCliMap();
+
+    for (const [agentId, info] of Object.entries(agentMap)) {
+      if (!fs.existsSync(info.projectDir)) continue;
+
+      // Gateway sessions.json for this agent
+      const sessionsFile = path.join(OPENCLAW_HOME, 'agents', agentId, 'sessions', 'sessions.json');
+      const gwData = readJsonSafe(sessionsFile);
+      const gwEntries = (gwData && typeof gwData === 'object')
+        ? Object.entries(gwData).map(([key, meta]) => ({ key, sessionId: meta?.sessionId, updatedAt: meta?.updatedAt || 0 }))
+        : [];
+
+      let files;
+      try { files = fs.readdirSync(info.projectDir).filter(f => f.endsWith('.jsonl')); }
+      catch { continue; }
+
+      for (const file of files) {
+        const uuid = file.replace(/\.jsonl$/, '');
+        const full = path.join(info.projectDir, file);
+        let stat; try { stat = fs.statSync(full); } catch { continue; }
+
+        let best = null, bestDelta = Infinity;
+        for (const gw of gwEntries) {
+          if (!gw.updatedAt) continue;
+          const delta = Math.abs(gw.updatedAt - stat.mtimeMs);
+          if (delta < bestDelta) { bestDelta = delta; best = gw; }
+        }
+
+        if (best && bestDelta <= LINK_WINDOW_MS) {
+          map.set(uuid, { sessionKey: best.key, gatewaySessionId: best.sessionId, agentId });
+        } else {
+          map.set(uuid, { sessionKey: `agent:${agentId}:claude-cli:${uuid}`, gatewaySessionId: null, agentId });
+        }
+      }
+    }
+    return map;
+  }
+
+  _startClaudeCliPolling() {
+    const fileSizes   = new Map();  // filePath -> last known size
+    const lastGrowth  = new Map();  // filePath -> timestamp of last growth (for processing_end)
+    const processing  = new Set();  // filePaths currently in processing state
+    const PROCESSING_IDLE_MS = 8_000; // emit processing_end after this much inactivity
+    let tickCount = 0;
+
+    this._claudeCliKeyMap = this._buildClaudeCliKeyMap();
+
+    const poll = () => {
+      tickCount++;
+      if (tickCount % 10 === 0) {
+        this._claudeCliKeyMap = this._buildClaudeCliKeyMap();
+      }
+
+      const agentMap = buildAgentClaudeCliMap();
+      const now = Date.now();
+
+      for (const [agentId, info] of Object.entries(agentMap)) {
+        if (!fs.existsSync(info.projectDir)) continue;
+        let files;
+        try { files = fs.readdirSync(info.projectDir).filter(f => f.endsWith('.jsonl')); }
+        catch { continue; }
+
+        for (const file of files) {
+          const full = path.join(info.projectDir, file);
+          const uuid = file.replace(/\.jsonl$/, '');
+          let stat; try { stat = fs.statSync(full); } catch { continue; }
+          const size = stat.size;
+          let prevSize = fileSizes.get(full);
+
+          if (prevSize === undefined) {
+            // First time seeing this file. If it was created very recently
+            // (mid-session), replay it from byte 0 so we catch the first turn.
+            // Otherwise just record the size as baseline (avoid replaying history).
+            const isYoung = (now - stat.mtimeMs) < 15_000;
+            if (isYoung) {
+              prevSize = 0;
+            } else {
+              fileSizes.set(full, size);
+              continue;
+            }
+          }
+
+          if (size > prevSize) {
+            // File grew — read new bytes
+            fileSizes.set(full, size);
+            lastGrowth.set(full, now);
+
+            // First growth after idle → processing_start
+            if (!processing.has(full)) {
+              processing.add(full);
+              const link = this._claudeCliKeyMap?.get(uuid) || {};
+              this.broadcast({
+                type: 'session:update',
+                action: 'processing_start',
+                agent: agentId,
+                file,
+                sessionKey: link.sessionKey || null,
+                source: 'claude-cli',
+              });
+            }
+
+            try {
+              const fd = fs.openSync(full, 'r');
+              const buffer = Buffer.alloc(size - prevSize);
+              fs.readSync(fd, buffer, 0, buffer.length, prevSize);
+              fs.closeSync(fd);
+
+              const link = this._claudeCliKeyMap?.get(uuid) || {};
+              const newLines = buffer.toString('utf-8').trim().split('\n').filter(Boolean);
+              for (const line of newLines) {
+                const parsed = parseSingleClaudeCliEntry(line);
+                if (!parsed) continue;
+                this.broadcast({
+                  type: 'session:live-event',
+                  agent: agentId,
+                  sessionId: link.gatewaySessionId || uuid,
+                  sessionKey: link.sessionKey || null,
+                  claudeCliSessionId: uuid,
+                  source: 'claude-cli',
+                  event: parsed,
+                });
+              }
+            } catch {}
+
+            // Generic update for sessions list refresh
+            this.broadcast({
+              type: 'session:update',
+              action: 'message',
+              agent: agentId,
+              file,
+              source: 'claude-cli',
+            });
+          } else if (processing.has(full)) {
+            // No growth this tick — check idle threshold to emit processing_end
+            const last = lastGrowth.get(full) || 0;
+            if (now - last > PROCESSING_IDLE_MS) {
+              processing.delete(full);
+              const link = this._claudeCliKeyMap?.get(uuid) || {};
+              this.broadcast({
+                type: 'session:update',
+                action: 'processing_end',
+                agent: agentId,
+                file,
+                sessionKey: link.sessionKey || null,
+                source: 'claude-cli',
+              });
+            }
+          }
+        }
+      }
+    };
+
+    poll();
+    this._claudeCliPollInterval = setInterval(poll, 2000);
+    console.log('[watchers] Claude CLI session polling started (2s interval)');
   }
 
   _watchFile(filePath, eventType) {
@@ -372,6 +549,8 @@ class LiveFeedWatcher {
     for (const w of this.watchers) {
       w.close();
     }
+    if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
+    if (this._claudeCliPollInterval) { clearInterval(this._claudeCliPollInterval); this._claudeCliPollInterval = null; }
     this.watchers = [];
     this.listeners.clear();
     console.log('[watchers] Live feed watchers stopped');
