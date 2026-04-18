@@ -388,6 +388,24 @@ export const api = {
       body: JSON.stringify({ url, target, agentId, bufferB64 }),
     }),
 
+  // Upload skill (zip / .skill / raw SKILL.md)
+  uploadSkillPreview: (filename: string, bufferB64: string) =>
+    request<import("@/types").ClawHubSkillPreview & { isSingleFile?: boolean; source?: string }>(
+      "/skills/upload/preview",
+      { method: "POST", body: JSON.stringify({ filename, bufferB64 }) },
+    ),
+  uploadSkillInstall: (
+    filename: string,
+    bufferB64: string,
+    target: string,
+    agentId?: string,
+    slug?: string,
+  ) =>
+    request<{ ok: boolean; slug: string; path: string; target: string; source: string }>(
+      "/skills/upload/install",
+      { method: "POST", body: JSON.stringify({ filename, bufferB64, target, agentId, slug }) },
+    ),
+
   // SkillsMP
   skillsmpKeyStatus: () =>
     request<import("@/types").SkillsmpKeyStatus>("/settings/skillsmp"),

@@ -520,7 +520,158 @@ async function installSkillsmpSkill({ skill, target, agentId }) {
   };
 }
 
+// ─── Upload (zip / .skill / raw SKILL.md) ─────────────────────────────────────
+
+function isZipBuffer(buf) {
+  return buf && buf.length >= 4
+    && buf[0] === 0x50 && buf[1] === 0x4B
+    && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07)
+    && (buf[3] === 0x04 || buf[3] === 0x06 || buf[3] === 0x08);
+}
+
+function deriveSlugFromFilename(filename) {
+  if (!filename) return null;
+  const base = path.basename(String(filename)).replace(/\.(zip|skill|md)$/i, '');
+  const slug = base.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || null;
+}
+
+/**
+ * Normalize zip entries so that a wrapper directory (common when zipping a folder)
+ * is stripped. E.g. if every entry lives under "my-skill/", rewrite keys to drop it.
+ */
+function stripZipWrapperDir(files) {
+  const names = Object.keys(files);
+  if (names.length === 0) return files;
+  const first = names[0].split('/')[0];
+  if (!first) return files;
+  const allShare = names.every(n => n === first || n.startsWith(first + '/'));
+  if (!allShare) return files;
+  // Ensure SKILL.md is NOT at root already
+  if (names.includes('SKILL.md')) return files;
+  const out = {};
+  for (const [k, v] of Object.entries(files)) {
+    const stripped = k === first ? '' : k.slice(first.length + 1);
+    if (stripped) out[stripped] = v;
+  }
+  return out;
+}
+
+/**
+ * Build a preview from an uploaded buffer. Accepts:
+ *   - ZIP archive (application/zip, .zip, .skill)
+ *   - Raw SKILL.md text (single-file skill, .skill or .md)
+ */
+function previewFromUpload(buffer, filename) {
+  if (!buffer || !buffer.length) throw new Error('Empty upload');
+
+  let files;
+  let isSingleFile = false;
+
+  if (isZipBuffer(buffer)) {
+    const parsed = parseZip(buffer);
+    files = stripZipWrapperDir(parsed.files);
+  } else {
+    // Treat as raw SKILL.md
+    const text = buffer.toString('utf-8');
+    if (!/^---\s*\n/.test(text) && !/^#\s/.test(text)) {
+      throw new Error('Upload is not a ZIP and does not look like a SKILL.md (missing frontmatter or heading)');
+    }
+    files = { 'SKILL.md': () => text };
+    isSingleFile = true;
+  }
+
+  const skillMdContent = files['SKILL.md'] ? files['SKILL.md']() : null;
+  if (!skillMdContent) throw new Error('Upload does not contain SKILL.md');
+  const frontmatter = parseSkillMdFrontmatter(skillMdContent);
+
+  let meta = {};
+  if (files['_meta.json']) {
+    try { meta = JSON.parse(files['_meta.json']()); } catch { /* ignore */ }
+  }
+
+  const security = runSecurityScan(files);
+  const fileList = Object.keys(files).sort();
+  const slug =
+    deriveSlugFromFilename(frontmatter.name) ||
+    deriveSlugFromFilename(meta.name) ||
+    deriveSlugFromFilename(filename) ||
+    'uploaded-skill';
+
+  return {
+    slug,
+    name:        frontmatter.name   || meta.name   || slug,
+    description: frontmatter.description || meta.description || '',
+    version:     meta.version       || frontmatter.version   || null,
+    author:      meta.author        || null,
+    license:     meta.license       || frontmatter.license   || null,
+    emoji:       frontmatter.emoji  || null,
+    skillMdContent,
+    security,
+    fileList,
+    isSingleFile,
+    source: 'upload',
+    _bufferB64: buffer.toString('base64'),
+  };
+}
+
+function installFromUpload({ bufferB64, filename, target, agentId, slug: slugOverride }) {
+  if (!bufferB64) throw new Error('bufferB64 is required');
+  const buffer = Buffer.from(bufferB64, 'base64');
+  if (!buffer.length) throw new Error('Empty upload');
+
+  // Derive slug: explicit override > filename-based
+  let slug = slugOverride && /^[a-z0-9-]+$/.test(slugOverride)
+    ? slugOverride
+    : deriveSlugFromFilename(filename);
+
+  if (isZipBuffer(buffer)) {
+    const parsed = parseZip(buffer);
+    const files = stripZipWrapperDir(parsed.files);
+    const skillMd = files['SKILL.md'] ? files['SKILL.md']() : null;
+    if (!skillMd) throw new Error('ZIP does not contain SKILL.md');
+
+    if (!slug) {
+      const fm = parseSkillMdFrontmatter(skillMd);
+      slug = deriveSlugFromFilename(fm.name) || 'uploaded-skill';
+    }
+
+    const installPath = resolveInstallPath(target, slug, agentId);
+    if (fs.existsSync(installPath)) {
+      throw new Error(`Skill "${slug}" is already installed at ${installPath}`);
+    }
+
+    fs.mkdirSync(installPath, { recursive: true });
+    // Write each (possibly wrapper-stripped) file manually so the stripping is honored
+    for (const [name, getContent] of Object.entries(files)) {
+      const dest = path.join(installPath, name);
+      if (!dest.startsWith(installPath)) continue; // zip-slip guard
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, getContent(), 'utf-8');
+    }
+    return { ok: true, slug, path: installPath, target, source: 'upload' };
+  }
+
+  // Raw SKILL.md
+  const text = buffer.toString('utf-8');
+  if (!/^---\s*\n/.test(text) && !/^#\s/.test(text)) {
+    throw new Error('Upload is not a ZIP and does not look like a SKILL.md');
+  }
+  if (!slug) {
+    const fm = parseSkillMdFrontmatter(text);
+    slug = deriveSlugFromFilename(fm.name) || 'uploaded-skill';
+  }
+  const installPath = resolveInstallPath(target, slug, agentId);
+  if (fs.existsSync(installPath)) {
+    throw new Error(`Skill "${slug}" is already installed at ${installPath}`);
+  }
+  fs.mkdirSync(installPath, { recursive: true });
+  fs.writeFileSync(path.join(installPath, 'SKILL.md'), text, 'utf-8');
+  return { ok: true, slug, path: installPath, target, source: 'upload' };
+}
+
 module.exports = {
   parseClawHubSlug, previewSkill, installSkill, getInstallTargets,
   skillsmpSearch, fetchSkillsmpSkillMd, runSecurityScan, installSkillsmpSkill,
+  previewFromUpload, installFromUpload,
 };

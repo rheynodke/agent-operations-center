@@ -9,6 +9,8 @@ const {
   buildAgentClaudeCliMap,
 } = require('./index.cjs');
 const { readJsonSafe } = require('./config.cjs');
+const { processClaudeCliFile: forwardClaudeCliIntermediateToTelegram } =
+  require('./claude-cli-telegram-forwarder.cjs');
 
 class LiveFeedWatcher {
   constructor() {
@@ -271,6 +273,9 @@ class LiveFeedWatcher {
     const lastGrowth  = new Map();  // filePath -> timestamp of last growth (for processing_end)
     const processing  = new Set();  // filePaths currently in processing state
     const PROCESSING_IDLE_MS = 8_000; // emit processing_end after this much inactivity
+    // Dedup set for the Telegram-forwarder: claude-cli text-block UUIDs we've
+    // already forwarded. Persists for the life of the watcher (process lifetime).
+    const forwardedTextBlockUuids = new Set();
     let tickCount = 0;
 
     this._claudeCliKeyMap = this._buildClaudeCliKeyMap();
@@ -359,6 +364,24 @@ class LiveFeedWatcher {
               agent: agentId,
               file,
               source: 'claude-cli',
+            });
+
+            // Forward intermediate assistant text blocks to Telegram. OpenClaw's
+            // claude-cli backend only delivers the FINAL text block per turn to
+            // the channel, so progress updates ("Let me check…", "Cek dulu…")
+            // never reach the user. We scan the file for text blocks that are
+            // followed by a tool_use or a new user turn (i.e. not the final)
+            // and send those directly via the Telegram Bot API. The `forwarder`
+            // handles dedup via UUID so repeated polls don't re-send.
+            //
+            // Fire-and-forget: the forwarder never throws, and we don't await
+            // it so the poll loop stays responsive even under Telegram latency.
+            forwardClaudeCliIntermediateToTelegram({
+              agentId,
+              filePath: full,
+              forwardedUuids: forwardedTextBlockUuids,
+            }).catch((err) => {
+              console.error('[watchers] claude-cli→telegram forwarder:', err?.message || err);
             });
           } else if (processing.has(full)) {
             // No growth this tick — check idle threshold to emit processing_end

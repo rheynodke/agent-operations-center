@@ -8,7 +8,7 @@ function shortenPath(p: string) {
 import {
   X, Search, ShieldCheck, ShieldAlert, ShieldX, Download,
   ChevronDown, FileText, CheckCircle2, Loader2, ExternalLink,
-  Package, Star, Key, Trash2, AlertTriangle, Github,
+  Package, Star, Key, Trash2, AlertTriangle, Github, Upload, FileArchive,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
@@ -726,9 +726,280 @@ function ClawHubTab({ targets }: { targets: ClawHubInstallTarget[] }) {
   )
 }
 
+// ─── Upload tab (zip / .skill / SKILL.md) ─────────────────────────────────────
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result || "")
+      const comma = result.indexOf(",")
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    }
+    reader.onerror = () => reject(reader.error || new Error("File read failed"))
+    reader.readAsDataURL(file)
+  })
+}
+
+function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
+  const [file, setFile]                   = useState<File | null>(null)
+  const [bufferB64, setBufferB64]         = useState<string | null>(null)
+  const [fetchState, setFetchState]       = useState<"idle" | "loading" | "done" | "error">("idle")
+  const [preview, setPreview]             = useState<(ClawHubSkillPreview & { isSingleFile?: boolean }) | null>(null)
+  const [fetchError, setFetchError]       = useState<string | null>(null)
+  const [target, setTarget]               = useState("global")
+  const [agentId, setAgentId]             = useState("")
+  const [slugOverride, setSlugOverride]   = useState("")
+  const [installState, setInstallState]   = useState<"idle" | "loading" | "done" | "error">("idle")
+  const [installError, setInstallError]   = useState<string | null>(null)
+  const [installedPath, setInstalledPath] = useState<string | null>(null)
+  const [showFiles, setShowFiles]         = useState(false)
+  const [showSkillMd, setShowSkillMd]     = useState(false)
+  const [dragOver, setDragOver]           = useState(false)
+
+  async function handleFile(f: File) {
+    if (!f) return
+    if (f.size > 24 * 1024 * 1024) {
+      setFetchError("File too large (max 24 MB)")
+      setFetchState("error")
+      return
+    }
+    setFile(f)
+    setFetchState("loading"); setPreview(null); setFetchError(null)
+    setInstallState("idle"); setInstallError(null)
+    try {
+      const b64 = await fileToBase64(f)
+      setBufferB64(b64)
+      const p = await api.uploadSkillPreview(f.name, b64)
+      setPreview(p)
+      setSlugOverride(p.slug || "")
+      setFetchState("done")
+    } catch (e: unknown) {
+      setFetchError(e instanceof Error ? e.message : String(e))
+      setFetchState("error")
+    }
+  }
+
+  async function handleInstall() {
+    if (!preview || !bufferB64 || !file) return
+    if (target === "agent" && !agentId) return
+    setInstallState("loading"); setInstallError(null)
+    try {
+      const res = await api.uploadSkillInstall(
+        file.name,
+        bufferB64,
+        target,
+        target === "agent" ? agentId : undefined,
+        slugOverride.trim() || undefined,
+      )
+      setInstalledPath(res.path)
+      setInstallState("done")
+    } catch (e: unknown) {
+      setInstallError(e instanceof Error ? e.message : String(e))
+      setInstallState("error")
+    }
+  }
+
+  function reset() {
+    setFile(null); setBufferB64(null); setPreview(null); setFetchError(null)
+    setFetchState("idle"); setInstallState("idle"); setInstallError(null)
+    setInstalledPath(null); setSlugOverride("")
+  }
+
+  const slugValid = /^[a-z0-9-]+$/.test(slugOverride.trim())
+  const canInstall = preview && installState === "idle" &&
+    preview.security.rating !== "danger" &&
+    (target !== "agent" || !!agentId) &&
+    slugValid
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Drop zone / file picker */}
+      {!file && (
+        <label
+          onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => {
+            e.preventDefault(); setDragOver(false)
+            const f = e.dataTransfer.files?.[0]
+            if (f) handleFile(f)
+          }}
+          className={cn(
+            "flex flex-col items-center justify-center gap-2 w-full py-8 rounded-xl border-2 border-dashed cursor-pointer transition-colors",
+            dragOver
+              ? "border-primary/60 bg-primary/5"
+              : "border-border hover:border-primary/40 hover:bg-card/60"
+          )}>
+          <input
+            type="file"
+            accept=".zip,.skill,.md,application/zip"
+            className="hidden"
+            onChange={e => {
+              const f = e.target.files?.[0]
+              if (f) handleFile(f)
+            }}
+          />
+          <Upload className="w-8 h-8 text-muted-foreground/60" />
+          <p className="text-sm font-medium text-foreground">Drop or click to upload</p>
+          <p className="text-[11px] text-muted-foreground">
+            <span className="font-mono">.zip</span>, <span className="font-mono">.skill</span>, or raw <span className="font-mono">SKILL.md</span> &middot; max 24 MB
+          </p>
+        </label>
+      )}
+
+      {/* Selected file chip */}
+      {file && (
+        <div className="flex items-center justify-between rounded-lg border border-border bg-surface-high px-3 py-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <FileArchive className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <span className="text-[12px] font-mono text-foreground truncate">{file.name}</span>
+            <span className="text-[10px] text-muted-foreground shrink-0">{(file.size / 1024).toFixed(1)} KB</span>
+          </div>
+          <button onClick={reset} className="text-muted-foreground hover:text-destructive transition-colors p-1 rounded">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {fetchState === "loading" && (
+        <div className="flex items-center justify-center py-6 gap-2 text-muted-foreground">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <span className="text-sm">Parsing & scanning…</span>
+        </div>
+      )}
+      {fetchState === "error" && fetchError && <p className="text-sm text-destructive">{fetchError}</p>}
+
+      {/* Preview card */}
+      {preview && (
+        <div className="rounded-xl border border-border bg-surface-high flex flex-col gap-3 p-4">
+          <div className="flex items-start gap-3">
+            {preview.emoji && <span className="text-2xl shrink-0 mt-0.5">{preview.emoji}</span>}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-semibold text-foreground">{preview.name}</h3>
+                {preview.version && <span className="text-[10px] text-muted-foreground font-mono bg-muted/30 px-1.5 py-0.5 rounded">v{preview.version}</span>}
+                {preview.license && <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/20">{preview.license}</span>}
+                {preview.isSingleFile && <span className="text-[10px] text-sky-400 px-1.5 py-0.5 rounded bg-sky-400/10">single-file</span>}
+              </div>
+              {preview.description && <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{preview.description}</p>}
+              {preview.author && <p className="text-[10px] text-muted-foreground/60 mt-1">by @{preview.author}</p>}
+            </div>
+          </div>
+
+          {/* Security scan */}
+          <div className={cn(
+            "rounded-lg border px-3 py-2.5 flex flex-col gap-1.5",
+            preview.security.rating === "clean"  && "border-green-500/20 bg-green-500/5",
+            preview.security.rating === "info"   && "border-sky-500/20 bg-sky-500/5",
+            preview.security.rating === "warn"   && "border-amber-500/20 bg-amber-500/5",
+            preview.security.rating === "danger" && "border-red-500/20 bg-red-500/5",
+          )}>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Security Scan</span>
+              <SecurityBadge rating={preview.security.rating} />
+            </div>
+            <p className="text-xs text-foreground/80">{preview.security.summary}</p>
+            {preview.security.issues.length > 0 && (
+              <ul className="flex flex-col gap-0.5 mt-0.5">
+                {preview.security.issues.slice(0, 5).map((issue, i) => (
+                  <li key={i} className={cn("text-[11px] flex items-center gap-1.5", issue.level === "danger" ? "text-red-400" : "text-amber-400")}>
+                    <span className="w-1 h-1 rounded-full bg-current shrink-0" />
+                    <span className="font-mono text-[10px] text-muted-foreground">{issue.file}</span>
+                    <span>{issue.label}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* File list + SKILL.md toggles */}
+          <div className="flex gap-2">
+            <button onClick={() => setShowFiles(v => !v)} className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronDown className={cn("w-3 h-3 transition-transform", showFiles && "rotate-180")} />
+              {preview.fileList.length} file{preview.fileList.length === 1 ? "" : "s"}
+            </button>
+            <button onClick={() => setShowSkillMd(v => !v)} className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors ml-2">
+              <FileText className="w-3 h-3" /> SKILL.md
+            </button>
+          </div>
+          {showFiles && (
+            <div className="rounded-lg bg-muted/20 border border-border p-2 max-h-28 overflow-y-auto">
+              {preview.fileList.map(f => <div key={f} className="text-[10px] font-mono text-muted-foreground py-0.5">{f}</div>)}
+            </div>
+          )}
+          {showSkillMd && (
+            <div className="rounded-lg bg-muted/20 border border-border p-3 max-h-40 overflow-y-auto">
+              <pre className="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap leading-relaxed">{preview.skillMdContent}</pre>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Install slug + location */}
+      {preview && installState !== "done" && (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Install slug</label>
+            <input
+              type="text"
+              value={slugOverride}
+              onChange={e => setSlugOverride(e.target.value)}
+              placeholder="my-skill"
+              className={cn(
+                "bg-input border rounded-lg px-3 py-2 text-sm text-foreground font-mono focus:outline-none focus:ring-1",
+                slugValid ? "border-border focus:ring-primary" : "border-red-500/40 focus:ring-red-500"
+              )}
+            />
+            {!slugValid && (
+              <p className="text-[11px] text-red-400">Slug must be lowercase letters, digits, or hyphens only</p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Install location</p>
+            {targets.length > 0
+              ? <TargetPicker targets={targets} value={target} onChange={setTarget} agentId={agentId} onAgentChange={setAgentId} />
+              : <div className="text-xs text-muted-foreground">Loading targets…</div>
+            }
+          </div>
+        </>
+      )}
+
+      {installState === "error" && installError && <p className="text-sm text-destructive">{installError}</p>}
+
+      {installState === "done" && (
+        <div className="rounded-xl border border-green-500/20 bg-green-500/8 px-4 py-3 flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-medium text-foreground">"{preview?.name}" installed!</p>
+            {installedPath && <p className="text-[11px] text-muted-foreground font-mono mt-0.5 break-all">{shortenPath(installedPath)}</p>}
+          </div>
+        </div>
+      )}
+
+      {preview && installState !== "done" && (
+        <button onClick={handleInstall} disabled={!canInstall || installState === "loading"}
+          className={cn(
+            "flex items-center justify-center gap-1.5 w-full py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40",
+            preview.security.rating === "danger"
+              ? "bg-red-500/10 text-red-400 border border-red-500/20 cursor-not-allowed"
+              : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
+          )}>
+          {installState === "loading"
+            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Installing…</>
+            : preview.security.rating === "danger"
+            ? <><ShieldX className="w-3.5 h-3.5" /> Blocked (dangerous)</>
+            : <><Download className="w-3.5 h-3.5" /> Install</>
+          }
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ─── Main modal ───────────────────────────────────────────────────────────────
 
-type TabId = "clawhub" | "skillsmp"
+type TabId = "clawhub" | "skillsmp" | "upload"
 
 interface Props {
   onClose: () => void
@@ -746,6 +1017,7 @@ export function InstallSkillModal({ onClose, onInstalled: _ }: Props) {
   const tabs: { id: TabId; label: string; icon: string }[] = [
     { id: "clawhub",  label: "ClawHub",  icon: "🦞" },
     { id: "skillsmp", label: "SkillsMP", icon: "⚡" },
+    { id: "upload",   label: "Upload",   icon: "📦" },
   ]
 
   return (
@@ -761,7 +1033,7 @@ export function InstallSkillModal({ onClose, onInstalled: _ }: Props) {
             </div>
             <div>
               <h2 className="text-sm font-semibold text-foreground">Install Skill</h2>
-              <p className="text-[11px] text-muted-foreground">From ClawHub or SkillsMP marketplace</p>
+              <p className="text-[11px] text-muted-foreground">ClawHub, SkillsMP, or upload a .zip / .skill file</p>
             </div>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
@@ -784,21 +1056,22 @@ export function InstallSkillModal({ onClose, onInstalled: _ }: Props) {
             </button>
           ))}
           <div className="flex-1 flex items-center justify-end gap-3 pb-1 pt-1">
-            <a href={tab === "clawhub" ? "https://clawhub.ai" : "https://skillsmp.com"}
-              target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
-              <ExternalLink className="w-3 h-3" />
-              Browse {tab === "clawhub" ? "ClawHub" : "SkillsMP"}
-            </a>
+            {tab !== "upload" && (
+              <a href={tab === "clawhub" ? "https://clawhub.ai" : "https://skillsmp.com"}
+                target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
+                <ExternalLink className="w-3 h-3" />
+                Browse {tab === "clawhub" ? "ClawHub" : "SkillsMP"}
+              </a>
+            )}
           </div>
         </div>
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {tab === "clawhub"
-            ? <ClawHubTab targets={targets} />
-            : <SkillsmpTab targets={targets} />
-          }
+          {tab === "clawhub"  && <ClawHubTab  targets={targets} />}
+          {tab === "skillsmp" && <SkillsmpTab targets={targets} />}
+          {tab === "upload"   && <UploadTab   targets={targets} />}
         </div>
       </div>
     </div>

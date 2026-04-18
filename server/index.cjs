@@ -132,7 +132,7 @@ const limiter = rateLimit({
   message: { error: 'Too many requests' },
 });
 app.use('/api/', limiter);
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 
 // ─── Auth Routes (public — no middleware) ─────────────────────────────────────
 
@@ -1035,6 +1035,44 @@ app.post('/api/skills/clawhub/install', db.authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('[api/skills/clawhub/install]', err);
     const code = err.message?.includes('already installed') ? 409 : 500;
+    res.status(code).json({ error: err.message || 'Install failed' });
+  }
+});
+
+// ─── Upload Skill (zip / .skill / raw SKILL.md) ───────────────────────────────
+
+// POST /api/skills/upload/preview — scan an uploaded buffer without installing
+// Body: { filename, bufferB64 }
+app.post('/api/skills/upload/preview', db.authMiddleware, (req, res) => {
+  const { filename, bufferB64 } = req.body || {};
+  if (!bufferB64 || typeof bufferB64 !== 'string') {
+    return res.status(400).json({ error: 'bufferB64 is required' });
+  }
+  try {
+    const buffer = Buffer.from(bufferB64, 'base64');
+    if (!buffer.length) return res.status(400).json({ error: 'Empty upload' });
+    const preview = skillsInstall.previewFromUpload(buffer, filename);
+    res.json(preview);
+  } catch (err) {
+    console.error('[api/skills/upload/preview]', err);
+    res.status(400).json({ error: err.message || 'Failed to parse upload' });
+  }
+});
+
+// POST /api/skills/upload/install — install from uploaded buffer
+// Body: { filename, bufferB64, target, agentId?, slug? }
+app.post('/api/skills/upload/install', db.authMiddleware, (req, res) => {
+  const { filename, bufferB64, target, agentId, slug } = req.body || {};
+  if (!bufferB64 || !target) {
+    return res.status(400).json({ error: 'bufferB64 and target are required' });
+  }
+  try {
+    const result = skillsInstall.installFromUpload({ bufferB64, filename, target, agentId, slug });
+    console.log(`[api/skills/upload] Installed "${result.slug}" to ${result.path}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/skills/upload/install]', err);
+    const code = err.message?.includes('already installed') ? 409 : 400;
     res.status(code).json({ error: err.message || 'Install failed' });
   }
 });

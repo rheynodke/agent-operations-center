@@ -65,6 +65,9 @@ module.exports = {
   toggleAgentSkill:     agents.toggleAgentSkill,
   deleteAgentSkill:     agents.deleteAgentSkill,
   deleteSkillBySlug:    agents.deleteSkillBySlug,
+  getSkillDirTree:      agents.getSkillDirTree,
+  getSkillAnyFile:      agents.getSkillAnyFile,
+  saveSkillAnyFile:     agents.saveSkillAnyFile,
   BUILTIN_TOOLS:     agents.BUILTIN_TOOLS,
   getAgentTools:     agents.getAgentTools,
   getAllTools:        agents.getAllTools,
@@ -86,6 +89,9 @@ module.exports = {
   saveSkillScript:     agents.saveSkillScript,
   deleteSkillScript:   agents.deleteSkillScript,
   getSkillScriptsPath: agents.getSkillScriptsPath,
+  getAgentSkillDirTree:  agents.getAgentSkillDirTree,
+  getAgentSkillAnyFile:  agents.getAgentSkillAnyFile,
+  saveAgentSkillAnyFile: agents.saveAgentSkillAnyFile,
 
   // ── routing ────────────────────────────────────────────────────────────────
   parseRoutes,

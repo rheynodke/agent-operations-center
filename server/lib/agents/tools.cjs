@@ -101,7 +101,31 @@ function getAgentTools(agentId) {
 
 /**
  * Toggle a built-in tool ON or OFF for a specific agent.
- * Manages agents.list[].tools.deny for disable, removes from deny for enable.
+ *
+ * Handles three enable/disable mechanisms in openclaw's tool resolver:
+ *   1. `tools.profile` (global or agent-level) — e.g. "coding" allows only a
+ *      curated subset of tools.
+ *   2. `agents.list[].tools.allow` — explicit allow-list at the agent level.
+ *      When set, it REPLACES the profile's allow-list entirely.
+ *   3. `agents.list[].tools.deny` — explicit deny-list at the agent level.
+ *      Always subtractive.
+ *
+ * Prior implementation only managed (3), so toggling ON a tool that was
+ * excluded by the profile (1) had no effect — the tool stayed disabled
+ * because the profile still excluded it. This function now correctly manages
+ * both `allow` and `deny` so the dashboard toggle actually reflects reality.
+ *
+ * Strategy for ENABLE:
+ *   - Remove from deny (if present).
+ *   - If the profile already allows this tool, done — no allow entry needed.
+ *   - Otherwise, materialize an agent-level allow list seeded from the
+ *     current effective-enabled tools (to preserve the other enabled tools)
+ *     and add the target tool. Subsequent enables append to this list.
+ *
+ * Strategy for DISABLE:
+ *   - Remove from agent-level allow (if present).
+ *   - Add to agent-level deny as a belt-and-suspenders backstop, since the
+ *     global profile could re-enable the tool if the allow list is removed.
  */
 function toggleAgentTool(agentId, toolName, enabled) {
   const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
@@ -114,28 +138,84 @@ function toggleAgentTool(agentId, toolName, enabled) {
   const agentIdx = config.agents.list.findIndex(a => a.id === agentId);
   if (agentIdx === -1) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentConfig    = config.agents.list[agentIdx];
-  const currentDeny    = agentConfig.tools?.deny || [];
+  const agentConfig = config.agents.list[agentIdx];
+  const currentDeny  = [...(agentConfig.tools?.deny  || [])];
+  const currentAllow = Array.isArray(agentConfig.tools?.allow)
+    ? [...agentConfig.tools.allow]
+    : null;
+
+  // Compute the current effective-enabled tool list based on profile + agent overrides.
+  // Used when we need to materialize an allow-list on first enable-through-profile.
+  const globalTools   = config.tools || {};
+  const agentProfile  = agentConfig.tools?.profile || globalTools.profile || 'full';
+  const profileSpec   = TOOL_PROFILES[agentProfile];
+  const profileAllow  = profileSpec?.allow || null;
+  const computeCurrentEnabled = () =>
+    BUILTIN_TOOLS
+      .map((t) => t.name)
+      .filter((name) => {
+        if (currentAllow) return currentAllow.includes(name);
+        if (profileAllow) return profileAllow.includes(name);
+        return true;  // profile=full, no allow restriction
+      })
+      .filter((name) => !currentDeny.includes(name));
+
+  const knownBuiltinNames = new Set(BUILTIN_TOOLS.map((t) => t.name));
 
   if (enabled) {
-    const newDeny = currentDeny.filter(t => t !== toolName);
-    if (newDeny.length === 0) {
-      if (agentConfig.tools) {
-        delete agentConfig.tools.deny;
-        if (Object.keys(agentConfig.tools).length === 0) delete agentConfig.tools;
+    // 1. Remove from deny if present.
+    const nextDeny = currentDeny.filter((t) => t !== toolName);
+
+    // 2. Ensure the tool is allowed.
+    //    - If profile already allows it and no explicit allow list exists,
+    //      we don't need an allow list.
+    //    - Otherwise, materialize/extend the agent-level allow list.
+    const profileCoversIt = profileAllow ? profileAllow.includes(toolName) : true;
+    let nextAllow = currentAllow;
+    if (!profileCoversIt) {
+      if (!nextAllow) {
+        // Snapshot what's currently enabled so we don't accidentally disable
+        // tools that the profile was allowing. Only include known builtins.
+        nextAllow = computeCurrentEnabled().filter((n) => knownBuiltinNames.has(n));
       }
-    } else {
-      agentConfig.tools = { ...agentConfig.tools, deny: newDeny };
+      if (!nextAllow.includes(toolName)) nextAllow.push(toolName);
     }
+
+    // Write the new tools block (pruning empty keys to keep the config tidy).
+    const nextTools = { ...(agentConfig.tools || {}) };
+    if (nextDeny.length) nextTools.deny = nextDeny; else delete nextTools.deny;
+    if (nextAllow) nextTools.allow = nextAllow; else delete nextTools.allow;
+    if (Object.keys(nextTools).length === 0) delete agentConfig.tools;
+    else agentConfig.tools = nextTools;
   } else {
-    const newDeny = [...new Set([...currentDeny, toolName])];
-    agentConfig.tools = { ...agentConfig.tools, deny: newDeny };
+    // Remove from allow (if present), add to deny.
+    let nextAllow = currentAllow ? currentAllow.filter((t) => t !== toolName) : null;
+    // If the allow list becomes exactly the profile baseline, drop it to keep
+    // the config clean — deny alone will do the job.
+    if (nextAllow && profileAllow) {
+      const sameAsProfile =
+        nextAllow.length === profileAllow.length &&
+        nextAllow.every((n) => profileAllow.includes(n));
+      if (sameAsProfile) nextAllow = null;
+    }
+    const nextDeny = [...new Set([...currentDeny, toolName])];
+
+    const nextTools = { ...(agentConfig.tools || {}) };
+    nextTools.deny = nextDeny;
+    if (nextAllow) nextTools.allow = nextAllow; else delete nextTools.allow;
+    agentConfig.tools = nextTools;
   }
 
   config.agents.list[agentIdx] = agentConfig;
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 
-  return { agentId, toolName, enabled, toolsDeny: agentConfig.tools?.deny || [] };
+  return {
+    agentId,
+    toolName,
+    enabled,
+    toolsAllow: agentConfig.tools?.allow || null,
+    toolsDeny:  agentConfig.tools?.deny  || [],
+  };
 }
 
 /**
