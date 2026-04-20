@@ -246,12 +246,17 @@ function resolveInstallPath(target, slug, agentId) {
   }
 }
 
-async function installSkill({ urlOrSlug, target, agentId, bufferB64 }) {
+async function installSkill({ urlOrSlug, target, agentId, bufferB64, overwrite = false }) {
   const slug = parseClawHubSlug(urlOrSlug);
   const installPath = resolveInstallPath(target, slug, agentId);
 
-  if (fs.existsSync(installPath)) {
-    throw new Error(`Skill "${slug}" is already installed at ${installPath}`);
+  const existed = fs.existsSync(installPath);
+  if (existed && !overwrite) {
+    const err = new Error(`Skill "${slug}" is already installed at ${installPath}`);
+    err.code = 'ALREADY_INSTALLED';
+    err.slug = slug;
+    err.installPath = installPath;
+    throw err;
   }
 
   // Use cached buffer if provided (from preview step), else re-download
@@ -264,6 +269,9 @@ async function installSkill({ urlOrSlug, target, agentId, bufferB64 }) {
 
   const zip = new AdmZip(buffer);
 
+  if (existed && overwrite) {
+    fs.rmSync(installPath, { recursive: true, force: true });
+  }
   fs.mkdirSync(installPath, { recursive: true });
   zip.extractAllTo(installPath, true /* overwrite */);
 
@@ -278,6 +286,7 @@ async function installSkill({ urlOrSlug, target, agentId, bufferB64 }) {
     slug,
     path: installPath,
     target,
+    updated: existed && overwrite,
   };
 }
 
@@ -494,12 +503,17 @@ async function fetchSkillsmpSkillMd(skillResult) {
 /**
  * Install a SkillsMP skill — just writes SKILL.md to the target directory.
  */
-async function installSkillsmpSkill({ skill, target, agentId }) {
+async function installSkillsmpSkill({ skill, target, agentId, overwrite = false }) {
   const slug = skill.slug;
   const installPath = resolveInstallPath(target, slug, agentId);
 
-  if (fs.existsSync(installPath)) {
-    throw new Error(`Skill "${slug}" is already installed at ${installPath}`);
+  const existed = fs.existsSync(installPath);
+  if (existed && !overwrite) {
+    const err = new Error(`Skill "${slug}" is already installed at ${installPath}`);
+    err.code = 'ALREADY_INSTALLED';
+    err.slug = slug;
+    err.installPath = installPath;
+    throw err;
   }
 
   // Fetch SKILL.md
@@ -508,6 +522,9 @@ async function installSkillsmpSkill({ skill, target, agentId }) {
     throw new Error(`Could not download SKILL.md for "${slug}" — check GitHub URL: ${skill.githubUrl || 'unknown'}`);
   }
 
+  if (existed && overwrite) {
+    fs.rmSync(installPath, { recursive: true, force: true });
+  }
   fs.mkdirSync(installPath, { recursive: true });
   fs.writeFileSync(path.join(installPath, 'SKILL.md'), result.content, 'utf-8');
 
@@ -517,6 +534,7 @@ async function installSkillsmpSkill({ skill, target, agentId }) {
     path: installPath,
     target,
     source: 'skillsmp',
+    updated: existed && overwrite,
   };
 }
 
@@ -615,7 +633,7 @@ function previewFromUpload(buffer, filename) {
   };
 }
 
-function installFromUpload({ bufferB64, filename, target, agentId, slug: slugOverride }) {
+function installFromUpload({ bufferB64, filename, target, agentId, slug: slugOverride, overwrite = false }) {
   if (!bufferB64) throw new Error('bufferB64 is required');
   const buffer = Buffer.from(bufferB64, 'base64');
   if (!buffer.length) throw new Error('Empty upload');
@@ -624,6 +642,14 @@ function installFromUpload({ bufferB64, filename, target, agentId, slug: slugOve
   let slug = slugOverride && /^[a-z0-9-]+$/.test(slugOverride)
     ? slugOverride
     : deriveSlugFromFilename(filename);
+
+  const throwAlreadyInstalled = (s, p) => {
+    const err = new Error(`Skill "${s}" is already installed at ${p}`);
+    err.code = 'ALREADY_INSTALLED';
+    err.slug = s;
+    err.installPath = p;
+    throw err;
+  };
 
   if (isZipBuffer(buffer)) {
     const parsed = parseZip(buffer);
@@ -637,10 +663,12 @@ function installFromUpload({ bufferB64, filename, target, agentId, slug: slugOve
     }
 
     const installPath = resolveInstallPath(target, slug, agentId);
-    if (fs.existsSync(installPath)) {
-      throw new Error(`Skill "${slug}" is already installed at ${installPath}`);
-    }
+    const existed = fs.existsSync(installPath);
+    if (existed && !overwrite) throwAlreadyInstalled(slug, installPath);
 
+    if (existed && overwrite) {
+      fs.rmSync(installPath, { recursive: true, force: true });
+    }
     fs.mkdirSync(installPath, { recursive: true });
     // Write each (possibly wrapper-stripped) file manually so the stripping is honored
     for (const [name, getContent] of Object.entries(files)) {
@@ -649,7 +677,7 @@ function installFromUpload({ bufferB64, filename, target, agentId, slug: slugOve
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, getContent(), 'utf-8');
     }
-    return { ok: true, slug, path: installPath, target, source: 'upload' };
+    return { ok: true, slug, path: installPath, target, source: 'upload', updated: existed && overwrite };
   }
 
   // Raw SKILL.md
@@ -662,12 +690,17 @@ function installFromUpload({ bufferB64, filename, target, agentId, slug: slugOve
     slug = deriveSlugFromFilename(fm.name) || 'uploaded-skill';
   }
   const installPath = resolveInstallPath(target, slug, agentId);
-  if (fs.existsSync(installPath)) {
-    throw new Error(`Skill "${slug}" is already installed at ${installPath}`);
+  const existed = fs.existsSync(installPath);
+  if (existed && !overwrite) throwAlreadyInstalled(slug, installPath);
+
+  if (existed && overwrite) {
+    // Raw SKILL.md: only overwrite the SKILL.md file itself, preserve sibling files
+    fs.writeFileSync(path.join(installPath, 'SKILL.md'), text, 'utf-8');
+    return { ok: true, slug, path: installPath, target, source: 'upload', updated: true };
   }
   fs.mkdirSync(installPath, { recursive: true });
   fs.writeFileSync(path.join(installPath, 'SKILL.md'), text, 'utf-8');
-  return { ok: true, slug, path: installPath, target, source: 'upload' };
+  return { ok: true, slug, path: installPath, target, source: 'upload', updated: false };
 }
 
 module.exports = {

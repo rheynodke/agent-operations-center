@@ -5,6 +5,9 @@ import type { ChatToolCall } from "@/stores/useChatStore"
 
 interface Props {
   toolCalls: ChatToolCall[]
+  /** When true, collapse the whole block behind a header so the final chat
+   *  message stays clean. Click to expand and inspect tool logs. */
+  defaultCollapsed?: boolean
 }
 
 // ─── JSON Value Renderer ──────────────────────────────────────────────────────
@@ -215,13 +218,50 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
 
 // ─── Public Export ────────────────────────────────────────────────────────────
 
-export function ToolCallBlock({ toolCalls }: Props) {
+export function ToolCallBlock({ toolCalls, defaultCollapsed = false }: Props) {
+  const [open, setOpen] = useState(!defaultCollapsed)
   if (!toolCalls.length) return null
+  const runningCount = toolCalls.filter((tc) => tc.status === "running").length
+  const doneCount    = toolCalls.length - runningCount
+  const summaryBits: string[] = []
+  if (runningCount > 0) summaryBits.push(`${runningCount} running`)
+  if (doneCount > 0)    summaryBits.push(`${doneCount} done`)
+  const summary = summaryBits.join(" · ") || `${toolCalls.length} tool${toolCalls.length === 1 ? "" : "s"}`
+
+  // When not collapsible (live run), render as before.
+  if (!defaultCollapsed) {
+    return (
+      <div className="flex flex-col gap-2">
+        {toolCalls.map((tc) => (
+          <ToolCallCard key={tc.id} call={tc} />
+        ))}
+      </div>
+    )
+  }
+  // Collapsed wrapper — keeps tool logs accessible but out of the way.
   return (
-    <div className="flex flex-col gap-2">
-      {toolCalls.map((tc) => (
-        <ToolCallCard key={tc.id} call={tc} />
-      ))}
+    <div className="rounded-xl border border-border/50 bg-foreground/3 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-foreground/5 transition-colors text-left"
+      >
+        {open
+          ? <ChevronDown className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+          : <ChevronRight className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+        }
+        <Wrench className="w-3 h-3 text-muted-foreground/40 shrink-0" />
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex-1">
+          Tool calls · {toolCalls.length}
+        </span>
+        <span className="text-[10px] font-mono text-muted-foreground/40">{summary}</span>
+      </button>
+      {open && (
+        <div className="border-t border-border/40 p-2.5 flex flex-col gap-2 bg-background/50">
+          {toolCalls.map((tc) => (
+            <ToolCallCard key={tc.id} call={tc} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

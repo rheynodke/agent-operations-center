@@ -33,7 +33,11 @@ async function request<T>(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `HTTP ${res.status}`)
+    const err = new Error(body.error || `HTTP ${res.status}`) as Error & { status?: number; code?: string; body?: Record<string, unknown> }
+    err.status = res.status
+    err.code = body.code
+    err.body = body
+    throw err
   }
 
   return res.json()
@@ -382,11 +386,66 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ url }),
     }),
-  clawHubInstall: (url: string, target: string, agentId?: string, bufferB64?: string) =>
-    request<{ ok: boolean; slug: string; path: string; target: string }>("/skills/clawhub/install", {
+  clawHubInstall: (url: string, target: string, agentId?: string, bufferB64?: string, overwrite?: boolean) =>
+    request<{ ok: boolean; slug: string; path: string; target: string; updated?: boolean }>("/skills/clawhub/install", {
       method: "POST",
-      body: JSON.stringify({ url, target, agentId, bufferB64 }),
+      body: JSON.stringify({ url, target, agentId, bufferB64, overwrite }),
     }),
+
+  // Role templates (Phase 1: read-only)
+  listRoleTemplates: () =>
+    request<{ templates: import("@/types").RoleTemplateSummary[] }>("/role-templates"),
+  getRoleTemplate: (id: string) =>
+    request<{ template: import("@/types").RoleTemplateRecord }>(`/role-templates/${encodeURIComponent(id)}`),
+  getRoleTemplateUsage: (id: string) =>
+    request<{ agentIds: string[]; count: number }>(`/role-templates/${encodeURIComponent(id)}/usage`),
+
+  // Role templates (Phase 2: CRUD)
+  createRoleTemplate: (data: Partial<import("@/types").RoleTemplateRecord>) =>
+    request<{ template: import("@/types").RoleTemplateRecord }>("/role-templates", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateRoleTemplate: (id: string, patch: Partial<import("@/types").RoleTemplateRecord>) =>
+    request<{ template: import("@/types").RoleTemplateRecord }>(`/role-templates/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteRoleTemplate: (id: string, force = false) =>
+    request<{ ok: boolean; id: string; cleared: string[] }>(
+      `/role-templates/${encodeURIComponent(id)}${force ? "?force=true" : ""}`,
+      { method: "DELETE" },
+    ),
+  forkRoleTemplate: (id: string, newId?: string, overrides?: Partial<import("@/types").RoleTemplateRecord>) =>
+    request<{ template: import("@/types").RoleTemplateRecord }>(
+      `/role-templates/${encodeURIComponent(id)}/fork`,
+      { method: "POST", body: JSON.stringify({ newId, overrides }) },
+    ),
+
+  // Role templates (Phase 5: apply to agent)
+  previewRoleTemplateApply: (templateId: string, agentId: string) =>
+    request<{ preview: import("@/types").ApplyPreview }>(
+      `/role-templates/${encodeURIComponent(templateId)}/preview-apply?agentId=${encodeURIComponent(agentId)}`,
+    ),
+  applyRoleTemplateToAgent: (
+    agentId: string,
+    body: {
+      templateId: string
+      overwriteFiles?: Array<"identity" | "soul" | "tools" | "agents">
+      installSkills?: boolean
+      installScripts?: boolean
+      overwriteConflictingScripts?: boolean
+    },
+  ) =>
+    request<import("@/types").ApplyResult>(
+      `/agents/${encodeURIComponent(agentId)}/assign-role`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  unassignAgentRole: (agentId: string) =>
+    request<{ ok: boolean; agentId: string }>(
+      `/agents/${encodeURIComponent(agentId)}/unassign-role`,
+      { method: "POST" },
+    ),
 
   // Upload skill (zip / .skill / raw SKILL.md)
   uploadSkillPreview: (filename: string, bufferB64: string) =>
@@ -400,10 +459,11 @@ export const api = {
     target: string,
     agentId?: string,
     slug?: string,
+    overwrite?: boolean,
   ) =>
-    request<{ ok: boolean; slug: string; path: string; target: string; source: string }>(
+    request<{ ok: boolean; slug: string; path: string; target: string; source: string; updated?: boolean }>(
       "/skills/upload/install",
-      { method: "POST", body: JSON.stringify({ filename, bufferB64, target, agentId, slug }) },
+      { method: "POST", body: JSON.stringify({ filename, bufferB64, target, agentId, slug, overwrite }) },
     ),
 
   // SkillsMP
@@ -423,10 +483,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ skill }),
     }),
-  skillsmpInstall: (skill: import("@/types").SkillsmpSkill, target: string, agentId?: string) =>
-    request<{ ok: boolean; slug: string; path: string; target: string }>("/skills/skillsmp/install", {
+  skillsmpInstall: (skill: import("@/types").SkillsmpSkill, target: string, agentId?: string, overwrite?: boolean) =>
+    request<{ ok: boolean; slug: string; path: string; target: string; updated?: boolean }>("/skills/skillsmp/install", {
       method: "POST",
-      body: JSON.stringify({ skill, target, agentId }),
+      body: JSON.stringify({ skill, target, agentId, overwrite }),
     }),
 
   // File versioning

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from "react"
-import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore } from "@/stores"
-import { useChatStore, parseMediaAttachments, mediaPathToUrl } from "@/stores/useChatStore"
+import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore, useProcessingStore } from "@/stores"
+import { useChatStore, parseMediaAttachments, mediaPathToUrl, stripGatewayEnvelopes, isSystemInjectedUserMessage } from "@/stores/useChatStore"
 import { useProjectStore } from '@/stores/useProjectStore'
 import { api } from "@/lib/api"
 import type { WsMessage, LiveFeedEntry } from "@/types"
@@ -75,45 +75,140 @@ export function useWebSocket() {
         // Individual parsed event streamed from a gateway session JSONL tail
         case "session:live-event": {
           // Watcher events are flat: { type, sessionId, sessionKey, event, agent, timestamp }
-          const raw = msg as unknown as { sessionId?: string; sessionKey?: string; event?: Record<string, unknown> }
+          const raw = msg as unknown as { sessionId?: string; sessionKey?: string; agent?: string; event?: Record<string, unknown> }
           if (raw.sessionId && raw.event) {
             useSessionLiveStore.getState().push(raw.sessionId, raw.event)
           }
-          // Also update the live chat store for sessions we have messages for
+          // Also update the live chat store for sessions we have messages for.
+          // Watcher's claude-cli → gateway-sessionKey linkage is heuristic
+          // (mtime-based). If it falls back to a synthetic key (e.g.
+          // `agent:<id>:claude-cli:<uuid>`), the event would be routed to a
+          // bucket the UI never created → tools/thinking silently dropped.
+          // Fallback: when the event's sessionKey has no bucket but there IS
+          // exactly one currently-running chat session for this agent, route
+          // the event there.
           const chatStore = useChatStore.getState()
-          const sessionKey = raw.sessionKey
+          let sessionKey = raw.sessionKey
+          if (sessionKey && !chatStore.messages[sessionKey]?.length) {
+            const runningKeys = Object.entries(chatStore.agentRunning)
+              .filter(([, v]) => v)
+              .map(([k]) => k)
+              .filter((k) => (chatStore.messages[k]?.length ?? 0) > 0)
+              // If an agent id came with the event, prefer sessions for that agent.
+              .filter((k) => !raw.agent || k.includes(`:${raw.agent}:`))
+            if (runningKeys.length === 1) {
+              sessionKey = runningKeys[0]
+            }
+          }
           if (sessionKey && chatStore.messages[sessionKey]?.length) {
-            const evt = raw.event as { role?: string; text?: string; thinking?: string; stopReason?: string; tools?: Array<{name: string; output?: string; input?: string}> } | undefined
+            const evt = raw.event as { role?: string; text?: string; thinking?: string; thinkingRedacted?: boolean; stopReason?: string; tools?: Array<{name: string; output?: string; input?: string; toolCallId?: string|null}> } | undefined
             if (evt) {
+              // Assistant tool_use blocks — surface as "running" tool calls the moment
+              // the JSONL entry is polled (~2s after claude-cli writes it). Previously
+              // ignored, which made the UI silent during claude-cli tool phases.
+              if (evt.role === 'assistant' && evt.tools?.length) {
+                chatStore.setAgentRunning(sessionKey, true)
+                chatStore.updateLastAgentMessage(sessionKey, (m) => {
+                  if (m.role !== 'agent') return m
+                  const existing = m.toolCalls ?? []
+                  const toAdd = evt.tools!
+                    .filter((t) => {
+                      const id = t.toolCallId || t.name
+                      return !existing.some(ex => (ex.id === id) || (!ex.result && ex.toolName === t.name && ex.input === t.input))
+                    })
+                    .map((t) => ({
+                      id: (t.toolCallId || `${t.name}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`) as string,
+                      toolName: t.name,
+                      input: t.input as string | Record<string, unknown> | undefined,
+                      status: 'running' as const,
+                    }))
+                  if (!toAdd.length) return m
+                  return { ...m, phase: 'tool_running' as const, toolCalls: [...existing, ...toAdd] }
+                })
+              }
+
               if (evt.role === 'assistant' && evt.text) {
-                // JSONL entries are written AFTER the response completes — always treat as final
+                // JSONL assistant text entries can be INTERMEDIATE (a narration
+                // segment between tool calls, e.g. "OK let me check X next…")
+                // or TRULY final (the last text before the run ends). We cannot
+                // tell which without waiting for `processing_end`, so we take
+                // the safe route: always overwrite responseText with the latest
+                // segment, but KEEP the running indicator alive. The authoritative
+                // end-of-run signal is `session:update action=processing_end`,
+                // which flips phase=done / isStreaming=false.
+                //
+                // Before: we marked each intermediate text as final → indicator
+                // disappeared between tool calls, then the next tool start spun
+                // up a new bubble → bubble fragmentation + flickering pill.
                 chatStore.updateLastAgentMessage(sessionKey, (m) => {
                   if (m.role !== 'agent') return m
-                  return { ...m, phase: "done" as const, responseText: evt.text!, responseDone: true, isStreaming: false }
+                  const hasRunningTool = (m.toolCalls ?? []).some(tc => tc.status === 'running')
+                  return {
+                    ...m,
+                    // Keep tool_running phase if a tool hasn't completed yet,
+                    // otherwise surface "responding" so the "Composing…" pill
+                    // shows while we wait for the next step.
+                    phase: hasRunningTool ? ("tool_running" as const) : ("responding" as const),
+                    responseText: evt.text!,
+                    responseDone: false,
+                    isStreaming: true,
+                  }
                 })
-                chatStore.setAgentRunning(sessionKey, false)
+                chatStore.setAgentRunning(sessionKey, true)
               }
 
-              if (evt.role === 'assistant' && evt.thinking) {
+              if (evt.role === 'assistant' && (evt.thinking || evt.thinkingRedacted)) {
+                // Claude-cli runs may include multiple assistant turns within a
+                // single run (thinking → tool → thinking → tool → text). ACCUMULATE
+                // thinking across turns the same way `gatewayMessagesToGroups()`
+                // does on history reload, so the user sees the full reasoning
+                // trace, not just the last block.
+                //
+                // Anthropic redacts thinking for certain models (sonnet / rate-
+                // limited fallbacks) — in that case `evt.thinking` is empty and
+                // `evt.thinkingRedacted=true` so we surface a subtle indicator.
                 chatStore.updateLastAgentMessage(sessionKey, (m) => {
                   if (m.role !== 'agent') return m
-                  return { ...m, thinkingText: evt.thinking!, thinkingDone: true }
+                  const incoming = (evt.thinking ?? '').trim()
+                  if (incoming) {
+                    const prev = m.thinkingText ?? ''
+                    // Avoid double-appending the same segment if this JSONL
+                    // entry was replayed (watcher re-reads on catch-up).
+                    const already = prev.includes(incoming)
+                    const merged = already ? prev : (prev ? `${prev}\n\n${incoming}` : incoming)
+                    return {
+                      ...m,
+                      thinkingText: merged,
+                      // Keep streaming while the run is active — authoritative
+                      // "done" signal comes from processing_end.
+                      thinkingDone: !!m.responseDone,
+                      // Clear any earlier "redacted" flag — we now have real text.
+                      thinkingRedacted: false,
+                    }
+                  }
+                  if (evt.thinkingRedacted && !m.thinkingText) {
+                    return { ...m, thinkingRedacted: true }
+                  }
+                  return m
                 })
               }
 
-              // Tool results from JSONL — mark matching running tool as done
+              // Tool results from JSONL — mark matching running tool as done.
+              // Match by toolCallId first (reliable), fall back to name+status.
               if (evt.role === 'toolResult' && evt.tools?.length) {
                 for (const tool of evt.tools) {
                   if (tool.output) {
                     chatStore.updateLastAgentMessage(sessionKey, (m) => {
                       if (m.role !== 'agent') return m
+                      const matchId = tool.toolCallId
                       return {
                         ...m,
-                        toolCalls: (m.toolCalls ?? []).map(tc =>
-                          tc.toolName === tool.name && tc.status === 'running'
-                            ? { ...tc, result: tool.output!, status: 'done' as const }
-                            : tc
-                        ),
+                        toolCalls: (m.toolCalls ?? []).map(tc => {
+                          const hit = matchId
+                            ? tc.id === matchId
+                            : tc.toolName === tool.name && tc.status === 'running'
+                          return hit ? { ...tc, result: tool.output!, status: 'done' as const } : tc
+                        }),
                       }
                     })
                   }
@@ -181,23 +276,42 @@ export function useWebSocket() {
 
         // These are the events the watcher broadcasts when session files change
         case "session:update": {
-          // processing_end fires when the JSONL lock file is removed (agent finished)
-          const su = msg as unknown as { action?: string; sessionKey?: string }
+          // processing_start / processing_end drive the live "active" flags on
+          // Overview and Agent Detail. The processing store is keyed by either
+          // `sessionKey` (gateway sessions) or `file` path (claude-cli JSONL).
+          const su = msg as unknown as { action?: string; sessionKey?: string; agent?: string; file?: string }
+          const procStore = useProcessingStore.getState()
+          const procKey = su.sessionKey || su.file
+          if (procKey) {
+            if (su.action === 'processing_start') {
+              procStore.start(procKey, su.agent)
+            } else if (su.action === 'processing_end') {
+              procStore.stop(procKey)
+            }
+          }
           if (su.action === 'processing_end' && su.sessionKey) {
+            // processing_end is the AUTHORITATIVE end-of-run signal. Finalize
+            // regardless of whether `agentRunning` is still true — intermediate
+            // session:live-event text entries no longer flip this (we keep the
+            // indicator alive between tool calls), so processing_end is the
+            // only place that truly flips phase=done / responseDone=true.
             const chatStore = useChatStore.getState()
-            if (chatStore.agentRunning[su.sessionKey]) {
-              const msgs = chatStore.messages[su.sessionKey] ?? []
-              const lastAgent = [...msgs].reverse().find(m => m.role === 'agent')
-              if (lastAgent?.responseText) {
-                // Response already in store — finalize immediately
+            const msgs = chatStore.messages[su.sessionKey] ?? []
+            const lastAgent = [...msgs].reverse().find(m => m.role === 'agent')
+            if (lastAgent && !lastAgent.responseDone) {
+              if (lastAgent.responseText) {
+                // Response text already captured → finalize immediately.
                 chatStore.setAgentRunning(su.sessionKey, false)
                 chatStore.updateLastAgentMessage(su.sessionKey, (m) => {
                   if (m.role !== 'agent') return m
-                  return { ...m, phase: 'done' as const, isStreaming: false, responseDone: true }
+                  const toolCalls = (m.toolCalls ?? []).map(tc =>
+                    tc.status === 'running' ? { ...tc, status: 'done' as const } : tc
+                  )
+                  return { ...m, phase: 'done' as const, isStreaming: false, responseDone: true, toolCalls }
                 })
               } else {
-                // Lock file gone but JSONL final response not yet polled (~2s lag)
-                // Keep "analyzing" indicator alive, force-clear after 5s
+                // Lock file gone but JSONL final response not yet polled (~2s lag).
+                // Keep "analyzing" pill alive, force-clear after 5s if still nothing.
                 chatStore.updateLastAgentMessage(su.sessionKey, (m) => {
                   if (m.role !== 'agent') return m
                   const toolCalls = (m.toolCalls ?? []).map(tc =>
@@ -207,7 +321,8 @@ export function useWebSocket() {
                 })
                 setTimeout(() => {
                   const store = useChatStore.getState()
-                  if (store.agentRunning[su.sessionKey!]) {
+                  const cur = (store.messages[su.sessionKey!] ?? []).slice(-1)[0]
+                  if (cur?.role === 'agent' && !cur.responseDone) {
                     store.setAgentRunning(su.sessionKey!, false)
                     store.updateLastAgentMessage(su.sessionKey!, (m) => {
                       if (m.role !== 'agent') return m
@@ -325,8 +440,17 @@ export function useWebSocket() {
             chatStore.setGatewayConnected(true)
           } else if (msg.type === "gateway:disconnected") {
             chatStore.setGatewayConnected(false)
+          } else if (msg.type === "chat:progress") {
+            // Lightweight heartbeat — gateway is emitting delta chunks but we
+            // intentionally DO NOT render them (see gateway-ws.cjs chat/delta).
+            // Just keep the agent-running flag alive so the phase indicator
+            // doesn't flicker off during long stretches without user-visible
+            // output (e.g. tool execution).
+            const { sessionKey } = (msg.payload ?? {}) as { sessionKey?: string }
+            if (sessionKey) chatStore.setAgentRunning(sessionKey, true)
+            break
           } else if (msg.type === "chat:message") {
-            const { sessionKey, role, text, thinking, done, toolName, toolInput, toolResult, toolCallId } = (msg.payload ?? {}) as Record<string, unknown>
+            const { sessionKey, role, text, thinking, done, toolName, toolInput, toolResult, toolCallId, replace } = (msg.payload ?? {}) as Record<string, unknown>
             if (sessionKey) {
               const sk = sessionKey as string
               const isThinking = role === "thinking" || !!thinking
@@ -336,6 +460,27 @@ export function useWebSocket() {
               const currentMsgs = chatStore.messages[sk] ?? []
               const lastMsg = currentMsgs[currentMsgs.length - 1]
               const hasAgentPlaceholder = lastMsg?.role === "agent" && lastMsg?.isStreaming
+
+              // Dedup guard: if incoming assistant text matches (or is prefix/superset of) the
+              // last finalized agent message's text, this is a late-arriving echo (e.g. gateway
+              // fires both streaming `chat state=delta` AND the full `session.message` after
+              // done). Skip creating a new bubble to avoid duplicate rendering.
+              if (!hasAgentPlaceholder && role === "assistant" && !isThinking && (text as string)?.trim() && lastMsg?.role === "agent") {
+                // Compare stripped versions so envelope markers don't cause false-negatives
+                const prevText = stripGatewayEnvelopes(((lastMsg as { responseText?: string }).responseText ?? "")).trim()
+                const newText = stripGatewayEnvelopes(text as string).trim()
+                if (prevText && (prevText === newText || prevText.startsWith(newText) || newText.startsWith(prevText))) {
+                  // Merge into existing bubble — ensure it's marked done, skip append.
+                  chatStore.updateLastAgentMessage(sk, (m) => {
+                    if (m.role !== "agent") return m
+                    const merged = newText.length > prevText.length ? newText : prevText
+                    return { ...m, responseText: merged, responseDone: true, isStreaming: false, phase: "done" as const }
+                  })
+                  chatStore.setAgentRunning(sk, false)
+                  break
+                }
+              }
+
               if (!hasAgentPlaceholder && (role === "assistant" || role === "thinking" || isThinking)) {
                 chatStore.setAgentRunning(sk, true)
                 chatStore.appendMessage(sk, {
@@ -352,39 +497,57 @@ export function useWebSocket() {
               // User message from external channel (e.g. Telegram) — may contain media
               if (role === "user" && text) {
                 const rawText = text as string
-                const { paths, caption } = parseMediaAttachments(rawText)
-                // Dedup: check last 5 user messages by text content only.
-                // Timestamp comparison is intentionally omitted — local timestamps
-                // and gateway broadcast timestamps always differ, causing false duplicates.
-                const existing = chatStore.messages[sk] ?? []
-                const recentUserMsgs = existing.filter(m => m.role === "user").slice(-5)
-                const alreadyHas = recentUserMsgs.some(m => m.userText === caption)
-                if (!alreadyHas) {
-                  chatStore.appendMessage(sk, {
-                    id: `user-ws-${Date.now()}`,
-                    role: "user",
-                    userText: caption,
-                    userImages: paths.length > 0 ? paths.map(mediaPathToUrl) : undefined,
-                    timestamp: Date.now(),
-                  })
+                // Skip system-injected user messages (skill invocation context).
+                if (isSystemInjectedUserMessage(rawText)) {
+                  // no-op — these belong to the LLM prompt, not the UI
+                } else {
+                  const { paths, caption } = parseMediaAttachments(rawText)
+                  if (caption || paths.length > 0) {
+                    // Dedup: check last 5 user messages by text content only.
+                    // Timestamp comparison is intentionally omitted — local timestamps
+                    // and gateway broadcast timestamps always differ, causing false duplicates.
+                    const existing = chatStore.messages[sk] ?? []
+                    const recentUserMsgs = existing.filter(m => m.role === "user").slice(-5)
+                    const alreadyHas = recentUserMsgs.some(m => m.userText === caption)
+                    if (!alreadyHas) {
+                      chatStore.appendMessage(sk, {
+                        id: `user-ws-${Date.now()}`,
+                        role: "user",
+                        userText: caption,
+                        userImages: paths.length > 0 ? paths.map(mediaPathToUrl) : undefined,
+                        timestamp: Date.now(),
+                      })
+                    }
+                  }
                 }
               }
 
               if (role === "assistant" || role === "thinking") {
                 chatStore.setAgentRunning(sk, true)
                 const hasText = !!(text as string)?.trim()
+                // NEW STREAMING POLICY: we no longer render chunk-by-chunk.
+                // The gateway proxy now only emits `chat:message` when the
+                // assistant text is COMPLETE (state=final / session.message
+                // snapshot) and sets `replace: true`. Anything else we treat
+                // as a full-snapshot replace as well — never append — so the
+                // UI shows either "working…" OR the complete final answer.
                 chatStore.updateLastAgentMessage(sk, (m) => {
                   if (m.role !== "agent") return m
                   if (isThinking) {
-                    return { ...m, phase: "thinking" as const, thinkingText: (m.thinkingText ?? "") + ((thinking ?? text ?? "") as string), thinkingDone: !!done, isStreaming: true }
+                    const next = (thinking ?? text ?? "") as string
+                    return { ...m, phase: "thinking" as const, thinkingText: next || m.thinkingText, thinkingDone: !!done, isStreaming: true }
                   }
                   const newText = (text as string | undefined) ?? ""
-                  const hasContent = !!(newText || m.responseText)
-                  const reallyDone = !!done && hasContent
+                  if (!newText) return m
+                  const shouldReplace = !!replace || !m.responseText
+                  const finalText = shouldReplace
+                    ? newText
+                    : (newText.length >= (m.responseText ?? "").length ? newText : (m.responseText ?? ""))
+                  const reallyDone = !!done
                   return {
                     ...m,
                     phase: reallyDone ? "done" as const : "responding" as const,
-                    responseText: newText ? (m.responseText ?? "") + newText : m.responseText,
+                    responseText: finalText,
                     responseDone: reallyDone,
                     isStreaming: !reallyDone,
                   }
@@ -572,6 +735,10 @@ export function useWebSocket() {
       ws.onclose = () => {
         setStatus("disconnected")
         wsRef.current = null
+        // Clear live processing flags — any in-flight `processing_end` events
+        // are now lost, so a stale "active" badge would be stuck until manual
+        // refresh. On reconnect the next poll/events will repopulate.
+        useProcessingStore.getState().reset()
         scheduleReconnect()
       }
 

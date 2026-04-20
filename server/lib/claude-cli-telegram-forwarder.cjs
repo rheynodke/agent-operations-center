@@ -147,34 +147,77 @@ function scanAssistantBlocks(filePath) {
   return entries;
 }
 
+// Signal for detecting a turn whose FINAL text block OpenClaw likely failed
+// to deliver. We use the strongest signal only — an `API Error:` text block
+// inside the turn — because it's the direct symptom of a stream idle-timeout
+// / CLI restart that breaks OpenClaw's stdout `type:"result"` parsing. Using
+// only this (rather than a tool_use count) means clean long turns, which
+// OpenClaw *does* deliver, are never re-sent by us → no duplicates.
+const API_ERROR_REGEX = /^\s*API Error\b/i;
+
 /**
- * A text block is INTERMEDIATE within its turn iff, between itself and the
- * next `user_turn` boundary (or the end of the jsonl), there is a `tool_use`
- * entry. That means the assistant is pausing to explain *before* invoking a
- * tool — exactly the "Let me check…" moments that should reach Telegram.
- *
- * A text block followed directly by the next `user_turn` (no tool_use in
- * between) is the FINAL reply of its turn and gets skipped — OpenClaw's
- * regular channel delivery already handles it.
- *
- * Edge case: the VERY LAST text block of the jsonl (no user_turn follows at
- * all) is also treated as FINAL; the turn may still be in progress or just
- * ended, and OpenClaw will own the send.
+ * Split entries into turns at each user_turn boundary. A "turn" is the list
+ * of assistant entries (text/tool_use) that follows a user message.
  */
-function selectIntermediateTextBlocks(entries) {
-  const result = [];
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    if (e.kind !== 'text') continue;
-    let hasToolUseInTurn = false;
-    for (let j = i + 1; j < entries.length; j++) {
-      const next = entries[j];
-      if (next.kind === 'user_turn') break;  // turn ended without tool_use → final
-      if (next.kind === 'tool_use') { hasToolUseInTurn = true; break; }
+function splitEntriesIntoTurns(entries) {
+  const turns = [];
+  let current = [];
+  for (const e of entries) {
+    if (e.kind === 'user_turn') {
+      if (current.length) turns.push(current);
+      current = [];
+    } else {
+      current.push(e);
     }
-    if (hasToolUseInTurn) result.push(e);
+  }
+  if (current.length) turns.push(current);
+  return turns;
+}
+
+/**
+ * A text block is INTERMEDIATE within its turn iff there is a later tool_use
+ * entry in the same turn — the assistant is pausing to explain *before*
+ * invoking another tool ("Let me check…" moments). These must always be
+ * forwarded because OpenClaw only delivers the final aggregate.
+ *
+ * The FINAL text block of a turn (no tool_use after it) is normally owned by
+ * OpenClaw's regular channel send. But when its stdout `type:"result"` line
+ * is lost (stream idle-timeout / CLI restart — symptom: an `API Error:` text
+ * block appears mid-turn in the jsonl), the final never reaches the channel.
+ * When `includeFinalForInterruptedTurns` is set we also forward the final
+ * text block from turns containing that error marker. Turns that completed
+ * cleanly (no API Error) are left to OpenClaw so we never double-send.
+ *
+ * API Error text blocks themselves are never forwarded — they're runtime
+ * noise, not something the user should see.
+ */
+function selectForwardableTextBlocks(entries, { includeFinalForInterruptedTurns = false } = {}) {
+  const result = [];
+  for (const turn of splitEntriesIntoTurns(entries)) {
+    const hasApiError = turn.some((e) => e.kind === 'text' && API_ERROR_REGEX.test(e.text || ''));
+
+    for (let i = 0; i < turn.length; i++) {
+      const e = turn[i];
+      if (e.kind !== 'text') continue;
+      if (API_ERROR_REGEX.test(e.text || '')) continue;
+
+      let hasToolUseAfter = false;
+      for (let j = i + 1; j < turn.length; j++) {
+        if (turn[j].kind === 'tool_use') { hasToolUseAfter = true; break; }
+      }
+      if (hasToolUseAfter) {
+        result.push(e);
+      } else if (includeFinalForInterruptedTurns && hasApiError) {
+        result.push(e);
+      }
+    }
   }
   return result;
+}
+
+// Back-compat alias — kept because it's part of the module's public surface.
+function selectIntermediateTextBlocks(entries) {
+  return selectForwardableTextBlocks(entries, { includeFinalForInterruptedTurns: false });
 }
 
 /**
@@ -234,12 +277,14 @@ async function sendTelegramMessage({ botToken, chatId, text }) {
  *
  * Returns the number of messages forwarded on this pass.
  */
-async function processClaudeCliFile({ agentId, filePath, forwardedUuids }) {
+async function processClaudeCliFile({ agentId, filePath, forwardedUuids, finalize = false }) {
   const entries = scanAssistantBlocks(filePath);
   if (entries.length === 0) return 0;
 
-  const intermediate = selectIntermediateTextBlocks(entries);
-  if (intermediate.length === 0) return 0;
+  const blocks = selectForwardableTextBlocks(entries, {
+    includeFinalForInterruptedTurns: !!finalize,
+  });
+  if (blocks.length === 0) return 0;
 
   const creds = readTelegramCredsForAgent(agentId);
   if (!creds) return 0;  // agent has no telegram binding
@@ -249,7 +294,7 @@ async function processClaudeCliFile({ agentId, filePath, forwardedUuids }) {
   if (!chatId) return 0;  // no chat to send to
 
   let sent = 0;
-  for (const block of intermediate) {
+  for (const block of blocks) {
     if (forwardedUuids.has(block.uuid)) continue;
     forwardedUuids.add(block.uuid);  // mark first to avoid retries-on-failure storms
 
@@ -268,6 +313,8 @@ module.exports = {
   // Exposed for tests / introspection
   scanAssistantBlocks,
   selectIntermediateTextBlocks,
+  selectForwardableTextBlocks,
+  splitEntriesIntoTurns,
   readTelegramCredsForAgent,
   resolveTelegramChatFromLinkedSession,
   normalizeForwardText,

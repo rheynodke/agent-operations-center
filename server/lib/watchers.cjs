@@ -282,9 +282,13 @@ class LiveFeedWatcher {
 
     const poll = () => {
       tickCount++;
-      if (tickCount % 10 === 0) {
-        this._claudeCliKeyMap = this._buildClaudeCliKeyMap();
-      }
+      // Rebuild the claude-cli→gateway-session keymap EVERY tick (used to be
+      // every 10th). The map is what lets us broadcast `session:live-event`
+      // with the correct gateway `sessionKey` — without a fresh map, live
+      // tools/thinking were routed to a fallback `agent:<id>:claude-cli:<uuid>`
+      // key that the frontend has no messages bucket for, so they were
+      // silently dropped. Rebuild cost is ~ms for small agent counts.
+      this._claudeCliKeyMap = this._buildClaudeCliKeyMap();
 
       const agentMap = buildAgentClaudeCliMap();
       const now = Date.now();
@@ -396,6 +400,22 @@ class LiveFeedWatcher {
                 file,
                 sessionKey: link.sessionKey || null,
                 source: 'claude-cli',
+              });
+
+              // Finalize pass: on long-progress turns, OpenClaw's stdout
+              // `type:"result"` line can be lost (stream idle-timeout / CLI
+              // restart) and the final assistant text never reaches the
+              // channel. Once the turn is idle, re-scan with finalize=true
+              // so the forwarder also considers final text blocks from
+              // turns that look interrupted or unusually long. UUID dedup
+              // prevents re-sending anything already forwarded.
+              forwardClaudeCliIntermediateToTelegram({
+                agentId,
+                filePath: full,
+                forwardedUuids: forwardedTextBlockUuids,
+                finalize: true,
+              }).catch((err) => {
+                console.error('[watchers] claude-cli→telegram finalize:', err?.message || err);
               });
             }
           }

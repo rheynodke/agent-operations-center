@@ -7,6 +7,7 @@ import { AuthenticatedImage } from "@/components/ui/AuthenticatedImage"
 import { cn } from "@/lib/utils"
 import { Brain, Loader2, User } from "lucide-react"
 import type { ChatMessageGroup } from "@/stores/useChatStore"
+import { stripGatewayEnvelopes } from "@/stores/useChatStore"
 
 interface Props {
   group: ChatMessageGroup
@@ -82,13 +83,25 @@ function AgentMessage({
   const phase = group.phase
   const hasThinking = !!group.thinkingText
   const hasTools = (group.toolCalls?.length ?? 0) > 0
-  const hasResponse = !!group.responseText
+  // Check against the stripped version so a response made entirely of gateway
+  // directive markers (which strip to empty) doesn't render an empty bubble.
+  const hasResponse = !!group.responseText && !!stripGatewayEnvelopes(group.responseText).trim()
   const isStreaming = group.isStreaming
 
-  // Phase-driven indicators
+  // Phase-driven indicators.
+  // Streaming chunk text is DISABLED — UI now waits for the complete final
+  // response. Indicators must therefore remain visible across long tool waits,
+  // even if a partial responseText has been received and the phase briefly
+  // flips back to "responding".
   const showThinkingLive = phase === "thinking" && !hasThinking
   const showAnalyzing    = (phase === "analyzing" || phase === "tool_running") && !hasResponse
+  // "responding" with no text yet = still working (e.g. tool finished, waiting
+  //   on next LLM call). Keep a pill alive instead of going silent.
+  const showResponding   = phase === "responding" && !hasResponse && isStreaming
   const showWorkingOnIt  = !hasResponse && isStreaming && !phase // fallback for legacy messages
+  // Show a subtle pulse next to tool list while tools still running even if
+  // the agent has produced no visible text yet.
+  const hasRunningTool   = (group.toolCalls ?? []).some(tc => tc.status === "running")
   const showCursor       = isStreaming && !group.responseDone && hasResponse
 
   return (
@@ -111,23 +124,39 @@ function AgentMessage({
           <PhasePill color="violet" icon={<Brain className="w-3 h-3 text-violet-300 animate-pulse" />} label="Thinking…" />
         )}
 
-        {/* Thinking block — reasoning text */}
+        {/* Thinking + tool calls stay persistent in the chat as a trace of
+            the agent's process. Each block collapses itself once the run is
+            done (live phase keeps them open so the user can watch progress).
+            Redacted-only thinking has no content to show, so we don't render
+            an indicator for it — cleaner chat. */}
         {hasThinking && (
           <ThinkingBlock
             text={group.thinkingText!}
             done={group.thinkingDone}
-            defaultExpanded={!group.thinkingDone}
+            defaultExpanded={!group.responseDone}
           />
         )}
 
-        {/* Tool calls */}
         {hasTools && (
-          <ToolCallBlock toolCalls={group.toolCalls!} />
+          <ToolCallBlock
+            toolCalls={group.toolCalls!}
+            defaultCollapsed={!!group.responseDone}
+          />
         )}
 
         {/* Phase: ANALYZING — all tools done, waiting for response */}
         {showAnalyzing && !hasResponse && (
-          <PhasePill color="violet" icon={<Brain className="w-3 h-3 text-violet-300 animate-pulse" />} label="Analyzing results…" />
+          <PhasePill
+            color="violet"
+            icon={<Brain className="w-3 h-3 text-violet-300 animate-pulse" />}
+            label={hasRunningTool ? "Running tool…" : "Analyzing results…"}
+          />
+        )}
+
+        {/* Phase: RESPONDING but no text yet — keeps an indicator alive after
+            tools finish, while we wait for the final assistant reply. */}
+        {showResponding && !showAnalyzing && (
+          <PhasePill color="muted" icon={<Loader2 className="w-3 h-3 text-muted-foreground/50 animate-spin" />} label="Composing response…" />
         )}
 
         {/* Phase: WORKING — fallback generic indicator */}
@@ -144,10 +173,11 @@ function AgentMessage({
           </div>
         )}
 
-        {/* Response text */}
+        {/* Response text — strip gateway envelope markers before rendering so
+            directives like "[chat.history omitted: ...]" don't leak to UI. */}
         {hasResponse ? (
           <div className={cn("bg-card border border-border rounded-2xl rounded-tl-sm px-4 py-3")}>
-            <MarkdownRenderer content={group.responseText!} />
+            <MarkdownRenderer content={stripGatewayEnvelopes(group.responseText!)} />
             {showCursor && (
               <span className="inline-block w-0.5 h-4 bg-primary/60 animate-pulse ml-0.5 align-text-bottom" />
             )}

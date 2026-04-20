@@ -2,8 +2,27 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
 import { Check, Copy, ZoomIn } from "lucide-react"
-import { useState, type ReactNode } from "react"
+import { Children, isValidElement, useState, type ReactNode } from "react"
 import { AuthenticatedImage } from "@/components/ui/AuthenticatedImage"
+
+/**
+ * Safely extract plain text from a React node tree that ReactMarkdown may
+ * hand us as a mix of strings, numbers, arrays, and element descriptors.
+ * Using `String(children)` on an array of elements produces the infamous
+ * "[object Object],[object Object]…" spam — this helper avoids that.
+ */
+function nodeToString(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return ""
+  if (typeof node === "string" || typeof node === "number") return String(node)
+  if (Array.isArray(node)) return node.map(nodeToString).join("")
+  if (isValidElement(node)) {
+    const props = node.props as { children?: ReactNode }
+    return nodeToString(props.children)
+  }
+  // Iterables (rare) — fall back via React.Children
+  try { return Children.toArray(node).map(nodeToString).join("") }
+  catch { return "" }
+}
 
 interface Props {
   content: string
@@ -53,7 +72,11 @@ function ChatImage({ src, alt }: { src?: string; alt?: string }) {
 
 function CodeBlock({ className, children }: { className?: string; children?: ReactNode }) {
   const [copied, setCopied] = useState(false)
-  const code = String(children ?? "").replace(/\n$/, "")
+  // Recursively walk ReactMarkdown's children to get the raw text. Previously
+  // used `String(children)` which produced `[object Object]` spam when the
+  // node tree included rehype-highlighted <span> elements (arrays of React
+  // elements, not strings).
+  const code = nodeToString(children).replace(/\n$/, "")
   const match = /language-(\w+)/.exec(className || "")
   const lang = match?.[1]
 
@@ -78,7 +101,9 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
         </button>
       </div>
       <pre className="overflow-x-auto p-4 text-sm leading-relaxed">
-        <code className={className}>{code}</code>
+        {/* Render the highlighted React tree (children), not the stringified
+            `code` — the `code` variable is only used for the Copy button. */}
+        <code className={className}>{children}</code>
       </pre>
     </div>
   )

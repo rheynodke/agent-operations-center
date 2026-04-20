@@ -15,6 +15,7 @@ const cronLib    = require('./automation/cron.cjs');
 const scriptsLib = require('./scripts.cjs');
 const hooksLib   = require('./hooks.cjs');
 const pairingLib = require('./pairing.cjs');
+const roleTemplates = require('./role-templates.cjs');
 const oauthG = require('./oauth/google.cjs');
 const googleConnections = require('./connections/google-workspace.cjs');
 const googleHealthCron = require('./cron/google-health.cjs');
@@ -42,9 +43,11 @@ module.exports = {
   parseClaudeCliSessions:            sessions.parseClaudeCliSessions,
   parseClaudeCliSessionEvents:       sessions.parseClaudeCliSessionEvents,
   parseClaudeCliSessionEventsByFile: sessions.parseClaudeCliSessionEventsByFile,
+  parseClaudeCliAsGatewayMessages:   sessions.parseClaudeCliAsGatewayMessages,
   parseSingleClaudeCliEntry:         sessions.parseSingleClaudeCliEntry,
   buildAgentClaudeCliMap:            sessions.buildAgentClaudeCliMap,
   findClaudeCliForGatewaySessionId:  sessions.findClaudeCliForGatewaySessionId,
+  findClaudeCliFileForGatewaySession: sessions.findClaudeCliFileForGatewaySession,
   getAllSessions:             sessions.getAllSessions,
   getDashboardStats:         sessions.getDashboardStats,
 
@@ -146,6 +149,21 @@ module.exports = {
   listPairingRequests:     pairingLib.listPairingRequests,
   listAllPairingRequests:  pairingLib.listAllPairingRequests,
   approvePairingCode:      pairingLib.approvePairingCode,
+
+  // ── role templates (Phase 1: read-only + seed) ────────────────────────────
+  listRoleTemplates:       roleTemplates.listTemplates,
+  getRoleTemplate:         roleTemplates.getTemplate,
+  seedRoleTemplatesIfEmpty: roleTemplates.seedIfEmpty,
+  // ── role templates (Phase 2: CRUD) ────────────────────────────────────────
+  createRoleTemplate:       roleTemplates.createTemplate,
+  updateRoleTemplate:       roleTemplates.updateTemplate,
+  deleteRoleTemplate:       roleTemplates.deleteTemplate,
+  forkRoleTemplate:         roleTemplates.forkTemplate,
+  listRoleTemplateUsage:    roleTemplates.listTemplateUsage,
+  // ── role templates (Phase 5: apply to agent) ──────────────────────────────
+  previewRoleTemplateApply: roleTemplates.previewApply,
+  applyRoleTemplateToAgent: roleTemplates.applyToAgent,
+  unassignAgentRole:        roleTemplates.unassignRole,
 
   // ── google workspace oauth helpers ─────────────────────────────────────────
   googleBuildScopes:        oauthG.buildScopes,

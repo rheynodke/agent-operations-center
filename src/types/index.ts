@@ -1,4 +1,9 @@
-export type { AgentRoleTemplate, AdlcRoleId } from './agentRoleTemplate'
+export type {
+  AgentRoleTemplate, AdlcRoleId,
+  RoleTemplateSummary, RoleTemplateRecord, RoleTemplateOrigin,
+  SkillRefStatus, SkillRefResolution,
+  AgentFileAction, ApplyPreview, ApplyPreviewFile, ApplyResult,
+} from './agentRoleTemplate'
 
 // ─── Core Agent Types ───────────────────────────────────────────────────────
 

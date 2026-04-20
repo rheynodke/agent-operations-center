@@ -241,15 +241,23 @@ function SkillDetailInner({ skill, targets, onBack }: {
     return () => { cancelled = true }
   }, [skillSlug]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function handleInstall() {
+  const [alreadyInstalled, setAlreadyInstalled] = useState(false)
+  const [updated, setUpdated] = useState(false)
+  const [forceUnsafe, setForceUnsafe] = useState(false)
+
+  async function handleInstall(overwrite = false) {
     if (target === "agent" && !agentId) return
-    setInstallState("loading"); setInstallError(null)
+    if (security?.rating === "danger" && !forceUnsafe) return
+    setInstallState("loading"); setInstallError(null); setAlreadyInstalled(false)
     try {
-      const res = await api.skillsmpInstall(skill, target, target === "agent" ? agentId : undefined)
+      const res = await api.skillsmpInstall(skill, target, target === "agent" ? agentId : undefined, overwrite)
       setInstalledPath(typeof res.path === "string" ? res.path : "")
+      setUpdated(!!res.updated)
       setInstallState("done")
     } catch (e: unknown) {
-      setInstallError(e instanceof Error ? e.message : String(e))
+      const err = e as Error & { code?: string }
+      setInstallError(err.message || String(e))
+      if (err?.code === "ALREADY_INSTALLED") setAlreadyInstalled(true)
       setInstallState("error")
     }
   }
@@ -263,7 +271,7 @@ function SkillDetailInner({ skill, targets, onBack }: {
         <div className="rounded-xl border border-green-500/20 bg-green-500/8 px-4 py-5 flex items-start gap-3">
           <CheckCircle2 className="w-6 h-6 text-green-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-semibold text-foreground">"{name}" installed successfully!</p>
+            <p className="text-sm font-semibold text-foreground">"{name}" {updated ? "updated" : "installed"} successfully!</p>
             {installedPath && (
               <p className="text-[11px] text-muted-foreground font-mono mt-1 break-all">{shortenPath(installedPath)}</p>
             )}
@@ -385,20 +393,50 @@ function SkillDetailInner({ skill, targets, onBack }: {
         <TargetPicker targets={targets} value={target} onChange={setTarget} agentId={agentId} onAgentChange={setAgentId} />
       </div>
 
-      {installError && <p className="text-sm text-destructive">{installError}</p>}
+      {installError && !alreadyInstalled && <p className="text-sm text-destructive">{installError}</p>}
 
-      <button onClick={handleInstall}
-        disabled={(installState as string) === "loading" || (target === "agent" && !agentId) || security?.rating === "danger"}
-        className={cn(
-          "flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40",
-          security?.rating === "danger"
-            ? "bg-red-500/10 text-red-400 border border-red-500/20 cursor-not-allowed"
-            : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
-        )}>
-        {(installState as string) === "loading" ? <><Loader2 className="w-4 h-4 animate-spin" /> Installing…</> :
-         security?.rating === "danger"           ? <><ShieldX className="w-4 h-4" /> Blocked</> :
-         <><Download className="w-4 h-4" /> Install "{name}"</>}
-      </button>
+      {alreadyInstalled ? (
+        <div className="flex flex-col gap-2 rounded-xl border border-amber-500/20 bg-amber-500/8 px-4 py-3">
+          <p className="text-[13px] text-foreground">A skill with this slug is already installed at this location.</p>
+          <div className="flex gap-2">
+            <button onClick={() => handleInstall(true)}
+              disabled={(installState as string) === "loading"}
+              className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-40">
+              {(installState as string) === "loading"
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Updating…</>
+                : <><Download className="w-4 h-4" /> Update existing skill</>}
+            </button>
+            <button onClick={() => { setAlreadyInstalled(false); setInstallState("idle"); setInstallError(null) }}
+              className="px-3 py-2 rounded-lg text-sm font-medium border border-border text-muted-foreground hover:text-foreground transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {security?.rating === "danger" && (
+            <label className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-red-500/30 bg-red-500/5 cursor-pointer">
+              <input type="checkbox" checked={forceUnsafe} onChange={e => setForceUnsafe(e.target.checked)}
+                className="mt-0.5 accent-red-500" />
+              <span className="text-[12px] text-foreground/90 leading-snug">
+                I reviewed the dangerous patterns above and trust this skill. <span className="text-red-400 font-medium">Force install anyway.</span>
+              </span>
+            </label>
+          )}
+          <button onClick={() => handleInstall(false)}
+            disabled={(installState as string) === "loading" || (target === "agent" && !agentId) || (security?.rating === "danger" && !forceUnsafe)}
+            className={cn(
+              "flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40",
+              security?.rating === "danger"
+                ? "bg-red-500/15 border border-red-500/30 text-red-300 hover:bg-red-500/25"
+                : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
+            )}>
+            {(installState as string) === "loading" ? <><Loader2 className="w-4 h-4 animate-spin" /> Installing…</> :
+             security?.rating === "danger"           ? <><ShieldX className="w-4 h-4" /> Force install "{name}"</> :
+             <><Download className="w-4 h-4" /> Install "{name}"</>}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -560,11 +598,14 @@ function ClawHubTab({ targets }: { targets: ClawHubInstallTarget[] }) {
   const [installedPath, setInstalledPath] = useState<string | null>(null)
   const [showFiles, setShowFiles]         = useState(false)
   const [showSkillMd, setShowSkillMd]     = useState(false)
+  const [alreadyInstalled, setAlreadyInstalled] = useState(false)
+  const [updated, setUpdated]             = useState(false)
+  const [forceUnsafe, setForceUnsafe]     = useState(false)
 
   async function handleFetch() {
     if (!url.trim()) return
     setFetchState("loading"); setPreview(null); setFetchError(null)
-    setInstallState("idle"); setInstallError(null)
+    setInstallState("idle"); setInstallError(null); setAlreadyInstalled(false); setForceUnsafe(false)
     try {
       setPreview(await api.clawHubPreview(url.trim()))
       setFetchState("done")
@@ -574,22 +615,26 @@ function ClawHubTab({ targets }: { targets: ClawHubInstallTarget[] }) {
     }
   }
 
-  async function handleInstall() {
+  async function handleInstall(overwrite = false) {
     if (!preview) return
     if (target === "agent" && !agentId) return
-    setInstallState("loading"); setInstallError(null)
+    setInstallState("loading"); setInstallError(null); setAlreadyInstalled(false)
     try {
-      const res = await api.clawHubInstall(url.trim(), target, target === "agent" ? agentId : undefined, preview._bufferB64)
+      const res = await api.clawHubInstall(url.trim(), target, target === "agent" ? agentId : undefined, preview._bufferB64, overwrite)
       setInstalledPath(res.path)
+      setUpdated(!!res.updated)
       setInstallState("done")
     } catch (e: unknown) {
-      setInstallError(e instanceof Error ? e.message : String(e))
+      const err = e as Error & { code?: string }
+      setInstallError(err.message || String(e))
+      if (err?.code === "ALREADY_INSTALLED") setAlreadyInstalled(true)
       setInstallState("error")
     }
   }
 
   const canInstall = preview && (installState as string) === "idle" &&
-    preview.security.rating !== "danger" && (target !== "agent" || !!agentId)
+    (preview.security.rating !== "danger" || forceUnsafe) &&
+    (target !== "agent" || !!agentId)
 
   return (
     <div className="flex flex-col gap-4">
@@ -647,7 +692,7 @@ function ClawHubTab({ targets }: { targets: ClawHubInstallTarget[] }) {
             <p className="text-xs text-foreground/80">{preview.security.summary}</p>
             {preview.security.issues.length > 0 && (
               <ul className="flex flex-col gap-0.5 mt-0.5">
-                {preview.security.issues.slice(0, 5).map((issue, i) => (
+                {(preview.security.rating === "danger" ? preview.security.issues : preview.security.issues.slice(0, 5)).map((issue, i) => (
                   <li key={i} className={cn("text-[11px] flex items-center gap-1.5", issue.level === "danger" ? "text-red-400" : "text-amber-400")}>
                     <span className="w-1 h-1 rounded-full bg-current shrink-0" />
                     <span className="font-mono text-[10px] text-muted-foreground">{issue.file}</span>
@@ -693,13 +738,13 @@ function ClawHubTab({ targets }: { targets: ClawHubInstallTarget[] }) {
         </div>
       )}
 
-      {installState === "error" && installError && <p className="text-sm text-destructive">{installError}</p>}
+      {installState === "error" && installError && !alreadyInstalled && <p className="text-sm text-destructive">{installError}</p>}
 
       {installState === "done" && (
         <div className="rounded-xl border border-green-500/20 bg-green-500/8 px-4 py-3 flex items-start gap-3">
           <CheckCircle2 className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-medium text-foreground">"{preview?.name}" installed!</p>
+            <p className="text-sm font-medium text-foreground">"{preview?.name}" {updated ? "updated" : "installed"}!</p>
             {installedPath && <p className="text-[11px] text-muted-foreground font-mono mt-0.5 break-all">{shortenPath(installedPath)}</p>}
           </div>
         </div>
@@ -707,20 +752,50 @@ function ClawHubTab({ targets }: { targets: ClawHubInstallTarget[] }) {
 
       {/* Footer action */}
       {preview && (installState as string) !== "done" && (
-        <button onClick={handleInstall} disabled={!canInstall || (installState as string) === "loading"}
-          className={cn(
-            "flex items-center justify-center gap-1.5 w-full py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40",
-            preview.security.rating === "danger"
-              ? "bg-red-500/10 text-red-400 border border-red-500/20 cursor-not-allowed"
-              : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
-          )}>
-          {(installState as string) === "loading"
-            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Installing…</>
-            : preview.security.rating === "danger"
-            ? <><ShieldX className="w-3.5 h-3.5" /> Blocked (dangerous)</>
-            : <><Download className="w-3.5 h-3.5" /> Install</>
-          }
-        </button>
+        alreadyInstalled ? (
+          <div className="flex flex-col gap-2 rounded-xl border border-amber-500/20 bg-amber-500/8 px-3 py-2.5">
+            <p className="text-[12px] text-foreground">Skill already installed at this location.</p>
+            <div className="flex gap-2">
+              <button onClick={() => handleInstall(true)}
+                disabled={(installState as string) === "loading"}
+                className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-40">
+                {(installState as string) === "loading"
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Updating…</>
+                  : <><Download className="w-3.5 h-3.5" /> Update existing</>}
+              </button>
+              <button onClick={() => { setAlreadyInstalled(false); setInstallState("idle"); setInstallError(null) }}
+                className="px-3 py-2 rounded-lg text-sm font-medium border border-border text-muted-foreground hover:text-foreground transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {preview.security.rating === "danger" && (
+              <label className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-red-500/30 bg-red-500/5 cursor-pointer">
+                <input type="checkbox" checked={forceUnsafe} onChange={e => setForceUnsafe(e.target.checked)}
+                  className="mt-0.5 accent-red-500" />
+                <span className="text-[12px] text-foreground/90 leading-snug">
+                  I reviewed the dangerous patterns above and trust this skill. <span className="text-red-400 font-medium">Force install anyway.</span>
+                </span>
+              </label>
+            )}
+            <button onClick={() => handleInstall(false)} disabled={!canInstall || (installState as string) === "loading"}
+              className={cn(
+                "flex items-center justify-center gap-1.5 w-full py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40",
+                preview.security.rating === "danger"
+                  ? "bg-red-500/15 border border-red-500/30 text-red-300 hover:bg-red-500/25"
+                  : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
+              )}>
+              {(installState as string) === "loading"
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Installing…</>
+                : preview.security.rating === "danger"
+                ? <><ShieldX className="w-3.5 h-3.5" /> Force install</>
+                : <><Download className="w-3.5 h-3.5" /> Install</>
+              }
+            </button>
+          </div>
+        )
       )}
     </div>
   )
@@ -756,6 +831,9 @@ function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
   const [showFiles, setShowFiles]         = useState(false)
   const [showSkillMd, setShowSkillMd]     = useState(false)
   const [dragOver, setDragOver]           = useState(false)
+  const [alreadyInstalled, setAlreadyInstalled] = useState(false)
+  const [updated, setUpdated]             = useState(false)
+  const [forceUnsafe, setForceUnsafe]     = useState(false)
 
   async function handleFile(f: File) {
     if (!f) return
@@ -766,7 +844,7 @@ function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
     }
     setFile(f)
     setFetchState("loading"); setPreview(null); setFetchError(null)
-    setInstallState("idle"); setInstallError(null)
+    setInstallState("idle"); setInstallError(null); setAlreadyInstalled(false); setForceUnsafe(false)
     try {
       const b64 = await fileToBase64(f)
       setBufferB64(b64)
@@ -780,10 +858,10 @@ function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
     }
   }
 
-  async function handleInstall() {
+  async function handleInstall(overwrite = false) {
     if (!preview || !bufferB64 || !file) return
     if (target === "agent" && !agentId) return
-    setInstallState("loading"); setInstallError(null)
+    setInstallState("loading"); setInstallError(null); setAlreadyInstalled(false)
     try {
       const res = await api.uploadSkillInstall(
         file.name,
@@ -791,11 +869,15 @@ function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
         target,
         target === "agent" ? agentId : undefined,
         slugOverride.trim() || undefined,
+        overwrite,
       )
       setInstalledPath(res.path)
+      setUpdated(!!res.updated)
       setInstallState("done")
     } catch (e: unknown) {
-      setInstallError(e instanceof Error ? e.message : String(e))
+      const err = e as Error & { code?: string }
+      setInstallError(err.message || String(e))
+      if (err?.code === "ALREADY_INSTALLED") setAlreadyInstalled(true)
       setInstallState("error")
     }
   }
@@ -803,12 +885,12 @@ function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
   function reset() {
     setFile(null); setBufferB64(null); setPreview(null); setFetchError(null)
     setFetchState("idle"); setInstallState("idle"); setInstallError(null)
-    setInstalledPath(null); setSlugOverride("")
+    setInstalledPath(null); setSlugOverride(""); setAlreadyInstalled(false); setUpdated(false)
   }
 
   const slugValid = /^[a-z0-9-]+$/.test(slugOverride.trim())
   const canInstall = preview && installState === "idle" &&
-    preview.security.rating !== "danger" &&
+    (preview.security.rating !== "danger" || forceUnsafe) &&
     (target !== "agent" || !!agentId) &&
     slugValid
 
@@ -901,7 +983,7 @@ function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
             <p className="text-xs text-foreground/80">{preview.security.summary}</p>
             {preview.security.issues.length > 0 && (
               <ul className="flex flex-col gap-0.5 mt-0.5">
-                {preview.security.issues.slice(0, 5).map((issue, i) => (
+                {(preview.security.rating === "danger" ? preview.security.issues : preview.security.issues.slice(0, 5)).map((issue, i) => (
                   <li key={i} className={cn("text-[11px] flex items-center gap-1.5", issue.level === "danger" ? "text-red-400" : "text-amber-400")}>
                     <span className="w-1 h-1 rounded-full bg-current shrink-0" />
                     <span className="font-mono text-[10px] text-muted-foreground">{issue.file}</span>
@@ -965,33 +1047,69 @@ function UploadTab({ targets }: { targets: ClawHubInstallTarget[] }) {
         </>
       )}
 
-      {installState === "error" && installError && <p className="text-sm text-destructive">{installError}</p>}
+      {installState === "error" && installError && !alreadyInstalled && <p className="text-sm text-destructive">{installError}</p>}
 
       {installState === "done" && (
         <div className="rounded-xl border border-green-500/20 bg-green-500/8 px-4 py-3 flex items-start gap-3">
           <CheckCircle2 className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-medium text-foreground">"{preview?.name}" installed!</p>
+            <p className="text-sm font-medium text-foreground">"{preview?.name}" {updated ? "updated" : "installed"}!</p>
             {installedPath && <p className="text-[11px] text-muted-foreground font-mono mt-0.5 break-all">{shortenPath(installedPath)}</p>}
           </div>
         </div>
       )}
 
       {preview && installState !== "done" && (
-        <button onClick={handleInstall} disabled={!canInstall || installState === "loading"}
-          className={cn(
-            "flex items-center justify-center gap-1.5 w-full py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40",
-            preview.security.rating === "danger"
-              ? "bg-red-500/10 text-red-400 border border-red-500/20 cursor-not-allowed"
-              : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
-          )}>
-          {installState === "loading"
-            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Installing…</>
-            : preview.security.rating === "danger"
-            ? <><ShieldX className="w-3.5 h-3.5" /> Blocked (dangerous)</>
-            : <><Download className="w-3.5 h-3.5" /> Install</>
-          }
-        </button>
+        alreadyInstalled ? (
+          <div className="flex flex-col gap-2 rounded-xl border border-amber-500/20 bg-amber-500/8 px-3 py-2.5">
+            <p className="text-[12px] text-foreground">
+              A skill with slug <span className="font-mono text-foreground/90">"{slugOverride}"</span> is already installed at this location.
+              {preview.isSingleFile
+                ? " Updating will replace SKILL.md only."
+                : " Updating will replace the entire skill directory."}
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => handleInstall(true)}
+                disabled={installState === "loading"}
+                className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-40">
+                {installState === "loading"
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Updating…</>
+                  : <><Download className="w-3.5 h-3.5" /> Update existing</>}
+              </button>
+              <button onClick={() => { setAlreadyInstalled(false); setInstallState("idle"); setInstallError(null) }}
+                className="px-3 py-2 rounded-lg text-sm font-medium border border-border text-muted-foreground hover:text-foreground transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {preview.security.rating === "danger" && (
+              <label className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-red-500/30 bg-red-500/5 cursor-pointer">
+                <input type="checkbox" checked={forceUnsafe} onChange={e => setForceUnsafe(e.target.checked)}
+                  className="mt-0.5 accent-red-500" />
+                <span className="text-[12px] text-foreground/90 leading-snug">
+                  I reviewed the dangerous patterns above and trust this skill (e.g. it's one I built myself).
+                  <span className="text-red-400 font-medium"> Force install anyway.</span>
+                </span>
+              </label>
+            )}
+            <button onClick={() => handleInstall(false)} disabled={!canInstall || installState === "loading"}
+              className={cn(
+                "flex items-center justify-center gap-1.5 w-full py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40",
+                preview.security.rating === "danger"
+                  ? "bg-red-500/15 border border-red-500/30 text-red-300 hover:bg-red-500/25"
+                  : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
+              )}>
+              {installState === "loading"
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Installing…</>
+                : preview.security.rating === "danger"
+                ? <><ShieldX className="w-3.5 h-3.5" /> Force install</>
+                : <><Download className="w-3.5 h-3.5" /> Install</>
+              }
+            </button>
+          </div>
+        )
       )}
     </div>
   )

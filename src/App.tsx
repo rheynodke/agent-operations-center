@@ -23,6 +23,7 @@ import { HooksPage } from "@/pages/HooksPage"
 import { RoutingPage } from "@/pages/RoutingPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 import { SkillsPage } from "@/pages/SkillsPage"
+import { RoleTemplatesPage } from "@/pages/RoleTemplatesPage"
 import { ChatPage } from "@/pages/ChatPage"
 import { ConnectionsPage } from "@/pages/ConnectionsPage"
 
@@ -49,6 +50,7 @@ function DashboardShell() {
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/routing" element={<RoutingPage />} />
             <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/roles" element={<RoleTemplatesPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/chat" element={<ChatPage />} />

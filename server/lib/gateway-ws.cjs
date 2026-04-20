@@ -137,6 +137,9 @@ class GatewayWsProxy {
     this._deviceIdentity = null;
     this._deviceAuthToken = null;
     this._port = 18789;
+    // Track last accumulated assistant text per sessionKey so we can emit
+    // per-chunk deltas to the frontend (gateway sends cumulative merged text).
+    this._chatDeltaAccum = new Map();
   }
 
   /** Alias for this.connected — used by server/index.cjs */
@@ -395,6 +398,10 @@ class GatewayWsProxy {
               toolInput: inner.toolInput || p.toolInput,
               toolResult: inner.toolResult || p.toolResult,
               toolCallId: inner.toolCallId || inner.id || p.toolCallId || p.id,
+              // `session.message` always carries a full snapshot (not an
+              // incremental delta), so instruct the frontend to overwrite
+              // responseText rather than append.
+              replace: true,
             },
           });
         }
@@ -413,10 +420,62 @@ class GatewayWsProxy {
           this.broadcast({ type: 'chat:done', payload: { sessionKey: agentKey } });
         }
       } else if (evt === 'chat') {
-        // Chat state events — state:"final" means the agent turn is complete
-        if (p.state === 'final') {
-          const chatKey = p.sessionKey ?? p.key ?? null;
-          this.broadcast({ type: 'chat:done', payload: { sessionKey: chatKey } });
+        // Chat lifecycle events. Policy: do NOT stream incremental delta text
+        // to the UI — this caused "half-rendered then stuck" UX during long
+        // tool calls. Instead:
+        //   - on state=delta: emit a lightweight `chat:progress` heartbeat so
+        //     the frontend keeps its "working" indicator alive, but no text.
+        //     We also buffer the accumulating text on the server so that when
+        //     `state=final` arrives we can emit ONE complete `chat:message`.
+        //   - on state=final: emit the full buffered text as a single
+        //     `chat:message` (done=true), then `chat:done`.
+        const chatKey = p.sessionKey ?? p.key ?? null;
+        const extractText = (v) => {
+          if (v == null) return '';
+          if (typeof v === 'string') return v;
+          if (Array.isArray(v)) return v.map(extractText).join('');
+          if (typeof v === 'object') {
+            if (v.type && v.type !== 'text') return '';
+            if (typeof v.text === 'string') return v.text;
+            return '';
+          }
+          return '';
+        };
+        if (p.state === 'delta') {
+          const msg = p.message || {};
+          const fullText = extractText(msg.content || msg.text || '');
+          if (chatKey) {
+            // Remember the latest cumulative text on the server so that if
+            // the gateway's own `state=final` doesn't carry the full payload
+            // we can still emit it. Accept only forward-progressing updates.
+            const prev = this._chatDeltaAccum.get(chatKey) || '';
+            if (fullText && fullText.length >= prev.length) {
+              this._chatDeltaAccum.set(chatKey, fullText);
+            }
+            this.broadcast({
+              type: 'chat:progress',
+              payload: { sessionKey: chatKey, ts: Date.now() },
+            });
+          }
+        } else if (p.state === 'final') {
+          const msg = p.message || {};
+          const finalText = extractText(msg.content || msg.text || '')
+            || this._chatDeltaAccum.get(chatKey) || '';
+          this._chatDeltaAccum.delete(chatKey);
+          if (finalText && chatKey) {
+            this.broadcast({
+              type: 'chat:message',
+              payload: {
+                sessionKey: chatKey,
+                role: msg.role || 'assistant',
+                text: finalText,
+                thinking: '',
+                done: true,
+                replace: true,        // signal frontend: overwrite, not append
+              },
+            });
+          }
+          if (chatKey) this.broadcast({ type: 'chat:done', payload: { sessionKey: chatKey } });
         }
       } else if (evt === 'session.tool') {
         // Tool call event
@@ -583,14 +642,20 @@ class GatewayWsProxy {
     return this.sendReq('chat.history', { sessionKey, maxChars });
   }
 
-  /** chat.send — { sessionKey, message, idempotencyKey }
-   *  message can be a plain string or an array of content blocks (text/image). */
-  chatSend(sessionKey, message) {
-    return this.sendReq('chat.send', {
+  /** chat.send — { sessionKey, message, attachments?, idempotencyKey }
+   *  - `message` MUST be a plain string (gateway schema `Type.String()`).
+   *  - `attachments` carries media: `[{ type, mimeType, fileName, content }]`
+   *    where `content` is base64 data for images. */
+  chatSend(sessionKey, message, attachments) {
+    const payload = {
       sessionKey,
-      message,
+      message: typeof message === 'string' ? message : '',
       idempotencyKey: crypto.randomBytes(8).toString('hex'),
-    });
+    };
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      payload.attachments = attachments;
+    }
+    return this.sendReq('chat.send', payload);
   }
 
   /** chat.abort — { sessionKey, runId? } */

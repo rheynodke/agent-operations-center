@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   BookOpen,
+  IdCard,
   MessageSquare,
   Cable,
   Webhook,
@@ -55,6 +56,7 @@ const navGroups = [
     label: "Library",
     items: [
       { to: "/skills", label: "Skills & Tools", icon: BookOpen },
+      { to: "/roles", label: "Role Templates", icon: IdCard },
       { to: "/connections", label: "Connections", icon: Plug },
     ],
   },

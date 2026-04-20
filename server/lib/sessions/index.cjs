@@ -122,7 +122,9 @@ module.exports = {
   parseClaudeCliSessions:                 claudeCli.parseClaudeCliSessions,
   parseClaudeCliSessionEvents:            claudeCli.parseClaudeCliSessionEvents,
   parseClaudeCliSessionEventsByFile:      claudeCli.parseClaudeCliSessionEventsByFile,
+  parseClaudeCliAsGatewayMessages:        claudeCli.parseClaudeCliAsGatewayMessages,
   parseSingleClaudeCliEntry:              claudeCli.parseSingleClaudeCliEntry,
   buildAgentClaudeCliMap:                 claudeCli.buildAgentClaudeCliMap,
   findClaudeCliForGatewaySessionId:       claudeCli.findClaudeCliForGatewaySessionId,
+  findClaudeCliFileForGatewaySession:     claudeCli.findClaudeCliFileForGatewaySession,
 };

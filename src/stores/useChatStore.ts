@@ -13,6 +13,7 @@ export interface ChatMessageGroup {
   // For agent messages — each phase is separate
   thinkingText?: string      // thinking/reasoning content
   thinkingDone?: boolean     // true when thinking phase is complete
+  thinkingRedacted?: boolean // true when provider stripped thinking content (e.g. Anthropic returns signature only)
   toolCalls?: ChatToolCall[] // tool call sequence
   responseText?: string      // final response text (streaming)
   agentImages?: string[]     // image URLs/data-urls from agent content blocks
@@ -98,8 +99,17 @@ export const useChatStore = create<ChatState>((set) => ({
 const MEDIA_BLOCK_RE = /\[media attached:\s*([^\s(]+)\s*\([^)]+\)\s*\|[^\]]*\]/g
 // The boilerplate instructions injected after each media block by the gateway
 const MEDIA_BOILERPLATE_RE = /\s*To send an image back,.*?Keep caption in the text body\./gs
+// Plain absolute path to a known openclaw media directory (used on session
+// reload — gateway history doesn't always keep the `[media attached: ...]`
+// wrapper; sometimes the raw path ends up as the user text).
+// Built via `new RegExp` to sidestep a Rollup parser quirk that rejects
+// `\]` inside a character class in literal regex form.
+const PLAIN_IMAGE_PATH_RE = new RegExp(
+  "(/(?:tmp|var/folders|Users/[^/\\s]+/\\.(?:openclaw|claude))/[^\\s\"')]+\\.(?:png|jpe?g|gif|webp|bmp))",
+  "gi",
+)
 
-/** Parse media attachments from gateway-injected text markers.
+/** Parse media attachments from gateway-injected text markers OR plain paths.
  *  Returns the file paths and the cleaned caption text. */
 export function parseMediaAttachments(text: string): { paths: string[]; caption: string } {
   const paths: string[] = []
@@ -108,7 +118,34 @@ export function parseMediaAttachments(text: string): { paths: string[]; caption:
     return ""
   })
   cleaned = cleaned.replace(MEDIA_BOILERPLATE_RE, "").trim()
+  // Fallback: detect plain paths to openclaw-staged images (on reload the
+  // media marker is often stripped, leaving just the path in user text).
+  cleaned = cleaned.replace(PLAIN_IMAGE_PATH_RE, (match) => {
+    paths.push(match)
+    return ""
+  })
+  // Tidy up leftover whitespace / dangling punctuation from path removal.
+  cleaned = cleaned.replace(/\s{2,}/g, " ").replace(/\s+([,.!?])/g, "$1").trim()
   return { paths, caption: cleaned }
+}
+
+/**
+ * Detect whether a user-role message is actually a system-injected skill
+ * invocation context (SKILL.md content + "Base directory for this skill: …"
+ * prefix that the gateway/LLM framework feeds to the agent on skill use).
+ * These are not things the user typed — they should never render in the UI.
+ */
+export function isSystemInjectedUserMessage(text: string): boolean {
+  if (!text) return false
+  const t = text.trimStart()
+  // Common markers observed in chat history:
+  return (
+    /^Base directory for this skill:\s*/.test(t) ||
+    /^#\s*\S+\s+A specialized companion/m.test(t) ||  // SKILL.md header-ish
+    /^<\s*skill[:\s=]/.test(t) ||                      // future <skill:...> envelopes
+    /^\[skill-invocation\]/.test(t) ||
+    /^\{"source":"skill"/.test(t)
+  )
 }
 
 /** Convert a local openclaw file path to a dashboard /api/media URL */
@@ -148,6 +185,28 @@ function convertMediaInlineToMarkdown(text: string): string {
 function stripToolCallMarkers(text: string): string {
   if (!text || !text.includes('<|tool_calls_section_begin|>')) return text
   return text.replace(/<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>/g, '').trim()
+}
+
+/**
+ * Strip gateway-injected envelope markers that sometimes leak into assistant
+ * text. These are directives meant for routing/context management, never for
+ * the human reader — they showed up inline otherwise (e.g. at the start of a
+ * message: "[chat.history omitted: message too large]✅ Sudah muncul, bro!").
+ */
+const GATEWAY_ENVELOPE_PATTERNS: RegExp[] = [
+  /\[chat\.history omitted:[^\]]*\]/g,           // "[chat.history omitted: message too large]"
+  /\[\[reply_to_current\]\]/g,                    // reply-targeting directive
+  /\[\[reply_to:[^\]]*\]\]/g,                     // explicit reply target
+  /\[\[silent\]\]/g,                              // silent-reply token
+  /\[chat\.resume(?:d)?(?::\s*[^\]]+)?\]/g,       // history resume marker
+]
+export function stripGatewayEnvelopes(text: string): string {
+  if (!text) return text
+  let out = text
+  for (const re of GATEWAY_ENVELOPE_PATTERNS) out = out.replace(re, "")
+  // Collapse whitespace/newlines left behind by leading strips so the response
+  // doesn't start with orphan blank lines.
+  return out.replace(/^\s+/, "").replace(/[ \t]+\n/g, "\n")
 }
 
 /** Extract plain text from gateway content (can be string, {type,text} object, or array of blocks) */
@@ -238,7 +297,13 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
     if (role === "user") {
       flushAgent()
       const rawText = extractText(msg.content || msg.text)
+      // Skip system-injected "user" messages (skill invocation context
+      // dumped by the LLM framework — not something the human typed).
+      if (isSystemInjectedUserMessage(rawText)) continue
       const { paths, caption } = parseMediaAttachments(rawText)
+      // If after stripping the only remaining content would be empty AND
+      // there are no images either, skip the bubble entirely.
+      if (!caption && paths.length === 0) continue
       groups.push({
         id: msg.id ?? `user-${msg.timestamp ?? Date.now()}`,
         role: "user",
@@ -297,10 +362,16 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
           timestamp: msg.timestamp,
         }
       }
-      // For toolResult, result text lives in msg.content; for tool, it's in msg.toolResult
-      const resultValue = role === "toolResult"
-        ? extractToolResultText(msg.content)
-        : msg.toolResult
+      // For toolResult, result text may live in msg.content (gateway history
+      // format) OR in msg.toolResult (our claude-cli-as-gateway conversion).
+      // For plain "tool" (WS streaming), it's always msg.toolResult.
+      let resultValue: unknown
+      if (role === "toolResult") {
+        const fromContent = extractToolResultText(msg.content)
+        resultValue = fromContent || msg.toolResult
+      } else {
+        resultValue = msg.toolResult
+      }
 
       // Match by toolCallId first, then by id/toolName
       const matchId = msg.toolCallId ?? msg.id ?? msg.toolName

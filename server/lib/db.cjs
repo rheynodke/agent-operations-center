@@ -223,6 +223,33 @@ async function initDatabase() {
     )
   `);
 
+  // ── ADLC Role Templates ─────────────────────────────────────────────────────
+  // Managed role presets for ADLC agents. Seeded from server/data/role-templates-seed.json
+  // on first run. Users can fork/create/edit custom templates.
+  // agent_files / skill_refs / script_refs / tags stored as JSON text.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS role_templates (
+      id                  TEXT PRIMARY KEY,
+      adlc_number         INTEGER,
+      role                TEXT NOT NULL,
+      emoji               TEXT,
+      color               TEXT,
+      description         TEXT,
+      model               TEXT,
+      tags                TEXT NOT NULL DEFAULT '[]',
+      agent_files         TEXT NOT NULL DEFAULT '{}',
+      skill_refs          TEXT NOT NULL DEFAULT '[]',
+      skill_contents      TEXT NOT NULL DEFAULT '{}',
+      script_refs         TEXT NOT NULL DEFAULT '[]',
+      fs_workspace_only   INTEGER NOT NULL DEFAULT 0,
+      origin              TEXT NOT NULL DEFAULT 'user',
+      built_in            INTEGER NOT NULL DEFAULT 0,
+      created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_role_templates_origin ON role_templates(origin)`);
+
   // Tasks migration: add project + external sync columns
   try { db.run("ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'general'"); } catch (_) {}
   try { db.run('ALTER TABLE tasks ADD COLUMN external_id TEXT'); } catch (_) {}

@@ -101,6 +101,21 @@ const HOST = process.env.HOST || '0.0.0.0';
 const app = express();
 const server = http.createServer(app);
 
+// Behind a reverse proxy (cloudflared tunnel → agents.dke.dev, or a local
+// nginx / Cloudflare Zero Trust gateway). `trust proxy` lets Express honour
+// `X-Forwarded-For` so rate-limiter keys off the real client IP instead of
+// the loopback. Configurable via env; default "1" (trust first hop) — matches
+// our production setup (a single tunnel in front).
+const TRUST_PROXY = process.env.TRUST_PROXY ?? '1';
+// Accept numeric hop counts, booleans, or a comma-separated list of IPs.
+if (TRUST_PROXY === 'true' || TRUST_PROXY === 'false') {
+  app.set('trust proxy', TRUST_PROXY === 'true');
+} else if (/^\d+$/.test(TRUST_PROXY)) {
+  app.set('trust proxy', parseInt(TRUST_PROXY, 10));
+} else {
+  app.set('trust proxy', TRUST_PROXY);
+}
+
 // ─── Security ─────────────────────────────────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: {
@@ -1024,18 +1039,18 @@ app.post('/api/skills/clawhub/preview', db.authMiddleware, async (req, res) => {
 // POST /api/skills/clawhub/install — download + extract skill
 // Body: { url, target, agentId?, bufferB64? }
 app.post('/api/skills/clawhub/install', db.authMiddleware, async (req, res) => {
-  const { url, target, agentId, bufferB64 } = req.body || {};
+  const { url, target, agentId, bufferB64, overwrite } = req.body || {};
   if (!url || !target) {
     return res.status(400).json({ error: 'url and target are required' });
   }
   try {
-    const result = await skillsInstall.installSkill({ urlOrSlug: url, target, agentId, bufferB64 });
-    console.log(`[api/skills/clawhub] Installed "${result.slug}" to ${result.path}`);
+    const result = await skillsInstall.installSkill({ urlOrSlug: url, target, agentId, bufferB64, overwrite: !!overwrite });
+    console.log(`[api/skills/clawhub] ${result.updated ? 'Updated' : 'Installed'} "${result.slug}" to ${result.path}`);
     res.json(result);
   } catch (err) {
     console.error('[api/skills/clawhub/install]', err);
-    const code = err.message?.includes('already installed') ? 409 : 500;
-    res.status(code).json({ error: err.message || 'Install failed' });
+    const code = err.code === 'ALREADY_INSTALLED' ? 409 : 500;
+    res.status(code).json({ error: err.message || 'Install failed', code: err.code, slug: err.slug, installPath: err.installPath });
   }
 });
 
@@ -1062,18 +1077,18 @@ app.post('/api/skills/upload/preview', db.authMiddleware, (req, res) => {
 // POST /api/skills/upload/install — install from uploaded buffer
 // Body: { filename, bufferB64, target, agentId?, slug? }
 app.post('/api/skills/upload/install', db.authMiddleware, (req, res) => {
-  const { filename, bufferB64, target, agentId, slug } = req.body || {};
+  const { filename, bufferB64, target, agentId, slug, overwrite } = req.body || {};
   if (!bufferB64 || !target) {
     return res.status(400).json({ error: 'bufferB64 and target are required' });
   }
   try {
-    const result = skillsInstall.installFromUpload({ bufferB64, filename, target, agentId, slug });
-    console.log(`[api/skills/upload] Installed "${result.slug}" to ${result.path}`);
+    const result = skillsInstall.installFromUpload({ bufferB64, filename, target, agentId, slug, overwrite: !!overwrite });
+    console.log(`[api/skills/upload] ${result.updated ? 'Updated' : 'Installed'} "${result.slug}" to ${result.path}`);
     res.json(result);
   } catch (err) {
     console.error('[api/skills/upload/install]', err);
-    const code = err.message?.includes('already installed') ? 409 : 400;
-    res.status(code).json({ error: err.message || 'Install failed' });
+    const code = err.code === 'ALREADY_INSTALLED' ? 409 : 400;
+    res.status(code).json({ error: err.message || 'Install failed', code: err.code, slug: err.slug, installPath: err.installPath });
   }
 });
 
@@ -1151,18 +1166,188 @@ app.post('/api/skills/skillsmp/preview', db.authMiddleware, async (req, res) => 
 
 // POST /api/skills/skillsmp/install — install from SkillsMP
 app.post('/api/skills/skillsmp/install', db.authMiddleware, async (req, res) => {
-  const { skill, target, agentId } = req.body || {};
+  const { skill, target, agentId, overwrite } = req.body || {};
   if (!skill || !target) {
     return res.status(400).json({ error: 'skill and target are required' });
   }
   try {
-    const result = await skillsInstall.installSkillsmpSkill({ skill, target, agentId });
-    console.log(`[api/skills/skillsmp] Installed "${result.slug}" to ${result.path}`);
+    const result = await skillsInstall.installSkillsmpSkill({ skill, target, agentId, overwrite: !!overwrite });
+    console.log(`[api/skills/skillsmp] ${result.updated ? 'Updated' : 'Installed'} "${result.slug}" to ${result.path}`);
     res.json(result);
   } catch (err) {
     console.error('[api/skills/skillsmp/install]', err);
-    const code = err.message?.includes('already installed') ? 409 : 500;
-    res.status(code).json({ error: err.message || 'Install failed' });
+    const code = err.code === 'ALREADY_INSTALLED' ? 409 : 500;
+    res.status(code).json({ error: err.message || 'Install failed', code: err.code, slug: err.slug, installPath: err.installPath });
+  }
+});
+
+// ─── ADLC Role Templates (Phase 1: read-only) ───────────────────────────────
+
+// GET /api/role-templates — list all templates with summary metadata
+app.get('/api/role-templates', db.authMiddleware, (req, res) => {
+  try {
+    const templates = parsers.listRoleTemplates();
+    // Strip heavy fields from list payload — UI fetches detail on demand
+    const summary = templates.map(t => ({
+      id:               t.id,
+      adlcAgentNumber:  t.adlcAgentNumber,
+      role:             t.role,
+      emoji:            t.emoji,
+      color:            t.color,
+      description:      t.description,
+      modelRecommendation: t.modelRecommendation,
+      tags:             t.tags,
+      origin:           t.origin,
+      builtIn:          t.builtIn,
+      skillCount:       Array.isArray(t.skillSlugs) ? t.skillSlugs.length : 0,
+      scriptCount:      Array.isArray(t.scriptTemplates) ? t.scriptTemplates.length : 0,
+      updatedAt:        t.updatedAt,
+    }));
+    res.json({ templates: summary });
+  } catch (err) {
+    console.error('[api/role-templates]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/role-templates/:id — full template including agent files,
+// skill bundle, and script templates
+app.get('/api/role-templates/:id', db.authMiddleware, (req, res) => {
+  try {
+    const template = parsers.getRoleTemplate(req.params.id);
+    if (!template) return res.status(404).json({ error: `Role template "${req.params.id}" not found` });
+    res.json({ template });
+  } catch (err) {
+    console.error('[api/role-templates/:id]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/role-templates/:id/usage — which agents reference this template?
+app.get('/api/role-templates/:id/usage', db.authMiddleware, (req, res) => {
+  try {
+    const agentIds = parsers.listRoleTemplateUsage(req.params.id);
+    res.json({ agentIds, count: agentIds.length });
+  } catch (err) {
+    console.error('[api/role-templates/:id/usage]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function roleTemplateErrorStatus(err) {
+  switch (err?.code) {
+    case 'VALIDATION': return 400;
+    case 'NOT_FOUND':  return 404;
+    case 'CONFLICT':   return 409;
+    case 'READ_ONLY':  return 403;
+    case 'IN_USE':     return 409;
+    default:           return 500;
+  }
+}
+
+// POST /api/role-templates — create a custom template
+// Body: { id, role, emoji?, color?, description?, modelRecommendation?,
+//         adlcAgentNumber?, tags?, agentFiles?, skillSlugs?, skillContents?,
+//         scriptTemplates?, fsWorkspaceOnly? }
+app.post('/api/role-templates', db.authMiddleware, (req, res) => {
+  try {
+    const created = parsers.createRoleTemplate(req.body || {});
+    console.log(`[api/role-templates] Created "${created.id}"`);
+    res.status(201).json({ template: created });
+  } catch (err) {
+    console.error('[api/role-templates][POST]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code, details: err.details });
+  }
+});
+
+// PATCH /api/role-templates/:id — update metadata / refs for a user template
+// Built-ins are rejected with 403 — caller must fork first.
+app.patch('/api/role-templates/:id', db.authMiddleware, (req, res) => {
+  try {
+    const updated = parsers.updateRoleTemplate(req.params.id, req.body || {});
+    console.log(`[api/role-templates] Updated "${req.params.id}"`);
+    res.json({ template: updated });
+  } catch (err) {
+    console.error('[api/role-templates][PATCH]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code, details: err.details });
+  }
+});
+
+// DELETE /api/role-templates/:id — delete a user template
+// Query: ?force=true to also clear `role` from agents referencing it
+app.delete('/api/role-templates/:id', db.authMiddleware, (req, res) => {
+  try {
+    const force = req.query.force === 'true' || req.query.force === '1';
+    const result = parsers.deleteRoleTemplate(req.params.id, { force });
+    console.log(`[api/role-templates] Deleted "${req.params.id}"${force ? ' (forced)' : ''}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/role-templates][DELETE]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code, usage: err.usage });
+  }
+});
+
+// POST /api/role-templates/:id/fork — copy a template (built-in or custom)
+// Body: { newId?, overrides? } — overrides is a partial template patch
+app.post('/api/role-templates/:id/fork', db.authMiddleware, (req, res) => {
+  try {
+    const { newId, overrides } = req.body || {};
+    const forked = parsers.forkRoleTemplate(req.params.id, newId, overrides || {});
+    console.log(`[api/role-templates] Forked "${req.params.id}" → "${forked.id}"`);
+    res.status(201).json({ template: forked });
+  } catch (err) {
+    console.error('[api/role-templates][fork]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code });
+  }
+});
+
+// GET /api/role-templates/:id/preview-apply?agentId=X
+// Returns per-file / skill / script changes that applying this template
+// would produce for the given agent.
+app.get('/api/role-templates/:id/preview-apply', db.authMiddleware, (req, res) => {
+  try {
+    const { agentId } = req.query;
+    if (!agentId || typeof agentId !== 'string') {
+      return res.status(400).json({ error: 'agentId query param required' });
+    }
+    const preview = parsers.previewRoleTemplateApply(req.params.id, agentId);
+    res.json({ preview });
+  } catch (err) {
+    console.error('[api/role-templates/preview-apply]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code });
+  }
+});
+
+// POST /api/agents/:agentId/assign-role
+// Body: {
+//   templateId, overwriteFiles?, installSkills?, installScripts?,
+//   overwriteConflictingScripts?
+// }
+app.post('/api/agents/:agentId/assign-role', db.authMiddleware, (req, res) => {
+  try {
+    const { templateId, overwriteFiles, installSkills, installScripts, overwriteConflictingScripts } = req.body || {};
+    if (!templateId) return res.status(400).json({ error: 'templateId is required' });
+    const savedBy = req.user?.username || 'dashboard';
+    const result = parsers.applyRoleTemplateToAgent(templateId, req.params.agentId, {
+      overwriteFiles, installSkills, installScripts, overwriteConflictingScripts, savedBy,
+    });
+    console.log(`[api/agents/assign-role] "${req.params.agentId}" ← "${templateId}": ${result.applied.files.length} files, ${result.applied.skillsAddedToAllowlist.length} skill refs, ${result.applied.scriptsWritten.length} scripts`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/assign-role]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code });
+  }
+});
+
+// POST /api/agents/:agentId/unassign-role — clear agent role (files untouched)
+app.post('/api/agents/:agentId/unassign-role', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.unassignAgentRole(req.params.agentId);
+    console.log(`[api/agents/unassign-role] "${req.params.agentId}"`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/unassign-role]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code });
   }
 });
 
@@ -3148,10 +3333,23 @@ app.get('/api/media', (req, res) => {
   if (!filePath || typeof filePath !== 'string') {
     return res.status(400).json({ error: 'path is required' });
   }
-  // Security: resolve and ensure it's under OPENCLAW_HOME
+  // Security: resolve and ensure it's under one of the allowed staging roots.
+  // Beyond OPENCLAW_HOME we also allow:
+  //   - /tmp/openclaw/**          (claude-cli image uploads land here)
+  //   - $TMPDIR/openclaw/**       (macOS per-user tmp)
+  //   - OPENCLAW_WORKSPACE/**     (agent workspace files)
+  // Each must be an exact-prefix match, no symlink escape.
   const resolved = path.resolve(filePath);
-  const allowed = path.resolve(parsers.OPENCLAW_HOME);
-  if (!resolved.startsWith(allowed + path.sep) && resolved !== allowed) {
+  const allowedRoots = [
+    path.resolve(parsers.OPENCLAW_HOME),
+    path.resolve(parsers.OPENCLAW_WORKSPACE || ''),
+    '/tmp/openclaw',
+    path.resolve(process.env.TMPDIR || '/tmp', 'openclaw'),
+  ].filter(Boolean);
+  const isAllowed = allowedRoots.some((root) =>
+    root && (resolved === root || resolved.startsWith(root + path.sep)),
+  );
+  if (!isAllowed) {
     return res.status(403).json({ error: 'Forbidden path' });
   }
   if (!fs.existsSync(resolved)) {
@@ -3272,6 +3470,27 @@ app.get('/api/chat/history/:sessionKey', db.authMiddleware, async (req, res) => 
       }
     }
 
+    // For claude-cli backed sessions, gateway's chat.history only returns
+    // plain text turns — no thinking, no tool_use, no tool_result. The full
+    // trace lives in the claude-cli JSONL. Try to locate it and return those
+    // parsed messages instead so the reload UI matches the live experience.
+    const agentId = sessionKey.split(':')[1];
+    if (agentId) {
+      const { OPENCLAW_HOME, readJsonSafe } = require('./lib/config.cjs');
+      const sessionsFile = path.join(OPENCLAW_HOME, 'agents', agentId, 'sessions', 'sessions.json');
+      const gwSessions = readJsonSafe(sessionsFile) || {};
+      const meta = gwSessions[sessionKey];
+      if (meta) {
+        const cli = parsers.findClaudeCliFileForGatewaySession(meta, agentId);
+        if (cli?.fullPath) {
+          const cliMessages = parsers.parseClaudeCliAsGatewayMessages(cli.fullPath);
+          if (cliMessages.length > 0) {
+            return res.json({ messages: cliMessages, source: 'claude-cli' });
+          }
+        }
+      }
+    }
+
     const result = await gatewayProxy.chatHistory(sessionKey, maxChars);
     res.json(result);
   } catch (err) {
@@ -3291,30 +3510,35 @@ app.post('/api/chat/send', db.authMiddleware, async (req, res) => {
     if (!text?.trim() && (!images || images.length === 0)) {
       return res.status(400).json({ error: 'text or images is required' });
     }
-    // Build content array for multimodal messages
-    let message;
-    if (images && images.length > 0) {
-      const contentBlocks = [];
-      for (const dataUrl of images) {
-        // dataUrl: "data:<mediaType>;base64,<data>"
-        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-        if (match) {
-          contentBlocks.push({
-            type: 'image',
-            source: { type: 'base64', media_type: match[1], data: match[2] },
-          });
-        }
-      }
-      if (text?.trim()) {
-        contentBlocks.push({ type: 'text', text: text.trim() });
-      }
-      message = contentBlocks;
-    } else {
-      message = text.trim();
+    // Gateway's chat.send requires `message` as a plain string and carries
+    // media via the separate `attachments` array (see ChatSendParamsSchema in
+    // openclaw:src/gateway/protocol/schema/logs-chat.ts). Previous code shoved
+    // content blocks into `message` which the schema rejects with
+    // "invalid chat.send params: at /message: must be string".
+    const message = (text || '').trim();
+    const attachments = [];
+    if (Array.isArray(images) && images.length > 0) {
+      images.forEach((dataUrl, i) => {
+        // Accept "data:<mediaType>;base64,<data>" — fall back to raw base64.
+        const match = typeof dataUrl === 'string' ? dataUrl.match(/^data:([^;]+);base64,(.+)$/) : null;
+        const mimeType = match ? match[1] : 'image/png';
+        const content  = match ? match[2] : (typeof dataUrl === 'string' ? dataUrl : '');
+        if (!content) return;
+        const extFromMime = (mimeType.split('/')[1] || 'bin').split('+')[0];
+        attachments.push({
+          type: 'image',
+          mimeType,
+          fileName: `upload-${Date.now()}-${i}.${extFromMime}`,
+          content,
+        });
+      });
     }
     // Ensure we're subscribed
     await gatewayProxy.sessionsMessagesSubscribe(sessionKey);
-    const result = await gatewayProxy.chatSend(sessionKey, message, agentId);
+    const result = await gatewayProxy.chatSend(sessionKey, message, attachments);
+    // agentId is accepted by the legacy wrapper call signature but the gateway
+    // does not use it for chat.send — session routing is by sessionKey.
+    void agentId;
     res.json(result || { ok: true });
   } catch (err) {
     console.error('[api/chat/send]', err);
@@ -3558,6 +3782,16 @@ async function sweepPendingTasks() {
 // ─── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   await db.initDatabase();
+
+  // Seed built-in ADLC role templates on first run (idempotent)
+  try {
+    const seedResult = parsers.seedRoleTemplatesIfEmpty();
+    if (seedResult.seeded > 0) {
+      console.log(`[startup] Role templates seeded: ${seedResult.seeded}`);
+    }
+  } catch (err) {
+    console.error('[startup] Role template seed failed:', err.message);
+  }
 
   function broadcast(event) {
     const msg = JSON.stringify({ ...event, timestamp: event.timestamp || new Date().toISOString() });

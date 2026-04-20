@@ -146,6 +146,7 @@ function parseSingleClaudeCliEntry(jsonLine, defaults = {}) {
     let role = msg.role || kind;
     let text = '';
     let thinking = '';
+    let thinkingRedacted = false; // true when a thinking block exists but its text was stripped by the provider
     const tools = [];
     let isErrorFlag = false;
 
@@ -166,9 +167,18 @@ function parseSingleClaudeCliEntry(jsonLine, defaults = {}) {
             tools.push(...toolCalls);
             break;
           }
-          case 'thinking':
-            thinking = part.thinking || thinking;
+          case 'thinking': {
+            const rawThinking = typeof part.thinking === 'string' ? part.thinking : '';
+            if (rawThinking.trim()) {
+              thinking = rawThinking;
+            } else if (part.signature || rawThinking === '') {
+              // Block present but text stripped (Anthropic redacts thinking content
+              // for certain models / rate-limited fallbacks — only a signature is
+              // returned). Surface this to UI so we can show a subtle indicator.
+              thinkingRedacted = true;
+            }
             break;
+          }
           case 'tool_use':
             tools.push({
               name: part.name || 'unknown',
@@ -248,6 +258,7 @@ function parseSingleClaudeCliEntry(jsonLine, defaults = {}) {
       sender,
       mediaFiles,
       thinking,
+      thinkingRedacted,
       tools,
       model: modelStr,
       cost: 0, // Claude CLI doesn't record cost inline
@@ -545,6 +556,97 @@ function parseClaudeCliSessions() {
   return sessions;
 }
 
+/**
+ * Read a claude-cli JSONL and return its turns as GatewayMessage-shaped
+ * objects that `gatewayMessagesToGroups()` in the frontend can consume.
+ * Preserves full content-block arrays (thinking + tool_use + text) so the
+ * reload path shows the same trace as the live WS path.
+ */
+function parseClaudeCliAsGatewayMessages(fullPath, opts = {}) {
+  if (!fullPath || !fs.existsSync(fullPath)) return [];
+  const limit = opts.limit || 2000;
+  let content;
+  try { content = fs.readFileSync(fullPath, 'utf-8'); }
+  catch { return []; }
+  const lines = content.trim().split('\n').filter(Boolean).slice(-limit);
+  const out = [];
+  for (const line of lines) {
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (!d || typeof d !== 'object') continue;
+    const kind = d.type;
+    if (!['user', 'assistant'].includes(kind)) continue;
+    const msg = d.message;
+    if (!msg) continue;
+    const tsIso = d.timestamp;
+    const ts = tsIso ? Date.parse(tsIso) : undefined;
+
+    if (kind === 'user') {
+      // Detect whether this is a real user message or a tool_result wrapper.
+      const rawContent = msg.content;
+      if (Array.isArray(rawContent)) {
+        const hasToolResult = rawContent.some(b => b && b.type === 'tool_result');
+        if (hasToolResult) {
+          // Emit one toolResult message per tool_result block — matches
+          // gateway history format that gatewayMessagesToGroups handles.
+          for (const b of rawContent) {
+            if (!b || b.type !== 'tool_result') continue;
+            let output = '';
+            const c = b.content;
+            if (typeof c === 'string') output = c;
+            else if (Array.isArray(c)) {
+              output = c.map(p => typeof p === 'string' ? p : (p?.text || JSON.stringify(p || ''))).join('\n');
+            } else if (c != null) {
+              try { output = JSON.stringify(c); } catch { output = String(c); }
+            }
+            out.push({
+              role: 'toolResult',
+              toolName: 'result',
+              toolCallId: b.tool_use_id || null,
+              toolResult: output,
+              isError: !!b.is_error,
+              timestamp: ts,
+              id: d.uuid || undefined,
+            });
+          }
+          continue;
+        }
+      }
+      // Plain user message
+      const text = typeof rawContent === 'string' ? rawContent :
+        (Array.isArray(rawContent)
+          ? rawContent.map(b => (b && b.type === 'text' ? (b.text || '') : '')).join('')
+          : '');
+      out.push({
+        role: 'user',
+        text,
+        content: rawContent,
+        timestamp: ts,
+        id: d.uuid || undefined,
+      });
+      continue;
+    }
+
+    // Assistant — preserve full content array so content-block extractors
+    // (thinking, tool_use, text, image) in gatewayMessagesToGroups work.
+    const assistantMsg = {
+      role: 'assistant',
+      content: msg.content,
+      timestamp: ts,
+      id: d.uuid || undefined,
+    };
+    // Convenience scalar thinking for UIs that use `msg.thinking` directly.
+    if (Array.isArray(msg.content)) {
+      const thinkBlock = msg.content.find(b => b && b.type === 'thinking');
+      if (thinkBlock && typeof thinkBlock.thinking === 'string' && thinkBlock.thinking.trim()) {
+        assistantMsg.thinking = thinkBlock.thinking;
+      }
+    }
+    out.push(assistantMsg);
+  }
+  return out;
+}
+
 module.exports = {
   CLAUDE_HOME,
   CLAUDE_PROJECTS_DIR,
@@ -556,6 +658,7 @@ module.exports = {
   parseSingleClaudeCliEntry,
   parseClaudeCliSessionEventsByFile,
   parseClaudeCliSessionEvents,
+  parseClaudeCliAsGatewayMessages,
   findClaudeCliFileBySessionId,
   findClaudeCliFileForGatewaySession,
   findClaudeCliForGatewaySessionId,

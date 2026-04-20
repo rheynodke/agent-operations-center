@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import { chatApi } from "@/lib/chat-api"
 import { useChatStore } from "@/stores/useChatStore"
+import { useProcessingStore } from "@/stores"
 import type { SkillInfo, AgentTool, Session, SkillScript, AgentChannelTelegram, AgentChannelWhatsApp, AgentChannelDiscord, AgentChannelsResult, PairingRequest, PairingRequestsByChannel } from "@/types"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import {
@@ -3983,8 +3984,11 @@ export function AgentDetailPage() {
 
   useEffect(() => { initialFileAutoSelected.current = false; loadDetail() }, [loadDetail])
 
-  // Detect if agent is currently processing
-  const isProcessing = detail?.status === "active"
+  // Detect if agent is currently processing.
+  // Realtime signal from WS (processing_start/end) takes precedence over the
+  // REST-snapshotted `detail.status` so the LIVE badge flips instantly.
+  const liveAgentProcessing = useProcessingStore((s) => (id ? (s.agentCounts[id] ?? 0) > 0 : false))
+  const isProcessing = liveAgentProcessing || detail?.status === "active"
 
   // Active session: first session with status 'active', falling back to just the most recent one
   const activeSession = useMemo(() => {

@@ -105,6 +105,49 @@ export const useSessionStore = create<SessionState>((set) => ({
   setLoading: (loading) => set({ loading }),
 }))
 
+// ─── Processing Store ─────────────────────────────────────────────────────────
+// Tracks which sessions / agents are currently executing, driven by WS events
+// `session:update action=processing_start|processing_end` (broadcast by
+// server/lib/watchers.cjs). Gives Overview + AgentDetail a realtime indicator
+// without waiting for the next REST poll.
+interface ProcessingState {
+  sessions: Record<string, { agentId?: string; startedAt: number }>  // keyed by file path or sessionKey
+  agentCounts: Record<string, number>                                // how many active sessions per agentId
+  isAgentProcessing: (agentId: string) => boolean
+  isSessionProcessing: (key: string) => boolean
+  start: (key: string, agentId?: string) => void
+  stop: (key: string) => void
+  reset: () => void
+}
+
+export const useProcessingStore = create<ProcessingState>((set, get) => ({
+  sessions: {},
+  agentCounts: {},
+  isAgentProcessing: (agentId) => (get().agentCounts[agentId] ?? 0) > 0,
+  isSessionProcessing: (key) => !!get().sessions[key],
+  start: (key, agentId) => set((s) => {
+    if (s.sessions[key]) return s // already tracked
+    const nextSessions = { ...s.sessions, [key]: { agentId, startedAt: Date.now() } }
+    const nextCounts = { ...s.agentCounts }
+    if (agentId) nextCounts[agentId] = (nextCounts[agentId] ?? 0) + 1
+    return { sessions: nextSessions, agentCounts: nextCounts }
+  }),
+  stop: (key) => set((s) => {
+    const entry = s.sessions[key]
+    if (!entry) return s
+    const nextSessions = { ...s.sessions }
+    delete nextSessions[key]
+    const nextCounts = { ...s.agentCounts }
+    if (entry.agentId) {
+      const n = (nextCounts[entry.agentId] ?? 1) - 1
+      if (n <= 0) delete nextCounts[entry.agentId]
+      else nextCounts[entry.agentId] = n
+    }
+    return { sessions: nextSessions, agentCounts: nextCounts }
+  }),
+  reset: () => set({ sessions: {}, agentCounts: {} }),
+}))
+
 // ─── Task Store ───────────────────────────────────────────────────────────────
 interface TaskFilters {
   agentId?: string
@@ -397,4 +440,39 @@ export const useConnectionsStore = create<ConnectionsState>((set) => ({
     }
   },
   bumpRefresh: () => set((s) => ({ refreshTick: s.refreshTick + 1 })),
+}))
+
+// ─── Role Templates (Phase 1: list cache) ───────────────────────────────────
+
+interface RoleTemplateState {
+  templates: import("@/types").RoleTemplateSummary[]
+  loading: boolean
+  loadedAt: number | null
+  error: string | null
+  refresh: () => Promise<void>
+  /** Same as refresh, but returns cached value if fetched within `ttlMs`. */
+  ensureLoaded: (ttlMs?: number) => Promise<void>
+}
+
+export const useRoleTemplateStore = create<RoleTemplateState>((set, get) => ({
+  templates: [],
+  loading: false,
+  loadedAt: null,
+  error: null,
+  refresh: async () => {
+    set({ loading: true, error: null })
+    try {
+      const { api } = await import("@/lib/api")
+      const r = await api.listRoleTemplates()
+      set({ templates: r.templates ?? [], loading: false, loadedAt: Date.now(), error: null })
+    } catch (err) {
+      set({ loading: false, error: err instanceof Error ? err.message : String(err) })
+    }
+  },
+  ensureLoaded: async (ttlMs = 60_000) => {
+    const { loadedAt, loading } = get()
+    if (loading) return
+    if (loadedAt && Date.now() - loadedAt < ttlMs) return
+    await get().refresh()
+  },
 }))

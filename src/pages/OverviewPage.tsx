@@ -21,7 +21,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import { GatewayControlCard } from "@/components/gateway/GatewayControlCard"
 import { AgentWorldView } from "@/components/world/AgentWorldView"
-import { useAgentStore, useSessionStore, useOverviewStore, useWsStore } from "@/stores"
+import { useAgentStore, useSessionStore, useOverviewStore, useWsStore, useProcessingStore } from "@/stores"
 import { cn } from "@/lib/utils"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import type { Agent, Session } from "@/types"
@@ -383,27 +383,45 @@ export function OverviewPage() {
       })
   }, [sessions])
 
-  // Build a map of agent → active session count (only sessions with status "active")
+  // Realtime processing state driven by WS processing_start/end events.
+  // Subscribing ensures Overview flips the "active" badge instantly when the
+  // agent starts/stops, without waiting for the next REST poll.
+  const liveProcessingSessions = useProcessingStore((s) => s.sessions)
+  const liveAgentCounts = useProcessingStore((s) => s.agentCounts)
+
+  // Build a map of agent → active session count.
+  // Primary source: WS-driven `liveAgentCounts`. Fallback: `session.status`
+  // from REST (so pages still work before first WS event arrives).
   const agentProcessingMap = useMemo(() => {
     const map = new Map<string, number>()
+    for (const [agentId, n] of Object.entries(liveAgentCounts)) {
+      if (n > 0) map.set(agentId, n)
+    }
     for (const s of sessionEntries) {
-      if (s.status === "active") {
+      if (s.status === "active" && !map.has(s.agent)) {
         map.set(s.agent, (map.get(s.agent) || 0) + 1)
       }
     }
     return map
-  }, [sessionEntries])
+  }, [sessionEntries, liveAgentCounts])
 
-  // Set of session IDs that are currently processing (status must be "active")
+  // Set of session IDs currently processing.
   const processingSessionIds = useMemo(() => {
     const set = new Set<string>()
+    // Live sessions (keyed by sessionKey or file path). Sessions on Overview
+    // use `s.id` which usually matches sessionKey suffix — also check if the
+    // session path is tracked.
+    for (const key of Object.keys(liveProcessingSessions)) {
+      set.add(key)
+      // Derive the session id (last path segment without extension) for match
+      const short = key.split('/').pop()?.replace(/\.jsonl$/, '')
+      if (short) set.add(short)
+    }
     for (const s of sessionEntries) {
-      if (s.status === "active") {
-        set.add(s.id)
-      }
+      if (s.status === "active") set.add(s.id)
     }
     return set
-  }, [sessionEntries])
+  }, [sessionEntries, liveProcessingSessions])
 
   const stats = useMemo(() => {
     const ov = overviewData as Record<string, unknown> | null
