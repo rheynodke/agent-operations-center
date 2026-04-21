@@ -40,6 +40,8 @@ export interface Agent {
   vibe?: string | null
   // Active channel bindings (populated by /api/agents list)
   channels?: string[]
+  // Ownership: user id that provisioned this agent (for role-based access)
+  provisionedBy?: number | null
 }
 
 // ─── Agent Channel Management Types ─────────────────────────────────────────
@@ -454,6 +456,29 @@ export interface AuthResponse {
   user: AuthUser
 }
 
+export interface Invitation {
+  id: number
+  token: string
+  createdBy: number
+  createdAt: string
+  expiresAt: string
+  revokedAt: string | null
+  defaultRole: string
+  note: string | null
+  useCount: number
+  expired: boolean
+  active: boolean
+}
+
+export interface ManagedUser {
+  id: number
+  username: string
+  display_name: string
+  role: string
+  created_at: string
+  last_login: string | null
+}
+
 // ─── Skill Types ──────────────────────────────────────────────────────────────
 
 export interface SkillInfo {
@@ -730,6 +755,7 @@ export interface Connection {
   hasCredentials: boolean
   metadata: ConnectionMetadata
   enabled: boolean
+  createdBy?: number | null
   lastTestedAt?: string | null
   lastTestOk?: boolean | null
   createdAt: string

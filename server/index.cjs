@@ -239,6 +239,169 @@ app.post('/api/auth/login', (req, res) => {
   });
 });
 
+// Returns a reason string if user isn't allowed to install with the given
+// target/agent combination, or null if allowed.
+// Returns a reason string if user isn't allowed to mutate the task, or null.
+// Rule: admin bypass; else user must own the task's agent. Tasks without
+// an agentId require admin.
+function checkTaskAccess(req, taskId) {
+  if (req.user?.role === 'admin' || req.user?.role === 'agent') return null;
+  const task = db.getTask(taskId);
+  if (!task) return 'Task not found';
+  if (!task.agentId) return 'Only admin can modify unassigned tasks';
+  if (!db.userOwnsAgent(req, task.agentId)) return 'You can only modify tasks on agents you own';
+  return null;
+}
+
+async function checkCronAccess(req, jobId) {
+  if (req.user?.role === 'admin' || req.user?.role === 'agent') return null;
+  try {
+    const jobs = parsers.parseCronJobs();
+    const job = (jobs || []).find(j => j.id === jobId);
+    if (!job) return null; // let handler return 404 naturally
+    if (job.agentId && !db.userOwnsAgent(req, job.agentId)) {
+      return 'You can only manage cron jobs for agents you own';
+    }
+  } catch { /* if list fails, fall through and let handler error */ }
+  return null;
+}
+
+function checkSkillInstallTarget(req, target, agentId) {
+  if (req.user?.role === 'admin' || req.user?.role === 'agent') return null;
+  if (target === 'global') return 'Only admin can install to global library';
+  if (target === 'agent' && agentId && !db.userOwnsAgent(req, agentId)) {
+    return 'You can only install skills to agents you own';
+  }
+  return null;
+}
+
+// ─── Invitation-based registration (public) ──────────────────────────────────
+// Validate an invitation token (used by /register page before submit)
+app.get('/api/invitations/validate/:token', (req, res) => {
+  const inv = db.getInvitationByToken(req.params.token);
+  if (!inv) return res.status(404).json({ valid: false, error: 'Invitation not found' });
+  if (inv.revokedAt) return res.status(410).json({ valid: false, error: 'Invitation revoked' });
+  if (inv.expired)   return res.status(410).json({ valid: false, error: 'Invitation expired' });
+  res.json({ valid: true, defaultRole: inv.defaultRole, expiresAt: inv.expiresAt });
+});
+
+// Register a new user via invitation token
+app.post('/api/auth/register-invite', (req, res) => {
+  const { token, username, password, displayName } = req.body || {};
+  if (!token || !username || !password) {
+    return res.status(400).json({ error: 'token, username and password are required' });
+  }
+  if (username.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters' });
+  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+  const inv = db.getInvitationByToken(token);
+  if (!inv) return res.status(404).json({ error: 'Invitation not found' });
+  if (inv.revokedAt) return res.status(410).json({ error: 'Invitation revoked' });
+  if (inv.expired)   return res.status(410).json({ error: 'Invitation expired' });
+
+  try {
+    const user = db.createUser({
+      username,
+      password,
+      displayName: displayName || username,
+      role: inv.defaultRole || 'user',
+    });
+    db.incrementInvitationUse(inv.id);
+    const jwtToken = db.generateToken(user);
+    console.log(`[auth] User "${username}" registered via invitation #${inv.id}`);
+    res.json({
+      token: jwtToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.display_name,
+        role: user.role,
+      },
+    });
+  } catch (err) {
+    if (err.message?.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'Username already exists' });
+    }
+    console.error('[auth/register-invite]', err);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// ─── Admin: Invitations CRUD ─────────────────────────────────────────────────
+app.get('/api/invitations', db.authMiddleware, db.requireAdmin, (req, res) => {
+  res.json({ invitations: db.getAllInvitations() });
+});
+
+app.post('/api/invitations', db.authMiddleware, db.requireAdmin, (req, res) => {
+  const { expiresAt, defaultRole = 'user', note } = req.body || {};
+  if (!expiresAt) return res.status(400).json({ error: 'expiresAt is required (ISO string)' });
+  const expDate = new Date(expiresAt);
+  if (isNaN(expDate.getTime())) return res.status(400).json({ error: 'Invalid expiresAt' });
+  if (expDate.getTime() <= Date.now()) return res.status(400).json({ error: 'expiresAt must be in the future' });
+  if (!['user', 'admin'].includes(defaultRole)) return res.status(400).json({ error: 'Invalid defaultRole' });
+  try {
+    const inv = db.createInvitation({
+      createdBy: req.user.userId,
+      expiresAt: expDate.toISOString(),
+      defaultRole,
+      note,
+    });
+    res.json({ invitation: inv });
+  } catch (err) {
+    console.error('[invitations/create]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/invitations/:id/revoke', db.authMiddleware, db.requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const inv = db.getInvitationById(id);
+  if (!inv) return res.status(404).json({ error: 'Invitation not found' });
+  db.revokeInvitation(id);
+  res.json({ invitation: db.getInvitationById(id) });
+});
+
+app.delete('/api/invitations/:id', db.authMiddleware, db.requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  db.deleteInvitation(id);
+  res.json({ ok: true });
+});
+
+// ─── Admin: Users CRUD ───────────────────────────────────────────────────────
+app.get('/api/users', db.authMiddleware, db.requireAdmin, (req, res) => {
+  res.json({ users: db.getAllUsers() });
+});
+
+app.patch('/api/users/:id', db.authMiddleware, db.requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const target = db.getUserById(id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  const { displayName, role, password } = req.body || {};
+  if (role !== undefined && !['admin', 'user'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+  // Don't let an admin demote themselves if they are the last admin
+  if (role === 'user' && id === req.user.userId) {
+    const admins = db.getAllUsers().filter(u => u.role === 'admin');
+    if (admins.length <= 1) return res.status(400).json({ error: 'Cannot demote the last admin' });
+  }
+  const updated = db.updateUser(id, { displayName, role, password });
+  res.json({ user: updated });
+});
+
+app.delete('/api/users/:id', db.authMiddleware, db.requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (id === req.user.userId) return res.status(400).json({ error: 'Cannot delete yourself' });
+  const target = db.getUserById(id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (target.role === 'admin') {
+    const admins = db.getAllUsers().filter(u => u.role === 'admin');
+    if (admins.length <= 1) return res.status(400).json({ error: 'Cannot delete the last admin' });
+  }
+  db.deleteUser(id);
+  res.json({ ok: true });
+});
+
 // Get current user profile (authenticated)
 app.get('/api/auth/me', db.authMiddleware, (req, res) => {
   const user = db.getUserById(req.user.userId);
@@ -558,6 +721,7 @@ function getEnrichedAgents() {
       hasAvatar:      !!profileMap[a.id]?.avatar_data,
       avatarPresetId: profileMap[a.id]?.avatar_preset_id || null,
       role:           profileMap[a.id]?.role || null,
+      provisionedBy:  profileMap[a.id]?.provisioned_by ?? null,
       vibe:           readAgentVibe(a) || null,
       sessionCount:   st.sessionCount  || 0,
       totalCost:      st.totalCost  ? Math.round(st.totalCost  * 10000) / 10000 : null,
@@ -660,7 +824,7 @@ app.get('/api/agents/:id/detail', db.authMiddleware, (req, res) => {
 });
 
 // Update agent config + workspace files
-app.patch('/api/agents/:id', db.authMiddleware, (req, res) => {
+app.patch('/api/agents/:id', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.updateAgent(req.params.id, req.body);
     // If agent was renamed, migrate the SQLite profile to the new ID
@@ -676,7 +840,7 @@ app.patch('/api/agents/:id', db.authMiddleware, (req, res) => {
   }
 });
 
-app.delete('/api/agents/:id', db.authMiddleware, (req, res) => {
+app.delete('/api/agents/:id', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const agentId = req.params.id;
     parsers.deleteAgent(agentId);
@@ -691,7 +855,7 @@ app.delete('/api/agents/:id', db.authMiddleware, (req, res) => {
 });
 
 // Inject research output standard into a single agent's SOUL.md (idempotent)
-app.post('/api/agents/:id/soul-standard', db.authMiddleware, (req, res) => {
+app.post('/api/agents/:id/soul-standard', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.injectSoulStandard(req.params.id);
     res.json({ ok: true, ...result });
@@ -722,7 +886,7 @@ app.get('/api/agents/:id/files/:filename', db.authMiddleware, (req, res) => {
 });
 
 // Save / overwrite a single workspace file
-app.put('/api/agents/:id/files/:filename', db.authMiddleware, (req, res) => {
+app.put('/api/agents/:id/files/:filename', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { content } = req.body;
     if (content === undefined) return res.status(400).json({ error: 'content is required' });
@@ -750,7 +914,7 @@ app.get('/api/agents/:id/profile', db.authMiddleware, (req, res) => {
 });
 
 // Update agent profile metadata (color, description, tags, notes)
-app.patch('/api/agents/:id/profile', db.authMiddleware, (req, res) => {
+app.patch('/api/agents/:id/profile', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { color, description, tags, notes, emoji, displayName, avatarPresetId } = req.body;
     const profile = db.upsertAgentProfile({
@@ -766,7 +930,7 @@ app.patch('/api/agents/:id/profile', db.authMiddleware, (req, res) => {
 });
 
 // Upload agent avatar (base64 encoded image)
-app.put('/api/agents/:id/avatar', db.authMiddleware, (req, res) => {
+app.put('/api/agents/:id/avatar', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { avatarData, avatarMime } = req.body;
     if (!avatarData) return res.status(400).json({ error: 'avatarData is required' });
@@ -825,7 +989,7 @@ app.get('/api/agents/:id/skills/:name/file', db.authMiddleware, (req, res) => {
 });
 
 // Save a skill's SKILL.md content
-app.put('/api/agents/:id/skills/:name/file', db.authMiddleware, (req, res) => {
+app.put('/api/agents/:id/skills/:name/file', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { content } = req.body;
     if (content === undefined) return res.status(400).json({ error: 'content is required' });
@@ -841,7 +1005,7 @@ app.put('/api/agents/:id/skills/:name/file', db.authMiddleware, (req, res) => {
 });
 
 // Create a new skill
-app.post('/api/agents/:id/skills', db.authMiddleware, (req, res) => {
+app.post('/api/agents/:id/skills', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { name, scope, content } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
@@ -857,7 +1021,7 @@ app.post('/api/agents/:id/skills', db.authMiddleware, (req, res) => {
 });
 
 // Toggle skill enabled/disabled FOR THIS AGENT ONLY (via agents.list[].skills allowlist)
-app.patch('/api/agents/:id/skills/:name/toggle', db.authMiddleware, (req, res) => {
+app.patch('/api/agents/:id/skills/:name/toggle', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { enabled } = req.body;
     if (enabled === undefined) return res.status(400).json({ error: 'enabled is required' });
@@ -872,7 +1036,7 @@ app.patch('/api/agents/:id/skills/:name/toggle', db.authMiddleware, (req, res) =
 });
 
 // Delete an agent's workspace skill (only 'workspace' source allowed)
-app.delete('/api/agents/:id/skills/:name', db.authMiddleware, (req, res) => {
+app.delete('/api/agents/:id/skills/:name', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.deleteAgentSkill(req.params.id, req.params.name);
     console.log(`[api/agents/skills] Deleted skill "${req.params.name}" for agent "${req.params.id}"`);
@@ -897,7 +1061,7 @@ app.get('/api/agents/:id/tools', db.authMiddleware, (req, res) => {
 });
 
 // Toggle a built-in tool ON or OFF for a specific agent (via agents.list[].tools.deny)
-app.patch('/api/agents/:id/tools/:name/toggle', db.authMiddleware, (req, res) => {
+app.patch('/api/agents/:id/tools/:name/toggle', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { enabled } = req.body;
     if (enabled === undefined) return res.status(400).json({ error: 'enabled is required' });
@@ -925,7 +1089,7 @@ app.get('/api/agents/:id/channels', db.authMiddleware, (req, res) => {
 });
 
 // Add a new channel binding for an agent
-app.post('/api/agents/:id/channels', db.authMiddleware, (req, res) => {
+app.post('/api/agents/:id/channels', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.addAgentChannel(req.params.id, req.body);
     console.log(`[api/agents/channels] Added ${req.body.type} channel for agent "${req.params.id}"`);
@@ -939,7 +1103,7 @@ app.post('/api/agents/:id/channels', db.authMiddleware, (req, res) => {
 });
 
 // Update an existing channel binding (dmPolicy, streaming, botToken, allowFrom)
-app.patch('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware, (req, res) => {
+app.patch('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.updateAgentChannel(req.params.id, req.params.channelType, req.params.accountId, req.body);
     console.log(`[api/agents/channels] Updated ${req.params.channelType}/${req.params.accountId} for agent "${req.params.id}"`);
@@ -953,7 +1117,7 @@ app.patch('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware,
 });
 
 // Remove a channel binding from an agent
-app.delete('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware, (req, res) => {
+app.delete('/api/agents/:id/channels/:channelType/:accountId', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.removeAgentChannel(req.params.id, req.params.channelType, req.params.accountId);
     console.log(`[api/agents/channels] Removed ${req.params.channelType}/${req.params.accountId} from agent "${req.params.id}"`);
@@ -1043,6 +1207,8 @@ app.post('/api/skills/clawhub/install', db.authMiddleware, async (req, res) => {
   if (!url || !target) {
     return res.status(400).json({ error: 'url and target are required' });
   }
+  const gate = checkSkillInstallTarget(req, target, agentId);
+  if (gate) return res.status(403).json({ error: gate });
   try {
     const result = await skillsInstall.installSkill({ urlOrSlug: url, target, agentId, bufferB64, overwrite: !!overwrite });
     console.log(`[api/skills/clawhub] ${result.updated ? 'Updated' : 'Installed'} "${result.slug}" to ${result.path}`);
@@ -1081,6 +1247,8 @@ app.post('/api/skills/upload/install', db.authMiddleware, (req, res) => {
   if (!bufferB64 || !target) {
     return res.status(400).json({ error: 'bufferB64 and target are required' });
   }
+  const gate = checkSkillInstallTarget(req, target, agentId);
+  if (gate) return res.status(403).json({ error: gate });
   try {
     const result = skillsInstall.installFromUpload({ bufferB64, filename, target, agentId, slug, overwrite: !!overwrite });
     console.log(`[api/skills/upload] ${result.updated ? 'Updated' : 'Installed'} "${result.slug}" to ${result.path}`);
@@ -1170,6 +1338,8 @@ app.post('/api/skills/skillsmp/install', db.authMiddleware, async (req, res) => 
   if (!skill || !target) {
     return res.status(400).json({ error: 'skill and target are required' });
   }
+  const gate = checkSkillInstallTarget(req, target, agentId);
+  if (gate) return res.status(403).json({ error: gate });
   try {
     const result = await skillsInstall.installSkillsmpSkill({ skill, target, agentId, overwrite: !!overwrite });
     console.log(`[api/skills/skillsmp] ${result.updated ? 'Updated' : 'Installed'} "${result.slug}" to ${result.path}`);
@@ -1323,7 +1493,7 @@ app.get('/api/role-templates/:id/preview-apply', db.authMiddleware, (req, res) =
 //   templateId, overwriteFiles?, installSkills?, installScripts?,
 //   overwriteConflictingScripts?
 // }
-app.post('/api/agents/:agentId/assign-role', db.authMiddleware, (req, res) => {
+app.post('/api/agents/:agentId/assign-role', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { templateId, overwriteFiles, installSkills, installScripts, overwriteConflictingScripts } = req.body || {};
     if (!templateId) return res.status(400).json({ error: 'templateId is required' });
@@ -1340,7 +1510,7 @@ app.post('/api/agents/:agentId/assign-role', db.authMiddleware, (req, res) => {
 });
 
 // POST /api/agents/:agentId/unassign-role — clear agent role (files untouched)
-app.post('/api/agents/:agentId/unassign-role', db.authMiddleware, (req, res) => {
+app.post('/api/agents/:agentId/unassign-role', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.unassignAgentRole(req.params.agentId);
     console.log(`[api/agents/unassign-role] "${req.params.agentId}"`);
@@ -1365,7 +1535,7 @@ app.get('/api/skills', db.authMiddleware, (req, res) => {
 });
 
 // Create a new skill globally (no agent context needed)
-app.post('/api/skills', db.authMiddleware, (req, res) => {
+app.post('/api/skills', db.authMiddleware, db.requireAdmin, (req, res) => {
   try {
     const { slug, scope, content } = req.body;
     if (!slug) return res.status(400).json({ error: 'slug is required' });
@@ -1380,7 +1550,7 @@ app.post('/api/skills', db.authMiddleware, (req, res) => {
 });
 
 // Delete a skill from the global library by slug
-app.delete('/api/skills/:slug', db.authMiddleware, (req, res) => {
+app.delete('/api/skills/:slug', db.authMiddleware, db.requireAdmin, (req, res) => {
   try {
     const result = parsers.deleteSkillBySlug(req.params.slug);
     console.log(`[api/skills] Deleted skill "${req.params.slug}"`);
@@ -1417,7 +1587,7 @@ app.get('/api/skills/:slug/anyfile', db.authMiddleware, (req, res) => {
 });
 
 // PUT /api/skills/:slug/anyfile?path=assets/AGENTS.md — save any file in skill dir
-app.put('/api/skills/:slug/anyfile', db.authMiddleware, (req, res) => {
+app.put('/api/skills/:slug/anyfile', db.authMiddleware, db.requireAdmin, (req, res) => {
   try {
     const filePath = req.query.path;
     const { content } = req.body;
@@ -1444,7 +1614,7 @@ app.get('/api/skills/:slug/file', db.authMiddleware, (req, res) => {
 });
 
 // Save a skill's SKILL.md directly by slug
-app.put('/api/skills/:slug/file', db.authMiddleware, (req, res) => {
+app.put('/api/skills/:slug/file', db.authMiddleware, db.requireAdmin, (req, res) => {
   try {
     const { content } = req.body;
     if (content === undefined) return res.status(400).json({ error: 'content is required' });
@@ -1494,7 +1664,7 @@ app.get('/api/agents/:id/skills/:name/anyfile', db.authMiddleware, (req, res) =>
   }
 });
 
-app.put('/api/agents/:id/skills/:name/anyfile', db.authMiddleware, (req, res) => {
+app.put('/api/agents/:id/skills/:name/anyfile', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const filePath = req.query.path;
     const { content } = req.body;
@@ -1547,7 +1717,7 @@ app.get('/api/agents/:id/skills/:name/scripts/:filename', db.authMiddleware, (re
 });
 
 // Save (create or overwrite) a script
-app.put('/api/agents/:id/skills/:name/scripts/:filename', db.authMiddleware, (req, res) => {
+app.put('/api/agents/:id/skills/:name/scripts/:filename', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { content, appendToSkillMd } = req.body;
     if (content === undefined) return res.status(400).json({ error: 'content is required' });
@@ -1569,7 +1739,7 @@ app.put('/api/agents/:id/skills/:name/scripts/:filename', db.authMiddleware, (re
 });
 
 // Delete a script
-app.delete('/api/agents/:id/skills/:name/scripts/:filename', db.authMiddleware, (req, res) => {
+app.delete('/api/agents/:id/skills/:name/scripts/:filename', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.deleteSkillScript(req.params.id, req.params.name, req.params.filename);
     console.log(`[api/agents/skills/scripts] Deleted "${req.params.filename}" from skill "${req.params.name}" for agent "${req.params.id}"`);
@@ -1722,6 +1892,9 @@ app.post('/api/tasks', db.authMiddleware, (req, res) => {
   try {
     const { title, description, status, priority, agentId, tags, requestFrom } = req.body;
     if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
+    if (agentId && !db.userOwnsAgent(req, agentId)) {
+      return res.status(403).json({ error: 'You can only assign tasks to agents you own' });
+    }
     const task = db.createTask({ title: title.trim(), description, status, priority, agentId, tags, requestFrom });
     db.addTaskActivity({ taskId: task.id, type: 'created', toValue: task.status, actor: 'user' });
     broadcastTasksUpdate();
@@ -1735,6 +1908,8 @@ app.post('/api/tasks', db.authMiddleware, (req, res) => {
 app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
   try {
     const { id } = req.params;
+    const gate = checkTaskAccess(req, id);
+    if (gate) return res.status(403).json({ error: gate });
     // agentId in body = actor identifier (from agent script); assignTo = new assignment (from UI)
     const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId, inputTokens, outputTokens, requestFrom } = req.body;
     const before = db.getTask(id);
@@ -1835,6 +2010,8 @@ app.delete('/api/tasks/:id', db.authMiddleware, (req, res) => {
   try {
     const { id } = req.params;
     if (!db.getTask(id)) return res.status(404).json({ error: 'Task not found' });
+    const gate = checkTaskAccess(req, id);
+    if (gate) return res.status(403).json({ error: gate });
     db.deleteTask(id);
     broadcastTasksUpdate();
     res.json({ ok: true });
@@ -2170,6 +2347,8 @@ app.post('/api/tasks/:id/analyze', db.authMiddleware, async (req, res) => {
     const task = db.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!task.agentId) return res.status(400).json({ error: 'Task must be assigned to an agent first' });
+    const gate = checkTaskAccess(req, task.id);
+    if (gate) return res.status(403).json({ error: gate });
 
     const analysis = await analyzeTaskForAgent(task);
     db.updateTask(task.id, { analysis });
@@ -2186,6 +2365,8 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
     const task = db.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!task.agentId) return res.status(400).json({ error: 'Task must be assigned to an agent first' });
+    const gate = checkTaskAccess(req, task.id);
+    if (gate) return res.status(403).json({ error: gate });
     if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
     const result = await dispatchTaskToAgent(task);
     res.json({ ok: true, ...result });
@@ -2248,6 +2429,7 @@ app.post('/api/connections', db.authMiddleware, async (req, res) => {
         credentials: '',
         metadata: pendingMeta,
         enabled: enabled !== false,
+        createdBy: req.user?.userId,
       });
       try {
         const { authUrl, codeVerifier, scopes } = parsers.googleBeginAuth({
@@ -2266,7 +2448,7 @@ app.post('/api/connections', db.authMiddleware, async (req, res) => {
       }
     }
 
-    const conn = db.createConnection({ id, name, type, credentials, metadata, enabled });
+    const conn = db.createConnection({ id, name, type, credentials, metadata, enabled, createdBy: req.user?.userId });
     res.json({ ok: true, connection: conn });
   } catch (err) {
     console.error('[api/connections POST]', err);
@@ -2275,7 +2457,7 @@ app.post('/api/connections', db.authMiddleware, async (req, res) => {
 });
 
 // Re-generate auth URL for an expired or disconnected google_workspace connection
-app.post('/api/connections/:id/google/reauth', db.authMiddleware, (req, res) => {
+app.post('/api/connections/:id/google/reauth', db.authMiddleware, db.requireConnectionOwnership, (req, res) => {
   try {
     const conn = db.getConnection(req.params.id);
     if (!conn || conn.type !== 'google_workspace') return res.status(404).json({ error: 'Not found' });
@@ -2297,7 +2479,7 @@ app.post('/api/connections/:id/google/reauth', db.authMiddleware, (req, res) => 
 });
 
 // Disconnect (revoke + keep row) a google_workspace connection
-app.post('/api/connections/:id/google/disconnect', db.authMiddleware, async (req, res) => {
+app.post('/api/connections/:id/google/disconnect', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
   try {
     await parsers.googleDisconnect(req.params.id, { fullDelete: false });
     broadcast({ type: 'connection:auth_expired', payload: { connectionId: req.params.id } });
@@ -2379,7 +2561,7 @@ app.get('/api/connections/:id/google-access-token', db.authMiddleware, async (re
   }
 });
 
-app.patch('/api/connections/:id', db.authMiddleware, (req, res) => {
+app.patch('/api/connections/:id', db.authMiddleware, db.requireConnectionOwnership, (req, res) => {
   try {
     const conn = db.getConnection(req.params.id);
     if (!conn) return res.status(404).json({ error: 'Connection not found' });
@@ -2390,7 +2572,7 @@ app.patch('/api/connections/:id', db.authMiddleware, (req, res) => {
   }
 });
 
-app.delete('/api/connections/:id', db.authMiddleware, async (req, res) => {
+app.delete('/api/connections/:id', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
   try {
     const conn = db.getConnection(req.params.id);
     if (conn && conn.type === 'google_workspace') {
@@ -2406,7 +2588,7 @@ app.delete('/api/connections/:id', db.authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/connections/:id/test', db.authMiddleware, async (req, res) => {
+app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
   try {
     const conn = db.getConnection(req.params.id);
     if (!conn) return res.status(404).json({ error: 'Not found' });
@@ -2529,7 +2711,7 @@ app.get('/api/agents/:id/connections', db.authMiddleware, (req, res) => {
   res.json({ connectionIds: ids, connections });
 });
 
-app.put('/api/agents/:id/connections', db.authMiddleware, (req, res) => {
+app.put('/api/agents/:id/connections', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { connectionIds } = req.body;
     if (!Array.isArray(connectionIds)) return res.status(400).json({ error: 'connectionIds must be an array' });
@@ -2831,6 +3013,9 @@ app.get('/api/cron', db.authMiddleware, (req, res) => {
 // Cron — create
 app.post('/api/cron', db.authMiddleware, async (req, res) => {
   try {
+    if (req.body?.agentId && !db.userOwnsAgent(req, req.body.agentId)) {
+      return res.status(403).json({ error: 'You can only create cron jobs for agents you own' });
+    }
     const result = await parsers.cronCreateJob(req.body, gatewayProxy);
     res.status(201).json(result);
   } catch (err) {
@@ -2854,6 +3039,8 @@ app.get('/api/cron/:id/runs', db.authMiddleware, async (req, res) => {
 // Cron — trigger job now
 app.post('/api/cron/:id/run', db.authMiddleware, async (req, res) => {
   try {
+    const gate = await checkCronAccess(req, req.params.id);
+    if (gate) return res.status(403).json({ error: gate });
     const result = await parsers.cronRunJob(req.params.id, gatewayProxy);
     res.json(result);
   } catch (err) {
@@ -2865,6 +3052,8 @@ app.post('/api/cron/:id/run', db.authMiddleware, async (req, res) => {
 // Cron — toggle enabled/disabled
 app.post('/api/cron/:id/toggle', db.authMiddleware, async (req, res) => {
   try {
+    const gate = await checkCronAccess(req, req.params.id);
+    if (gate) return res.status(403).json({ error: gate });
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean') return res.status(400).json({ error: '`enabled` boolean required' });
     const result = await parsers.cronToggleJob(req.params.id, enabled, gatewayProxy);
@@ -2878,6 +3067,8 @@ app.post('/api/cron/:id/toggle', db.authMiddleware, async (req, res) => {
 // Cron — edit
 app.patch('/api/cron/:id', db.authMiddleware, async (req, res) => {
   try {
+    const gate = await checkCronAccess(req, req.params.id);
+    if (gate) return res.status(403).json({ error: gate });
     const result = await parsers.cronUpdateJob(req.params.id, req.body, gatewayProxy);
     res.json(result);
   } catch (err) {
@@ -2889,6 +3080,8 @@ app.patch('/api/cron/:id', db.authMiddleware, async (req, res) => {
 // Cron — delete
 app.delete('/api/cron/:id', db.authMiddleware, async (req, res) => {
   try {
+    const gate = await checkCronAccess(req, req.params.id);
+    if (gate) return res.status(403).json({ error: gate });
     const result = await parsers.cronDeleteJob(req.params.id, gatewayProxy);
     res.json(result);
   } catch (err) {
@@ -2908,7 +3101,7 @@ app.get('/api/agents/:id/custom-tools', db.authMiddleware, (req, res) => {
   }
 });
 
-app.post('/api/agents/:id/custom-tools/:filename/toggle', db.authMiddleware, (req, res) => {
+app.post('/api/agents/:id/custom-tools/:filename/toggle', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { enabled, scope } = req.body;
     if (typeof enabled !== 'boolean') return res.status(400).json({ error: '`enabled` boolean required' });
@@ -2922,7 +3115,7 @@ app.post('/api/agents/:id/custom-tools/:filename/toggle', db.authMiddleware, (re
   }
 });
 
-app.post('/api/agents/:id/sync-task-script', db.authMiddleware, (req, res) => {
+app.post('/api/agents/:id/sync-task-script', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { id } = req.params;
     parsers.ensureUpdateTaskScript();
@@ -2945,7 +3138,7 @@ app.get('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.put('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
+app.put('/api/agents/:id/scripts/:filename', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { content } = req.body;
     if (typeof content !== 'string') return res.status(400).json({ error: '`content` required' });
@@ -2955,7 +3148,7 @@ app.put('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.patch('/api/agents/:id/scripts/:filename/rename', db.authMiddleware, (req, res) => {
+app.patch('/api/agents/:id/scripts/:filename/rename', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const { newName } = req.body;
     if (!newName) return res.status(400).json({ error: '`newName` required' });
@@ -2963,12 +3156,12 @@ app.patch('/api/agents/:id/scripts/:filename/rename', db.authMiddleware, (req, r
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.delete('/api/agents/:id/scripts/:filename', db.authMiddleware, (req, res) => {
+app.delete('/api/agents/:id/scripts/:filename', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try { res.json(parsers.deleteAgentScript(req.params.id, req.params.filename)); }
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.patch('/api/agents/:id/scripts/:filename/meta', db.authMiddleware, (req, res) => {
+app.patch('/api/agents/:id/scripts/:filename/meta', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try { res.json(parsers.updateAgentScriptMeta(req.params.id, req.params.filename, req.body)); }
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
@@ -2985,7 +3178,7 @@ app.get('/api/scripts/:filename', db.authMiddleware, (req, res) => {
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.put('/api/scripts/:filename', db.authMiddleware, (req, res) => {
+app.put('/api/scripts/:filename', db.authMiddleware, db.requireAdmin, (req, res) => {
   try {
     const { content } = req.body;
     if (typeof content !== 'string') return res.status(400).json({ error: '`content` string required' });
@@ -2995,7 +3188,7 @@ app.put('/api/scripts/:filename', db.authMiddleware, (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.patch('/api/scripts/:filename/rename', db.authMiddleware, (req, res) => {
+app.patch('/api/scripts/:filename/rename', db.authMiddleware, db.requireAdmin, (req, res) => {
   try {
     const { newName } = req.body;
     if (!newName) return res.status(400).json({ error: '`newName` required' });
@@ -3003,12 +3196,12 @@ app.patch('/api/scripts/:filename/rename', db.authMiddleware, (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.delete('/api/scripts/:filename', db.authMiddleware, (req, res) => {
+app.delete('/api/scripts/:filename', db.authMiddleware, db.requireAdmin, (req, res) => {
   try { res.json(parsers.deleteScript(req.params.filename)); }
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.patch('/api/scripts/:filename/meta', db.authMiddleware, (req, res) => {
+app.patch('/api/scripts/:filename/meta', db.authMiddleware, db.requireAdmin, (req, res) => {
   try { res.json(parsers.updateScriptMeta(req.params.filename, req.body)); }
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
@@ -3401,6 +3594,9 @@ app.post('/api/chat/sessions', db.authMiddleware, async (req, res) => {
     }
     const { agentId } = req.body;
     if (!agentId) return res.status(400).json({ error: 'agentId is required' });
+    if (!db.userOwnsAgent(req, agentId)) {
+      return res.status(403).json({ error: 'You can only chat with agents you own' });
+    }
     const result = await gatewayProxy.sessionsCreate(agentId);
     console.log('[api/chat/sessions/create] result:', JSON.stringify(result).slice(0, 500));
     res.json(result);
@@ -3509,6 +3705,11 @@ app.post('/api/chat/send', db.authMiddleware, async (req, res) => {
     if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
     if (!text?.trim() && (!images || images.length === 0)) {
       return res.status(400).json({ error: 'text or images is required' });
+    }
+    // Ownership: sessionKey format is "agent:{agentId}:..." — enforce ownership
+    const sessionAgentId = sessionKey.split(':')[1];
+    if (sessionAgentId && !db.userOwnsAgent(req, sessionAgentId)) {
+      return res.status(403).json({ error: 'You can only chat with agents you own' });
     }
     // Gateway's chat.send requires `message` as a plain string and carries
     // media via the separate `attachments` array (see ChatSendParamsSchema in

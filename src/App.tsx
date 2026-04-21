@@ -26,6 +26,14 @@ import { SkillsPage } from "@/pages/SkillsPage"
 import { RoleTemplatesPage } from "@/pages/RoleTemplatesPage"
 import { ChatPage } from "@/pages/ChatPage"
 import { ConnectionsPage } from "@/pages/ConnectionsPage"
+import { RegisterPage } from "@/pages/RegisterPage"
+import { UserManagementPage } from "@/pages/UserManagementPage"
+
+function AdminOnly({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user)
+  if (user?.role !== "admin") return <Navigate to="/" replace />
+  return <>{children}</>
+}
 
 function DashboardShell() {
   useWebSocket()
@@ -52,7 +60,8 @@ function DashboardShell() {
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/roles" element={<RoleTemplatesPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings" element={<AdminOnly><SettingsPage /></AdminOnly>} />
+            <Route path="/users" element={<AdminOnly><UserManagementPage /></AdminOnly>} />
             <Route path="/chat" element={<ChatPage />} />
             {/* If authenticated user goes to login or setup, redirect them to dashboard root */}
             <Route path="/login" element={<Navigate to="/" replace />} />
@@ -119,6 +128,7 @@ function MainApp() {
       !isAuthenticated || !user ? (
         <>
           <Route path="/login" element={<LoginScreen />} />
+          <Route path="/register" element={<RegisterPage />} />
           {/* Redirect ALL other paths to login, preventing setup access */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </>

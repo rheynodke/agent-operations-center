@@ -17,10 +17,11 @@ import {
   Cable,
   Webhook,
   Plug,
+  Users,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAlertStore, useWsStore } from "@/stores"
+import { useAlertStore, useWsStore, useAuthStore } from "@/stores"
 import { useThemeStore } from "@/stores/useThemeStore"
 import { AgentLogo } from "@/components/AgentLogo"
 
@@ -67,6 +68,8 @@ export function Sidebar() {
   const alertsStore = useAlertStore((s) => s.alerts)
   const alerts = alertsStore.filter((a) => !a.acknowledged)
   const wsStatus = useWsStore((s) => s.status)
+  const role = useAuthStore((s) => s.user?.role)
+  const isAdmin = role === "admin"
   const { sidebarCollapsed, toggleSidebar, mobileNavOpen, setMobileNavOpen } = useThemeStore()
 
   useEffect(() => {
@@ -180,6 +183,25 @@ export function Sidebar() {
 
         {/* Bottom */}
         <div className="flex flex-col gap-0.5 mt-2 pt-3 border-t border-sidebar-border">
+          {isAdmin && (
+            <NavLink
+              to="/users"
+              title={sidebarCollapsed ? "Users" : undefined}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-2.5 py-2 rounded-lg text-sm transition-all duration-150",
+                  sidebarCollapsed ? "md:justify-center md:px-0 px-2.5" : "px-2.5",
+                  isActive
+                    ? "bg-surface-high text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                )
+              }
+            >
+              <Users className="h-4 w-4 shrink-0" />
+              {!sidebarCollapsed && <span>Users</span>}
+            </NavLink>
+          )}
+          {isAdmin && (
           <NavLink
             to="/settings"
             title={sidebarCollapsed ? "Settings" : undefined}
@@ -196,6 +218,7 @@ export function Sidebar() {
             <Settings className="h-4 w-4 shrink-0" />
             {!sidebarCollapsed && <span>Settings</span>}
           </NavLink>
+          )}
 
           <button
             onClick={toggleSidebar}

@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import { chatApi } from "@/lib/chat-api"
 import { useChatStore } from "@/stores/useChatStore"
-import { useProcessingStore } from "@/stores"
+import { useProcessingStore, useAgentStore } from "@/stores"
 import type { SkillInfo, AgentTool, Session, SkillScript, AgentChannelTelegram, AgentChannelWhatsApp, AgentChannelDiscord, AgentChannelsResult, PairingRequest, PairingRequestsByChannel } from "@/types"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import {
@@ -30,6 +30,8 @@ import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
+import { useCanEditAgent } from "@/lib/permissions"
+import { Lock as LockIcon } from "lucide-react"
 import { TemplatePicker } from "@/components/ai/TemplatePicker"
 import { SkillTemplatePicker, type SkillTemplate } from "@/components/skills/SkillTemplatePicker"
 import type { SkillFileNode } from "@/lib/api"
@@ -3887,6 +3889,10 @@ export function AgentDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
 
+  // Ownership — gate write actions based on the agents list entry (has provisionedBy)
+  const agentFromList = useAgentStore((s) => s.agents.find((a) => a.id === id))
+  const canEdit = useCanEditAgent(agentFromList)
+
   // Modals
   const [editing, setEditing] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -4186,18 +4192,27 @@ export function AgentDetailPage() {
                 >
                   {testingChat ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : gatewayConnected ? <MessageSquarePlus className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
                 </button>
-                <button onClick={() => setEditing(true)} title="Edit Configuration"
-                  className="w-7 h-7 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center text-primary hover:bg-primary/30 transition-colors">
-                  <Pencil className="w-3.5 h-3.5" />
-                </button>
+                {canEdit && (
+                  <button onClick={() => setEditing(true)} title="Edit Configuration"
+                    className="w-7 h-7 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center text-primary hover:bg-primary/30 transition-colors">
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <button onClick={loadDetail}
                   className="w-7 h-7 rounded-lg border border-foreground/10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
                   <RefreshCw className="w-3 h-3" />
                 </button>
-                <button onClick={() => setShowDeleteModal(true)} title="Delete agent"
-                  className="w-7 h-7 rounded-lg border border-red-500/20 flex items-center justify-center text-red-400/50 hover:text-red-400 hover:bg-red-500/10 transition-colors">
-                  <Trash2 className="w-3 h-3" />
-                </button>
+                {canEdit && (
+                  <button onClick={() => setShowDeleteModal(true)} title="Delete agent"
+                    className="w-7 h-7 rounded-lg border border-red-500/20 flex items-center justify-center text-red-400/50 hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+                {!canEdit && (
+                  <span title="Read-only — you are not the owner" className="px-2 h-7 rounded-lg bg-muted/50 border border-border text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                    <LockIcon className="w-3 h-3" /> Read-only
+                  </span>
+                )}
               </div>
             </div>
 

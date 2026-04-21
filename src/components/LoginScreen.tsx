@@ -89,7 +89,7 @@ export function LoginScreen() {
 
           {/* Base image — slow Ken Burns pan */}
           <img
-            src="/agent-hero-mascots.png"
+            src="/agent-bg-mascots.png"
             alt="Cute 3D mascot AI agents"
             aria-hidden
             className="absolute inset-0 w-full h-full object-cover object-center"

@@ -6,6 +6,8 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { api } from "@/lib/api"
+import { canEditConnection } from "@/lib/permissions"
+import { useAuthStore } from "@/stores"
 import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata } from "@/types"
 import { cn } from "@/lib/utils"
 import { useConnectionsStore } from "@/stores"
@@ -31,7 +33,7 @@ function getTypeLabel(type: string) {
 // ── Connection Card ──────────────────────────────────────────────────────────
 
 function ConnectionCard({
-  conn, onTest, onDelete, onEdit, assignedAgents, onGoogleOauth,
+  conn, onTest, onDelete, onEdit, assignedAgents, onGoogleOauth, canEdit,
 }: {
   conn: Connection
   onTest: (id: string) => void
@@ -39,6 +41,7 @@ function ConnectionCard({
   onEdit: (conn: Connection) => void
   assignedAgents?: string[]
   onGoogleOauth?: (authUrl: string) => Promise<{ connectionId: string } | null>
+  canEdit: boolean
 }) {
   const Icon = getTypeIcon(conn.type)
   const meta = conn.metadata || {}
@@ -67,8 +70,11 @@ function ConnectionCard({
 
   return (
     <div
-      className="rounded-xl border border-border/50 bg-card/60 p-4 hover:border-border hover:shadow-sm transition-all cursor-pointer"
-      onClick={() => onEdit(conn)}
+      className={cn(
+        "rounded-xl border border-border/50 bg-card/60 p-4 hover:border-border hover:shadow-sm transition-all",
+        canEdit ? "cursor-pointer" : "cursor-default"
+      )}
+      onClick={canEdit ? () => onEdit(conn) : undefined}
     >
       <div className="flex items-start gap-3">
         <div className={cn(
@@ -147,20 +153,26 @@ function ConnectionCard({
               </>
             )
           })()}
-          <button
-            onClick={() => onTest(conn.id)}
-            className="p-1.5 rounded-md hover:bg-muted/30 text-muted-foreground/50 hover:text-foreground transition-colors"
-            title="Test connection"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={() => onDelete(conn)}
-            className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground/50 hover:text-red-400 transition-colors"
-            title="Delete"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          {canEdit ? (
+            <>
+              <button
+                onClick={() => onTest(conn.id)}
+                className="p-1.5 rounded-md hover:bg-muted/30 text-muted-foreground/50 hover:text-foreground transition-colors"
+                title="Test connection"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => onDelete(conn)}
+                className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground/50 hover:text-red-400 transition-colors"
+                title="Delete"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </>
+          ) : (
+            <span className="text-[10px] text-muted-foreground/50 px-1.5" title="Read-only — you are not the owner">read-only</span>
+          )}
         </div>
       </div>
 
@@ -929,6 +941,8 @@ function ConnectionDialog({
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function ConnectionsPage() {
+  const authUser = useAuthStore((s) => s.user)
+  const currentUser = authUser ? { id: authUser.id, role: authUser.role } : null
   const [connections, setConnections] = useState<Connection[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -1079,6 +1093,7 @@ export function ConnectionsPage() {
                       onDelete={setDeleteTarget}
                       onEdit={(c) => { setEditConn(c); setDialogOpen(true) }}
                       onGoogleOauth={runGoogleOauth}
+                      canEdit={canEditConnection(conn, currentUser)}
                     />
                   ))}
                 </div>

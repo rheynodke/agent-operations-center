@@ -7,7 +7,7 @@ import { AuthenticatedImage } from "@/components/ui/AuthenticatedImage"
 import { cn } from "@/lib/utils"
 import { Brain, Loader2, User } from "lucide-react"
 import type { ChatMessageGroup } from "@/stores/useChatStore"
-import { stripGatewayEnvelopes } from "@/stores/useChatStore"
+import { stripGatewayEnvelopes, stripUserMetadataEnvelope } from "@/stores/useChatStore"
 
 interface Props {
   group: ChatMessageGroup
@@ -17,7 +17,16 @@ interface Props {
   isLast?: boolean
 }
 
-function UserMessage({ text, images }: { text: string; images?: string[] }) {
+function formatTime(ts?: number): string {
+  if (!ts) return ""
+  try {
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  } catch { return "" }
+}
+
+function UserMessage({ text, images, timestamp }: { text: string; images?: string[]; timestamp?: number }) {
+  const cleaned = stripUserMetadataEnvelope(text)
+  const time = formatTime(timestamp)
   return (
     <div className="flex items-end justify-end gap-3">
       <div className="max-w-[85%] md:max-w-[68%] flex flex-col gap-1.5 items-end min-w-0">
@@ -29,10 +38,13 @@ function UserMessage({ text, images }: { text: string; images?: string[] }) {
             ))}
           </div>
         )}
-        {text && (
-          <div className="bg-primary/12 border border-primary/20 rounded-2xl rounded-br-sm px-4 py-3 text-sm text-foreground/90 leading-relaxed break-words overflow-hidden">
-            {text}
+        {cleaned && (
+          <div className="bg-primary/12 border border-primary/20 rounded-2xl rounded-br-sm px-4 py-3 text-sm text-foreground/90 leading-relaxed break-words overflow-hidden whitespace-pre-wrap">
+            {cleaned}
           </div>
+        )}
+        {time && (
+          <span className="text-[10px] text-muted-foreground/40 px-1">{time}</span>
         )}
       </div>
       {/* User avatar */}
@@ -185,6 +197,9 @@ function AgentMessage({
         ) : isStreaming && !showAnalyzing && (hasThinking || hasTools) ? (
           <PhasePill color="muted" icon={<Loader2 className="w-3.5 h-3.5 text-muted-foreground/40 animate-spin" />} label="Preparing response…" />
         ) : null}
+        {hasResponse && group.timestamp && (
+          <span className="text-[10px] text-muted-foreground/40 px-1 -mt-1">{formatTime(group.timestamp)}</span>
+        )}
       </div>
     </div>
   )
@@ -221,7 +236,7 @@ function PhasePill({ color, icon, label }: { color: "violet" | "muted"; icon: Re
 
 export function ChatMessage({ group, agentName, agentAvatarPresetId, agentEmoji, isLast }: Props) {
   if (group.role === "user") {
-    return <UserMessage text={group.userText ?? ""} images={group.userImages} />
+    return <UserMessage text={group.userText ?? ""} images={group.userImages} timestamp={group.timestamp} />
   }
   return (
     <AgentMessage

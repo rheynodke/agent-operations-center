@@ -59,6 +59,37 @@ export const api = {
     }),
   getMe: () => request<{ user: AuthResponse["user"] }>("/auth/me"),
 
+  // Invitations (public validation + register)
+  validateInvitation: (token: string) =>
+    request<{ valid: boolean; defaultRole?: string; expiresAt?: string; error?: string }>(`/invitations/validate/${encodeURIComponent(token)}`),
+  registerWithInvite: (token: string, username: string, password: string, displayName?: string) =>
+    request<AuthResponse>("/auth/register-invite", {
+      method: "POST",
+      body: JSON.stringify({ token, username, password, displayName }),
+    }),
+
+  // Admin: Invitations
+  listInvitations: () => request<{ invitations: import("@/types").Invitation[] }>("/invitations"),
+  createInvitation: (opts: { expiresAt: string; defaultRole?: string; note?: string }) =>
+    request<{ invitation: import("@/types").Invitation }>("/invitations", {
+      method: "POST",
+      body: JSON.stringify(opts),
+    }),
+  revokeInvitation: (id: number) =>
+    request<{ invitation: import("@/types").Invitation }>(`/invitations/${id}/revoke`, { method: "POST" }),
+  deleteInvitation: (id: number) =>
+    request<{ ok: boolean }>(`/invitations/${id}`, { method: "DELETE" }),
+
+  // Admin: Users
+  listUsers: () => request<{ users: import("@/types").ManagedUser[] }>("/users"),
+  updateUser: (id: number, patch: { displayName?: string; role?: string; password?: string }) =>
+    request<{ user: import("@/types").ManagedUser }>(`/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteUser: (id: number) =>
+    request<{ ok: boolean }>(`/users/${id}`, { method: "DELETE" }),
+
   // Overview
   getOverview: () => request("/overview"),
   getActivity: () => request("/activity"),

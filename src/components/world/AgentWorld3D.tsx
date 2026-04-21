@@ -1457,6 +1457,21 @@ function AgentAvatar3D({
   const bodyRef     = useRef<THREE.Mesh>(null)
   const eyeRef      = useRef<THREE.Mesh>(null)
   const eyeRef2     = useRef<THREE.Mesh>(null)
+
+  // Limb refs for walk animation (pivot groups — rotate about X for gait)
+  const hipLRef      = useRef<THREE.Group>(null)
+  const hipRRef      = useRef<THREE.Group>(null)
+  const kneeLRef     = useRef<THREE.Group>(null)
+  const kneeRRef     = useRef<THREE.Group>(null)
+  const shoulderLRef = useRef<THREE.Group>(null)
+  const shoulderRRef = useRef<THREE.Group>(null)
+  const elbowLRef    = useRef<THREE.Group>(null)
+  const elbowRRef    = useRef<THREE.Group>(null)
+
+  // Gait phase accumulator — advances while walking, decays at rest
+  const gaitRef     = useRef<number>(0)
+  const prevXRef    = useRef<number>(0)
+  const prevZRef    = useRef<number>(0)
   const darkerColor = useMemo(() => {
     const c = new THREE.Color(color)
     c.multiplyScalar(0.65)
@@ -1651,6 +1666,40 @@ function AgentAvatar3D({
     })
     g.position.x += sepX
     g.position.z += sepZ
+
+    // ── Walking / arm-swing gait animation ──────────────────────────────────
+    const dx2 = g.position.x - prevXRef.current
+    const dz2 = g.position.z - prevZRef.current
+    const speed = Math.sqrt(dx2 * dx2 + dz2 * dz2) / Math.max(delta, 1/120)
+    prevXRef.current = g.position.x
+    prevZRef.current = g.position.z
+    const moving = speed > 0.5
+    // Advance gait when moving (frequency scales with speed)
+    if (moving) {
+      const freq = THREE.MathUtils.clamp(speed * 0.6, 5, 14)
+      gaitRef.current += delta * freq
+    }
+    const gait = gaitRef.current
+    const swing = moving ? 0.45 : 0
+    const kneeBend = moving ? 0.55 : 0
+    const armSwing = moving ? 0.40 : 0
+
+    const lerp = (cur: number, target: number) => THREE.MathUtils.lerp(cur, target, Math.min(delta * 12, 1))
+
+    if (hipLRef.current) hipLRef.current.rotation.x = lerp(hipLRef.current.rotation.x,  Math.sin(gait)     * swing)
+    if (hipRRef.current) hipRRef.current.rotation.x = lerp(hipRRef.current.rotation.x, -Math.sin(gait)     * swing)
+    if (kneeLRef.current) kneeLRef.current.rotation.x = lerp(kneeLRef.current.rotation.x, Math.max(0, Math.sin(gait + Math.PI)) * kneeBend)
+    if (kneeRRef.current) kneeRRef.current.rotation.x = lerp(kneeRRef.current.rotation.x, Math.max(0, Math.sin(gait))           * kneeBend)
+    if (shoulderLRef.current) shoulderLRef.current.rotation.x = lerp(shoulderLRef.current.rotation.x, -Math.sin(gait) * armSwing)
+    if (shoulderRRef.current) shoulderRRef.current.rotation.x = lerp(shoulderRRef.current.rotation.x,  Math.sin(gait) * armSwing)
+    if (elbowLRef.current) elbowLRef.current.rotation.x = lerp(elbowLRef.current.rotation.x, moving ? (0.3 + Math.max(0, -Math.sin(gait)) * 0.3) : 0)
+    if (elbowRRef.current) elbowRRef.current.rotation.x = lerp(elbowRRef.current.rotation.x, moving ? (0.3 + Math.max(0,  Math.sin(gait)) * 0.3) : 0)
+
+    // Subtle body bob when walking
+    if (moving) {
+      const bob = Math.abs(Math.sin(gait)) * 0.05
+      g.position.y = THREE.MathUtils.lerp(g.position.y, bob, delta * 6)
+    }
   })
 
   const [hovered, setHovered] = useState(false)
@@ -1684,25 +1733,59 @@ function AgentAvatar3D({
         <WorkingAura color={auraColor} processing={state === "processing"} />
       )}
 
-      {/* ── Platform / feet ── */}
-      <Box args={[0.88, 0.22, 0.88]} position={[0, 0.11, 0]} castShadow>
-        <meshStandardMaterial color={darkerColor} roughness={0.7} metalness={0.1} />
-      </Box>
-
       {/* ── Large invisible hover hitbox covering the whole avatar ── */}
       <Box
-        args={[2.2, 4.0, 2.2]}
-        position={[0, 1.6, 0]}
+        args={[2.8, 4.0, 2.8]}
+        position={[0, 1.7, 0]}
         visible={false}
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       />
 
-      {/* ── Torso — live emissive via bodyRef ── */}
+      {/* ══════ LEGS — short & chunky ══════ */}
+      <group ref={hipLRef} position={[-0.28, 0.72, 0]}>
+        <Cylinder args={[0.17, 0.20, 0.32, 12]} position={[0, -0.16, 0]} castShadow>
+          <meshStandardMaterial color={darkerColor} roughness={0.55} metalness={0.2} />
+        </Cylinder>
+        <Sphere args={[0.19, 12, 8]} position={[0, -0.32, 0]} castShadow>
+          <meshStandardMaterial color={color} roughness={0.3} metalness={0.25} />
+        </Sphere>
+        <group ref={kneeLRef} position={[0, -0.32, 0]}>
+          <Cylinder args={[0.16, 0.18, 0.30, 12]} position={[0, -0.15, 0]} castShadow>
+            <meshStandardMaterial color={darkerColor} roughness={0.55} metalness={0.2} />
+          </Cylinder>
+          <Box args={[0.34, 0.14, 0.48]} position={[0, -0.35, 0.10]} castShadow>
+            <meshStandardMaterial color="#1a1a22" roughness={0.7} metalness={0.15} />
+          </Box>
+        </group>
+      </group>
+      <group ref={hipRRef} position={[0.28, 0.72, 0]}>
+        <Cylinder args={[0.17, 0.20, 0.32, 12]} position={[0, -0.16, 0]} castShadow>
+          <meshStandardMaterial color={darkerColor} roughness={0.55} metalness={0.2} />
+        </Cylinder>
+        <Sphere args={[0.19, 12, 8]} position={[0, -0.32, 0]} castShadow>
+          <meshStandardMaterial color={color} roughness={0.3} metalness={0.25} />
+        </Sphere>
+        <group ref={kneeRRef} position={[0, -0.32, 0]}>
+          <Cylinder args={[0.16, 0.18, 0.30, 12]} position={[0, -0.15, 0]} castShadow>
+            <meshStandardMaterial color={darkerColor} roughness={0.55} metalness={0.2} />
+          </Cylinder>
+          <Box args={[0.34, 0.14, 0.48]} position={[0, -0.35, 0.10]} castShadow>
+            <meshStandardMaterial color="#1a1a22" roughness={0.7} metalness={0.15} />
+          </Box>
+        </group>
+      </group>
+
+      {/* Pelvis / hip block — chunky, wide base */}
+      <Box args={[0.88, 0.30, 0.70]} position={[0, 0.86, 0]} castShadow>
+        <meshStandardMaterial color={darkerColor} roughness={0.5} metalness={0.2} />
+      </Box>
+
+      {/* ══════ TORSO — wide, rounded, chunky ══════ */}
       <Cylinder
         ref={bodyRef}
-        args={[0.46, 0.50, 1.15, 16]}
-        position={[0, 0.85, 0]}
+        args={[0.72, 0.80, 0.90, 24]}
+        position={[0, 1.50, 0]}
         castShadow
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
@@ -1711,75 +1794,167 @@ function AgentAvatar3D({
           color={color}
           emissive={color}
           emissiveIntensity={0}
-          roughness={0.28}
-          metalness={0.18}
+          roughness={0.38}
+          metalness={0.3}
         />
       </Cylinder>
-
-      {/* Shoulder joint L */}
-      <Sphere args={[0.22, 12, 8]} position={[-0.68, 1.1, 0]} castShadow>
-        <meshStandardMaterial color={color} roughness={0.3} metalness={0.15} />
-      </Sphere>
-      {/* Shoulder joint R */}
-      <Sphere args={[0.22, 12, 8]} position={[ 0.68, 1.1, 0]} castShadow>
-        <meshStandardMaterial color={color} roughness={0.3} metalness={0.15} />
+      {/* Rounded shoulder cap — mascot silhouette */}
+      <Sphere args={[0.72, 24, 16]} scale={[1, 0.55, 0.95]} position={[0, 1.88, 0]} castShadow>
+        <meshStandardMaterial color={color} roughness={0.38} metalness={0.3} />
       </Sphere>
 
-      {/* Chest orb */}
-      <Sphere args={[0.15, 12, 8]} position={[0, 0.85, 0.48]}>
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={2.5} toneMapped={false} roughness={0.1} />
+      {/* Chest plate — raised darker panel housing the orb */}
+      <Cylinder args={[0.34, 0.34, 0.06, 24]} position={[0, 1.50, 0.80]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+        <meshStandardMaterial color={darkerColor} roughness={0.45} metalness={0.5} />
+      </Cylinder>
+      {/* Housing ring around orb */}
+      <mesh position={[0, 1.50, 0.83]}>
+        <torusGeometry args={[0.22, 0.055, 12, 28]} />
+        <meshStandardMaterial color="#0a0a12" roughness={0.25} metalness={0.8} />
+      </mesh>
+      {/* Glowing core orb */}
+      <Sphere args={[0.18, 16, 12]} position={[0, 1.50, 0.85]}>
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={3.8} toneMapped={false} roughness={0.05} />
       </Sphere>
 
-      {/* Neck */}
-      <Cylinder args={[0.19, 0.21, 0.28, 12]} position={[0, 1.6, 0]} castShadow>
+      {/* Shoulder armor bolts — small rivets on shoulder joints for mech detail */}
+      {[-0.88, 0.88].map((xp) => (
+        <Sphere key={xp} args={[0.035, 8, 6]} position={[xp, 1.88, 0.26]}>
+          <meshStandardMaterial color={darkerColor} roughness={0.4} metalness={0.7} />
+        </Sphere>
+      ))}
+
+      {/* ══════ ARMS — short, stubby ══════ */}
+      <group ref={shoulderLRef} position={[-0.88, 1.88, 0]}>
+        <Sphere args={[0.28, 14, 10]} castShadow>
+          <meshStandardMaterial color={color} roughness={0.3} metalness={0.15} />
+        </Sphere>
+        <Cylinder args={[0.16, 0.18, 0.32, 12]} position={[0, -0.17, 0]} castShadow>
+          <meshStandardMaterial color={darkerColor} roughness={0.4} metalness={0.2} />
+        </Cylinder>
+        <group ref={elbowLRef} position={[0, -0.33, 0]}>
+          <Sphere args={[0.15, 12, 8]} castShadow>
+            <meshStandardMaterial color={color} roughness={0.3} metalness={0.2} />
+          </Sphere>
+          <Cylinder args={[0.15, 0.17, 0.30, 12]} position={[0, -0.15, 0]} castShadow>
+            <meshStandardMaterial color={darkerColor} roughness={0.4} metalness={0.2} />
+          </Cylinder>
+          {/* Chunky hand */}
+          <Sphere args={[0.20, 14, 10]} position={[0, -0.34, 0]} castShadow>
+            <meshStandardMaterial color={color} roughness={0.35} metalness={0.18} />
+          </Sphere>
+        </group>
+      </group>
+      <group ref={shoulderRRef} position={[0.88, 1.88, 0]}>
+        <Sphere args={[0.28, 14, 10]} castShadow>
+          <meshStandardMaterial color={color} roughness={0.3} metalness={0.15} />
+        </Sphere>
+        <Cylinder args={[0.16, 0.18, 0.32, 12]} position={[0, -0.17, 0]} castShadow>
+          <meshStandardMaterial color={darkerColor} roughness={0.4} metalness={0.2} />
+        </Cylinder>
+        <group ref={elbowRRef} position={[0, -0.33, 0]}>
+          <Sphere args={[0.15, 12, 8]} castShadow>
+            <meshStandardMaterial color={color} roughness={0.3} metalness={0.2} />
+          </Sphere>
+          <Cylinder args={[0.15, 0.17, 0.30, 12]} position={[0, -0.15, 0]} castShadow>
+            <meshStandardMaterial color={darkerColor} roughness={0.4} metalness={0.2} />
+          </Cylinder>
+          <Sphere args={[0.20, 14, 10]} position={[0, -0.34, 0]} castShadow>
+            <meshStandardMaterial color={color} roughness={0.35} metalness={0.18} />
+          </Sphere>
+        </group>
+      </group>
+
+      {/* Neck — short, stubby */}
+      <Cylinder args={[0.24, 0.28, 0.14, 14]} position={[0, 2.05, 0]} castShadow>
         <meshStandardMaterial color={darkerColor} roughness={0.55} metalness={0.1} />
       </Cylinder>
 
-      {/* ── Head group ── */}
-      <group position={[0, 2.26, 0]}>
-        {/* Rounded helmet */}
-        <Sphere args={[0.62, 22, 16]} scale={[1, 1.08, 1]} castShadow>
-          <meshStandardMaterial color={color} roughness={0.25} metalness={0.15} />
+      {/* ══════ HEAD — large mech helmet ══════ */}
+      <group position={[0, 2.80, 0]}>
+        {/* Main helmet — slight vertical stretch, matte-metallic */}
+        <Sphere args={[0.84, 30, 24]} scale={[1.0, 1.04, 1.0]} castShadow>
+          <meshStandardMaterial color={color} roughness={0.4} metalness={0.25} />
+        </Sphere>
+        {/* Crown seam — horizontal panel line around top third */}
+        <mesh position={[0, 0.28, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.76, 0.020, 6, 36]} />
+          <meshStandardMaterial color={darkerColor} roughness={0.5} metalness={0.35} />
+        </mesh>
+        {/* Lower jaw seam */}
+        <mesh position={[0, -0.38, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.72, 0.018, 6, 36]} />
+          <meshStandardMaterial color={darkerColor} roughness={0.5} metalness={0.35} />
+        </mesh>
+
+        {/* Ear caps — rotated disc with embossed center */}
+        <group position={[-0.84, -0.05, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <Cylinder args={[0.24, 0.24, 0.16, 20]} castShadow>
+            <meshStandardMaterial color={color} roughness={0.4} metalness={0.22} />
+          </Cylinder>
+          <Cylinder args={[0.16, 0.16, 0.175, 18]}>
+            <meshStandardMaterial color={darkerColor} roughness={0.55} metalness={0.35} />
+          </Cylinder>
+          <Cylinder args={[0.07, 0.07, 0.185, 12]}>
+            <meshStandardMaterial color="#0b0b12" roughness={0.3} metalness={0.7} />
+          </Cylinder>
+        </group>
+        <group position={[ 0.84, -0.05, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <Cylinder args={[0.24, 0.24, 0.16, 20]} castShadow>
+            <meshStandardMaterial color={color} roughness={0.4} metalness={0.22} />
+          </Cylinder>
+          <Cylinder args={[0.16, 0.16, 0.175, 18]}>
+            <meshStandardMaterial color={darkerColor} roughness={0.55} metalness={0.35} />
+          </Cylinder>
+          <Cylinder args={[0.07, 0.07, 0.185, 12]}>
+            <meshStandardMaterial color="#0b0b12" roughness={0.3} metalness={0.7} />
+          </Cylinder>
+        </group>
+
+        {/* VISOR — big wrap-around dark glass panel, clearly pokes out of the
+            helmet front so it reads as a face mask, not hidden inside. */}
+        <Sphere args={[0.72, 32, 22]} scale={[1.25, 0.78, 0.55]} position={[0, -0.04, 0.55]} castShadow>
+          <meshStandardMaterial color="#06060d" roughness={0.05} metalness={0.92} />
+        </Sphere>
+        {/* Visor frame — ring around the visor edge, darker color (like ref mascot) */}
+        <Sphere args={[0.74, 32, 22]} scale={[1.28, 0.82, 0.58]} position={[0, -0.04, 0.52]} castShadow>
+          <meshStandardMaterial color={darkerColor} roughness={0.45} metalness={0.35} />
+        </Sphere>
+        {/* Visor glossy highlight */}
+        <Sphere args={[0.72, 28, 18]} scale={[1.00, 0.10, 0.52]} position={[0, 0.22, 0.62]}>
+          <meshStandardMaterial color="#ffffff" roughness={0.1} metalness={0.3} transparent opacity={0.18} />
         </Sphere>
 
-        {/* Ear bump L */}
-        <Cylinder args={[0.14, 0.14, 0.15, 10]} position={[-0.64, 0, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
-          <meshStandardMaterial color={color} roughness={0.3} metalness={0.1} />
-        </Cylinder>
-        {/* Ear bump R */}
-        <Cylinder args={[0.14, 0.14, 0.15, 10]} position={[ 0.64, 0, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
-          <meshStandardMaterial color={color} roughness={0.3} metalness={0.1} />
-        </Cylinder>
-
-        {/* Wide dark visor */}
-        <Box args={[0.88, 0.46, 0.07]} position={[0, -0.05, 0.52]}>
-          <meshStandardMaterial color="#040810" roughness={0.04} metalness={0.92} />
-        </Box>
-
-        {/* Eye L — live emissive via eyeRef */}
-        <mesh ref={eyeRef} position={[-0.18, -0.03, 0.58]}>
-          <sphereGeometry args={[0.1, 12, 8]} />
-          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={3} toneMapped={false} />
+        {/* EYES — bright arch glow, pushed out in front of the visor surface */}
+        <mesh ref={eyeRef} position={[-0.24, -0.02, 0.94]} scale={[0.9, 1.35, 0.4]}>
+          <sphereGeometry args={[0.16, 16, 12]} />
+          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={4.0} toneMapped={false} />
         </mesh>
-        {/* Eye R — live emissive via eyeRef2 */}
-        <mesh ref={eyeRef2} position={[ 0.18, -0.03, 0.58]}>
-          <sphereGeometry args={[0.1, 12, 8]} />
-          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={3} toneMapped={false} />
+        <mesh ref={eyeRef2} position={[ 0.24, -0.02, 0.94]} scale={[0.9, 1.35, 0.4]}>
+          <sphereGeometry args={[0.16, 16, 12]} />
+          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={4.0} toneMapped={false} />
         </mesh>
 
-        {/* Antenna stem */}
-        <Cylinder args={[0.04, 0.05, 0.56, 8]} position={[0, 0.86, 0]} castShadow>
-          <meshStandardMaterial color={darkerColor} roughness={0.5} metalness={0.1} />
+        {/* Small rivets on helmet side — mech detail */}
+        {[-0.2, 0.2].map((xp) => (
+          <Sphere key={`rivet-${xp}`} args={[0.028, 8, 6]} position={[xp, 0.50, 0.72]}>
+            <meshStandardMaterial color={darkerColor} roughness={0.35} metalness={0.8} />
+          </Sphere>
+        ))}
+
+        {/* Antenna stem — slight bend via rotated cylinder */}
+        <Cylinder args={[0.035, 0.05, 0.42, 10]} position={[0, 1.05, 0]} rotation={[0, 0, -0.08]} castShadow>
+          <meshStandardMaterial color={darkerColor} roughness={0.45} metalness={0.35} />
         </Cylinder>
         {/* Antenna ball */}
-        <Sphere args={[0.13, 12, 8]} position={[0, 1.17, 0]} castShadow>
-          <meshStandardMaterial color={color} roughness={0.25} metalness={0.2} />
+        <Sphere args={[0.15, 16, 12]} position={[0.02, 1.32, 0]} castShadow>
+          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} roughness={0.3} metalness={0.3} toneMapped={false} />
         </Sphere>
       </group>
 
       {/* Nametag */}
       <Text
-        position={[0, 3.3, 0]}
+        position={[0, 3.80, 0]}
         rotation={[-Math.PI / 4.5, 0, 0]}
         fontSize={0.45}
         color="#1e293b"
@@ -1794,7 +1969,7 @@ function AgentAvatar3D({
 
       {/* Hover profile card */}
       {hovered && (
-        <Html position={[0, 4.8, 0]} center zIndexRange={[100, 200]} style={{ pointerEvents: "auto" }}>
+        <Html position={[0, 5.2, 0]} center zIndexRange={[100, 200]} style={{ pointerEvents: "auto" }}>
           <div
             onPointerEnter={() => {
               if (leaveTimerRef.current) {

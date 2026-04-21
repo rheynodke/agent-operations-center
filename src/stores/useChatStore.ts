@@ -130,6 +130,29 @@ export function parseMediaAttachments(text: string): { paths: string[]; caption:
 }
 
 /**
+ * Strip gateway-injected metadata envelope from a user message. The gateway
+ * prepends one or two "(untrusted metadata)" JSON-fenced blocks plus an
+ * optional "[Day YYYY-MM-DD HH:MM TZ]" timestamp before the user's actual
+ * text. These are context for the agent, never for display.
+ *
+ * Example input:
+ *   Conversation info (untrusted metadata): ```json {...} ```
+ *   Sender (untrusted metadata): ```json {...} ```
+ *   [Mon 2026-04-20 19:56 GMT+7] context.ai itu apa bro
+ */
+export function stripUserMetadataEnvelope(text: string): string {
+  if (!text) return text
+  let out = text
+  // Remove any "<Label> (untrusted metadata): ```json … ```" blocks (labels
+  // observed: "Conversation info", "Sender"). Non-greedy across newlines.
+  out = out.replace(/(?:^|\n)\s*[A-Za-z][\w\s]*\(untrusted metadata\):\s*```json[\s\S]*?```/g, "")
+  // Remove leading "[Day YYYY-MM-DD HH:MM TZ+N]" timestamp that the gateway
+  // injects right before the user text.
+  out = out.replace(/^\s*\[[A-Za-z]{3,}\s+\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}\s+[A-Z]{2,5}[+-]?\d*\]\s*/, "")
+  return out.replace(/^\s+/, "").replace(/\s+$/, "")
+}
+
+/**
  * Detect whether a user-role message is actually a system-injected skill
  * invocation context (SKILL.md content + "Base directory for this skill: …"
  * prefix that the gateway/LLM framework feeds to the agent on skill use).
@@ -296,7 +319,7 @@ export function gatewayMessagesToGroups(msgs: GatewayMessage[]): ChatMessageGrou
     const role = msg.role
     if (role === "user") {
       flushAgent()
-      const rawText = extractText(msg.content || msg.text)
+      const rawText = stripUserMetadataEnvelope(extractText(msg.content || msg.text))
       // Skip system-injected "user" messages (skill invocation context
       // dumped by the LLM framework — not something the human typed).
       if (isSystemInjectedUserMessage(rawText)) continue

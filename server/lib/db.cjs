@@ -223,6 +223,26 @@ async function initDatabase() {
     )
   `);
 
+  // ── Invitations (admin-generated registration links) ────────────────────────
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invitations (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      token        TEXT UNIQUE NOT NULL,
+      created_by   INTEGER NOT NULL,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at   TEXT NOT NULL,
+      revoked_at   TEXT,
+      default_role TEXT NOT NULL DEFAULT 'user',
+      note         TEXT,
+      use_count    INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations(token)`);
+
+  // Migration: add created_by to connections (owner tracking for role-based access)
+  try { db.run('ALTER TABLE connections ADD COLUMN created_by INTEGER'); } catch (_) {}
+
   // ── ADLC Role Templates ─────────────────────────────────────────────────────
   // Managed role presets for ADLC agents. Seeded from server/data/role-templates-seed.json
   // on first run. Users can fork/create/edit custom templates.
@@ -691,6 +711,107 @@ function getAllUsers() {
   );
 }
 
+function deleteUser(id) {
+  if (!db) return;
+  db.run('DELETE FROM users WHERE id = ?', [id]);
+  persist();
+}
+
+function updateUser(id, { displayName, role, password } = {}) {
+  if (!db) return null;
+  const fields = ["updated_at = datetime('now')"];
+  const vals = [];
+  if (displayName !== undefined) { fields.push('display_name = ?'); vals.push(displayName); }
+  if (role !== undefined) { fields.push('role = ?'); vals.push(role); }
+  if (password) { fields.push('password_hash = ?'); vals.push(hashPassword(password)); }
+  if (vals.length === 0) return getUserById(id);
+  vals.push(id);
+  db.run(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getUserById(id);
+}
+
+// ─── Invitations ─────────────────────────────────────────────────────────────
+function normalizeInvitation(row) {
+  if (!row || !row.id) return null;
+  const now = new Date();
+  const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
+  const expired = expiresAt ? expiresAt.getTime() < now.getTime() : false;
+  return {
+    id: row.id,
+    token: row.token,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at || null,
+    defaultRole: row.default_role || 'user',
+    note: row.note || null,
+    useCount: row.use_count || 0,
+    expired,
+    active: !row.revoked_at && !expired,
+  };
+}
+
+function createInvitation({ createdBy, expiresAt, defaultRole = 'user', note }) {
+  if (!db) throw new Error('DB not initialized');
+  if (!createdBy) throw new Error('createInvitation: createdBy required');
+  if (!expiresAt) throw new Error('createInvitation: expiresAt required');
+  const token = crypto.randomBytes(24).toString('hex');
+  db.run(
+    'INSERT INTO invitations (token, created_by, expires_at, default_role, note) VALUES (?, ?, ?, ?, ?)',
+    [token, createdBy, expiresAt, defaultRole, note || null]
+  );
+  persist();
+  return getInvitationByToken(token);
+}
+
+function getAllInvitations() {
+  if (!db) return [];
+  const res = db.exec('SELECT * FROM invitations ORDER BY created_at DESC');
+  if (!res.length) return [];
+  const cols = res[0].columns;
+  return res[0].values.map(row => {
+    const obj = {}; cols.forEach((c, i) => { obj[c] = row[i]; });
+    return normalizeInvitation(obj);
+  });
+}
+
+function getInvitationByToken(token) {
+  if (!db) return null;
+  const res = db.exec('SELECT * FROM invitations WHERE token = ?', [token]);
+  if (!res.length || !res[0].values.length) return null;
+  const cols = res[0].columns;
+  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
+  return normalizeInvitation(obj);
+}
+
+function getInvitationById(id) {
+  if (!db) return null;
+  const res = db.exec('SELECT * FROM invitations WHERE id = ?', [id]);
+  if (!res.length || !res[0].values.length) return null;
+  const cols = res[0].columns;
+  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
+  return normalizeInvitation(obj);
+}
+
+function revokeInvitation(id) {
+  if (!db) return;
+  db.run("UPDATE invitations SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL", [id]);
+  persist();
+}
+
+function deleteInvitation(id) {
+  if (!db) return;
+  db.run('DELETE FROM invitations WHERE id = ?', [id]);
+  persist();
+}
+
+function incrementInvitationUse(id) {
+  if (!db) return;
+  db.run('UPDATE invitations SET use_count = use_count + 1 WHERE id = ?', [id]);
+  persist();
+}
+
 // ─── JWT ──────────────────────────────────────────────────────────────────────
 function generateToken(user) {
   return jwt.sign(
@@ -735,6 +856,66 @@ function authMiddleware(req, res, next) {
   }
 
   req.user = payload;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin role required' });
+  }
+  next();
+}
+
+// ─── Ownership helpers ───────────────────────────────────────────────────────
+// Agent ownership is tracked on agent_profiles.provisioned_by.
+// Admin always bypasses ownership checks.
+
+function getAgentOwner(agentId) {
+  if (!db) return null;
+  const res = db.exec('SELECT provisioned_by FROM agent_profiles WHERE agent_id = ?', [agentId]);
+  if (!res.length || !res[0].values.length) return null;
+  return res[0].values[0][0]; // may be null for legacy agents
+}
+
+function getConnectionOwner(connId) {
+  if (!db) return null;
+  const res = db.exec('SELECT created_by FROM connections WHERE id = ?', [connId]);
+  if (!res.length || !res[0].values.length) return null;
+  return res[0].values[0][0];
+}
+
+/** True if `req.user` is admin, OR is the owner of the given agent. */
+function userOwnsAgent(req, agentId) {
+  if (!req?.user) return false;
+  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
+  const owner = getAgentOwner(agentId);
+  return owner != null && owner === req.user.userId;
+}
+
+function userOwnsConnection(req, connId) {
+  if (!req?.user) return false;
+  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
+  const owner = getConnectionOwner(connId);
+  return owner != null && owner === req.user.userId;
+}
+
+/** Express middleware: require that req.user owns the agent named by :id (or :agentId) */
+function requireAgentOwnership(req, res, next) {
+  const agentId = req.params.id || req.params.agentId;
+  if (!agentId) return res.status(400).json({ error: 'agentId missing from route' });
+  if (!userOwnsAgent(req, agentId)) {
+    return res.status(403).json({ error: 'You do not have permission to modify this agent' });
+  }
+  next();
+}
+
+function requireConnectionOwnership(req, res, next) {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: 'connection id missing' });
+  if (!userOwnsConnection(req, id)) {
+    return res.status(403).json({ error: 'You do not have permission to modify this connection' });
+  }
   next();
 }
 
@@ -839,6 +1020,7 @@ function normalizeConnection(row) {
     hasCredentials: !!row.credentials,
     metadata: (() => { try { return row.metadata ? JSON.parse(row.metadata) : {}; } catch { return {}; } })(),
     enabled: !!row.enabled,
+    createdBy: row.created_by ?? null,
     lastTestedAt: row.last_tested_at || null,
     lastTestOk: row.last_test_ok != null ? !!row.last_test_ok : null,
     createdAt: row.created_at,
@@ -894,15 +1076,15 @@ function getEnabledConnectionsRaw() {
   });
 }
 
-function createConnection({ id, name, type, credentials, metadata, enabled }) {
+function createConnection({ id, name, type, credentials, metadata, enabled, createdBy }) {
   if (!db) throw new Error('DB not initialized');
   const now = new Date().toISOString();
   const encCreds = credentials ? encryptConn(credentials) : '';
   const metaStr = JSON.stringify(metadata || {});
   db.run(
-    `INSERT INTO connections (id, name, type, credentials, metadata, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, name, type, encCreds, metaStr, enabled !== false ? 1 : 0, now, now]
+    `INSERT INTO connections (id, name, type, credentials, metadata, enabled, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, name, type, encCreds, metaStr, enabled !== false ? 1 : 0, createdBy || null, now, now]
   );
   persist();
   return getConnection(id);
@@ -1020,6 +1202,18 @@ module.exports = {
   generateToken,
   verifyToken,
   authMiddleware,
+  requireAdmin,
+  requireAgentOwnership,
+  requireConnectionOwnership,
+  userOwnsAgent,
+  userOwnsConnection,
+  getAgentOwner,
+  getConnectionOwner,
+  deleteUser,
+  updateUser,
+  // Invitations
+  createInvitation, getAllInvitations, getInvitationByToken, getInvitationById,
+  revokeInvitation, deleteInvitation, incrementInvitationUse,
   JWT_SECRET,
   // Agent profiles
   getAgentProfile,
