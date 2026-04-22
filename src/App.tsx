@@ -19,6 +19,7 @@ import { AgentDetailPage } from "@/pages/AgentDetailPage"
 import { SessionsPage } from "@/pages/SessionsPage"
 import BoardPage from "@/pages/BoardPage"
 import MetricsPage from "@/pages/MetricsPage"
+import AgentMetricsPage from "@/pages/AgentMetricsPage"
 import { CronPage } from "@/pages/CronPage"
 import { HooksPage } from "@/pages/HooksPage"
 import { RoutingPage } from "@/pages/RoutingPage"
@@ -56,6 +57,7 @@ function DashboardShell() {
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/board" element={<BoardPage />} />
             <Route path="/metrics" element={<MetricsPage />} />
+            <Route path="/metrics/agents/:agentId" element={<AgentMetricsPage />} />
             <Route path="/cron" element={<CronPage />} />
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/routing" element={<RoutingPage />} />

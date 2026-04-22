@@ -1893,7 +1893,8 @@ app.get('/api/metrics/summary', db.authMiddleware, (req, res) => {
   try {
     const range = req.query.range || '30d';
     const projectId = req.query.projectId || null;
-    const data = metrics.getSummary({ range, projectId });
+    const agentId = req.query.agentId || null;
+    const data = metrics.getSummary({ range, projectId, agentId });
     res.json(data);
   } catch (err) {
     if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
@@ -1906,7 +1907,8 @@ app.get('/api/metrics/throughput', db.authMiddleware, (req, res) => {
   try {
     const range = req.query.range || '30d';
     const projectId = req.query.projectId || null;
-    const data = metrics.getThroughput({ range, projectId });
+    const agentId = req.query.agentId || null;
+    const data = metrics.getThroughput({ range, projectId, agentId });
     res.json(data);
   } catch (err) {
     if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
@@ -1946,12 +1948,36 @@ app.get('/api/metrics/lifecycle', db.authMiddleware, (req, res) => {
   try {
     const range = req.query.range || '30d';
     const projectId = req.query.projectId || null;
-    const data = metrics.getLifecycleFunnel({ range, projectId });
+    const agentId = req.query.agentId || null;
+    const data = metrics.getLifecycleFunnel({ range, projectId, agentId });
     res.json(data);
   } catch (err) {
     if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
     console.error('[api/metrics/lifecycle]', err);
     res.status(500).json({ error: 'Failed to compute lifecycle funnel' });
+  }
+});
+
+// Per-agent recent tasks for the drilldown page.
+app.get('/api/metrics/agents/:agentId/tasks', db.authMiddleware, (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const projectId = req.query.projectId || null;
+    const limit = req.query.limit != null ? Number(req.query.limit) : 20;
+    const tasks = metrics.getAgentRecentTasks({ agentId, projectId, limit });
+
+    // Resolve agent meta from the registry so the UI can show a proper header.
+    let agent = null;
+    try {
+      const reg = parsers.parseAgentRegistry();
+      const a = reg.find(x => x.id === agentId);
+      if (a) agent = { id: a.id, name: a.name, emoji: a.emoji, workspace: a.workspace };
+    } catch {}
+
+    res.json({ agent, tasks });
+  } catch (err) {
+    console.error('[api/metrics/agents/:id/tasks]', err);
+    res.status(500).json({ error: 'Failed to fetch agent tasks' });
   }
 });
 

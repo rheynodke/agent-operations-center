@@ -125,9 +125,9 @@ export function AgentLeaderboard({ agents, knownAgents, loading }: Props) {
                 return (
                   <tr
                     key={row.agentId}
-                    onClick={() => navigate(`/board?agentId=${row.agentId}`)}
+                    onClick={() => navigate(`/metrics/agents/${row.agentId}`)}
                     className="border-b border-border/20 last:border-0 hover:bg-muted/20 cursor-pointer transition-colors"
-                    title="Click to filter the task board to this agent"
+                    title="Click to see this agent's detailed metrics"
                   >
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2 min-w-0">

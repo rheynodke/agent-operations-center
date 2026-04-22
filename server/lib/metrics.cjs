@@ -59,47 +59,59 @@ function projectFilter(projectId) {
 }
 
 /**
+ * Same shape, but for an optional agent filter. Composed alongside projectFilter
+ * so the caller can append both in one append-only chain.
+ */
+function agentFilter(agentId) {
+  if (!agentId) return { clause: '', params: [] };
+  return { clause: ' AND agent_id = ?', params: [agentId] };
+}
+
+/**
  * KPI summary + status distribution.
  * Returns numbers comparable to the previous same-length window for deltas.
  */
-function getSummary({ range = '30d', projectId = null } = {}) {
+function getSummary({ range = '30d', projectId = null, agentId = null } = {}) {
   const r = resolveRange(range);
   const pf = projectFilter(projectId);
+  const af = agentFilter(agentId);
+  const filterClause = pf.clause + af.clause;
+  const filterParams = [...pf.params, ...af.params];
 
   // Completed in range
   const completedCurrent = scalar(
-    `SELECT COUNT(*) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ?${pf.clause}`,
-    [r.since, r.until, ...pf.params]
+    `SELECT COUNT(*) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ?${filterClause}`,
+    [r.since, r.until, ...filterParams]
   );
   const completedPrevious = scalar(
-    `SELECT COUNT(*) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ?${pf.clause}`,
-    [r.previousSince, r.previousUntil, ...pf.params]
+    `SELECT COUNT(*) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ?${filterClause}`,
+    [r.previousSince, r.previousUntil, ...filterParams]
   );
 
   // Cost sum in range (only for done tasks — cost is usually set on completion)
   const costCurrent = scalar(
-    `SELECT COALESCE(SUM(cost), 0) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ? AND cost IS NOT NULL${pf.clause}`,
-    [r.since, r.until, ...pf.params]
+    `SELECT COALESCE(SUM(cost), 0) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ? AND cost IS NOT NULL${filterClause}`,
+    [r.since, r.until, ...filterParams]
   );
   const costPrevious = scalar(
-    `SELECT COALESCE(SUM(cost), 0) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ? AND cost IS NOT NULL${pf.clause}`,
-    [r.previousSince, r.previousUntil, ...pf.params]
+    `SELECT COALESCE(SUM(cost), 0) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ? AND cost IS NOT NULL${filterClause}`,
+    [r.previousSince, r.previousUntil, ...filterParams]
   );
 
   // Active agents: distinct agent_id with any task update in the window
   const activeCurrent = scalar(
-    `SELECT COUNT(DISTINCT agent_id) FROM tasks WHERE agent_id IS NOT NULL AND updated_at >= ? AND updated_at < ?${pf.clause}`,
-    [r.since, r.until, ...pf.params]
+    `SELECT COUNT(DISTINCT agent_id) FROM tasks WHERE agent_id IS NOT NULL AND updated_at >= ? AND updated_at < ?${filterClause}`,
+    [r.since, r.until, ...filterParams]
   );
   const activePrevious = scalar(
-    `SELECT COUNT(DISTINCT agent_id) FROM tasks WHERE agent_id IS NOT NULL AND updated_at >= ? AND updated_at < ?${pf.clause}`,
-    [r.previousSince, r.previousUntil, ...pf.params]
+    `SELECT COUNT(DISTINCT agent_id) FROM tasks WHERE agent_id IS NOT NULL AND updated_at >= ? AND updated_at < ?${filterClause}`,
+    [r.previousSince, r.previousUntil, ...filterParams]
   );
 
   // Blocked: current snapshot (not a range metric)
   const blockedCurrent = scalar(
-    `SELECT COUNT(*) FROM tasks WHERE status = 'blocked'${pf.clause}`,
-    [...pf.params]
+    `SELECT COUNT(*) FROM tasks WHERE status = 'blocked'${filterClause}`,
+    [...filterParams]
   );
   // Previous snapshot is a reconstruction: count tasks that entered 'blocked' before
   // previousUntil and were not moved out before previousUntil. Cheaper approximation:
@@ -109,8 +121,8 @@ function getSummary({ range = '30d', projectId = null } = {}) {
 
   // Status distribution — current snapshot
   const statusRows = query(
-    `SELECT status, COUNT(*) AS c FROM tasks WHERE 1=1${pf.clause} GROUP BY status`,
-    [...pf.params]
+    `SELECT status, COUNT(*) AS c FROM tasks WHERE 1=1${filterClause} GROUP BY status`,
+    [...filterParams]
   );
   const statusDistribution = Object.fromEntries(VALID_STATUSES.map(s => [s, 0]));
   for (const row of statusRows) {
@@ -122,6 +134,7 @@ function getSummary({ range = '30d', projectId = null } = {}) {
     since: r.since,
     until: r.until,
     projectId: projectId || null,
+    agentId: agentId || null,
     kpis: {
       completed:    { current: completedCurrent, previous: completedPrevious, deltaPct: deltaPct(completedCurrent, completedPrevious) },
       cost:         { current: Number(costCurrent.toFixed ? costCurrent.toFixed(4) : costCurrent) * 1, previous: Number(costPrevious.toFixed ? costPrevious.toFixed(4) : costPrevious) * 1, deltaPct: deltaPct(costCurrent, costPrevious) },
@@ -136,9 +149,10 @@ function getSummary({ range = '30d', projectId = null } = {}) {
  * Throughput: completed tasks per calendar day (UTC), bucketed by project.
  * Fills missing dates with 0 so the chart has a continuous x-axis.
  */
-function getThroughput({ range = '30d', projectId = null } = {}) {
+function getThroughput({ range = '30d', projectId = null, agentId = null } = {}) {
   const r = resolveRange(range);
   const pf = projectFilter(projectId);
+  const af = agentFilter(agentId);
 
   // SQLite's date() returns YYYY-MM-DD from ISO 8601 timestamps
   const rows = query(
@@ -147,10 +161,10 @@ function getThroughput({ range = '30d', projectId = null } = {}) {
             COUNT(*) AS c
        FROM tasks
       WHERE status = 'done'
-        AND completed_at >= ? AND completed_at < ?${pf.clause}
+        AND completed_at >= ? AND completed_at < ?${pf.clause}${af.clause}
    GROUP BY bucket_date, project_id
    ORDER BY bucket_date ASC`,
-    [r.since, r.until, ...pf.params]
+    [r.since, r.until, ...pf.params, ...af.params]
   );
 
   // Build a dense date list
@@ -179,7 +193,7 @@ function getThroughput({ range = '30d', projectId = null } = {}) {
   // Include project metadata so the frontend can color segments
   const projects = db.getAllProjects().map(p => ({ id: p.id, name: p.name, color: p.color }));
 
-  return { range, since: r.since, until: r.until, projectId: projectId || null, buckets, projects };
+  return { range, since: r.since, until: r.until, projectId: projectId || null, agentId: agentId || null, buckets, projects };
 }
 
 /**
@@ -302,9 +316,14 @@ const FORWARD_PAIRS = [
  * For each status_change activity in the window, compute how long the task
  * spent in the `from_value` status before this transition. Then avg per pair.
  */
-function getLifecycleFunnel({ range = '30d', projectId = null } = {}) {
+function getLifecycleFunnel({ range = '30d', projectId = null, agentId = null } = {}) {
   const r = resolveRange(range);
   const pf = projectFilter(projectId);
+  const af = agentFilter(agentId);
+  // Both filters target columns on the joined `tasks` alias (`t`).
+  const joinedFilters = pf.clause.replace('project_id', 't.project_id')
+                      + af.clause.replace('agent_id',   't.agent_id');
+  const joinedParams = [...pf.params, ...af.params];
 
   // Pull transitions inside the window, joined with the task's created_at as a
   // fallback for the 'backlog → ...' transition where there is no prior activity.
@@ -314,9 +333,9 @@ function getLifecycleFunnel({ range = '30d', projectId = null } = {}) {
        FROM task_activity ta
        JOIN tasks t ON t.id = ta.task_id
       WHERE ta.type = 'status_change'
-        AND ta.created_at >= ? AND ta.created_at < ?${pf.clause.replace('project_id', 't.project_id')}
+        AND ta.created_at >= ? AND ta.created_at < ?${joinedFilters}
    ORDER BY ta.task_id, ta.created_at ASC`,
-    [r.since, r.until, ...pf.params]
+    [r.since, r.until, ...joinedParams]
   );
 
   // Also fetch prior activities per task that might be outside the window but
@@ -326,9 +345,9 @@ function getLifecycleFunnel({ range = '30d', projectId = null } = {}) {
        FROM task_activity ta
        JOIN tasks t ON t.id = ta.task_id
       WHERE ta.type = 'status_change'
-        AND ta.created_at < ?${pf.clause.replace('project_id', 't.project_id')}
+        AND ta.created_at < ?${joinedFilters}
    ORDER BY ta.task_id, ta.created_at ASC`,
-    [r.until, ...pf.params]
+    [r.until, ...joinedParams]
   );
 
   // Build per-task arrival-at-status map: task_id → { status → arrival_time[] }
@@ -374,7 +393,44 @@ function getLifecycleFunnel({ range = '30d', projectId = null } = {}) {
     };
   });
 
-  return { range, since: r.since, until: r.until, projectId: projectId || null, transitions };
+  return { range, since: r.since, until: r.until, projectId: projectId || null, agentId: agentId || null, transitions };
+}
+
+/**
+ * Recent tasks for an agent drilldown — newest first, capped at `limit`.
+ * Not scoped by range (we show recent regardless) but respects projectId.
+ * Returns raw task rows so the UI can show title, status, priority, cost,
+ * duration, and completed_at.
+ */
+function getAgentRecentTasks({ agentId, projectId = null, limit = 20 } = {}) {
+  if (!agentId) throw new Error('agentId is required');
+  const pf = projectFilter(projectId);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+
+  const rows = query(
+    `SELECT id, title, status, priority, cost, tags, project_id,
+            created_at, updated_at, completed_at,
+            (julianday(COALESCE(completed_at, updated_at)) - julianday(created_at)) * 86400000.0 AS duration_ms
+       FROM tasks
+      WHERE agent_id = ?${pf.clause}
+   ORDER BY updated_at DESC
+      LIMIT ${safeLimit}`,
+    [agentId, ...pf.params]
+  );
+
+  return rows.map(r => ({
+    id: r.id,
+    title: r.title,
+    status: r.status,
+    priority: r.priority,
+    cost: r.cost == null ? null : Number(r.cost),
+    tags: (() => { try { return r.tags ? JSON.parse(r.tags) : []; } catch { return []; } })(),
+    projectId: r.project_id || 'general',
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    completedAt: r.completed_at || null,
+    durationMs: r.duration_ms == null ? null : Number(r.duration_ms),
+  }));
 }
 
 module.exports = {
@@ -382,6 +438,7 @@ module.exports = {
   getThroughput,
   getAgentLeaderboard,
   getLifecycleFunnel,
+  getAgentRecentTasks,
   // exposed for tests
   _resolveRange: resolveRange,
   _deltaPct: deltaPct,

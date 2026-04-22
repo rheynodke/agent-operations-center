@@ -307,7 +307,28 @@ export interface MetricsLifecycle {
   since: string
   until: string
   projectId: string | null
+  agentId?: string | null
   transitions: LifecycleTransition[]
+}
+
+/** Slim task shape returned by /api/metrics/agents/:id/tasks — not the full Task row. */
+export interface AgentRecentTask {
+  id: string
+  title: string
+  status: string
+  priority: string | null
+  cost: number | null
+  tags: string[]
+  projectId: string
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+  durationMs: number | null
+}
+
+export interface MetricsAgentTasks {
+  agent: { id: string; name?: string; emoji?: string | null; workspace?: string } | null
+  tasks: AgentRecentTask[]
 }
 
 /** Free-form comment on a task (user ↔ agent discussion thread). */

@@ -299,3 +299,46 @@ test('getLifecycleFunnel: projectId filter isolates transitions', () => {
   const lf = metrics.getLifecycleFunnel({ range: '30d', projectId: 'sales' });
   lf.transitions.forEach(t => assert.equal(t.count, 0));
 });
+
+// ── agentId filter (drilldown) ────────────────────────────────────────────────
+
+test('getSummary: agentId filter narrows to just that agent', () => {
+  const sqlDb = db.getDb();
+  sqlDb.run("INSERT OR IGNORE INTO projects (id, name, color, created_at, updated_at) VALUES ('dr', 'Dr', '#000', datetime('now'), datetime('now'))");
+  insertCompletedTask({ title: 'dr-a', projectId: 'dr', agentId: 'solo',  daysAgo: 2, cost: 1.0 });
+  insertCompletedTask({ title: 'dr-b', projectId: 'dr', agentId: 'other', daysAgo: 2, cost: 5.0 });
+
+  const both = metrics.getSummary({ range: '30d', projectId: 'dr' });
+  const solo = metrics.getSummary({ range: '30d', projectId: 'dr', agentId: 'solo' });
+  assert.equal(both.kpis.completed.current, 2);
+  assert.equal(solo.kpis.completed.current, 1);
+  assert.equal(solo.kpis.cost.current, 1.0);
+  assert.equal(solo.agentId, 'solo');
+});
+
+test('getAgentRecentTasks: returns tasks for the agent, newest first, respects limit', async () => {
+  const sqlDb = db.getDb();
+  sqlDb.run("INSERT OR IGNORE INTO projects (id, name, color, created_at, updated_at) VALUES ('rt', 'RT', '#000', datetime('now'), datetime('now'))");
+  // Seed 3 tasks with distinct updated_at via sleep (SQL timestamps respect insertion order here)
+  insertCompletedTask({ title: 'rt-old', projectId: 'rt', agentId: 'zed', daysAgo: 8, cost: 0.1 });
+  await new Promise(r => setTimeout(r, 10));
+  insertCompletedTask({ title: 'rt-mid', projectId: 'rt', agentId: 'zed', daysAgo: 5, cost: 0.2 });
+  await new Promise(r => setTimeout(r, 10));
+  insertCompletedTask({ title: 'rt-new', projectId: 'rt', agentId: 'zed', daysAgo: 2, cost: 0.3 });
+  // Also one task from a different agent — must not appear
+  insertCompletedTask({ title: 'rt-other', projectId: 'rt', agentId: 'notzed', daysAgo: 1 });
+
+  const res = metrics.getAgentRecentTasks({ agentId: 'zed', projectId: 'rt', limit: 20 });
+  assert.equal(res.length, 3);
+  assert.equal(res[0].title, 'rt-new');
+  assert.ok(res[0].durationMs > 0);
+  assert.equal(res[0].cost, 0.3);
+
+  // limit works
+  const lim = metrics.getAgentRecentTasks({ agentId: 'zed', projectId: 'rt', limit: 2 });
+  assert.equal(lim.length, 2);
+});
+
+test('getAgentRecentTasks: throws when agentId missing', () => {
+  assert.throws(() => metrics.getAgentRecentTasks({}), /agentId is required/);
+});

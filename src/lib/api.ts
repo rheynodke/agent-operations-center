@@ -331,14 +331,16 @@ export const api = {
   },
 
   // Metrics dashboard
-  getMetricsSummary: (range: import('@/types').MetricsRange = '30d', projectId?: string | null) => {
+  getMetricsSummary: (range: import('@/types').MetricsRange = '30d', projectId?: string | null, agentId?: string | null) => {
     const params = new URLSearchParams({ range });
     if (projectId) params.set('projectId', projectId);
+    if (agentId)   params.set('agentId',   agentId);
     return request<import('@/types').MetricsSummary>(`/metrics/summary?${params.toString()}`);
   },
-  getMetricsThroughput: (range: import('@/types').MetricsRange = '30d', projectId?: string | null) => {
+  getMetricsThroughput: (range: import('@/types').MetricsRange = '30d', projectId?: string | null, agentId?: string | null) => {
     const params = new URLSearchParams({ range });
     if (projectId) params.set('projectId', projectId);
+    if (agentId)   params.set('agentId',   agentId);
     return request<import('@/types').MetricsThroughput>(`/metrics/throughput?${params.toString()}`);
   },
   getMetricsAgents: (range: import('@/types').MetricsRange = '30d', projectId?: string | null) => {
@@ -346,10 +348,16 @@ export const api = {
     if (projectId) params.set('projectId', projectId);
     return request<import('@/types').MetricsAgents>(`/metrics/agents?${params.toString()}`);
   },
-  getMetricsLifecycle: (range: import('@/types').MetricsRange = '30d', projectId?: string | null) => {
+  getMetricsLifecycle: (range: import('@/types').MetricsRange = '30d', projectId?: string | null, agentId?: string | null) => {
     const params = new URLSearchParams({ range });
     if (projectId) params.set('projectId', projectId);
+    if (agentId)   params.set('agentId',   agentId);
     return request<import('@/types').MetricsLifecycle>(`/metrics/lifecycle?${params.toString()}`);
+  },
+  getMetricsAgentTasks: (agentId: string, projectId?: string | null, limit = 20) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (projectId) params.set('projectId', projectId);
+    return request<import('@/types').MetricsAgentTasks>(`/metrics/agents/${encodeURIComponent(agentId)}/tasks?${params.toString()}`);
   },
 
   // Task comments — user ↔ agent discussion thread
