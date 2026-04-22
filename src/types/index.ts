@@ -220,6 +220,57 @@ export interface Task {
   attachments?: TaskAttachment[]
 }
 
+// ─── Metrics Dashboard ───────────────────────────────────────────────────────
+
+export type MetricsRange = '7d' | '30d' | '90d'
+
+export interface MetricsKpi {
+  current: number
+  previous: number
+  /** Percentage change vs previous window. null when previous is 0 (no baseline). */
+  deltaPct: number | null
+}
+
+export interface MetricsStatusDistribution {
+  backlog: number
+  todo: number
+  in_progress: number
+  in_review: number
+  blocked: number
+  done: number
+}
+
+export interface MetricsSummary {
+  range: MetricsRange
+  since: string
+  until: string
+  projectId: string | null
+  kpis: {
+    completed: MetricsKpi
+    cost: MetricsKpi
+    activeAgents: MetricsKpi
+    blocked: MetricsKpi
+  }
+  statusDistribution: MetricsStatusDistribution
+}
+
+export interface MetricsThroughputBucket {
+  /** ISO date (UTC), YYYY-MM-DD. */
+  date: string
+  count: number
+  /** Per-project counts. Keys are project ids present on that day. */
+  byProject: Record<string, number>
+}
+
+export interface MetricsThroughput {
+  range: MetricsRange
+  since: string
+  until: string
+  projectId: string | null
+  buckets: MetricsThroughputBucket[]
+  projects: Array<{ id: string; name: string; color: string }>
+}
+
 /** Free-form comment on a task (user ↔ agent discussion thread). */
 export interface TaskComment {
   id: string

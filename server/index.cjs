@@ -17,6 +17,7 @@ const versioning = require('./lib/versioning.cjs');
 const integrations = require('./lib/integrations/index.cjs');
 const attachmentsLib = require('./lib/attachments.cjs');
 const outputsLib = require('./lib/outputs.cjs');
+const metrics = require('./lib/metrics.cjs');
 const multer = require('multer');
 const { AGENTS_DIR } = require('./lib/config.cjs');
 
@@ -1882,6 +1883,35 @@ app.get('/api/sessions/:agentId/:sessionId/messages', db.authMiddleware, (req, r
   } catch (err) {
     console.error('[api/sessions/messages]', err);
     res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+// ─── Metrics dashboard ────────────────────────────────────────────────────────
+// Any authenticated user can read metrics (includes cost figures).
+
+app.get('/api/metrics/summary', db.authMiddleware, (req, res) => {
+  try {
+    const range = req.query.range || '30d';
+    const projectId = req.query.projectId || null;
+    const data = metrics.getSummary({ range, projectId });
+    res.json(data);
+  } catch (err) {
+    if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
+    console.error('[api/metrics/summary]', err);
+    res.status(500).json({ error: 'Failed to compute summary' });
+  }
+});
+
+app.get('/api/metrics/throughput', db.authMiddleware, (req, res) => {
+  try {
+    const range = req.query.range || '30d';
+    const projectId = req.query.projectId || null;
+    const data = metrics.getThroughput({ range, projectId });
+    res.json(data);
+  } catch (err) {
+    if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
+    console.error('[api/metrics/throughput]', err);
+    res.status(500).json({ error: 'Failed to compute throughput' });
   }
 });
 

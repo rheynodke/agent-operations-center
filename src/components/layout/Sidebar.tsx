@@ -3,6 +3,7 @@ import { useEffect } from "react"
 import {
   LayoutDashboard,
   Bot,
+  BarChart3,
   ListChecks,
   Activity,
   Timer,
@@ -38,6 +39,7 @@ const navGroups = [
       { to: "/sessions", label: "Sessions", icon: Activity },
       { to: "/chat", label: "Chat", icon: MessageSquare },
       { to: "/board", label: "Task Board", icon: ListChecks },
+      { to: "/metrics", label: "Metrics", icon: BarChart3 },
     ],
   },
   {

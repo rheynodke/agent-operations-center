@@ -330,6 +330,18 @@ export const api = {
     return token ? `${att.url}?token=${encodeURIComponent(token)}` : att.url;
   },
 
+  // Metrics dashboard
+  getMetricsSummary: (range: import('@/types').MetricsRange = '30d', projectId?: string | null) => {
+    const params = new URLSearchParams({ range });
+    if (projectId) params.set('projectId', projectId);
+    return request<import('@/types').MetricsSummary>(`/metrics/summary?${params.toString()}`);
+  },
+  getMetricsThroughput: (range: import('@/types').MetricsRange = '30d', projectId?: string | null) => {
+    const params = new URLSearchParams({ range });
+    if (projectId) params.set('projectId', projectId);
+    return request<import('@/types').MetricsThroughput>(`/metrics/throughput?${params.toString()}`);
+  },
+
   // Task comments — user ↔ agent discussion thread
   getTaskComments: (taskId: string) =>
     request<{ comments: import('@/types').TaskComment[] }>(`/tasks/${encodeURIComponent(taskId)}/comments`),
