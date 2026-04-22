@@ -400,6 +400,16 @@ export function useWebSocket() {
           break
         }
 
+        case "task:output_added":
+        case "task:output_removed": {
+          // Lightweight notification for OutputsSection — re-fetch on the client side.
+          // Payload: { agentId, taskId, filename, size?, mtime? }
+          window.dispatchEvent(new CustomEvent('aoc:task-output', {
+            detail: { type: msg.type, ...(msg.payload as Record<string, unknown>) },
+          }))
+          break
+        }
+
         case "cron:updated": {
           const jobs = (msg.payload as { jobs?: unknown[] })?.jobs
           if (Array.isArray(jobs)) useCronStore.getState().setJobs(jobs as never)

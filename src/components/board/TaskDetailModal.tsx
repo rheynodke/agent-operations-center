@@ -19,6 +19,7 @@ import { InReviewBanner } from "./InReviewBanner"
 import { AgentWorkSection } from "./AgentWorkSection"
 import { ExecutionStats } from "./ExecutionStats"
 import { AttachmentsSection } from "./AttachmentsSection"
+import { OutputsSection } from "./OutputsSection"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -599,6 +600,9 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
               </p>
             </SectionCard>
           )}
+
+          {/* Agent Outputs — highlight during in_review so reviewer sees deliverables first */}
+          <OutputsSection task={task} highlight={task.status === 'in_review'} />
 
           {/* Attachments */}
           <AttachmentsSection

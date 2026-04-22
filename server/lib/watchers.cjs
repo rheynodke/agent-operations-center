@@ -72,8 +72,71 @@ class LiveFeedWatcher {
     this._startClaudeCliPolling();
 
     this._watchSkillsDirs();
+    this._watchAgentOutputs();
 
     console.log('[watchers] Live feed watchers started');
+  }
+
+  /**
+   * Watch every agent workspace's `outputs/` directory for files written by
+   * the agent (e.g. deliverables for a task). Path structure:
+   *   {agentWorkspace}/outputs/{taskId}/{filename}
+   * Broadcasts `task:output_added` / `task:output_removed` so the frontend can
+   * refresh the task detail modal in real time.
+   */
+  _watchAgentOutputs() {
+    try {
+      const cfg = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+      const agents = cfg.agents?.list || [];
+      const expandHome = (p) => (p || '').replace(/^~/, process.env.HOME || process.env.USERPROFILE || '~');
+
+      for (const agent of agents) {
+        const workspace = expandHome(agent.workspace || OPENCLAW_WORKSPACE);
+        const outputsDir = path.join(workspace, 'outputs');
+        try { fs.mkdirSync(outputsDir, { recursive: true }); } catch {}
+
+        const watcher = chokidar.watch(outputsDir, {
+          ignoreInitial: true,
+          depth: 2, // outputs/{taskId}/{filename}
+          ignored: (p) => /\/(\.DS_Store|node_modules|\.git)(\/|$)/.test(p) || path.basename(p).startsWith('.'),
+        });
+
+        const emit = (type, filePath) => {
+          // filePath is absolute; extract taskId from the path segment right under outputs/
+          const rel = path.relative(outputsDir, filePath);
+          const parts = rel.split(path.sep).filter(Boolean);
+          if (parts.length < 2) return; // need at least {taskId}/{filename}
+          const [taskId, ...rest] = parts;
+          const filename = rest.join('/');
+          if (!filename || filename.startsWith('.')) return;
+          let size, mtime;
+          if (type !== 'removed') {
+            try {
+              const st = fs.statSync(filePath);
+              size = st.size;
+              mtime = st.mtime.toISOString();
+            } catch { return; }
+          }
+          this.broadcast({
+            type: type === 'removed' ? 'task:output_removed' : 'task:output_added',
+            payload: {
+              agentId: agent.id,
+              taskId,
+              filename,
+              ...(size != null ? { size, mtime } : {}),
+            },
+          });
+        };
+
+        watcher.on('add',    (p) => emit('added',   p));
+        watcher.on('change', (p) => emit('changed', p));
+        watcher.on('unlink', (p) => emit('removed', p));
+        this.watchers.push(watcher);
+      }
+      console.log(`[watchers] Agent outputs watcher started (${agents.length} workspace(s))`);
+    } catch (err) {
+      console.warn('[watchers] agent outputs watcher setup failed:', err.message);
+    }
   }
 
   _watchSkillsDirs() {

@@ -16,6 +16,7 @@ const aiLib = require('./lib/ai.cjs');
 const versioning = require('./lib/versioning.cjs');
 const integrations = require('./lib/integrations/index.cjs');
 const attachmentsLib = require('./lib/attachments.cjs');
+const outputsLib = require('./lib/outputs.cjs');
 const multer = require('multer');
 const { AGENTS_DIR } = require('./lib/config.cjs');
 
@@ -2130,10 +2131,50 @@ app.get('/api/attachments/:taskId/:attachmentId', attachmentAuthMiddleware, (req
     if (!resolved) return res.status(404).json({ error: 'Attachment not found' });
     if (resolved.att.mimeType) res.setHeader('Content-Type', resolved.att.mimeType);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(resolved.att.filename)}"`);
-    res.sendFile(resolved.absPath);
+    // Express 5's send() rejects absolute paths without the root option — use the
+    // containing directory as root and the basename as the relative path.
+    const path = require('path');
+    res.sendFile(path.basename(resolved.absPath), { root: path.dirname(resolved.absPath) });
   } catch (err) {
     console.error('[api/attachments GET]', err);
     res.status(500).json({ error: 'Failed to serve attachment' });
+  }
+});
+
+// ─── Task Outputs (agent-produced deliverables) ───────────────────────────────
+
+// List outputs for a task — scans {agentWorkspace}/outputs/{taskId}/
+app.get('/api/tasks/:id/outputs', db.authMiddleware, (req, res) => {
+  try {
+    const { id } = req.params;
+    const task = db.getTask(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!task.agentId) return res.json({ outputs: [] });
+    const outputs = outputsLib.listOutputs(task.agentId, id);
+    res.json({ outputs });
+  } catch (err) {
+    console.error('[api/tasks/:id/outputs GET]', err);
+    res.status(500).json({ error: 'Failed to list outputs' });
+  }
+});
+
+// Serve a single output file. Same auth pattern as attachments (supports ?token=).
+app.get('/api/tasks/:id/outputs/:filename', attachmentAuthMiddleware, (req, res) => {
+  try {
+    const { id, filename } = req.params;
+    const task = db.getTask(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!task.agentId) return res.status(404).json({ error: 'Task has no assigned agent' });
+    const resolved = outputsLib.resolveOutputFile(task.agentId, id, filename);
+    if (!resolved) return res.status(404).json({ error: 'Output not found' });
+    if (resolved.mimeType) res.setHeader('Content-Type', resolved.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(resolved.filename)}"`);
+    // Express 5's send() rejects absolute paths without the root option — pass the
+    // task's outputs dir as root and the resolved filename as the relative path.
+    res.sendFile(resolved.filename, { root: outputsLib.outputsDir(task.agentId, id) });
+  } catch (err) {
+    console.error('[api/tasks/:id/outputs/:filename GET]', err);
+    res.status(500).json({ error: 'Failed to serve output' });
   }
 });
 
@@ -2166,6 +2207,35 @@ async function dispatchTaskToAgent(task, opts = {}) {
     // Subsequent dispatch → reuse the same session (context preserved)
     sessionKey = task.sessionId;
   }
+
+  // Ensure the per-task outputs folder exists so the agent can write deliverables
+  // to a predictable location that AOC watches.
+  let outputsDirAbs = null;
+  try { outputsDirAbs = outputsLib.ensureOutputsDir(task.agentId, task.id); }
+  catch (e) { console.warn('[dispatch] failed to create outputs dir:', e.message); }
+
+  // Brief reminder of any outputs already saved (useful on re-dispatch)
+  let existingOutputsNote = '';
+  try {
+    const existing = outputsLib.listOutputs(task.agentId, task.id).filter(f => f.filename !== 'MANIFEST.json');
+    if (existing.length > 0) {
+      existingOutputsNote = `Already saved (${existing.length}): ${existing.slice(0, 5).map(f => `\`${f.filename}\``).join(', ')}${existing.length > 5 ? ', …' : ''}.`;
+    }
+  } catch {}
+
+  const outputsContext = outputsDirAbs ? [
+    '',
+    '**📤 Output Directory** (save final deliverables here — AOC watches this folder):',
+    `\`${outputsDirAbs}\``,
+    '',
+    'Guidelines:',
+    '- One logical output per file. Use descriptive filenames (`sales_q1_report.pdf`, not `output.pdf`).',
+    '- Supported formats: pdf, xlsx, csv, png/jpg, md, html, json, docx, zip, txt.',
+    `- Helper: \`save_output.sh ${task.id} <source|-> <filename> [--description "..."]\` — copies the file here and updates \`MANIFEST.json\`. You can also write directly to the folder.`,
+    '- Before marking the task `in_review`, ensure every deliverable lives in this folder.',
+    existingOutputsNote,
+    '',
+  ].filter(Boolean).join('\n') : '';
 
   const aocToken = process.env.DASHBOARD_TOKEN || '';
   const aocPort  = process.env.PORT || '18800';
@@ -2277,6 +2347,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
       task.description ? `**Description:**\n${task.description}` : '',
       projectContext,
       attachmentsContext,
+      outputsContext,
       extraContext ? `\n**Additional Context from operator:**\n${extraContext}` : '',
       connectionsContext,
       ``,
@@ -2324,6 +2395,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
     // Continue message for re-dispatch — agent already has full context from prior messages
     const changeNote = opts.changeRequestNote;
     const extraContext = opts.additionalContext;
+    const outputsReminder = outputsDirAbs ? `📤 Save updated deliverables to \`${outputsDirAbs}\` (use \`save_output.sh ${task.id} ...\`).` : '';
     if (changeNote) {
       message = [
         `---`,
@@ -2331,6 +2403,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
         changeNote,
         newAttachmentsBlock,
         `Please address the feedback above. You already have the full context from your previous work on this ticket.`,
+        outputsReminder,
         `When done, update status to "in_review" again.`,
       ].filter(Boolean).join('\n');
     } else if (extraContext) {
@@ -2342,6 +2415,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
         extraContext,
         newAttachmentsBlock,
         `You already have the full context from your previous work. Please continue where you left off.`,
+        outputsReminder,
         `When done, update status to "in_review".`,
       ].filter(Boolean).join('\n');
     } else {
@@ -2350,6 +2424,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
         `🔄 **Continue working on this ticket.**`,
         newAttachmentsBlock,
         `You already have the full context from your previous work. Please continue where you left off.`,
+        outputsReminder,
         `When done, update status to "in_review".`,
       ].filter(Boolean).join('\n');
     }
@@ -4046,6 +4121,7 @@ function syncConnectionsScriptForAllAgents() {
     parsers.ensureGwsCallScript();
     parsers.ensureAocConnectScript();
     parsers.ensureFetchAttachmentScript();
+    parsers.ensureSaveOutputScript();
     const agents = parsers.parseAgentRegistry();
     const allConns = db.getAllConnections();
     for (const agent of agents) {

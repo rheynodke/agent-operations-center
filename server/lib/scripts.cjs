@@ -906,6 +906,113 @@ function ensureFetchAttachmentScript() {
   console.log('[scripts] Ensured shared fetch_attachment.sh script');
 }
 
+// ── save_output.sh — Register a deliverable for a task ──────────────────────
+
+const SAVE_OUTPUT_SCRIPT_NAME = 'save_output.sh';
+const SAVE_OUTPUT_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# save_output — Copy or stream a file into the task's output folder.
+#
+# Usage:
+#   save_output.sh <task_id> <source_path|-> <target_filename> [--description "..."]
+#
+#   <source_path>   Path to an existing file, OR '-' to read stdin.
+#   <target_filename>  Filename to write under the task output folder.
+#                      (Must be a plain basename — no path separators.)
+#   --description TEXT Optional human-readable note stored in MANIFEST.json.
+#
+# Outputs are written to:
+#   \${OPENCLAW_WORKSPACE}/outputs/<task_id>/<target_filename>
+# (or the agent's configured workspace if set via .aoc_agent_env)
+#
+# Prints the absolute path of the saved file on stdout.
+
+set -euo pipefail
+
+TASK_ID="\${1:?Usage: save_output.sh <task_id> <source|-> <target_filename> [--description \\"...\\"]}"
+SOURCE="\${2:?source path (or '-' for stdin) required}"
+TARGET="\${3:?target filename required}"
+shift 3 || true
+
+DESCRIPTION=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --description) DESCRIPTION="\${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+# Reject filename path components — security guard
+case "$TARGET" in
+  */*|\\\\*|..*|.*) echo "save_output: target filename must be a plain basename (no path separators, no leading dot)" >&2; exit 2 ;;
+esac
+
+# Sanitize task id (alphanumerics, underscore, hyphen only).
+# Uses printf (no trailing newline) + tr so the id isn't suffixed with '_'.
+SAFE_TASK="$(printf '%s' "$TASK_ID" | tr -c 'A-Za-z0-9_-' '_')"
+if [ -z "$SAFE_TASK" ] || [ "$SAFE_TASK" = "_" ]; then
+  echo "save_output: invalid task id" >&2; exit 2
+fi
+
+# Resolve workspace (prefer env from .aoc_agent_env, fallback to OPENCLAW_WORKSPACE)
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
+WORKSPACE="\${AOC_WORKSPACE:-\${OPENCLAW_WORKSPACE:-$PWD}}"
+
+OUT_DIR="$WORKSPACE/outputs/$SAFE_TASK"
+mkdir -p "$OUT_DIR"
+DEST="$OUT_DIR/$TARGET"
+
+# Copy or stream content
+if [ "$SOURCE" = "-" ]; then
+  cat > "$DEST"
+else
+  if [ ! -f "$SOURCE" ]; then
+    echo "save_output: source file not found: $SOURCE" >&2; exit 2
+  fi
+  cp -f "$SOURCE" "$DEST"
+fi
+
+# Update MANIFEST.json (append/update entry for this filename)
+MANIFEST="$OUT_DIR/MANIFEST.json"
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SIZE="$(stat -f %z "$DEST" 2>/dev/null || stat -c %s "$DEST" 2>/dev/null || echo 0)"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$MANIFEST" "$TARGET" "$DESCRIPTION" "$NOW" "$SIZE" <<'PY' || true
+import json, os, sys
+path, fname, desc, now, size = sys.argv[1:6]
+data = {"outputs": []}
+if os.path.exists(path):
+    try:
+        with open(path) as f: data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("outputs"), list):
+            data = {"outputs": []}
+    except Exception:
+        data = {"outputs": []}
+outs = [o for o in data["outputs"] if o.get("filename") != fname]
+outs.append({"filename": fname, "description": desc or None, "size": int(size or 0), "updatedAt": now})
+data["outputs"] = outs
+with open(path, "w") as f: json.dump(data, f, indent=2)
+PY
+fi
+
+echo "$DEST"
+`;
+
+function ensureSaveOutputScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, SAVE_OUTPUT_SCRIPT_NAME);
+  fs.writeFileSync(scriptPath, SAVE_OUTPUT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[SAVE_OUTPUT_SCRIPT_NAME] = {
+    name: 'save_output',
+    emoji: '📤',
+    description: 'Save an agent deliverable into the task output folder ({workspace}/outputs/{taskId}/). Updates MANIFEST.json. Usage: save_output.sh <task_id> <source|-> <filename> [--description "..."]',
+    execHint: `${SCRIPTS_DIR}/save_output.sh <task_id> <source|-> <filename> [--description "..."]`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+  console.log('[scripts] Ensured shared save_output.sh script');
+}
+
 // ── aoc-connect.sh — Generic connection wrapper ─────────────────────────────
 
 const AOC_CONNECT_SCRIPT_NAME = 'aoc-connect.sh';
@@ -1661,6 +1768,7 @@ module.exports = {
   ensureGwsCallScript,
   ensureAocConnectScript,
   ensureFetchAttachmentScript,
+  ensureSaveOutputScript,
   injectHeartbeatTaskCheck,
   // ADLC shared scripts installer
   ensureSharedAdlcScripts,

@@ -220,6 +220,17 @@ export interface Task {
   attachments?: TaskAttachment[]
 }
 
+/** Agent-produced output file living under {agentWorkspace}/outputs/{taskId}/. */
+export interface TaskOutput {
+  filename: string
+  size: number
+  mtime: string
+  ctime?: string
+  mimeType: string
+  ext: string
+  isText?: boolean
+}
+
 export interface TaskAttachment {
   /** Stable per-attachment id (uuid for uploads; hash/url-based for sheet links). */
   id: string

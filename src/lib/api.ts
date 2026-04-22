@@ -329,6 +329,15 @@ export const api = {
     const token = useAuthStore.getState().token;
     return token ? `${att.url}?token=${encodeURIComponent(token)}` : att.url;
   },
+
+  // Task outputs — agent-produced deliverables under {workspace}/outputs/{taskId}/
+  getTaskOutputs: (taskId: string) =>
+    request<{ outputs: import('@/types').TaskOutput[] }>(`/tasks/${encodeURIComponent(taskId)}/outputs`),
+  outputUrl: (taskId: string, filename: string): string => {
+    const token = useAuthStore.getState().token;
+    const base = `${BASE}/tasks/${encodeURIComponent(taskId)}/outputs/${encodeURIComponent(filename)}`;
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  },
   analyzeTask: (taskId: string) =>
     request<{ ok: boolean; analysis: import('@/types').TaskAnalysis }>(`/tasks/${taskId}/analyze`, { method: 'POST' }),
 
