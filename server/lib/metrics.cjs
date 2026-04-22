@@ -182,10 +182,208 @@ function getThroughput({ range = '30d', projectId = null } = {}) {
   return { range, since: r.since, until: r.until, projectId: projectId || null, buckets, projects };
 }
 
+/**
+ * Per-agent performance table for the leaderboard.
+ * Returns one row per agent that touched at least one task in the window.
+ */
+function getAgentLeaderboard({ range = '30d', projectId = null } = {}) {
+  const r = resolveRange(range);
+  const pf = projectFilter(projectId);
+
+  // Fetch done tasks in window with agent + duration + cost
+  const doneRows = query(
+    `SELECT agent_id,
+            cost,
+            (julianday(completed_at) - julianday(created_at)) * 86400000.0 AS duration_ms
+       FROM tasks
+      WHERE status = 'done'
+        AND completed_at >= ? AND completed_at < ?
+        AND agent_id IS NOT NULL${pf.clause}`,
+    [r.since, r.until, ...pf.params]
+  );
+
+  // Blocked snapshot per agent (current, for success-rate denominator)
+  const blockedRows = query(
+    `SELECT agent_id, COUNT(*) AS c
+       FROM tasks
+      WHERE status = 'blocked' AND agent_id IS NOT NULL${pf.clause}
+   GROUP BY agent_id`,
+    [...pf.params]
+  );
+
+  // For change-request rate we need, per agent:
+  //   - reviewReached: COUNT DISTINCT task_id where any activity has to_value='in_review'
+  //     for tasks owned by that agent in the window
+  //   - reviewReturns: COUNT activities where from_value='in_review' AND to_value IN ('in_progress','todo')
+  const reviewReached = query(
+    `SELECT t.agent_id, COUNT(DISTINCT ta.task_id) AS c
+       FROM task_activity ta
+       JOIN tasks t ON t.id = ta.task_id
+      WHERE ta.type = 'status_change' AND ta.to_value = 'in_review'
+        AND ta.created_at >= ? AND ta.created_at < ?
+        AND t.agent_id IS NOT NULL${pf.clause.replace('project_id', 't.project_id')}
+   GROUP BY t.agent_id`,
+    [r.since, r.until, ...pf.params]
+  );
+  const reviewReturns = query(
+    `SELECT t.agent_id, COUNT(*) AS c
+       FROM task_activity ta
+       JOIN tasks t ON t.id = ta.task_id
+      WHERE ta.type = 'status_change'
+        AND ta.from_value = 'in_review'
+        AND ta.to_value IN ('in_progress', 'todo')
+        AND ta.created_at >= ? AND ta.created_at < ?
+        AND t.agent_id IS NOT NULL${pf.clause.replace('project_id', 't.project_id')}
+   GROUP BY t.agent_id`,
+    [r.since, r.until, ...pf.params]
+  );
+
+  // Aggregate done metrics per agent
+  const perAgent = new Map();
+  function ensure(agentId) {
+    if (!perAgent.has(agentId)) {
+      perAgent.set(agentId, {
+        agentId,
+        completed: 0,
+        costSum: 0,
+        costCount: 0,
+        durationSum: 0,
+        durationCount: 0,
+        blocked: 0,
+        reviewReached: 0,
+        reviewReturns: 0,
+      });
+    }
+    return perAgent.get(agentId);
+  }
+  for (const row of doneRows) {
+    const a = ensure(row.agent_id);
+    a.completed++;
+    if (row.cost != null) { a.costSum += Number(row.cost); a.costCount++; }
+    if (row.duration_ms != null) { a.durationSum += Number(row.duration_ms); a.durationCount++; }
+  }
+  for (const row of blockedRows) ensure(row.agent_id).blocked = row.c;
+  for (const row of reviewReached) ensure(row.agent_id).reviewReached = row.c;
+  for (const row of reviewReturns) ensure(row.agent_id).reviewReturns = row.c;
+
+  // Compute final per-agent row
+  const agents = [...perAgent.values()].map(a => {
+    const successDenom = a.completed + a.blocked;
+    const successRate = successDenom === 0 ? null : a.completed / successDenom;
+    const changeRequestRate = a.reviewReached === 0 ? null : a.reviewReturns / a.reviewReached;
+    return {
+      agentId: a.agentId,
+      completed: a.completed,
+      blocked: a.blocked,
+      avgCost: a.costCount === 0 ? null : a.costSum / a.costCount,
+      avgDurationMs: a.durationCount === 0 ? null : a.durationSum / a.durationCount,
+      changeRequestRate,                // 0..1 or null
+      successRate,                      // 0..1 or null
+      reviewReached: a.reviewReached,
+      reviewReturns: a.reviewReturns,
+    };
+  });
+
+  // Default sort: completed desc, then avgCost asc
+  agents.sort((x, y) => y.completed - x.completed || (x.avgCost ?? Infinity) - (y.avgCost ?? Infinity));
+
+  return { range, since: r.since, until: r.until, projectId: projectId || null, agents };
+}
+
+const FORWARD_PAIRS = [
+  ['backlog', 'todo'],
+  ['todo', 'in_progress'],
+  ['in_progress', 'in_review'],
+  ['in_review', 'done'],
+];
+
+/**
+ * Lifecycle funnel: avg time each forward transition takes.
+ * For each status_change activity in the window, compute how long the task
+ * spent in the `from_value` status before this transition. Then avg per pair.
+ */
+function getLifecycleFunnel({ range = '30d', projectId = null } = {}) {
+  const r = resolveRange(range);
+  const pf = projectFilter(projectId);
+
+  // Pull transitions inside the window, joined with the task's created_at as a
+  // fallback for the 'backlog → ...' transition where there is no prior activity.
+  const activities = query(
+    `SELECT ta.task_id, ta.from_value, ta.to_value, ta.created_at AS to_time,
+            t.created_at AS task_created
+       FROM task_activity ta
+       JOIN tasks t ON t.id = ta.task_id
+      WHERE ta.type = 'status_change'
+        AND ta.created_at >= ? AND ta.created_at < ?${pf.clause.replace('project_id', 't.project_id')}
+   ORDER BY ta.task_id, ta.created_at ASC`,
+    [r.since, r.until, ...pf.params]
+  );
+
+  // Also fetch prior activities per task that might be outside the window but
+  // define when the current transition's `from_value` was entered.
+  const priorActivities = query(
+    `SELECT ta.task_id, ta.to_value, ta.created_at
+       FROM task_activity ta
+       JOIN tasks t ON t.id = ta.task_id
+      WHERE ta.type = 'status_change'
+        AND ta.created_at < ?${pf.clause.replace('project_id', 't.project_id')}
+   ORDER BY ta.task_id, ta.created_at ASC`,
+    [r.until, ...pf.params]
+  );
+
+  // Build per-task arrival-at-status map: task_id → { status → arrival_time[] }
+  const arrivals = new Map();
+  for (const row of priorActivities) {
+    if (!arrivals.has(row.task_id)) arrivals.set(row.task_id, {});
+    const m = arrivals.get(row.task_id);
+    if (!m[row.to_value]) m[row.to_value] = [];
+    m[row.to_value].push(row.created_at);
+  }
+
+  // For each in-window transition, compute time-in-from-status
+  const aggregates = new Map(); // key `from|to` → { sumMs, count }
+  for (const a of activities) {
+    if (!a.from_value || !a.to_value) continue;
+    // Find most recent arrival at from_value BEFORE to_time
+    let fromTime = null;
+    const perTask = arrivals.get(a.task_id) || {};
+    const arr = perTask[a.from_value] || [];
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (arr[i] < a.to_time) { fromTime = arr[i]; break; }
+    }
+    // Fallback for backlog: use task creation time
+    if (!fromTime && a.from_value === 'backlog') fromTime = a.task_created;
+    if (!fromTime) continue;
+    const ms = new Date(a.to_time).getTime() - new Date(fromTime).getTime();
+    if (ms < 0) continue;
+    const key = `${a.from_value}|${a.to_value}`;
+    if (!aggregates.has(key)) aggregates.set(key, { sumMs: 0, count: 0 });
+    const agg = aggregates.get(key);
+    agg.sumMs += ms;
+    agg.count++;
+  }
+
+  // Emit all forward pairs (filled or zero) so the chart always shows the full funnel
+  const transitions = FORWARD_PAIRS.map(([from, to]) => {
+    const agg = aggregates.get(`${from}|${to}`) || { sumMs: 0, count: 0 };
+    return {
+      from,
+      to,
+      avgMs: agg.count === 0 ? null : agg.sumMs / agg.count,
+      count: agg.count,
+    };
+  });
+
+  return { range, since: r.since, until: r.until, projectId: projectId || null, transitions };
+}
+
 module.exports = {
   getSummary,
   getThroughput,
+  getAgentLeaderboard,
+  getLifecycleFunnel,
   // exposed for tests
   _resolveRange: resolveRange,
   _deltaPct: deltaPct,
+  _FORWARD_PAIRS: FORWARD_PAIRS,
 };

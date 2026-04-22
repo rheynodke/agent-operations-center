@@ -1915,6 +1915,46 @@ app.get('/api/metrics/throughput', db.authMiddleware, (req, res) => {
   }
 });
 
+app.get('/api/metrics/agents', db.authMiddleware, (req, res) => {
+  try {
+    const range = req.query.range || '30d';
+    const projectId = req.query.projectId || null;
+    const data = metrics.getAgentLeaderboard({ range, projectId });
+
+    // Enrich each row with the agent's display name + emoji from the registry.
+    // (Clients could also resolve this, but doing it server-side keeps the
+    // frontend simpler and lets us fall back to a clean "unknown" label.)
+    let agentsById = {};
+    try {
+      const agents = parsers.parseAgentRegistry();
+      for (const a of agents) agentsById[a.id] = a;
+    } catch {}
+    const enriched = data.agents.map(a => ({
+      ...a,
+      agentName:  agentsById[a.agentId]?.name  || a.agentId,
+      agentEmoji: agentsById[a.agentId]?.emoji || null,
+    }));
+    res.json({ ...data, agents: enriched });
+  } catch (err) {
+    if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
+    console.error('[api/metrics/agents]', err);
+    res.status(500).json({ error: 'Failed to compute agent leaderboard' });
+  }
+});
+
+app.get('/api/metrics/lifecycle', db.authMiddleware, (req, res) => {
+  try {
+    const range = req.query.range || '30d';
+    const projectId = req.query.projectId || null;
+    const data = metrics.getLifecycleFunnel({ range, projectId });
+    res.json(data);
+  } catch (err) {
+    if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
+    console.error('[api/metrics/lifecycle]', err);
+    res.status(500).json({ error: 'Failed to compute lifecycle funnel' });
+  }
+});
+
 // ─── Tasks (ticketing) ────────────────────────────────────────────────────────
 
 app.get('/api/tasks', db.authMiddleware, (req, res) => {

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { BarChart3, CheckCircle2, DollarSign, Users, ShieldAlert, RefreshCw, Loader2 } from "lucide-react"
 import { api } from "@/lib/api"
-import { useProjectStore } from "@/stores"
-import type { MetricsRange, MetricsSummary, MetricsThroughput } from "@/types"
+import { useProjectStore, useAgentStore } from "@/stores"
+import type { MetricsRange, MetricsSummary, MetricsThroughput, MetricsAgents, MetricsLifecycle } from "@/types"
 import { KpiCard } from "@/components/metrics/KpiCard"
 import { StatusDistribution } from "@/components/metrics/StatusDistribution"
 import { ThroughputChart } from "@/components/metrics/ThroughputChart"
+import { AgentLeaderboard } from "@/components/metrics/AgentLeaderboard"
+import { LifecycleFunnel } from "@/components/metrics/LifecycleFunnel"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 
@@ -25,10 +27,13 @@ function formatCost(n: number): string {
 
 export default function MetricsPage() {
   const projects = useProjectStore(s => s.projects)
+  const knownAgents = useAgentStore(s => s.agents)
   const [range, setRange] = useState<MetricsRange>('30d')
   const [projectId, setProjectId] = useState<string>(ALL_PROJECTS)
   const [summary, setSummary] = useState<MetricsSummary | null>(null)
   const [throughput, setThroughput] = useState<MetricsThroughput | null>(null)
+  const [leaderboard, setLeaderboard] = useState<MetricsAgents | null>(null)
+  const [lifecycle, setLifecycle] = useState<MetricsLifecycle | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const lastFetchRef = useRef<number>(0)
@@ -39,12 +44,16 @@ export default function MetricsPage() {
     setLoading(true)
     setError(null)
     try {
-      const [sumRes, thrRes] = await Promise.all([
+      const [sumRes, thrRes, agentsRes, lifeRes] = await Promise.all([
         api.getMetricsSummary(range, effectiveProjectId),
         api.getMetricsThroughput(range, effectiveProjectId),
+        api.getMetricsAgents(range, effectiveProjectId),
+        api.getMetricsLifecycle(range, effectiveProjectId),
       ])
       setSummary(sumRes)
       setThroughput(thrRes)
+      setLeaderboard(agentsRes)
+      setLifecycle(lifeRes)
       lastFetchRef.current = Date.now()
     } catch (e) {
       setError((e as Error).message || "Failed to load metrics")
@@ -187,6 +196,19 @@ export default function MetricsPage() {
 
       {/* Throughput chart */}
       <ThroughputChart data={throughput} loading={loading && !throughput} />
+
+      {/* Two-column: leaderboard + lifecycle funnel (stacks on mobile) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <AgentLeaderboard
+          agents={leaderboard?.agents ?? []}
+          knownAgents={knownAgents}
+          loading={loading && !leaderboard}
+        />
+        <LifecycleFunnel
+          transitions={lifecycle?.transitions ?? []}
+          loading={loading && !lifecycle}
+        />
+      </div>
     </div>
   )
 }

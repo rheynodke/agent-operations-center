@@ -271,6 +271,45 @@ export interface MetricsThroughput {
   projects: Array<{ id: string; name: string; color: string }>
 }
 
+export interface AgentMetric {
+  agentId: string
+  agentName: string
+  agentEmoji?: string | null
+  completed: number
+  blocked: number
+  avgCost: number | null
+  avgDurationMs: number | null
+  /** 0..1 or null when no task reached in_review */
+  changeRequestRate: number | null
+  /** 0..1 or null when no done/blocked signal */
+  successRate: number | null
+  reviewReached: number
+  reviewReturns: number
+}
+
+export interface MetricsAgents {
+  range: MetricsRange
+  since: string
+  until: string
+  projectId: string | null
+  agents: AgentMetric[]
+}
+
+export interface LifecycleTransition {
+  from: 'backlog' | 'todo' | 'in_progress' | 'in_review'
+  to:   'todo' | 'in_progress' | 'in_review' | 'done'
+  avgMs: number | null
+  count: number
+}
+
+export interface MetricsLifecycle {
+  range: MetricsRange
+  since: string
+  until: string
+  projectId: string | null
+  transitions: LifecycleTransition[]
+}
+
 /** Free-form comment on a task (user ↔ agent discussion thread). */
 export interface TaskComment {
   id: string
