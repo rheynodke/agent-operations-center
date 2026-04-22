@@ -13,6 +13,13 @@ export function useIsAdmin(): boolean {
   return useAuthStore((s) => s.user?.role) === "admin"
 }
 
+/** True if the current user can open the Skills page Claude terminal. */
+export function useCanUseClaudeTerminal(): boolean {
+  const role = useAuthStore((s) => s.user?.role)
+  const granted = useAuthStore((s) => s.user?.canUseClaudeTerminal)
+  return role === "admin" || Boolean(granted)
+}
+
 export function useCurrentUserId(): number | undefined {
   return useAuthStore((s) => s.user?.id)
 }

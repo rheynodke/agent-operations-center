@@ -58,6 +58,11 @@ export function useWebSocket() {
           break
         }
 
+        case "skills:updated": {
+          window.dispatchEvent(new CustomEvent("aoc:skills-updated"))
+          break
+        }
+
         case "agents:updated": {
           const agents = (msg.payload as { agents?: unknown[] })?.agents
           if (Array.isArray(agents)) useAgentStore.getState().mergeAgents(agents as never)

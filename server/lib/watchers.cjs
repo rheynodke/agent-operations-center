@@ -71,7 +71,39 @@ class LiveFeedWatcher {
     // misses all thinking/tool-call/tool-result/final-text events.
     this._startClaudeCliPolling();
 
+    this._watchSkillsDirs();
+
     console.log('[watchers] Live feed watchers started');
+  }
+
+  _watchSkillsDirs() {
+    const dirs = [
+      path.join(OPENCLAW_HOME, 'skills'),
+      path.join(OPENCLAW_WORKSPACE, '.agents', 'skills'),
+      path.join(OPENCLAW_WORKSPACE, 'skills'),
+    ];
+    let debounceTimer = null;
+    const emit = () => {
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        this.broadcast({ type: 'skills:updated' });
+      }, 300);
+    };
+    for (const dir of dirs) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+      const watcher = chokidar.watch(dir, {
+        ignoreInitial: true,
+        depth: 3,
+        ignored: (p) => /\/(node_modules|\.git|\.DS_Store)(\/|$)/.test(p),
+      });
+      watcher.on('add', emit);
+      watcher.on('change', emit);
+      watcher.on('unlink', emit);
+      watcher.on('addDir', emit);
+      watcher.on('unlinkDir', emit);
+      this.watchers.push(watcher);
+    }
   }
 
   _buildSessionIdMap(agentsDir) {

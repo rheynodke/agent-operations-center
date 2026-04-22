@@ -71,6 +71,11 @@ export function UserManagementPage() {
     catch (err) { setError(err instanceof Error ? err.message : "Failed") }
   }
 
+  async function handleTerminalToggle(user: ManagedUser, enabled: boolean) {
+    try { await api.updateUser(user.id, { canUseClaudeTerminal: enabled }); await refresh() }
+    catch (err) { setError(err instanceof Error ? err.message : "Failed") }
+  }
+
   async function runConfirm() {
     if (!confirm) return
     setConfirmLoading(true)
@@ -151,6 +156,7 @@ export function UserManagementPage() {
                 <th className="px-4 py-2 font-semibold">Username</th>
                 <th className="px-4 py-2 font-semibold">Display name</th>
                 <th className="px-4 py-2 font-semibold">Role</th>
+                <th className="px-4 py-2 font-semibold" title="Grant access to the Skills page Claude Code terminal">Claude Terminal</th>
                 <th className="px-4 py-2 font-semibold">Created</th>
                 <th className="px-4 py-2 font-semibold">Last login</th>
                 <th className="px-4 py-2"></th>
@@ -169,6 +175,21 @@ export function UserManagementPage() {
                     >
                       {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
                     </select>
+                  </td>
+                  <td className="px-4 py-2">
+                    {u.role === "admin" ? (
+                      <span className="text-[11px] text-muted-foreground italic">always on (admin)</span>
+                    ) : (
+                      <label className="inline-flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(u.can_use_claude_terminal)}
+                          onChange={(e) => handleTerminalToggle(u, e.target.checked)}
+                          className="w-4 h-4 accent-primary"
+                        />
+                        <span className="text-[11px] text-muted-foreground">{u.can_use_claude_terminal ? "Enabled" : "Disabled"}</span>
+                      </label>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-muted-foreground text-xs">{formatDate(u.created_at)}</td>
                   <td className="px-4 py-2 text-muted-foreground text-xs">{formatDate(u.last_login)}</td>

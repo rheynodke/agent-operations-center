@@ -422,6 +422,7 @@ export type WsEventType =
   | "chat:event"
   | "chat:sessions-changed"
   | "chat:done"
+  | "skills:updated"
 
 export interface WsMessage {
   type: WsEventType
@@ -444,6 +445,7 @@ export interface AuthUser {
   username: string
   displayName: string
   role: string
+  canUseClaudeTerminal?: boolean
 }
 
 export interface AuthStatus {
@@ -475,6 +477,7 @@ export interface ManagedUser {
   username: string
   display_name: string
   role: string
+  can_use_claude_terminal?: number
   created_at: string
   last_login: string | null
 }

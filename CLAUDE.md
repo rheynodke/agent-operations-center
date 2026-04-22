@@ -249,3 +249,28 @@ In development, the SQLite database (`aoc.db`) is stored at `data/aoc.db` in the
 7. SQLite `agent_profiles` has a `role` column (migration in `db.cjs`). `GET /api/agents` exposes `role` from profile. `AgentCard` uses `getTemplateColor()`/`getTemplateLabel()` for left border + role badge.
 
 **`notify.sh`** is channel-agnostic: queries `AOC_URL/api/agents/$AOC_AGENT_ID/channels` to auto-detect bound channel (priority: Telegram > WhatsApp > Discord), with `--channel` override flag.
+
+### Role-Based Access Control
+
+Two user roles: `admin` and `user` (plus internal `agent` role used by service tokens). Admin bypasses all ownership checks; regular users retain read access to everything but may only mutate resources they created.
+
+- **Ownership columns** — `agent_profiles.provisioned_by`, `connections.created_by` (both nullable `INTEGER` referencing `users.id`). Set on create; checked on mutate.
+- **Server enforcement** (`server/lib/db.cjs`):
+  - `requireAdmin` — 403 unless `req.user.role === 'admin'`.
+  - `requireAgentOwnership` / `requireConnectionOwnership` — admin + `agent` role bypass; otherwise checks ownership column. Apply as Express middleware on mutation routes.
+- **Client mirror** (`src/lib/permissions.ts`) — `useIsAdmin()`, `useCanEditAgent(agent)`, `useCanEditConnection(conn)` hooks and pure `canEditAgent/canEditConnection(resource, user)` variants for list maps. Keep these in sync with server checks when adding new ownership-scoped resources.
+- Admin-only routes are gated in `src/App.tsx` via `<AdminOnly>` wrapper (e.g., `/users`).
+
+### Invitations & Registration
+
+Self-serve registration is invite-only. Admins generate invitations; new users redeem tokens at `/register`.
+
+- Table: `invitations (id, token, created_by, expires_at, default_role, note, use_count, revoked_at, created_at)` — see `server/lib/db.cjs`.
+- Management UI: `src/pages/UserManagementPage.tsx` (`/users`, admin-only) — users tab + invitations tab (create, copy link, revoke, delete).
+- Registration UI: `src/pages/RegisterPage.tsx` (`/register?token=...`) — public route.
+- Helpers: `createInvitation`, `getInvitationByToken`, `revokeInvitation`, `incrementInvitationUse`. New user's role comes from `invitations.default_role`.
+- Default admin bootstrap still works: if no users exist, the setup flow creates the first admin (no invitation required).
+
+### Managed Role Templates
+
+`role_templates` SQLite table (seeded from `server/data/role-templates-seed.json` on startup) — persists ADLC role presets server-side in addition to the compile-time TS templates in `src/data/role-templates/`. Origin column distinguishes `seed` vs user-created presets. Use this table (not the TS files) for anything that needs runtime mutation.

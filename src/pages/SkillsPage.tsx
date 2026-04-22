@@ -14,6 +14,8 @@ import { useAgentStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { CustomToolsTab } from "@/components/skills/CustomToolsTab"
 import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
+import { SkillsTerminal } from "@/components/skills/SkillsTerminal"
+import { useCanUseClaudeTerminal } from "@/lib/permissions"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
@@ -325,17 +327,21 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [editMode, setEditMode] = useState(false)
+  const [externalChange, setExternalChange] = useState(false)
   const [error, setError] = useState("")
   const [showHistory, setShowHistory] = useState(false)
   const [showAiPanel, setShowAiPanel] = useState(false)
   const [showTemplatePicker, setShowTemplatePicker] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const editModeRef = useRef(editMode)
+  editModeRef.current = editMode
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError("")
     setEditMode(false)
+    setExternalChange(false)
     api.getGlobalSkillFile(slug)
       .then(data => {
         if (cancelled) return
@@ -350,6 +356,32 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
       })
     return () => { cancelled = true }
   }, [slug])
+
+  // Live-reload: refetch this file when a `skills:updated` event fires.
+  // If the user is mid-edit, don't clobber their changes — just surface a
+  // "modified on disk" hint they can choose to reload from.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onUpdate = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(async () => {
+        try {
+          const data = await api.getGlobalSkillFile(slug)
+          if (editModeRef.current) {
+            setExternalChange(data.content !== original)
+          } else {
+            setContent(data.content)
+            setOriginal(data.content)
+          }
+        } catch { /* ignore transient errors */ }
+      }, 300)
+    }
+    window.addEventListener("aoc:skills-updated", onUpdate)
+    return () => {
+      window.removeEventListener("aoc:skills-updated", onUpdate)
+      if (timer) clearTimeout(timer)
+    }
+  }, [slug, original])
 
   useEffect(() => {
     if (editMode && textareaRef.current) textareaRef.current.focus()
@@ -390,6 +422,22 @@ function SkillMdEditor({ slug, editable, onSaved }: { slug: string; editable: bo
       <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-white/5 bg-white/1">
         <ScrollText className="w-3.5 h-3.5 text-muted-foreground/50" />
         <span className="text-[11px] font-semibold text-muted-foreground/70">SKILL.md</span>
+        {externalChange && editMode && (
+          <button
+            onClick={async () => {
+              try {
+                const data = await api.getGlobalSkillFile(slug)
+                setContent(data.content)
+                setOriginal(data.content)
+                setExternalChange(false)
+              } catch {}
+            }}
+            className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-400 hover:bg-amber-500/20"
+            title="Reload from disk (discards your edits)"
+          >
+            modified on disk · reload
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
           {editMode ? (
             <>
@@ -597,6 +645,34 @@ function SkillFilesPanel({ slug, editable }: { slug: string; editable: boolean }
       .then(data => { setFileContent(data.content); setEditContent(data.content); setFileLoading(false) })
       .catch(e => { setError((e as Error).message); setFileLoading(false) })
   }, [slug, selectedPath])
+
+  // Live-reload: refresh the file tree + currently opened file when
+  // `skills:updated` fires, without unmounting or showing a loader.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const editingRef = editMode
+    const onUpdate = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(async () => {
+        try {
+          const t = await api.getSkillDirTree(slug)
+          setTree(t.tree)
+        } catch {}
+        if (selectedPath && !editingRef) {
+          try {
+            const data = await api.getSkillAnyFile(slug, selectedPath)
+            setFileContent(data.content)
+            setEditContent(data.content)
+          } catch {}
+        }
+      }, 300)
+    }
+    window.addEventListener("aoc:skills-updated", onUpdate)
+    return () => {
+      window.removeEventListener("aoc:skills-updated", onUpdate)
+      if (timer) clearTimeout(timer)
+    }
+  }, [slug, selectedPath, editMode])
 
   async function handleSave() {
     if (!selectedPath) return
@@ -1255,8 +1331,10 @@ type TabId = "skills" | "tools" | "custom-tools"
 
 export function SkillsPage() {
   const storeAgents = useAgentStore((s) => s.agents)
+  const canUseTerminal = useCanUseClaudeTerminal()
   const [tab, setTab] = useState<TabId>("skills")
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [skills, setSkills] = useState<GlobalSkillInfo[]>([])
   const [tools, setTools] = useState<GlobalToolInfo[]>([])
@@ -1276,8 +1354,12 @@ export function SkillsPage() {
     }))
   }
 
-  async function load() {
-    setLoading(true)
+  // `loading` is true only for the first load (full-page spinner). Subsequent
+  // refetches (from the refresh button or skills:updated WS event) run silently
+  // via `refreshing` so the open preview pane doesn't unmount.
+  async function load({ silent = false }: { silent?: boolean } = {}) {
+    if (silent) setRefreshing(true)
+    else setLoading(true)
     setError(null)
     try {
       const [skillsRes, toolsRes, scriptsRes] = await Promise.all([
@@ -1289,13 +1371,30 @@ export function SkillsPage() {
       setTools(toolsRes.tools)
       setScriptCount((scriptsRes as { scripts: unknown[] }).scripts?.length ?? 0)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load")
+      if (!silent) setError(err instanceof Error ? err.message : "Failed to load")
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }
 
   useEffect(() => { load() }, [])
+
+  // Hot-reload: server broadcasts `skills:updated` via /ws → useWebSocket dispatches
+  // the `aoc:skills-updated` window event → we debounce-refetch here, silently,
+  // so the open preview/editor pane stays mounted.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onUpdate = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => { load({ silent: true }) }, 400)
+    }
+    window.addEventListener("aoc:skills-updated", onUpdate)
+    return () => {
+      window.removeEventListener("aoc:skills-updated", onUpdate)
+      if (timer) clearTimeout(timer)
+    }
+  }, [])
 
   const globallyEnabled = skills.filter(s => s.globallyEnabled).length
   const uniqueSources = [...new Set(skills.map(s => s.source))].length
@@ -1341,11 +1440,11 @@ export function SkillsPage() {
             <Plus className="w-3.5 h-3.5" /> New
           </button>
           <button
-            onClick={load}
-            disabled={loading}
+            onClick={() => load({ silent: true })}
+            disabled={loading || refreshing}
             className="flex items-center justify-center w-8 h-8 sm:w-auto sm:h-auto sm:gap-1.5 sm:px-3 sm:py-1.5 rounded-lg bg-foreground/3 border border-foreground/8 text-[12px] text-muted-foreground hover:text-foreground hover:bg-foreground/6 transition-colors disabled:opacity-40"
           >
-            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+            <RefreshCw className={cn("w-3.5 h-3.5", (loading || refreshing) && "animate-spin")} />
             <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>
@@ -1362,8 +1461,9 @@ export function SkillsPage() {
         </div>
       )}
 
-      {/* Main card */}
-      <div className="flex-1 min-h-0 bg-foreground/1 border border-foreground/5 rounded-2xl overflow-hidden shadow-sm flex flex-col">
+      {/* Body: main card + optional right-pane terminal */}
+      <div className="flex-1 min-h-0 flex gap-0">
+      <div className="flex-1 min-w-0 bg-foreground/1 border border-foreground/5 rounded-2xl overflow-hidden shadow-sm flex flex-col">
         {/* Tabs */}
         <div className="shrink-0 flex items-center gap-0.5 sm:gap-1 px-3 sm:px-4 pt-3 pb-0 border-b border-foreground/5 overflow-x-auto scrollbar-none">
           <button
@@ -1422,6 +1522,9 @@ export function SkillsPage() {
         ) : (
           <CustomToolsTab />
         )}
+      </div>
+
+        {canUseTerminal && <SkillsTerminal />}
       </div>
     </div>
   )

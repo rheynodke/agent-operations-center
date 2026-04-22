@@ -87,16 +87,18 @@ export function LoginScreen() {
         ══════════════════════════════════════════════════════════ */}
         <div className="hidden md:block relative w-[58%] lg:w-[62%] overflow-hidden shrink-0">
 
-          {/* Base image — slow Ken Burns pan */}
-          <img
-            src="/agent-bg-mascots.png"
-            alt="Cute 3D mascot AI agents"
+          {/* Base video — 16:9 source cropped to fill the panel via object-cover */}
+          <video
+            src="/video_background.mp4"
+            autoPlay
+            loop
+            muted
+            playsInline
+            preload="metadata"
             aria-hidden
             className="absolute inset-0 w-full h-full object-cover object-center"
             style={{
               filter: "brightness(0.72) saturate(1.15)",
-              animation: "ken-burns 22s ease-in-out infinite",
-              transformOrigin: "center center",
             }}
           />
 

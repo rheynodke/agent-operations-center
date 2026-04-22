@@ -235,6 +235,7 @@ app.post('/api/auth/login', (req, res) => {
       username: user.username,
       displayName: user.display_name,
       role: user.role,
+      canUseClaudeTerminal: Boolean(user.can_use_claude_terminal),
     },
   });
 });
@@ -376,7 +377,7 @@ app.patch('/api/users/:id', db.authMiddleware, db.requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const target = db.getUserById(id);
   if (!target) return res.status(404).json({ error: 'User not found' });
-  const { displayName, role, password } = req.body || {};
+  const { displayName, role, password, canUseClaudeTerminal } = req.body || {};
   if (role !== undefined && !['admin', 'user'].includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
@@ -385,7 +386,7 @@ app.patch('/api/users/:id', db.authMiddleware, db.requireAdmin, (req, res) => {
     const admins = db.getAllUsers().filter(u => u.role === 'admin');
     if (admins.length <= 1) return res.status(400).json({ error: 'Cannot demote the last admin' });
   }
-  const updated = db.updateUser(id, { displayName, role, password });
+  const updated = db.updateUser(id, { displayName, role, password, canUseClaudeTerminal });
   res.json({ user: updated });
 });
 
@@ -413,6 +414,7 @@ app.get('/api/auth/me', db.authMiddleware, (req, res) => {
       username: user.username,
       displayName: user.display_name,
       role: user.role,
+      canUseClaudeTerminal: Boolean(user.can_use_claude_terminal),
       createdAt: user.created_at,
       lastLogin: user.last_login,
     },
@@ -3800,8 +3802,16 @@ gatewayProxy.addListener((event) => {
 });
 const feedWatcher = new LiveFeedWatcher();
 
+const terminal = require('./lib/terminal.cjs');
+
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (url.pathname === '/ws/terminal') {
+    terminal.handleUpgrade(request, socket, head, db);
+    return;
+  }
+
   if (url.pathname !== '/ws') { socket.destroy(); return; }
 
   // Verify JWT token from query param

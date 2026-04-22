@@ -15,6 +15,7 @@
     "prod": "vite build && pm2 restart aoc-dashboard || pm2 start ecosystem.config.cjs",
     "prod:start": "vite build && pm2 start ecosystem.config.cjs",
     "prod:restart": "vite build && pm2 restart aoc-dashboard",
+    "postinstall": "node -e \"try{require('fs').chmodSync(require.resolve('node-pty/prebuilds/'+process.platform+'-'+process.arch+'/spawn-helper'),0o755)}catch(e){}\"",
     "generate-token": "node -e 'import(\"crypto\").then(c=>console.log(c.randomBytes(32).toString(\"hex\")))'"
   },
   "dependencies": {
@@ -45,6 +46,10 @@
     "google-auth-library": "^10.6.2",
     "googleapis": "^171.4.0",
     "helmet": "^8.1.0",
+    "node-pty": "^1.0.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "react-xtermjs": "^1.0.10",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.511.0",
     "qrcode": "^1.5.4",

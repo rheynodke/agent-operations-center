@@ -95,6 +95,12 @@ async function initDatabase() {
     db.run(`ALTER TABLE agent_profiles ADD COLUMN role TEXT`);
   } catch (_) { /* column already exists */ }
 
+  // Migration: per-user permission flag for the Skills terminal (Claude TUI).
+  // Admins always have access; this grants a non-admin user the same.
+  try {
+    db.run(`ALTER TABLE users ADD COLUMN can_use_claude_terminal INTEGER NOT NULL DEFAULT 0`);
+  } catch (_) { /* column already exists */ }
+
   // Dashboard settings — key/value store for API keys, preferences, etc.
   db.run(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -687,7 +693,7 @@ function getUserByUsername(username) {
 
 function getUserById(id) {
   if (!db) return null;
-  const result = db.exec('SELECT id, username, display_name, role, created_at, last_login FROM users WHERE id = ?', [id]);
+  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login FROM users WHERE id = ?', [id]);
   if (result.length === 0 || result[0].values.length === 0) return null;
 
   const row = result[0].values[0];
@@ -703,7 +709,7 @@ function updateLastLogin(userId) {
 
 function getAllUsers() {
   if (!db) return [];
-  const result = db.exec('SELECT id, username, display_name, role, created_at, last_login FROM users ORDER BY created_at');
+  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login FROM users ORDER BY created_at');
   if (result.length === 0) return [];
 
   return result[0].values.map(row =>
@@ -717,13 +723,14 @@ function deleteUser(id) {
   persist();
 }
 
-function updateUser(id, { displayName, role, password } = {}) {
+function updateUser(id, { displayName, role, password, canUseClaudeTerminal } = {}) {
   if (!db) return null;
   const fields = ["updated_at = datetime('now')"];
   const vals = [];
   if (displayName !== undefined) { fields.push('display_name = ?'); vals.push(displayName); }
   if (role !== undefined) { fields.push('role = ?'); vals.push(role); }
   if (password) { fields.push('password_hash = ?'); vals.push(hashPassword(password)); }
+  if (canUseClaudeTerminal !== undefined) { fields.push('can_use_claude_terminal = ?'); vals.push(canUseClaudeTerminal ? 1 : 0); }
   if (vals.length === 0) return getUserById(id);
   vals.push(id);
   db.run(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, vals);

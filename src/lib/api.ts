@@ -82,7 +82,7 @@ export const api = {
 
   // Admin: Users
   listUsers: () => request<{ users: import("@/types").ManagedUser[] }>("/users"),
-  updateUser: (id: number, patch: { displayName?: string; role?: string; password?: string }) =>
+  updateUser: (id: number, patch: { displayName?: string; role?: string; password?: string; canUseClaudeTerminal?: boolean }) =>
     request<{ user: import("@/types").ManagedUser }>(`/users/${id}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
