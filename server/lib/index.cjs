@@ -135,6 +135,7 @@ module.exports = {
   ensureCheckConnectionsScript: scriptsLib.ensureCheckConnectionsScript,
   ensureGwsCallScript:          scriptsLib.ensureGwsCallScript,
   ensureAocConnectScript:       scriptsLib.ensureAocConnectScript,
+  ensureMcpCallScript:          scriptsLib.ensureMcpCallScript,
   ensureFetchAttachmentScript:  scriptsLib.ensureFetchAttachmentScript,
   ensureSaveOutputScript:       scriptsLib.ensureSaveOutputScript,
   ensurePostCommentScript:      scriptsLib.ensurePostCommentScript,

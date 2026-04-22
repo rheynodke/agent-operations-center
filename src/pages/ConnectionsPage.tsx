@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react"
-import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2, FileText } from "lucide-react"
+import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2, FileText, Workflow, Eye, EyeOff, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -8,7 +8,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { api } from "@/lib/api"
 import { canEditConnection } from "@/lib/permissions"
 import { useAuthStore } from "@/stores"
-import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata } from "@/types"
+import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata, McpPreset, McpTool } from "@/types"
 import { cn } from "@/lib/utils"
 import { useConnectionsStore } from "@/stores"
 
@@ -20,6 +20,87 @@ const CONNECTION_TYPES: { value: ConnectionType; label: string; icon: React.Comp
   { value: "github", label: "GitHub Repo", icon: GitBranch, description: "Repository access via gh CLI" },
   { value: "odoocli", label: "Odoo (XML-RPC)", icon: Box, description: "Odoo ERP via odoocli — CRUD, methods, debug" },
   { value: "google_workspace", label: "Google Workspace", icon: FileText, description: "Docs, Drive, Sheets — OAuth per account" },
+  { value: "mcp", label: "MCP Server", icon: Workflow, description: "Model Context Protocol — expose external tools to agents" },
+]
+
+// ── MCP Presets ──────────────────────────────────────────────────────────────
+// Each preset pre-fills command/args and suggests which env keys are secrets.
+// User can always pick "custom" to enter anything.
+interface McpPresetDef {
+  value: McpPreset
+  label: string
+  description: string
+  command: string
+  args: string[]
+  secretEnvKeys: string[]  // suggested — user can add/remove
+  docsUrl?: string
+}
+
+const MCP_PRESETS: McpPresetDef[] = [
+  {
+    value: 'filesystem',
+    label: 'Filesystem',
+    description: 'Read/write local files within allowed dirs',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+    secretEnvKeys: [],
+  },
+  {
+    value: 'github',
+    label: 'GitHub',
+    description: 'Repos, issues, PRs via GitHub API',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github'],
+    secretEnvKeys: ['GITHUB_PERSONAL_ACCESS_TOKEN'],
+  },
+  {
+    value: 'slack',
+    label: 'Slack',
+    description: 'Post messages, read channels',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-slack'],
+    secretEnvKeys: ['SLACK_BOT_TOKEN', 'SLACK_TEAM_ID'],
+  },
+  {
+    value: 'postgres',
+    label: 'PostgreSQL',
+    description: 'Query a Postgres DB read-only',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://user:pass@host/db'],
+    secretEnvKeys: [],
+  },
+  {
+    value: 'brave-search',
+    label: 'Brave Search',
+    description: 'Web + local search via Brave API',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-brave-search'],
+    secretEnvKeys: ['BRAVE_API_KEY'],
+  },
+  {
+    value: 'puppeteer',
+    label: 'Puppeteer',
+    description: 'Browser automation — navigate, click, screenshot',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-puppeteer'],
+    secretEnvKeys: [],
+  },
+  {
+    value: 'memory',
+    label: 'Memory (Knowledge Graph)',
+    description: 'Persistent knowledge graph for the agent',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-memory'],
+    secretEnvKeys: [],
+  },
+  {
+    value: 'custom',
+    label: 'Custom',
+    description: 'Any stdio MCP server — enter command + args',
+    command: '',
+    args: [],
+    secretEnvKeys: [],
+  },
 ]
 
 function getTypeIcon(type: string) {
@@ -66,6 +147,12 @@ function ConnectionCard({
   } else if (conn.type === "google_workspace") {
     const gmeta = (conn.metadata || {}) as Partial<GoogleWorkspaceMetadata>
     detail = `${gmeta.linkedEmail || '(not linked)'} · ${gmeta.preset || 'custom'}`
+  } else if (conn.type === "mcp") {
+    const preset = meta.preset || 'custom'
+    const toolCount = (meta.tools || []).length
+    const cmd = meta.command || '?'
+    const firstArg = (meta.args || [])[1] || (meta.args || [])[0] || ''
+    detail = `${preset} · ${cmd}${firstArg ? ' ' + firstArg : ''} · ${toolCount} tool${toolCount === 1 ? '' : 's'}`
   }
 
   return (
@@ -85,6 +172,7 @@ function ConnectionCard({
           conn.type === "github" ? "bg-purple-500/10 text-purple-400" :
           conn.type === "odoocli" ? "bg-violet-500/10 text-violet-400" :
           conn.type === "google_workspace" ? "bg-blue-500/10 text-blue-400" :
+          conn.type === "mcp" ? "bg-cyan-500/10 text-cyan-400" :
           "bg-emerald-500/10 text-emerald-400"
         )}>
           <Icon className="h-5 w-5" />
@@ -361,6 +449,12 @@ interface ConnFormState {
   // Google Workspace
   gwsPreset: 'prd-writer' | 'sheets-analyst' | 'full-workspace' | 'custom'
   gwsCustomScopes: string
+  // MCP
+  mcpPreset: McpPreset
+  mcpCommand: string
+  mcpArgs: string            // newline or space-separated; we split on newlines first, then whitespace
+  mcpDescription: string
+  mcpEnv: Array<{ key: string; value: string; secret: boolean }>
 }
 
 const emptyForm: ConnFormState = {
@@ -372,6 +466,11 @@ const emptyForm: ConnFormState = {
   githubMode: "remote", repoOwner: "", repoName: "", branch: "main", localPath: "", ghDescription: "",
   odooUrl: "", odooDb: "", odooUsername: "", odooAuthType: "password", odooDescription: "",
   gwsPreset: "full-workspace", gwsCustomScopes: "",
+  mcpPreset: "filesystem",
+  mcpCommand: "npx",
+  mcpArgs: "-y\n@modelcontextprotocol/server-filesystem\n/tmp",
+  mcpDescription: "",
+  mcpEnv: [],
 }
 
 function ConnectionDialog({
@@ -424,6 +523,15 @@ function ConnectionDialog({
         odooDescription: m.description || "",
         gwsPreset: ((m as Partial<GoogleWorkspaceMetadata>).preset as ConnFormState['gwsPreset']) || "full-workspace",
         gwsCustomScopes: ((m as Partial<GoogleWorkspaceMetadata>).customScopes || []).join(", "),
+        mcpPreset: (m.preset as McpPreset) || "custom",
+        mcpCommand: (m.command as string) || "",
+        mcpArgs: Array.isArray(m.args) ? (m.args as string[]).join("\n") : "",
+        mcpDescription: (m.description as string) || "",
+        // Credentials never come back from server; just list keys as secret placeholders
+        mcpEnv: [
+          ...Object.entries((m.env as Record<string, string>) || {}).map(([k, v]) => ({ key: k, value: v, secret: false })),
+          ...((m.envKeys as string[]) || []).map(k => ({ key: k, value: "", secret: true })),
+        ],
       })
     } else {
       setForm(emptyForm)
@@ -494,7 +602,40 @@ function ConnectionDialog({
       }
       return meta
     }
+    if (form.type === "mcp") {
+      const argsList = form.mcpArgs
+        .split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+      const nonSecret: Record<string, string> = {}
+      const secretKeys: string[] = []
+      for (const row of form.mcpEnv) {
+        if (!row.key) continue
+        if (row.secret) secretKeys.push(row.key)
+        else nonSecret[row.key] = row.value
+      }
+      return {
+        transport: 'stdio',
+        preset: form.mcpPreset,
+        command: form.mcpCommand,
+        args: argsList,
+        env: nonSecret,
+        envKeys: secretKeys,
+        description: form.mcpDescription || undefined,
+      }
+    }
     return {}
+  }
+
+  function buildMcpCredentials(): string | undefined {
+    if (form.type !== "mcp") return undefined
+    const secrets: Record<string, string> = {}
+    let anyFilled = false
+    for (const row of form.mcpEnv) {
+      if (row.secret && row.key && row.value) {
+        secrets[row.key] = row.value
+        anyFilled = true
+      }
+    }
+    return anyFilled ? JSON.stringify(secrets) : undefined
   }
 
   async function handleTest() {
@@ -517,15 +658,25 @@ function ConnectionDialog({
     setTestResult(null)
     try {
       const metadata = buildMetadata()
+      const mcpCreds = buildMcpCredentials()
       if (editConn) {
         const patch: Record<string, unknown> = { name: form.name, metadata }
-        if (form.credentials) patch.credentials = form.credentials
+        if (form.type === 'mcp') {
+          if (mcpCreds) patch.credentials = mcpCreds
+        } else if (form.credentials) {
+          patch.credentials = form.credentials
+        }
         await api.updateConnection(editConn.id, patch)
         onClose()
       } else {
+        const credentials = form.type === 'google_workspace'
+          ? undefined
+          : form.type === 'mcp'
+            ? (mcpCreds || '')
+            : form.credentials
         const { authUrl } = await api.createConnection({
           name: form.name, type: form.type,
-          credentials: form.type === 'google_workspace' ? undefined : form.credentials,
+          credentials,
           metadata,
         })
         onClose()
@@ -907,6 +1058,149 @@ function ConnectionDialog({
               )}
             </>
           )}
+
+          {f.type === "mcp" && (
+            <>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Preset</Label>
+                <Select
+                  value={f.mcpPreset}
+                  onValueChange={v => {
+                    const preset = v as McpPreset
+                    const def = MCP_PRESETS.find(p => p.value === preset)
+                    setForm(prev => {
+                      // On preset change, replace command/args if not custom; seed secret env keys
+                      if (preset === 'custom') return { ...prev, mcpPreset: preset }
+                      if (!def) return { ...prev, mcpPreset: preset }
+                      const nextEnv = def.secretEnvKeys.map(k => {
+                        const existing = prev.mcpEnv.find(r => r.key === k)
+                        return existing ? { ...existing, secret: true } : { key: k, value: "", secret: true }
+                      })
+                      // Preserve any custom (non-preset) env rows user already added
+                      const preserved = prev.mcpEnv.filter(r => !def.secretEnvKeys.includes(r.key))
+                      return {
+                        ...prev,
+                        mcpPreset: preset,
+                        mcpCommand: def.command,
+                        mcpArgs: def.args.join("\n"),
+                        mcpEnv: [...nextEnv, ...preserved],
+                      }
+                    })
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs border-border/50"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {MCP_PRESETS.map(p => (
+                      <SelectItem key={p.value} value={p.value}>{p.label} — <span className="text-muted-foreground">{p.description}</span></SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Command</Label>
+                  <input value={f.mcpCommand} onChange={e => set("mcpCommand", e.target.value)}
+                    placeholder="npx" className={monoInputClass}
+                    disabled={f.mcpPreset !== 'custom' && !!f.mcpCommand} />
+                </div>
+                <div className="col-span-2 space-y-1">
+                  <Label className="text-xs text-muted-foreground">Args (one per line)</Label>
+                  <textarea value={f.mcpArgs} onChange={e => set("mcpArgs", e.target.value)}
+                    placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/tmp'}
+                    rows={3}
+                    className="flex w-full rounded-md px-3 py-2 text-[11px] font-mono bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-muted-foreground">Environment variables</Label>
+                  <button type="button"
+                    onClick={() => setForm(prev => ({ ...prev, mcpEnv: [...prev.mcpEnv, { key: "", value: "", secret: false }] }))}
+                    className="text-[10px] text-primary hover:underline flex items-center gap-0.5">
+                    <Plus className="h-2.5 w-2.5" /> Add
+                  </button>
+                </div>
+                {f.mcpEnv.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground/50">No env vars — add tokens/keys required by the MCP server.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {f.mcpEnv.map((row, idx) => (
+                      <div key={idx} className="flex items-center gap-1.5">
+                        <input
+                          value={row.key}
+                          onChange={e => setForm(prev => ({
+                            ...prev,
+                            mcpEnv: prev.mcpEnv.map((r, i) => i === idx ? { ...r, key: e.target.value } : r),
+                          }))}
+                          placeholder="KEY"
+                          className={cn(monoInputClass, "flex-1")}
+                        />
+                        <input
+                          type={row.secret ? 'password' : 'text'}
+                          value={row.value}
+                          onChange={e => setForm(prev => ({
+                            ...prev,
+                            mcpEnv: prev.mcpEnv.map((r, i) => i === idx ? { ...r, value: e.target.value } : r),
+                          }))}
+                          placeholder={row.secret && editConn?.hasCredentials && !row.value ? "stored · leave blank to keep" : "value"}
+                          className={cn(monoInputClass, "flex-[2]")}
+                        />
+                        <button type="button"
+                          onClick={() => setForm(prev => ({
+                            ...prev,
+                            mcpEnv: prev.mcpEnv.map((r, i) => i === idx ? { ...r, secret: !r.secret } : r),
+                          }))}
+                          className={cn(
+                            "h-8 px-2 rounded-md border text-[10px] font-medium transition-colors",
+                            row.secret
+                              ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                              : "border-border/50 bg-input text-muted-foreground hover:text-foreground"
+                          )}
+                          title={row.secret ? "Secret — stored encrypted" : "Plain env var"}>
+                          {row.secret ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                        </button>
+                        <button type="button"
+                          onClick={() => setForm(prev => ({
+                            ...prev,
+                            mcpEnv: prev.mcpEnv.filter((_, i) => i !== idx),
+                          }))}
+                          className="h-8 px-1.5 rounded-md text-muted-foreground/50 hover:text-red-400 transition-colors"
+                          title="Remove">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[10px] text-muted-foreground/50">Toggle the eye icon to mark a value as secret — secrets are encrypted and never returned by the API.</p>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <textarea value={f.mcpDescription} onChange={e => set("mcpDescription", e.target.value)}
+                  placeholder="What does this MCP server expose? When should agents use it?"
+                  rows={2} className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+              </div>
+
+              {editConn && (editConn.metadata as { tools?: McpTool[] } | undefined)?.tools && (editConn.metadata as { tools?: McpTool[] }).tools!.length > 0 && (
+                <div className="rounded-md border border-border/40 bg-muted/10 px-2.5 py-2">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 mb-1">
+                    Discovered tools ({(editConn.metadata as { tools: McpTool[] }).tools.length})
+                  </div>
+                  <div className="text-[11px] font-mono text-foreground/70 leading-relaxed">
+                    {(editConn.metadata as { tools: McpTool[] }).tools.slice(0, 10).map(t => t.name).join(', ')}
+                    {(editConn.metadata as { tools: McpTool[] }).tools.length > 10 && ` +${(editConn.metadata as { tools: McpTool[] }).tools.length - 10} more`}
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[11px] text-muted-foreground/70">
+                After saving, click <strong>Test</strong> to spawn the MCP server and discover its tools.
+              </p>
+            </>
+          )}
         </div>
 
         {testResult && (
@@ -929,7 +1223,7 @@ function ConnectionDialog({
             </Button>
           )}
           <Button size="sm" className="h-7 text-xs" onClick={handleSave}
-            disabled={saving || !f.name || (!editConn && f.type !== "github" && f.type !== "google_workspace" && !f.credentials)}>
+            disabled={saving || !f.name || (!editConn && f.type !== "github" && f.type !== "google_workspace" && f.type !== "mcp" && !f.credentials) || (f.type === "mcp" && !f.mcpCommand)}>
             {saving ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Saving…</> : editConn ? "Update" : (f.type === "google_workspace" ? "Connect Google Account" : "Create")}
           </Button>
         </DialogFooter>
@@ -1074,6 +1368,8 @@ export function ConnectionsPage() {
                     typeInfo.value === "website"   ? "bg-orange-500/10 text-orange-400" :
                     typeInfo.value === "github"    ? "bg-purple-500/10 text-purple-400" :
                     typeInfo.value === "odoocli"   ? "bg-violet-500/10 text-violet-400" :
+                    typeInfo.value === "mcp"       ? "bg-cyan-500/10 text-cyan-400" :
+                    typeInfo.value === "google_workspace" ? "bg-blue-500/10 text-blue-400" :
                     "bg-emerald-500/10 text-emerald-400"
                   )}>
                     <Icon className="h-3.5 w-3.5" />

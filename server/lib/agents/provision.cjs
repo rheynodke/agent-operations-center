@@ -2,7 +2,7 @@
 const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
-const { ensureUpdateTaskScript, toggleAgentCustomTool, ensureCheckTasksScript, ensureCheckConnectionsScript, ensureGwsCallScript, ensureAocConnectScript, injectHeartbeatTaskCheck, ensureSharedAdlcScripts } = require('../scripts.cjs');
+const { ensureUpdateTaskScript, toggleAgentCustomTool, ensureCheckTasksScript, ensureCheckConnectionsScript, ensureGwsCallScript, ensureAocConnectScript, ensureMcpCallScript, injectHeartbeatTaskCheck, ensureSharedAdlcScripts } = require('../scripts.cjs');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -572,11 +572,13 @@ function provisionAgent(opts, userId) {
     ensureCheckConnectionsScript();
     ensureGwsCallScript();
     ensureAocConnectScript();
+    ensureMcpCallScript();
     const getFileFn  = (_id, filename) => fs.readFileSync(path.join(workspacePath, filename), 'utf-8');
     const saveFileFn = (_id, filename, content) => fs.writeFileSync(path.join(workspacePath, filename), content, 'utf-8');
     toggleAgentCustomTool(id, 'update_task.sh', true, 'shared', getFileFn, saveFileFn);
     toggleAgentCustomTool(id, 'check_connections.sh', true, 'shared', getFileFn, saveFileFn);
     toggleAgentCustomTool(id, 'aoc-connect.sh', true, 'shared', getFileFn, saveFileFn);
+    toggleAgentCustomTool(id, 'mcp-call.sh', true, 'shared', getFileFn, saveFileFn);
     injectHeartbeatTaskCheck(id, workspacePath);
     // Write per-agent identity env file
     const agentEnvContent = `# AOC agent identity — auto-generated\nexport AOC_AGENT_ID="${id}"\n`;

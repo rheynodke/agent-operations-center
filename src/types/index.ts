@@ -851,7 +851,27 @@ export interface IntegrationConfig {
 
 // ─── Connections (Third-party Data Sources) ──────────────────────────────────
 
-export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli' | 'google_workspace'
+export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli' | 'google_workspace' | 'mcp'
+
+export type McpPreset = 'filesystem' | 'github' | 'slack' | 'postgres' | 'brave-search' | 'puppeteer' | 'memory' | 'custom'
+
+export interface McpTool {
+  name: string
+  description?: string
+  inputSchema?: Record<string, unknown>
+}
+
+export interface McpMetadata {
+  transport: 'stdio'
+  preset: McpPreset
+  command: string
+  args: string[]
+  env?: Record<string, string>      // non-sensitive env vars
+  envKeys?: string[]                // names of secret env keys stored in credentials JSON
+  tools?: McpTool[]                 // populated by test/discovery
+  toolsDiscoveredAt?: string
+  description?: string
+}
 
 export type GoogleWorkspaceAuthState = 'pending' | 'connected' | 'expired' | 'disconnected'
 
@@ -901,6 +921,15 @@ export interface ConnectionMetadata {
   odooDb?: string
   odooUsername?: string
   odooAuthType?: 'password' | 'api_key'
+  // MCP (also carries fields from McpMetadata when type === 'mcp')
+  transport?: 'stdio'
+  preset?: string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  envKeys?: string[]
+  tools?: McpTool[]
+  toolsDiscoveredAt?: string
 }
 
 export interface Connection {

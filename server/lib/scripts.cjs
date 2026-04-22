@@ -615,7 +615,8 @@ if not conns:
 SAFE_KEYS = {'name','type','hint','projectId','datasets','host','port','database','username',
              'url','loginUrl','authType','user','description','sslMode',
              'githubMode','repo','branch','localPath','repoOwner','repoName',
-             'linkedEmail','preset','authState','scopes'}
+             'linkedEmail','preset','authState','scopes',
+             'command','args','toolsDiscoveredAt'}
 for c in conns:
     t = c.get('type', '?').upper()
     name = c.get('name', '?')
@@ -634,6 +635,13 @@ for c in conns:
     if c.get('type') == 'google_workspace':
         print(f'  >>> To use: gws-call.sh "{name}" <service> <method> \\'<json-body>\\'')
         print(f'  >>> Services: drive, docs, sheets, slides, gmail, calendar')
+    elif c.get('type') == 'mcp':
+        tools = c.get('tools', []) or []
+        names = [t.get('name','?') for t in tools]
+        preview = ', '.join(names[:8]) + (f' +{len(names)-8} more' if len(names) > 8 else '')
+        print(f'  tools ({len(names)}): {preview or "(run --list-tools to discover)"}')
+        print(f'  >>> To use: mcp-call.sh "{name}" <tool-name> \\'<json-args>\\'')
+        print(f'  >>> List tools: mcp-call.sh "{name}" --list-tools')
     elif c.get('type') == 'github' and github_mode == 'local':
         local_path = c.get('localPath', '')
         branch = c.get('branch', 'main')
@@ -1615,6 +1623,91 @@ function ensureAocConnectScript() {
   console.log('[scripts] Ensured shared aoc-connect.sh script');
 }
 
+// ── mcp-call.sh — Thin client for AOC's MCP proxy ───────────────────────────
+
+const MCP_CALL_SCRIPT_NAME = 'mcp-call.sh';
+const MCP_CALL_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# mcp-call — Invoke an MCP (Model Context Protocol) server tool via AOC Dashboard
+# AOC spawns + manages the MCP child process server-side; this script only
+# forwards the call. Credentials never appear on the agent side.
+#
+# Usage:
+#   mcp-call.sh <connection-name> --list-tools
+#   mcp-call.sh <connection-name> <tool-name> ['<json-args>']
+#
+# Examples:
+#   mcp-call.sh "GitHub MCP" --list-tools
+#   mcp-call.sh "GitHub MCP" create_issue '{"owner":"foo","repo":"bar","title":"..."}'
+#   mcp-call.sh "Filesystem" list_directory '{"path":"/tmp"}'
+
+set -euo pipefail
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+
+CONN_NAME="\${1:?Usage: mcp-call.sh <connection-name> <tool-name|--list-tools> [json-args]}"
+TOOL_NAME="\${2:?Usage: mcp-call.sh <connection-name> <tool-name|--list-tools> [json-args]}"
+JSON_ARGS="\${3:-{\\}}"
+
+[ -z "\${AOC_TOKEN:-}" ] && { echo "ERROR: AOC_TOKEN not configured" >&2; exit 1; }
+[ -z "\${AOC_AGENT_ID:-}" ] && { echo "ERROR: AOC_AGENT_ID not configured" >&2; exit 1; }
+
+# Validate JSON args (skip for --list-tools)
+if [ "$TOOL_NAME" != "--list-tools" ] && [ "$TOOL_NAME" != "__list__" ]; then
+  if ! echo "$JSON_ARGS" | python3 -c 'import sys,json; json.load(sys.stdin)' 2>/dev/null; then
+    echo "ERROR: args must be valid JSON, got: $JSON_ARGS" >&2
+    exit 2
+  fi
+fi
+
+# Build request body (export must come before the subshell so python sees the vars)
+export CONN_NAME TOOL_NAME JSON_ARGS
+REQ_BODY=$(python3 <<'EOF'
+import json, os
+body = {
+  "connectionName": os.environ["CONN_NAME"],
+  "tool": os.environ["TOOL_NAME"],
+}
+tool = os.environ["TOOL_NAME"]
+if tool not in ("--list-tools", "__list__"):
+  try:
+    body["args"] = json.loads(os.environ.get("JSON_ARGS") or "{}")
+  except Exception:
+    body["args"] = {}
+print(json.dumps(body))
+EOF
+)
+
+RESP=$(curl -s -X POST "$AOC_URL/api/mcp/call" \\
+  -H "Authorization: Bearer $AOC_TOKEN" \\
+  -H "X-AOC-Agent-Id: $AOC_AGENT_ID" \\
+  -H "Content-Type: application/json" \\
+  -d "$REQ_BODY")
+
+# Pretty-print response; if it's not JSON just dump raw
+if echo "$RESP" | python3 -c 'import sys,json; json.load(sys.stdin)' >/dev/null 2>&1; then
+  echo "$RESP" | python3 -m json.tool
+else
+  echo "$RESP"
+fi
+`;
+
+function ensureMcpCallScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, MCP_CALL_SCRIPT_NAME);
+  fs.writeFileSync(scriptPath, MCP_CALL_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[MCP_CALL_SCRIPT_NAME] = {
+    name: 'mcp_call',
+    emoji: '🧩',
+    description: 'Invoke tools on MCP (Model Context Protocol) servers registered as connections. Credentials are handled server-side. Usage: mcp-call.sh <connection-name> <tool> [json-args]',
+    execHint: `${SCRIPTS_DIR}/mcp-call.sh <connection-name> <tool-name|--list-tools> [json-args]`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+  console.log('[scripts] Ensured shared mcp-call.sh script');
+}
+
 // ── Shared ADLC Scripts ──────────────────────────────────────────────────────
 
 // Scripts that appear in multiple ADLC templates and should also be installed
@@ -1708,6 +1801,13 @@ const CONN_TYPE_GUIDE = {
       '`aoc-connect.sh "<name>" record search <model> --domain "[...]" --fields name,state`',
       '`aoc-connect.sh "<name>" record read <model> <id> --fields name,state`',
       '`aoc-connect.sh "<name>" record create <model> --values "{...}"`',
+    ],
+  },
+  mcp: {
+    label: 'MCP Servers',
+    actions: [
+      '`mcp-call.sh "<name>" --list-tools`                — list available tools',
+      '`mcp-call.sh "<name>" <tool-name> \'{"arg":"val"}\'` — invoke a tool',
     ],
   },
 };
@@ -1839,6 +1939,7 @@ module.exports = {
   ensureCheckConnectionsScript,
   ensureGwsCallScript,
   ensureAocConnectScript,
+  ensureMcpCallScript,
   ensureFetchAttachmentScript,
   ensureSaveOutputScript,
   ensurePostCommentScript,

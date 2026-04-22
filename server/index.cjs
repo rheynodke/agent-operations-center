@@ -18,6 +18,7 @@ const integrations = require('./lib/integrations/index.cjs');
 const attachmentsLib = require('./lib/attachments.cjs');
 const outputsLib = require('./lib/outputs.cjs');
 const metrics = require('./lib/metrics.cjs');
+const mcpPool = require('./lib/connections/mcp.cjs');
 const multer = require('multer');
 const { AGENTS_DIR } = require('./lib/config.cjs');
 
@@ -2627,6 +2628,14 @@ async function dispatchTaskToAgent(task, opts = {}) {
           const state  = meta.authState || 'unknown';
           return `  - **${c.name}** (Google Workspace): linked \`${linked}\` · preset \`${preset}\` · state \`${state}\`\n    → \`gws-call.sh "${c.name}" <service> <method> '<json-body>'\`\n    Services: drive, docs, sheets, slides, gmail, calendar. Example: \`gws-call.sh "${c.name}" docs documents.create '{"title":"..."}'\``;
         }
+        if (c.type === 'mcp') {
+          const preset = meta.preset || 'custom';
+          const toolList = (meta.tools || []).map(t => t.name);
+          const toolsPreview = toolList.length
+            ? toolList.slice(0, 8).join(', ') + (toolList.length > 8 ? ` +${toolList.length - 8} more` : '')
+            : '(run `mcp-call.sh "' + c.name + '" --list-tools` to discover)';
+          return `  - **${c.name}** (MCP · ${preset}): ${toolList.length} tool(s)\n    Tools: ${toolsPreview}\n    → \`mcp-call.sh "${c.name}" <tool-name> '<json-args>'\`\n    List tools: \`mcp-call.sh "${c.name}" --list-tools\``;
+        }
         return `  - **${c.name}** (${c.type})`;
       });
       connectionsContext = `\n**Available Connections** (use \`aoc-connect.sh\` — credentials are handled automatically, never hardcode them):\n${lines.join('\n')}\n\nTo list all connections: \`check_connections.sh\`\n`;
@@ -3136,11 +3145,13 @@ app.get('/api/connections/:id/google-access-token', db.authMiddleware, async (re
   }
 });
 
-app.patch('/api/connections/:id', db.authMiddleware, db.requireConnectionOwnership, (req, res) => {
+app.patch('/api/connections/:id', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
   try {
     const conn = db.getConnection(req.params.id);
     if (!conn) return res.status(404).json({ error: 'Connection not found' });
     const updated = db.updateConnection(req.params.id, req.body);
+    // Drop any live MCP child so next call picks up new config/creds
+    if (conn.type === 'mcp') { try { await mcpPool.teardown(req.params.id); } catch {} }
     res.json({ connection: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3154,6 +3165,7 @@ app.delete('/api/connections/:id', db.authMiddleware, db.requireConnectionOwners
       try { await parsers.googleDisconnect(req.params.id, { fullDelete: true }); }
       catch (err) { console.warn('[delete] google revoke failed (best-effort):', err.message); }
     } else {
+      if (conn && conn.type === 'mcp') { try { await mcpPool.teardown(req.params.id); } catch {} }
       db.deleteConnection(req.params.id);
     }
     res.json({ ok: true });
@@ -3268,12 +3280,87 @@ app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwn
       } catch (e) {
         result = { ok: false, error: e.message || e.toString() };
       }
+    } else if (raw.type === 'mcp') {
+      const m = raw.metadata || {};
+      if (!m.command) {
+        result = { ok: false, error: 'command not set in metadata' };
+      } else {
+        // Tear down any live instance so we probe with fresh config
+        try { await mcpPool.teardown(req.params.id); } catch {}
+        const probe = await mcpPool.probe({
+          command: m.command,
+          args: m.args || [],
+          env: m.env || {},
+          credentials: raw.credentials || '',
+        });
+        if (probe.ok) {
+          // Persist discovered tools (minimal fields — strip inputSchema from display)
+          const tools = probe.tools.map(t => ({
+            name: t.name,
+            description: t.description || '',
+            inputSchema: t.inputSchema || undefined,
+          }));
+          db.updateConnection(req.params.id, {
+            metadata: { ...m, tools, toolsDiscoveredAt: new Date().toISOString() },
+          });
+          const preview = tools.slice(0, 3).map(t => t.name).join(', ') + (tools.length > 3 ? ` +${tools.length - 3} more` : '');
+          result = { ok: true, message: `Connected · ${tools.length} tool(s) discovered`, preview };
+        } else {
+          result = { ok: false, error: probe.error };
+        }
+      }
     }
 
     // Update test state
     db.updateConnection(req.params.id, { lastTestedAt: new Date().toISOString(), lastTestOk: result.ok });
     res.json(result);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── MCP tool invocation ─────────────────────────────────────────────────────
+// Called by mcp-call.sh. Resolves connection by name, enforces agent assignment,
+// spawns/reuses the MCP child, forwards JSON-RPC call, returns raw tool response.
+app.post('/api/mcp/call', db.authMiddleware, async (req, res) => {
+  try {
+    const { connectionName, tool, args } = req.body || {};
+    if (!connectionName || !tool) {
+      return res.status(400).json({ error: 'connectionName and tool are required' });
+    }
+    const all = db.getAllConnections().filter(c => c.type === 'mcp' && c.enabled);
+    const match = all.find(c => c.name === connectionName);
+    if (!match) return res.status(404).json({ error: `MCP connection "${connectionName}" not found or disabled` });
+
+    // Agent assignment check (same pattern as /api/connections/:id/google-access-token)
+    const agentId = req.user?.agentId || req.get('X-AOC-Agent-Id');
+    if (agentId) {
+      const assigned = db.getAgentConnectionIds(agentId);
+      if (!assigned.includes(match.id)) {
+        return res.status(403).json({ error: 'Agent not assigned to this MCP connection' });
+      }
+    }
+
+    const raw = db.getConnectionRaw(match.id);
+    if (!raw) return res.status(404).json({ error: 'Connection not found' });
+    const m = raw.metadata || {};
+
+    // --list-tools shortcut — avoids a second round-trip from the shell
+    if (tool === '--list-tools' || tool === '__list__') {
+      const tools = await mcpPool.listTools(match.id, {
+        command: m.command, args: m.args || [], env: m.env || {}, credentials: raw.credentials || '',
+      });
+      return res.json({ ok: true, tools });
+    }
+
+    const response = await mcpPool.callTool(match.id, {
+      command: m.command, args: m.args || [], env: m.env || {}, credentials: raw.credentials || '',
+    }, tool, args || {});
+
+    // MCP callTool returns { content: [...], isError?: bool }
+    res.json({ ok: !response.isError, response });
+  } catch (err) {
+    console.error('[api/mcp/call]', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3379,6 +3466,13 @@ app.get('/api/agent/connections', db.authMiddleware, (req, res) => {
         out.scopes = meta.scopes || [];
         out.authState = meta.authState || 'unknown';
         out.hint = 'Use gws-call.sh <connection-name> <service> <method> [json-body] to call Google APIs. Credentials are handled automatically.';
+      } else if (c.type === 'mcp') {
+        out.preset = meta.preset || 'custom';
+        out.command = meta.command || null;
+        out.args = meta.args || [];
+        out.tools = (meta.tools || []).map(t => ({ name: t.name, description: t.description || '' }));
+        out.toolsDiscoveredAt = meta.toolsDiscoveredAt || null;
+        out.hint = `Use mcp-call.sh "${c.name}" <tool-name> '<json-args>' — credentials are handled automatically.`;
       }
 
       return out;
@@ -4470,6 +4564,7 @@ function syncConnectionsScriptForAllAgents() {
     parsers.ensureCheckConnectionsScript();
     parsers.ensureGwsCallScript();
     parsers.ensureAocConnectScript();
+    parsers.ensureMcpCallScript();
     parsers.ensureFetchAttachmentScript();
     parsers.ensureSaveOutputScript();
     parsers.ensurePostCommentScript();
