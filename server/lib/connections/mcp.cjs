@@ -16,6 +16,8 @@ const crypto = require('node:crypto');
 // SDK is ESM-packaged but ships a CJS build; require the CJS subpaths directly.
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
 
 // ── Pool state ──────────────────────────────────────────────────────────────
 /** @type {Map<string, {client: any, transport: any, specHash: string, startedAt: number, restartCount: number}>} */
@@ -29,15 +31,20 @@ const INIT_TIMEOUT_MS = 20_000;
 
 function hashSpec(spec) {
   const payload = JSON.stringify({
+    transport: spec.transport || 'stdio',
     command: spec.command,
     args: spec.args || [],
     env: spec.env || {},
+    url: spec.url || '',
+    headers: spec.headers || {},
     credentials: spec.credentials || '', // already-decrypted JSON string
   });
   return crypto.createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
 function parseCredentialsEnv(credentialsJson) {
+  // For stdio: credentials = JSON of secret env vars
+  // For http/sse: credentials = JSON of secret header values (same shape)
   if (!credentialsJson) return {};
   try {
     const parsed = JSON.parse(credentialsJson);
@@ -76,17 +83,37 @@ async function withTimeout(promise, ms, label) {
   }
 }
 
-async function spawnClient(connId, spec) {
-  if (!spec || !spec.command) {
-    throw new Error('MCP spec missing command');
+function buildTransport(spec) {
+  const kind = spec.transport || 'stdio';
+
+  if (kind === 'http' || kind === 'sse') {
+    if (!spec.url) throw new Error(`MCP spec missing url for ${kind} transport`);
+    let parsedUrl;
+    try { parsedUrl = new URL(spec.url); }
+    catch { throw new Error(`MCP url is not a valid URL: ${spec.url}`); }
+
+    // Merge non-secret headers (metadata.headers) + secret headers (credentials JSON)
+    const headers = { ...(spec.headers || {}), ...parseCredentialsEnv(spec.credentials) };
+    const opts = {
+      requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
+    };
+    return kind === 'http'
+      ? new StreamableHTTPClientTransport(parsedUrl, opts)
+      : new SSEClientTransport(parsedUrl, opts);
   }
 
-  const transport = new StdioClientTransport({
+  // stdio (default)
+  if (!spec.command) throw new Error('MCP spec missing command for stdio transport');
+  return new StdioClientTransport({
     command: spec.command,
     args: Array.isArray(spec.args) ? spec.args : [],
     env: buildChildEnv(spec),
     stderr: 'pipe',
   });
+}
+
+async function spawnClient(connId, spec) {
+  const transport = buildTransport(spec);
 
   const client = new Client(
     { name: 'aoc-dashboard', version: '1.0.0' },

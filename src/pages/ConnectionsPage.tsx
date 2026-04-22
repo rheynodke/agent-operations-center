@@ -3,12 +3,12 @@ import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel, SelectSeparator } from "@/components/ui/select"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { api } from "@/lib/api"
 import { canEditConnection } from "@/lib/permissions"
 import { useAuthStore } from "@/stores"
-import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata, McpPreset, McpTool } from "@/types"
+import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata, McpPreset, McpTool, McpTransport } from "@/types"
 import { cn } from "@/lib/utils"
 import { useConnectionsStore } from "@/stores"
 
@@ -30,9 +30,14 @@ interface McpPresetDef {
   value: McpPreset
   label: string
   description: string
-  command: string
-  args: string[]
-  secretEnvKeys: string[]  // suggested — user can add/remove
+  transport: McpTransport
+  // stdio
+  command?: string
+  args?: string[]
+  secretEnvKeys?: string[]
+  // http/sse
+  url?: string
+  secretHeaderKeys?: string[]
   docsUrl?: string
 }
 
@@ -41,6 +46,7 @@ const MCP_PRESETS: McpPresetDef[] = [
     value: 'filesystem',
     label: 'Filesystem',
     description: 'Read/write local files within allowed dirs',
+    transport: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
     secretEnvKeys: [],
@@ -49,6 +55,7 @@ const MCP_PRESETS: McpPresetDef[] = [
     value: 'github',
     label: 'GitHub',
     description: 'Repos, issues, PRs via GitHub API',
+    transport: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-github'],
     secretEnvKeys: ['GITHUB_PERSONAL_ACCESS_TOKEN'],
@@ -57,6 +64,7 @@ const MCP_PRESETS: McpPresetDef[] = [
     value: 'slack',
     label: 'Slack',
     description: 'Post messages, read channels',
+    transport: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-slack'],
     secretEnvKeys: ['SLACK_BOT_TOKEN', 'SLACK_TEAM_ID'],
@@ -65,6 +73,7 @@ const MCP_PRESETS: McpPresetDef[] = [
     value: 'postgres',
     label: 'PostgreSQL',
     description: 'Query a Postgres DB read-only',
+    transport: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://user:pass@host/db'],
     secretEnvKeys: [],
@@ -73,6 +82,7 @@ const MCP_PRESETS: McpPresetDef[] = [
     value: 'brave-search',
     label: 'Brave Search',
     description: 'Web + local search via Brave API',
+    transport: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-brave-search'],
     secretEnvKeys: ['BRAVE_API_KEY'],
@@ -81,22 +91,49 @@ const MCP_PRESETS: McpPresetDef[] = [
     value: 'puppeteer',
     label: 'Puppeteer',
     description: 'Browser automation — navigate, click, screenshot',
+    transport: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-puppeteer'],
     secretEnvKeys: [],
   },
   {
     value: 'memory',
-    label: 'Memory (Knowledge Graph)',
+    label: 'Memory',
     description: 'Persistent knowledge graph for the agent',
+    transport: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-memory'],
     secretEnvKeys: [],
   },
   {
+    value: 'context7-http',
+    label: 'Context7',
+    description: 'Up-to-date library docs for coding agents · no auth',
+    transport: 'http',
+    url: 'https://mcp.context7.com/mcp',
+    secretHeaderKeys: [],
+  },
+  {
+    value: 'http-custom',
+    label: 'Custom HTTP',
+    description: 'Zapier, n8n, any modern remote MCP · URL + optional Bearer token',
+    transport: 'http',
+    url: '',
+    secretHeaderKeys: ['Authorization'],
+  },
+  {
+    value: 'sse-custom',
+    label: 'Custom SSE',
+    description: 'Legacy transport · only if server does not support Streamable HTTP',
+    transport: 'sse',
+    url: '',
+    secretHeaderKeys: ['Authorization'],
+  },
+  {
     value: 'custom',
-    label: 'Custom',
-    description: 'Any stdio MCP server — enter command + args',
+    label: 'Custom stdio',
+    description: 'Any stdio MCP server · enter command + args manually',
+    transport: 'stdio',
     command: '',
     args: [],
     secretEnvKeys: [],
@@ -149,10 +186,17 @@ function ConnectionCard({
     detail = `${gmeta.linkedEmail || '(not linked)'} · ${gmeta.preset || 'custom'}`
   } else if (conn.type === "mcp") {
     const preset = meta.preset || 'custom'
+    const transport = (meta.transport as string) || 'stdio'
     const toolCount = (meta.tools || []).length
-    const cmd = meta.command || '?'
-    const firstArg = (meta.args || [])[1] || (meta.args || [])[0] || ''
-    detail = `${preset} · ${cmd}${firstArg ? ' ' + firstArg : ''} · ${toolCount} tool${toolCount === 1 ? '' : 's'}`
+    let target = ''
+    if (transport === 'stdio') {
+      const cmd = meta.command || '?'
+      const firstArg = (meta.args || [])[1] || (meta.args || [])[0] || ''
+      target = `${cmd}${firstArg ? ' ' + firstArg : ''}`
+    } else {
+      target = meta.url || '?'
+    }
+    detail = `${preset} · ${transport} · ${target} · ${toolCount} tool${toolCount === 1 ? '' : 's'}`
   }
 
   return (
@@ -451,10 +495,12 @@ interface ConnFormState {
   gwsCustomScopes: string
   // MCP
   mcpPreset: McpPreset
+  mcpTransport: McpTransport
   mcpCommand: string
-  mcpArgs: string            // newline or space-separated; we split on newlines first, then whitespace
+  mcpArgs: string            // one per line
+  mcpUrl: string
   mcpDescription: string
-  mcpEnv: Array<{ key: string; value: string; secret: boolean }>
+  mcpEnv: Array<{ key: string; value: string; secret: boolean }>     // stdio env OR http/sse headers
 }
 
 const emptyForm: ConnFormState = {
@@ -467,8 +513,10 @@ const emptyForm: ConnFormState = {
   odooUrl: "", odooDb: "", odooUsername: "", odooAuthType: "password", odooDescription: "",
   gwsPreset: "full-workspace", gwsCustomScopes: "",
   mcpPreset: "filesystem",
+  mcpTransport: "stdio",
   mcpCommand: "npx",
   mcpArgs: "-y\n@modelcontextprotocol/server-filesystem\n/tmp",
+  mcpUrl: "",
   mcpDescription: "",
   mcpEnv: [],
 }
@@ -524,13 +572,17 @@ function ConnectionDialog({
         gwsPreset: ((m as Partial<GoogleWorkspaceMetadata>).preset as ConnFormState['gwsPreset']) || "full-workspace",
         gwsCustomScopes: ((m as Partial<GoogleWorkspaceMetadata>).customScopes || []).join(", "),
         mcpPreset: (m.preset as McpPreset) || "custom",
+        mcpTransport: (m.transport as McpTransport) || "stdio",
         mcpCommand: (m.command as string) || "",
         mcpArgs: Array.isArray(m.args) ? (m.args as string[]).join("\n") : "",
+        mcpUrl: (m.url as string) || "",
         mcpDescription: (m.description as string) || "",
-        // Credentials never come back from server; just list keys as secret placeholders
+        // Union of env vars (stdio) and headers (http/sse). Credentials never come back; list keys as secret placeholders.
         mcpEnv: [
           ...Object.entries((m.env as Record<string, string>) || {}).map(([k, v]) => ({ key: k, value: v, secret: false })),
           ...((m.envKeys as string[]) || []).map(k => ({ key: k, value: "", secret: true })),
+          ...Object.entries((m.headers as Record<string, string>) || {}).map(([k, v]) => ({ key: k, value: v, secret: false })),
+          ...((m.headerKeys as string[]) || []).map(k => ({ key: k, value: "", secret: true })),
         ],
       })
     } else {
@@ -603,8 +655,6 @@ function ConnectionDialog({
       return meta
     }
     if (form.type === "mcp") {
-      const argsList = form.mcpArgs
-        .split(/\r?\n/).map(s => s.trim()).filter(Boolean)
       const nonSecret: Record<string, string> = {}
       const secretKeys: string[] = []
       for (const row of form.mcpEnv) {
@@ -612,15 +662,22 @@ function ConnectionDialog({
         if (row.secret) secretKeys.push(row.key)
         else nonSecret[row.key] = row.value
       }
-      return {
-        transport: 'stdio',
+      const base: Record<string, unknown> = {
+        transport: form.mcpTransport,
         preset: form.mcpPreset,
-        command: form.mcpCommand,
-        args: argsList,
-        env: nonSecret,
-        envKeys: secretKeys,
         description: form.mcpDescription || undefined,
       }
+      if (form.mcpTransport === 'stdio') {
+        base.command = form.mcpCommand
+        base.args = form.mcpArgs.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+        base.env = nonSecret
+        base.envKeys = secretKeys
+      } else {
+        base.url = form.mcpUrl
+        base.headers = nonSecret
+        base.headerKeys = secretKeys
+      }
+      return base
     }
     return {}
   }
@@ -1069,53 +1126,104 @@ function ConnectionDialog({
                     const preset = v as McpPreset
                     const def = MCP_PRESETS.find(p => p.value === preset)
                     setForm(prev => {
-                      // On preset change, replace command/args if not custom; seed secret env keys
-                      if (preset === 'custom') return { ...prev, mcpPreset: preset }
                       if (!def) return { ...prev, mcpPreset: preset }
-                      const nextEnv = def.secretEnvKeys.map(k => {
+                      const secretKeys = [...(def.secretEnvKeys || []), ...(def.secretHeaderKeys || [])]
+                      const nextSecrets = secretKeys.map(k => {
                         const existing = prev.mcpEnv.find(r => r.key === k)
                         return existing ? { ...existing, secret: true } : { key: k, value: "", secret: true }
                       })
-                      // Preserve any custom (non-preset) env rows user already added
-                      const preserved = prev.mcpEnv.filter(r => !def.secretEnvKeys.includes(r.key))
+                      const preserved = prev.mcpEnv.filter(r => !secretKeys.includes(r.key))
                       return {
                         ...prev,
                         mcpPreset: preset,
-                        mcpCommand: def.command,
-                        mcpArgs: def.args.join("\n"),
-                        mcpEnv: [...nextEnv, ...preserved],
+                        mcpTransport: def.transport,
+                        mcpCommand: def.command ?? prev.mcpCommand,
+                        mcpArgs: def.args ? def.args.join("\n") : prev.mcpArgs,
+                        mcpUrl: def.url ?? prev.mcpUrl,
+                        mcpEnv: [...nextSecrets, ...preserved],
                       }
                     })
                   }}
                 >
                   <SelectTrigger className="h-8 text-xs border-border/50"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {MCP_PRESETS.map(p => (
-                      <SelectItem key={p.value} value={p.value}>{p.label} — <span className="text-muted-foreground">{p.description}</span></SelectItem>
-                    ))}
+                  <SelectContent className="max-h-[min(520px,70vh)]">
+                    {(() => {
+                      const stdioPresets = MCP_PRESETS.filter(p => p.transport === 'stdio' && p.value !== 'custom')
+                      const remotePresets = MCP_PRESETS.filter(p => p.transport === 'http' || p.transport === 'sse')
+                      const customPresets = MCP_PRESETS.filter(p => p.value === 'custom')
+                      const renderItem = (p: McpPresetDef) => (
+                        <SelectItem key={p.value} value={p.value} className="py-1.5">
+                          <div className="flex items-center gap-2 min-w-0 w-full">
+                            <span className="font-medium text-foreground/90 shrink-0">{p.label}</span>
+                            <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground/70 shrink-0">
+                              {p.transport}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground/70 truncate">{p.description}</span>
+                          </div>
+                        </SelectItem>
+                      )
+                      return (
+                        <>
+                          <SelectGroup>
+                            <SelectLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/50 px-2 py-1">
+                              Local — runs on AOC server
+                            </SelectLabel>
+                            {stdioPresets.map(renderItem)}
+                          </SelectGroup>
+                          <SelectSeparator />
+                          <SelectGroup>
+                            <SelectLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/50 px-2 py-1">
+                              Remote — hosted MCP endpoint
+                            </SelectLabel>
+                            {remotePresets.map(renderItem)}
+                          </SelectGroup>
+                          <SelectSeparator />
+                          <SelectGroup>
+                            <SelectLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/50 px-2 py-1">
+                              Custom
+                            </SelectLabel>
+                            {customPresets.map(renderItem)}
+                          </SelectGroup>
+                        </>
+                      )
+                    })()}
                   </SelectContent>
                 </Select>
+                <p className="text-[10px] text-muted-foreground/50 leading-relaxed">
+                  <strong>stdio</strong> = AOC spawns the MCP server as a child process · <strong>HTTP</strong> = modern remote transport (Streamable HTTP) · <strong>SSE</strong> = legacy remote transport, only if the server does not support HTTP.
+                </p>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              {f.mcpTransport === 'stdio' ? (
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Command</Label>
+                    <input value={f.mcpCommand} onChange={e => set("mcpCommand", e.target.value)}
+                      placeholder="npx" className={monoInputClass}
+                      disabled={f.mcpPreset !== 'custom' && !!f.mcpCommand} />
+                  </div>
+                  <div className="col-span-2 space-y-1">
+                    <Label className="text-xs text-muted-foreground">Args (one per line)</Label>
+                    <textarea value={f.mcpArgs} onChange={e => set("mcpArgs", e.target.value)}
+                      placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/tmp'}
+                      rows={3}
+                      className="flex w-full rounded-md px-3 py-2 text-[11px] font-mono bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+                  </div>
+                </div>
+              ) : (
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Command</Label>
-                  <input value={f.mcpCommand} onChange={e => set("mcpCommand", e.target.value)}
-                    placeholder="npx" className={monoInputClass}
-                    disabled={f.mcpPreset !== 'custom' && !!f.mcpCommand} />
+                  <Label className="text-xs text-muted-foreground">Server URL ({f.mcpTransport === 'http' ? 'Streamable HTTP' : 'SSE'})</Label>
+                  <input value={f.mcpUrl} onChange={e => set("mcpUrl", e.target.value)}
+                    placeholder="https://mcp.example.com/mcp" className={monoInputClass} />
+                  <p className="text-[10px] text-muted-foreground/50">
+                    Paste the MCP endpoint URL. Examples: Zapier gives you a per-user URL; n8n self-hosted: <code>https://n8n.example.com/mcp/...</code>; Context7: <code>https://mcp.context7.com/mcp</code>.
+                  </p>
                 </div>
-                <div className="col-span-2 space-y-1">
-                  <Label className="text-xs text-muted-foreground">Args (one per line)</Label>
-                  <textarea value={f.mcpArgs} onChange={e => set("mcpArgs", e.target.value)}
-                    placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/tmp'}
-                    rows={3}
-                    className="flex w-full rounded-md px-3 py-2 text-[11px] font-mono bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
-                </div>
-              </div>
+              )}
 
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs text-muted-foreground">Environment variables</Label>
+                  <Label className="text-xs text-muted-foreground">{f.mcpTransport === 'stdio' ? 'Environment variables' : 'HTTP headers'}</Label>
                   <button type="button"
                     onClick={() => setForm(prev => ({ ...prev, mcpEnv: [...prev.mcpEnv, { key: "", value: "", secret: false }] }))}
                     className="text-[10px] text-primary hover:underline flex items-center gap-0.5">
@@ -1123,7 +1231,11 @@ function ConnectionDialog({
                   </button>
                 </div>
                 {f.mcpEnv.length === 0 ? (
-                  <p className="text-[10px] text-muted-foreground/50">No env vars — add tokens/keys required by the MCP server.</p>
+                  <p className="text-[10px] text-muted-foreground/50">
+                    {f.mcpTransport === 'stdio'
+                      ? 'No env vars — add tokens/keys required by the MCP server.'
+                      : 'No headers — for auth use key "Authorization" with value "Bearer <token>".'}
+                  </p>
                 ) : (
                   <div className="space-y-1.5">
                     {f.mcpEnv.map((row, idx) => (
@@ -1223,7 +1335,12 @@ function ConnectionDialog({
             </Button>
           )}
           <Button size="sm" className="h-7 text-xs" onClick={handleSave}
-            disabled={saving || !f.name || (!editConn && f.type !== "github" && f.type !== "google_workspace" && f.type !== "mcp" && !f.credentials) || (f.type === "mcp" && !f.mcpCommand)}>
+            disabled={
+              saving || !f.name ||
+              (!editConn && f.type !== "github" && f.type !== "google_workspace" && f.type !== "mcp" && !f.credentials) ||
+              (f.type === "mcp" && f.mcpTransport === "stdio" && !f.mcpCommand) ||
+              (f.type === "mcp" && (f.mcpTransport === "http" || f.mcpTransport === "sse") && !f.mcpUrl)
+            }>
             {saving ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Saving…</> : editConn ? "Update" : (f.type === "google_workspace" ? "Connect Google Account" : "Create")}
           </Button>
         </DialogFooter>

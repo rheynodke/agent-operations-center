@@ -2630,11 +2630,13 @@ async function dispatchTaskToAgent(task, opts = {}) {
         }
         if (c.type === 'mcp') {
           const preset = meta.preset || 'custom';
+          const transport = meta.transport || 'stdio';
+          const target = transport === 'stdio' ? `\`${meta.command || '?'}\`` : `\`${meta.url || '?'}\``;
           const toolList = (meta.tools || []).map(t => t.name);
           const toolsPreview = toolList.length
             ? toolList.slice(0, 8).join(', ') + (toolList.length > 8 ? ` +${toolList.length - 8} more` : '')
             : '(run `mcp-call.sh "' + c.name + '" --list-tools` to discover)';
-          return `  - **${c.name}** (MCP · ${preset}): ${toolList.length} tool(s)\n    Tools: ${toolsPreview}\n    → \`mcp-call.sh "${c.name}" <tool-name> '<json-args>'\`\n    List tools: \`mcp-call.sh "${c.name}" --list-tools\``;
+          return `  - **${c.name}** (MCP · ${preset} · ${transport}): ${toolList.length} tool(s) · ${target}\n    Tools: ${toolsPreview}\n    → \`mcp-call.sh "${c.name}" <tool-name> '<json-args>'\`\n    List tools: \`mcp-call.sh "${c.name}" --list-tools\``;
         }
         return `  - **${c.name}** (${c.type})`;
       });
@@ -3282,15 +3284,22 @@ app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwn
       }
     } else if (raw.type === 'mcp') {
       const m = raw.metadata || {};
-      if (!m.command) {
+      const transport = m.transport || 'stdio';
+      const needsUrl = transport === 'http' || transport === 'sse';
+      if (!needsUrl && !m.command) {
         result = { ok: false, error: 'command not set in metadata' };
+      } else if (needsUrl && !m.url) {
+        result = { ok: false, error: 'url not set in metadata' };
       } else {
         // Tear down any live instance so we probe with fresh config
         try { await mcpPool.teardown(req.params.id); } catch {}
         const probe = await mcpPool.probe({
+          transport,
           command: m.command,
           args: m.args || [],
           env: m.env || {},
+          url: m.url,
+          headers: m.headers || {},
           credentials: raw.credentials || '',
         });
         if (probe.ok) {
@@ -3345,17 +3354,23 @@ app.post('/api/mcp/call', db.authMiddleware, async (req, res) => {
     if (!raw) return res.status(404).json({ error: 'Connection not found' });
     const m = raw.metadata || {};
 
+    const poolSpec = {
+      transport: m.transport || 'stdio',
+      command: m.command,
+      args: m.args || [],
+      env: m.env || {},
+      url: m.url,
+      headers: m.headers || {},
+      credentials: raw.credentials || '',
+    };
+
     // --list-tools shortcut — avoids a second round-trip from the shell
     if (tool === '--list-tools' || tool === '__list__') {
-      const tools = await mcpPool.listTools(match.id, {
-        command: m.command, args: m.args || [], env: m.env || {}, credentials: raw.credentials || '',
-      });
+      const tools = await mcpPool.listTools(match.id, poolSpec);
       return res.json({ ok: true, tools });
     }
 
-    const response = await mcpPool.callTool(match.id, {
-      command: m.command, args: m.args || [], env: m.env || {}, credentials: raw.credentials || '',
-    }, tool, args || {});
+    const response = await mcpPool.callTool(match.id, poolSpec, tool, args || {});
 
     // MCP callTool returns { content: [...], isError?: bool }
     res.json({ ok: !response.isError, response });
@@ -3468,8 +3483,13 @@ app.get('/api/agent/connections', db.authMiddleware, (req, res) => {
         out.hint = 'Use gws-call.sh <connection-name> <service> <method> [json-body] to call Google APIs. Credentials are handled automatically.';
       } else if (c.type === 'mcp') {
         out.preset = meta.preset || 'custom';
-        out.command = meta.command || null;
-        out.args = meta.args || [];
+        out.transport = meta.transport || 'stdio';
+        if (out.transport === 'stdio') {
+          out.command = meta.command || null;
+          out.args = meta.args || [];
+        } else {
+          out.url = meta.url || null;
+        }
         out.tools = (meta.tools || []).map(t => ({ name: t.name, description: t.description || '' }));
         out.toolsDiscoveredAt = meta.toolsDiscoveredAt || null;
         out.hint = `Use mcp-call.sh "${c.name}" <tool-name> '<json-args>' — credentials are handled automatically.`;

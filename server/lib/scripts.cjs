@@ -616,7 +616,7 @@ SAFE_KEYS = {'name','type','hint','projectId','datasets','host','port','database
              'url','loginUrl','authType','user','description','sslMode',
              'githubMode','repo','branch','localPath','repoOwner','repoName',
              'linkedEmail','preset','authState','scopes',
-             'command','args','toolsDiscoveredAt'}
+             'command','args','toolsDiscoveredAt','transport','url'}
 for c in conns:
     t = c.get('type', '?').upper()
     name = c.get('name', '?')

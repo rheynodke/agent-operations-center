@@ -853,7 +853,12 @@ export interface IntegrationConfig {
 
 export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli' | 'google_workspace' | 'mcp'
 
-export type McpPreset = 'filesystem' | 'github' | 'slack' | 'postgres' | 'brave-search' | 'puppeteer' | 'memory' | 'custom'
+export type McpTransport = 'stdio' | 'http' | 'sse'
+
+export type McpPreset =
+  | 'filesystem' | 'github' | 'slack' | 'postgres' | 'brave-search' | 'puppeteer' | 'memory'  // stdio
+  | 'context7-http' | 'http-custom' | 'sse-custom'                                              // remote
+  | 'custom'
 
 export interface McpTool {
   name: string
@@ -862,13 +867,19 @@ export interface McpTool {
 }
 
 export interface McpMetadata {
-  transport: 'stdio'
+  transport: McpTransport
   preset: McpPreset
-  command: string
-  args: string[]
+  // stdio fields
+  command?: string
+  args?: string[]
   env?: Record<string, string>      // non-sensitive env vars
   envKeys?: string[]                // names of secret env keys stored in credentials JSON
-  tools?: McpTool[]                 // populated by test/discovery
+  // http/sse fields
+  url?: string
+  headers?: Record<string, string>   // non-sensitive headers
+  headerKeys?: string[]              // names of secret headers stored in credentials JSON
+  // shared
+  tools?: McpTool[]                  // populated by test/discovery
   toolsDiscoveredAt?: string
   description?: string
 }
@@ -922,12 +933,15 @@ export interface ConnectionMetadata {
   odooUsername?: string
   odooAuthType?: 'password' | 'api_key'
   // MCP (also carries fields from McpMetadata when type === 'mcp')
-  transport?: 'stdio'
+  transport?: McpTransport
   preset?: string
   command?: string
   args?: string[]
   env?: Record<string, string>
   envKeys?: string[]
+  url?: string
+  headers?: Record<string, string>
+  headerKeys?: string[]
   tools?: McpTool[]
   toolsDiscoveredAt?: string
 }
