@@ -1819,6 +1819,55 @@ function collectSessionEvents(sessionId, session) {
   return combined;
 }
 
+/**
+ * POST /api/sessions/:id/abort — generic session-level interrupt.
+ *
+ * Works for any session key (task-driven, chat-page, Telegram DM, cron-
+ * triggered, etc.) as long as the OpenClaw Gateway knows about it. Calls
+ * the gateway's chat.abort RPC to stop the in-flight generation while
+ * keeping the session alive so follow-up messages can continue.
+ *
+ * If the session key maps to a known task, a task activity row is logged
+ * so the abort shows up on the task board history as well.
+ */
+app.post('/api/sessions/:id/abort', db.authMiddleware, async (req, res) => {
+  try {
+    const sessionKey = req.params.id;
+    if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
+    if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
+
+    let abortResult = null;
+    try {
+      abortResult = await gatewayProxy.chatAbort(sessionKey);
+    } catch (rpcErr) {
+      console.error('[api/sessions/abort] chat.abort RPC failed:', rpcErr.message);
+      return res.status(502).json({ error: `Gateway abort failed: ${rpcErr.message}` });
+    }
+
+    // If this session is linked to a task, mirror the activity entry so the
+    // board's task history stays in sync with what happened here.
+    try {
+      const linkedTasks = db.getAllTasks({}).filter(t => t.sessionId === sessionKey);
+      const actor = req.user?.username ? `user:${req.user.username}` : 'user';
+      const note = typeof req.body?.note === 'string' && req.body.note.trim()
+        ? req.body.note.trim().slice(0, 500)
+        : 'Interrupted from sessions view';
+      for (const t of linkedTasks) {
+        db.addTaskActivity({ taskId: t.id, type: 'comment', actor, note: `🛑 ${note}` });
+      }
+      if (linkedTasks.length) broadcastTasksUpdate();
+    } catch (logErr) {
+      console.warn('[api/sessions/abort] activity log failed:', logErr.message);
+    }
+
+    broadcast({ type: 'session:aborted', payload: { sessionKey } });
+    res.json({ ok: true, sessionKey, abortResult });
+  } catch (err) {
+    console.error('[api/sessions/abort]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/sessions/:id', db.authMiddleware, (req, res) => {
   try {
     const sessions = parsers.getAllSessions();
@@ -2856,6 +2905,51 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 })
+
+/**
+ * POST /api/tasks/:id/interrupt — soft-abort the agent's in-flight work.
+ *
+ * Calls the gateway's chat.abort RPC, which stops the current generation
+ * (model inference + tool loop) but keeps the session alive. The user can
+ * re-dispatch later with change-request/continue context — prior messages
+ * are preserved.
+ *
+ * Task status is left as-is so the user explicitly decides what to do next
+ * (Resume / Mark Blocked / Request Changes). An activity row is logged so
+ * the reason is visible in the history.
+ */
+app.post('/api/tasks/:id/interrupt', db.authMiddleware, async (req, res) => {
+  try {
+    const task = db.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const gate = checkTaskAccess(req, task.id);
+    if (gate) return res.status(403).json({ error: gate });
+    if (!task.sessionId) return res.status(400).json({ error: 'Task has no active session to interrupt' });
+    if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
+
+    let abortResult = null;
+    try {
+      abortResult = await gatewayProxy.chatAbort(task.sessionId);
+    } catch (rpcErr) {
+      // Gateway may not implement chat.abort on older versions — surface a clear error
+      console.error('[api/tasks/interrupt] chat.abort RPC failed:', rpcErr.message);
+      return res.status(502).json({ error: `Gateway abort failed: ${rpcErr.message}` });
+    }
+
+    const note = typeof req.body?.note === 'string' && req.body.note.trim()
+      ? req.body.note.trim().slice(0, 500)
+      : 'Interrupted by user';
+    const actor = req.user?.username ? `user:${req.user.username}` : 'user';
+    db.addTaskActivity({ taskId: task.id, type: 'comment', actor, note: `🛑 ${note}` });
+
+    broadcast({ type: 'task:interrupted', payload: { taskId: task.id, sessionKey: task.sessionId, note } });
+    broadcastTasksUpdate();
+    res.json({ ok: true, sessionKey: task.sessionId, abortResult });
+  } catch (err) {
+    console.error('[api/tasks/interrupt]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── Connections (third-party data sources) ──────────────────────────────────
 

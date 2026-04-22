@@ -284,6 +284,16 @@ export const api = {
     request<{ ok: boolean }>(`/agents/${agentId}/sync-task-script`, { method: 'POST' }),
   dispatchTask: (taskId: string) =>
     request<{ ok: boolean; sessionKey: string; agentId: string }>(`/tasks/${taskId}/dispatch`, { method: 'POST' }),
+  interruptTask: (taskId: string, note?: string) =>
+    request<{ ok: boolean; sessionKey: string }>(`/tasks/${taskId}/interrupt`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note || undefined }),
+    }),
+  abortSession: (sessionKey: string, note?: string) =>
+    request<{ ok: boolean; sessionKey: string }>(`/sessions/${encodeURIComponent(sessionKey)}/abort`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note || undefined }),
+    }),
 
   // Attachments
   uploadTaskAttachments: (

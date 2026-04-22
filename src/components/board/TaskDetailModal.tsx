@@ -10,7 +10,7 @@ import {
   Zap, X, Calendar, User, Clock,
   CheckCircle2, ArrowRight, ChevronDown,
   FileText, Bot, History, BarChart3,
-  Search, AlertTriangle, Database, ListChecks, RefreshCw, Loader2, ShieldCheck, ShieldAlert
+  Search, AlertTriangle, Database, ListChecks, RefreshCw, Loader2, ShieldCheck, ShieldAlert, OctagonX,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -288,6 +288,7 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
   const [activity, setActivity] = useState<TaskActivity[]>([])
   const [loadingActivity, setLoadingActivity] = useState(false)
   const [dispatching, setDispatching] = useState(false)
+  const [interrupting, setInterrupting] = useState(false)
   const [dispatchMsg, setDispatchMsg] = useState("")
   const [reviewSubmitting, setReviewSubmitting] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
@@ -311,6 +312,23 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
     }, 180)
     return () => clearTimeout(t)
   }, [open, task?.id])
+
+  async function handleInterrupt() {
+    if (!task) return
+    if (!confirm("Stop this agent?\n\nThe gateway will abort the current generation. The session stays alive — you can re-dispatch later (Continue / Request Changes / Mark Blocked).")) return
+    setInterrupting(true)
+    setDispatchMsg("")
+    try {
+      await api.interruptTask(task.id)
+      setDispatchMsg("🛑 Agent interrupted — choose a next step")
+      setTimeout(() => setDispatchMsg(""), 6000)
+    } catch (e) {
+      setDispatchMsg((e as Error).message || "Interrupt failed")
+      setTimeout(() => setDispatchMsg(""), 6000)
+    } finally {
+      setInterrupting(false)
+    }
+  }
 
   async function handleDispatch() {
     if (!task) return
@@ -385,6 +403,20 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
                 {task.title}
               </h1>
               <div className="flex items-center gap-2 shrink-0">
+                {/* Stop — only while the agent is mid-flight */}
+                {isLive && task.sessionId && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs gap-1.5 px-3 border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                    onClick={handleInterrupt}
+                    disabled={interrupting}
+                    title="Abort the current generation. The session stays alive — you can re-dispatch later."
+                  >
+                    <OctagonX className="h-3 w-3" />
+                    {interrupting ? "Stopping…" : "Stop"}
+                  </Button>
+                )}
                 {task.agentId && (
                   <Button
                     size="sm"

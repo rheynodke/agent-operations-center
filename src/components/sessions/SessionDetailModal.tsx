@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import { Loader2, ChevronDown, Wrench, User, Zap, Hash, DollarSign, Coins } from "lucide-react"
+import { Loader2, ChevronDown, Wrench, User, Zap, Hash, DollarSign, Coins, OctagonX } from "lucide-react"
 import { useSessionStore, useSessionLiveStore, useAgentStore, useAuthStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import type { Session } from "@/types"
@@ -118,6 +118,8 @@ export function SessionDetailModal({ session, onClose }: Props) {
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [aborting, setAborting] = useState(false)
+  const [abortMsg, setAbortMsg] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
   const prevEventCountRef = useRef(0)
@@ -148,6 +150,21 @@ export function SessionDetailModal({ session, onClose }: Props) {
       loadingRef.current = false
     }
   }, [session.id, detail])
+
+  const handleAbort = useCallback(async () => {
+    if (!session.id) return
+    if (!confirm("Stop this session?\n\nThe gateway will abort the current generation. The session stays alive — the user can continue the conversation afterwards.")) return
+    setAborting(true)
+    setAbortMsg(null)
+    try {
+      await api.abortSession(session.id)
+      setAbortMsg("🛑 Session interrupted")
+      setTimeout(() => setAbortMsg(null), 6000)
+    } catch (e) {
+      setAbortMsg((e as Error).message || "Abort failed")
+      setTimeout(() => setAbortMsg(null), 6000)
+    } finally { setAborting(false) }
+  }, [session.id])
 
   // Initial load with retry — new sessions may not be readable immediately
   // (agent is actively writing JSONL, lock file held, sessions.json not flushed yet)
@@ -324,8 +341,22 @@ export function SessionDetailModal({ session, onClose }: Props) {
                   </span>
                 ) : "IDLE"}
               </Badge>
+              {isProcessing && (
+                <button
+                  onClick={handleAbort}
+                  disabled={aborting}
+                  className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-md border border-red-500/40 text-red-500 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                  title="Abort the current generation. The session stays alive."
+                >
+                  {aborting ? <Loader2 className="h-3 w-3 animate-spin" /> : <OctagonX className="h-3 w-3" />}
+                  {aborting ? "Stopping…" : "Stop"}
+                </button>
+              )}
             </div>
           </div>
+          {abortMsg && (
+            <p className="mt-2 text-[11px] text-muted-foreground/80">{abortMsg}</p>
+          )}
         </DialogHeader>
 
         {/* ── Mobile tab switcher (hidden on md+) ── */}
