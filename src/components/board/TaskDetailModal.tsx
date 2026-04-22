@@ -20,6 +20,7 @@ import { AgentWorkSection } from "./AgentWorkSection"
 import { ExecutionStats } from "./ExecutionStats"
 import { AttachmentsSection } from "./AttachmentsSection"
 import { OutputsSection } from "./OutputsSection"
+import { CommentsThread } from "./CommentsThread"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -609,6 +610,9 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
             task={task}
             onUpdated={(updated) => onTaskReplace?.(updated)}
           />
+
+          {/* Comments thread (user ↔ agent) */}
+          <CommentsThread task={task} agents={agents} />
 
           {/* Pre-flight Analysis */}
           {(task.analysis || (task.status === 'backlog' && task.agentId)) && (

@@ -1013,6 +1013,78 @@ function ensureSaveOutputScript() {
   console.log('[scripts] Ensured shared save_output.sh script');
 }
 
+// ── post_comment.sh — Post a message to a task's comment thread ─────────────
+
+const POST_COMMENT_SCRIPT_NAME = 'post_comment.sh';
+const POST_COMMENT_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# post_comment — Post a free-form message to a task's discussion thread.
+# Use this for in-flight progress updates, questions, or milestone reports
+# without changing the task status (which would trigger a re-dispatch).
+#
+# Usage:
+#   post_comment.sh <task_id> "message text"
+#   echo "message text" | post_comment.sh <task_id> -
+#
+# Env required:
+#   AOC_URL        e.g. http://localhost:18800 (defaults so)
+#   AOC_TOKEN      dashboard token (set by .aoc_agent_env)
+#   AOC_AGENT_ID   this agent's id (set by .aoc_agent_env)
+#
+# Prints the created comment id on stdout. Exit 0 on success, non-zero otherwise.
+
+set -euo pipefail
+
+TASK_ID="\${1:?Usage: post_comment.sh <task_id> <message|->}"
+BODY_ARG="\${2:?message text (or '-' to read stdin) required}"
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
+
+AOC_URL="\${AOC_URL:-http://localhost:\${PORT:-18800}}"
+if [ -z "\${AOC_TOKEN:-}" ]; then echo "post_comment: AOC_TOKEN not set" >&2; exit 2; fi
+if [ -z "\${AOC_AGENT_ID:-}" ]; then echo "post_comment: AOC_AGENT_ID not set" >&2; exit 2; fi
+
+# Resolve body — support stdin when arg is '-'
+if [ "$BODY_ARG" = "-" ]; then
+  BODY="$(cat)"
+else
+  BODY="$BODY_ARG"
+fi
+if [ -z "\${BODY// }" ]; then echo "post_comment: empty body" >&2; exit 2; fi
+
+# JSON-escape body using python3 (handles quotes/newlines/unicode safely)
+# Export BODY first so the Python subshell inherits it.
+export BODY
+PAYLOAD="$(python3 - <<PY
+import json, os
+print(json.dumps({"body": os.environ["BODY"], "agentId": os.environ["AOC_AGENT_ID"]}))
+PY
+)"
+
+RES="$(curl -sf -X POST "$AOC_URL/api/tasks/$TASK_ID/comments" \\
+  -H "Authorization: Bearer $AOC_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d "$PAYLOAD")" || { echo "post_comment: request failed" >&2; exit 1; }
+
+echo "$RES" | python3 -c "import json,sys; print(json.load(sys.stdin)['comment']['id'])"
+`;
+
+function ensurePostCommentScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, POST_COMMENT_SCRIPT_NAME);
+  fs.writeFileSync(scriptPath, POST_COMMENT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[POST_COMMENT_SCRIPT_NAME] = {
+    name: 'post_comment',
+    emoji: '💬',
+    description: 'Post a free-form comment to a task thread without changing status. Usage: post_comment.sh <task_id> <message|->',
+    execHint: `${SCRIPTS_DIR}/post_comment.sh <task_id> <message|->`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+  console.log('[scripts] Ensured shared post_comment.sh script');
+}
+
 // ── aoc-connect.sh — Generic connection wrapper ─────────────────────────────
 
 const AOC_CONNECT_SCRIPT_NAME = 'aoc-connect.sh';
@@ -1769,6 +1841,7 @@ module.exports = {
   ensureAocConnectScript,
   ensureFetchAttachmentScript,
   ensureSaveOutputScript,
+  ensurePostCommentScript,
   injectHeartbeatTaskCheck,
   // ADLC shared scripts installer
   ensureSharedAdlcScripts,

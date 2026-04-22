@@ -137,6 +137,7 @@ module.exports = {
   ensureAocConnectScript:       scriptsLib.ensureAocConnectScript,
   ensureFetchAttachmentScript:  scriptsLib.ensureFetchAttachmentScript,
   ensureSaveOutputScript:       scriptsLib.ensureSaveOutputScript,
+  ensurePostCommentScript:      scriptsLib.ensurePostCommentScript,
   injectHeartbeatTaskCheck: scriptsLib.injectHeartbeatTaskCheck,
   ensureSharedAdlcScripts:  scriptsLib.ensureSharedAdlcScripts,
   syncAgentConnectionsContext: scriptsLib.syncAgentConnectionsContext,

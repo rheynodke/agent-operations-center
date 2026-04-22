@@ -2158,6 +2158,141 @@ app.get('/api/tasks/:id/outputs', db.authMiddleware, (req, res) => {
   }
 });
 
+// ─── Task Comments (free-form discussion thread) ──────────────────────────────
+// Any authenticated user can read + post. Agents (DASHBOARD_TOKEN) may also
+// post — they identify themselves via `agentId` in the body. Edit/delete is
+// restricted to the original author or an admin.
+
+function commentBroadcast(type, taskId, comment) {
+  try {
+    broadcast({ type, payload: { taskId, comment } });
+  } catch (err) {
+    console.warn('[comment] broadcast failed:', err.message);
+  }
+}
+
+// List comments for a task
+app.get('/api/tasks/:id/comments', db.authMiddleware, (req, res) => {
+  try {
+    const { id } = req.params;
+    const task = db.getTask(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const comments = db.listTaskComments(id);
+    res.json({ comments });
+  } catch (err) {
+    console.error('[api/tasks/:id/comments GET]', err);
+    res.status(500).json({ error: 'Failed to list comments' });
+  }
+});
+
+// Post a comment. Body: { body: string, agentId?: string }
+// - If the caller is the agent service token (role=agent), `agentId` must be provided.
+// - Otherwise author is the authenticated user.
+app.post('/api/tasks/:id/comments', db.authMiddleware, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { body, agentId } = req.body || {};
+    if (!body || !String(body).trim()) return res.status(400).json({ error: 'body is required' });
+    const task = db.getTask(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    let comment;
+    if (req.user?.role === 'agent') {
+      // Service-token / agent post — require an explicit agent id
+      if (!agentId) return res.status(400).json({ error: 'agentId is required when posting as an agent' });
+      const agentName = (() => {
+        try {
+          const agents = parsers.parseAgentRegistry();
+          const a = agents.find(x => x.id === agentId);
+          return a?.name || agentId;
+        } catch { return agentId; }
+      })();
+      comment = db.addTaskComment({
+        taskId: id,
+        authorType: 'agent',
+        authorId: agentId,
+        authorName: agentName,
+        body: String(body).trim(),
+      });
+    } else {
+      // Authenticated user
+      const u = req.user;
+      if (!u?.userId) return res.status(401).json({ error: 'Unauthorized' });
+      const full = db.getUserById(u.userId);
+      const name = full?.display_name || full?.username || u.username || `user-${u.userId}`;
+      comment = db.addTaskComment({
+        taskId: id,
+        authorType: 'user',
+        authorId: u.userId,
+        authorName: name,
+        body: String(body).trim(),
+      });
+    }
+
+    commentBroadcast('task:comment_added', id, comment);
+    res.status(201).json({ comment });
+  } catch (err) {
+    console.error('[api/tasks/:id/comments POST]', err);
+    res.status(400).json({ error: err.message || 'Failed to post comment' });
+  }
+});
+
+function resolveCommentAuthorGate(req, comment) {
+  if (!comment) return 'Comment not found';
+  if (comment.deletedAt) return 'Comment already deleted';
+  if (req.user?.role === 'admin') return null;
+  if (req.user?.role === 'agent') {
+    // Agent token may modify only its own agent comments — agent id passed via header or body
+    const agentId = req.body?.agentId || req.get('X-Agent-Id');
+    if (comment.authorType === 'agent' && agentId && String(comment.authorId) === String(agentId)) return null;
+    return 'You can only modify comments you authored';
+  }
+  // Regular user
+  const userId = req.user?.userId;
+  if (comment.authorType === 'user' && String(comment.authorId) === String(userId)) return null;
+  return 'You can only modify comments you authored';
+}
+
+// Edit a comment (body only)
+app.patch('/api/tasks/:id/comments/:cid', db.authMiddleware, (req, res) => {
+  try {
+    const { id, cid } = req.params;
+    const { body } = req.body || {};
+    const task = db.getTask(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const existing = db.getTaskComment(cid);
+    if (!existing || existing.taskId !== id) return res.status(404).json({ error: 'Comment not found' });
+    const gate = resolveCommentAuthorGate(req, existing);
+    if (gate) return res.status(403).json({ error: gate });
+    if (!body || !String(body).trim()) return res.status(400).json({ error: 'body is required' });
+    const updated = db.updateTaskComment(cid, { body: String(body).trim() });
+    commentBroadcast('task:comment_edited', id, updated);
+    res.json({ comment: updated });
+  } catch (err) {
+    console.error('[api/tasks/:id/comments/:cid PATCH]', err);
+    res.status(500).json({ error: 'Failed to update comment' });
+  }
+});
+
+// Soft-delete a comment
+app.delete('/api/tasks/:id/comments/:cid', db.authMiddleware, (req, res) => {
+  try {
+    const { id, cid } = req.params;
+    const task = db.getTask(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const existing = db.getTaskComment(cid);
+    if (!existing || existing.taskId !== id) return res.status(404).json({ error: 'Comment not found' });
+    const gate = resolveCommentAuthorGate(req, existing);
+    if (gate) return res.status(403).json({ error: gate });
+    const updated = db.deleteTaskComment(cid);
+    commentBroadcast('task:comment_deleted', id, updated);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/tasks/:id/comments/:cid DELETE]', err);
+    res.status(500).json({ error: 'Failed to delete comment' });
+  }
+});
+
 // Serve a single output file. Same auth pattern as attachments (supports ?token=).
 app.get('/api/tasks/:id/outputs/:filename', attachmentAuthMiddleware, (req, res) => {
   try {
@@ -2276,6 +2411,27 @@ async function dispatchTaskToAgent(task, opts = {}) {
     }
   }
 
+  // Recent comments — lets the agent "hear" user questions/remarks posted between dispatches.
+  let commentsContext = '';
+  try {
+    const recent = db.getRecentTaskComments(task.id, 10);
+    if (recent.length > 0) {
+      const lines = recent.map(c => {
+        const who = c.authorType === 'agent' ? `🤖 ${c.authorName || c.authorId}` : `👤 ${c.authorName || c.authorId}`;
+        const when = new Date(c.createdAt).toISOString().replace('T', ' ').slice(0, 16);
+        // Indent multi-line bodies so they render cleanly
+        const body = String(c.body || '').split('\n').map(l => `    ${l}`).join('\n');
+        return `  - ${who} · ${when}\n${body}`;
+      });
+      commentsContext = [
+        '',
+        `**💬 Recent comments** (${recent.length} most recent — use \`post_comment.sh ${task.id} "message"\` to reply without changing status):`,
+        lines.join('\n'),
+        '',
+      ].join('\n');
+    }
+  } catch (e) { console.warn('[dispatch] comments context failed:', e.message); }
+
   // Build project context
   let projectContext = '';
   if (task.projectId && task.projectId !== 'general') {
@@ -2348,6 +2504,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
       projectContext,
       attachmentsContext,
       outputsContext,
+      commentsContext,
       extraContext ? `\n**Additional Context from operator:**\n${extraContext}` : '',
       connectionsContext,
       ``,
@@ -2402,6 +2559,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
         `⚠️ **Change Request from reviewer:**`,
         changeNote,
         newAttachmentsBlock,
+        commentsContext,
         `Please address the feedback above. You already have the full context from your previous work on this ticket.`,
         outputsReminder,
         `When done, update status to "in_review" again.`,
@@ -2414,6 +2572,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
         `**Additional instructions from operator:**`,
         extraContext,
         newAttachmentsBlock,
+        commentsContext,
         `You already have the full context from your previous work. Please continue where you left off.`,
         outputsReminder,
         `When done, update status to "in_review".`,
@@ -2423,6 +2582,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
         `---`,
         `🔄 **Continue working on this ticket.**`,
         newAttachmentsBlock,
+        commentsContext,
         `You already have the full context from your previous work. Please continue where you left off.`,
         outputsReminder,
         `When done, update status to "in_review".`,
@@ -4122,6 +4282,7 @@ function syncConnectionsScriptForAllAgents() {
     parsers.ensureAocConnectScript();
     parsers.ensureFetchAttachmentScript();
     parsers.ensureSaveOutputScript();
+    parsers.ensurePostCommentScript();
     const agents = parsers.parseAgentRegistry();
     const allConns = db.getAllConnections();
     for (const agent of agents) {

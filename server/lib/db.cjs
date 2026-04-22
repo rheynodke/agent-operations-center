@@ -172,6 +172,25 @@ async function initDatabase() {
     )
   `);
 
+  // Task comments — free-form discussion thread between users and agents.
+  // author_type: 'user' | 'agent'. author_id holds user.id (stringified) or agent id.
+  // author_name is a snapshot so a deleted user still renders meaningfully.
+  // deleted_at toggles soft-delete so history / dispatch context remains consistent.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS task_comments (
+      id           TEXT PRIMARY KEY,
+      task_id      TEXT NOT NULL,
+      author_type  TEXT NOT NULL,
+      author_id    TEXT NOT NULL,
+      author_name  TEXT,
+      body         TEXT NOT NULL,
+      created_at   TEXT NOT NULL,
+      edited_at    TEXT,
+      deleted_at   TEXT
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id, created_at)`);
+
   // Projects
   db.run(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -344,6 +363,21 @@ function normalizeActivity(row) {
     actor: row.actor,
     note: row.note || undefined,
     createdAt: row.created_at,
+  };
+}
+
+function normalizeComment(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    authorType: row.author_type,
+    authorId: row.author_id,
+    authorName: row.author_name || undefined,
+    body: row.body,
+    createdAt: row.created_at,
+    editedAt: row.edited_at || undefined,
+    deletedAt: row.deleted_at || undefined,
   };
 }
 
@@ -632,6 +666,75 @@ function getTaskActivity(taskId) {
   stmt.bind({ ':taskId': taskId });
   const rows = [];
   while (stmt.step()) rows.push(normalizeActivity(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+// ─── Task Comments (user ↔ agent discussion) ─────────────────────────────────
+
+function addTaskComment({ taskId, authorType, authorId, authorName, body } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!taskId) throw new Error('addTaskComment: taskId is required');
+  if (!body || !body.trim()) throw new Error('addTaskComment: body is required');
+  if (authorType !== 'user' && authorType !== 'agent') throw new Error('addTaskComment: authorType must be user or agent');
+  if (!authorId) throw new Error('addTaskComment: authorId is required');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO task_comments (id, task_id, author_type, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, taskId, authorType, String(authorId), authorName || null, body, now]
+  );
+  persist();
+  return getTaskComment(id);
+}
+
+function getTaskComment(id) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM task_comments WHERE id = :id');
+  const row = stmt.getAsObject({ ':id': id });
+  stmt.free();
+  return row.id ? normalizeComment(row) : null;
+}
+
+function listTaskComments(taskId, { includeDeleted = false } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM task_comments WHERE task_id = :taskId ORDER BY created_at ASC');
+  stmt.bind({ ':taskId': taskId });
+  const rows = [];
+  while (stmt.step()) {
+    const c = normalizeComment(stmt.getAsObject());
+    if (c && (includeDeleted || !c.deletedAt)) rows.push(c);
+  }
+  stmt.free();
+  return rows;
+}
+
+function updateTaskComment(id, { body } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!body || !body.trim()) throw new Error('updateTaskComment: body is required');
+  const now = new Date().toISOString();
+  db.run('UPDATE task_comments SET body = ?, edited_at = ? WHERE id = ? AND deleted_at IS NULL', [body, now, id]);
+  persist();
+  return getTaskComment(id);
+}
+
+function deleteTaskComment(id) {
+  if (!db) throw new Error('DB not initialized');
+  const now = new Date().toISOString();
+  db.run('UPDATE task_comments SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', [now, id]);
+  persist();
+  return getTaskComment(id);
+}
+
+/** Recent undeleted comments for dispatch context. `limit` rows, oldest first. */
+function getRecentTaskComments(taskId, limit = 10) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare(
+    'SELECT * FROM (SELECT * FROM task_comments WHERE task_id = :taskId AND deleted_at IS NULL ORDER BY created_at DESC LIMIT :lim) ORDER BY created_at ASC'
+  );
+  stmt.bind({ ':taskId': taskId, ':lim': limit });
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeComment(stmt.getAsObject()));
   stmt.free();
   return rows;
 }
@@ -1234,6 +1337,7 @@ module.exports = {
   // Tasks
   getAllTasks, getTask, getTaskByExternalId, createTask, updateTask, deleteTask,
   addTaskActivity, getTaskActivity,
+  addTaskComment, getTaskComment, listTaskComments, updateTaskComment, deleteTaskComment, getRecentTaskComments,
   // Projects
   getAllProjects, getProject, createProject, updateProject, deleteProject,
   // Integrations

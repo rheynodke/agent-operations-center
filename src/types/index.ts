@@ -220,6 +220,19 @@ export interface Task {
   attachments?: TaskAttachment[]
 }
 
+/** Free-form comment on a task (user ↔ agent discussion thread). */
+export interface TaskComment {
+  id: string
+  taskId: string
+  authorType: 'user' | 'agent'
+  authorId: string
+  authorName?: string
+  body: string
+  createdAt: string
+  editedAt?: string
+  deletedAt?: string
+}
+
 /** Agent-produced output file living under {agentWorkspace}/outputs/{taskId}/. */
 export interface TaskOutput {
   filename: string

@@ -400,6 +400,15 @@ export function useWebSocket() {
           break
         }
 
+        case "task:comment_added":
+        case "task:comment_edited":
+        case "task:comment_deleted": {
+          window.dispatchEvent(new CustomEvent('aoc:task-comment', {
+            detail: { type: msg.type, ...(msg.payload as Record<string, unknown>) },
+          }))
+          break
+        }
+
         case "task:output_added":
         case "task:output_removed": {
           // Lightweight notification for OutputsSection — re-fetch on the client side.

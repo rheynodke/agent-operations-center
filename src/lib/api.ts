@@ -330,6 +330,22 @@ export const api = {
     return token ? `${att.url}?token=${encodeURIComponent(token)}` : att.url;
   },
 
+  // Task comments — user ↔ agent discussion thread
+  getTaskComments: (taskId: string) =>
+    request<{ comments: import('@/types').TaskComment[] }>(`/tasks/${encodeURIComponent(taskId)}/comments`),
+  postTaskComment: (taskId: string, body: string) =>
+    request<{ comment: import('@/types').TaskComment }>(`/tasks/${encodeURIComponent(taskId)}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  updateTaskComment: (taskId: string, commentId: string, body: string) =>
+    request<{ comment: import('@/types').TaskComment }>(`/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    }),
+  deleteTaskComment: (taskId: string, commentId: string) =>
+    request<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`, { method: 'DELETE' }),
+
   // Task outputs — agent-produced deliverables under {workspace}/outputs/{taskId}/
   getTaskOutputs: (taskId: string) =>
     request<{ outputs: import('@/types').TaskOutput[] }>(`/tasks/${encodeURIComponent(taskId)}/outputs`),
