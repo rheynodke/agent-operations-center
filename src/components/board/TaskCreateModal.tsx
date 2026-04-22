@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Task, TaskStatus, TaskPriority, Agent } from "@/types"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { PriorityIndicator } from "./PriorityIndicator"
-import { User } from "lucide-react"
+import { User, Paperclip, Upload, X } from "lucide-react"
 
 const STATUSES: { value: TaskStatus; label: string; dot: string; disabled?: boolean }[] = [
   { value: "backlog",     label: "Backlog",     dot: "bg-zinc-500" },
@@ -31,11 +31,14 @@ interface TaskCreateModalProps {
   task?: Task | null       // if set, editing mode
   agents: Agent[]
   defaultStatus?: TaskStatus
-  onSave: (data: Partial<Task>) => Promise<void>
+  /** Returns the created task when creating (used to upload staged files). */
+  onSave: (data: Partial<Task>) => Promise<Task | void>
+  /** Upload files against a task id (called after create when pending files exist). */
+  onUploadAttachments?: (taskId: string, files: File[], onProgress?: (pct: number) => void) => Promise<void>
   onClose: () => void
 }
 
-export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog", onSave, onClose }: TaskCreateModalProps) {
+export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog", onSave, onUploadAttachments, onClose }: TaskCreateModalProps) {
   const [title, setTitle]         = useState("")
   const [description, setDescription] = useState("")
   const [status, setStatus]       = useState<TaskStatus>(defaultStatus)
@@ -43,6 +46,8 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
   const [assignTo, setAssignTo]   = useState<string>("")
   const [tagsRaw, setTagsRaw]     = useState("")
   const [requestFrom, setRequestFrom] = useState("-")
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [saving, setSaving]       = useState(false)
   const [error, setError]         = useState("")
 
@@ -59,6 +64,7 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
       setTitle(""); setDescription(""); setStatus(defaultStatus)
       setPriority("medium"); setAssignTo(""); setTagsRaw(""); setRequestFrom("-")
     }
+    setPendingFiles([])
     setError("")
   }, [task, open])
 
@@ -67,18 +73,37 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
     setSaving(true)
     try {
       const tags = tagsRaw.split(",").map(t => t.trim()).filter(Boolean)
-      await onSave({
+      const result = await onSave({
         title: title.trim(), description: description.trim() || undefined,
         status, priority, agentId: assignTo || undefined, tags,
         requestFrom: requestFrom.trim() || '-',
         ...(task ? { assignTo: assignTo || undefined } : {}),
       })
+      // After create: upload any staged attachments
+      if (!task && pendingFiles.length && onUploadAttachments && result && typeof result === 'object' && 'id' in result) {
+        try {
+          setUploadProgress(0)
+          await onUploadAttachments((result as Task).id, pendingFiles, (pct) => setUploadProgress(pct))
+        } catch (upErr) {
+          setError(`Task created, but attachment upload failed: ${(upErr as Error).message}`)
+          setSaving(false)
+          setUploadProgress(null)
+          return
+        } finally {
+          setUploadProgress(null)
+        }
+      }
       onClose()
     } catch (e: unknown) {
       setError((e as Error).message || "Failed to save")
     } finally {
       setSaving(false)
     }
+  }
+
+  function handleFiles(fl: FileList | null) {
+    if (!fl) return
+    setPendingFiles(prev => [...prev, ...Array.from(fl)])
   }
 
   return (
@@ -182,11 +207,64 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
               <Input value={requestFrom} onChange={(e) => setRequestFrom(e.target.value)} placeholder="-" />
             </div>
           </div>
+          {!task && (
+            <div className="space-y-1">
+              <Label className="flex items-center gap-1.5">
+                <Paperclip className="h-3 w-3" /> Attachments (optional)
+              </Label>
+              <label className="flex items-center gap-2 px-3 py-2 rounded-md border border-dashed border-border/50 hover:border-border cursor-pointer text-xs text-muted-foreground hover:text-foreground bg-muted/10">
+                <Upload className="h-3.5 w-3.5" />
+                <span>Click to add files (max 25MB each, 10 total)</span>
+                <input
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(e) => { handleFiles(e.target.files); e.target.value = "" }}
+                />
+              </label>
+              {pendingFiles.length > 0 && (
+                <ul className="space-y-1 pt-1">
+                  {pendingFiles.map((f, i) => (
+                    <li key={i} className="flex items-center gap-2 text-xs px-2 py-1 rounded bg-muted/30 border border-border/30">
+                      <Paperclip className="h-3 w-3 text-muted-foreground/60 shrink-0" />
+                      <span className="truncate flex-1">{f.name}</span>
+                      <span className="text-[10px] text-muted-foreground/50">
+                        {f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1024 / 1024).toFixed(1)} MB`}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setPendingFiles(prev => prev.filter((_, idx) => idx !== i))}
+                        className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {uploadProgress !== null && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <span>Uploading attachments…</span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="h-1 rounded-full bg-muted/30 overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500/70 transition-all duration-150"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
-          <Button onClick={handleSave} disabled={saving}>{saving ? "Saving..." : task ? "Save" : "Create"}</Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {uploadProgress !== null ? `Uploading ${uploadProgress}%…` : saving ? "Saving..." : task ? "Save" : "Create"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

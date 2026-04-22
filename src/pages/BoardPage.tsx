@@ -75,9 +75,16 @@ export default function BoardPage() {
 
   const hasActiveFilters = !!(filters.agentId || filters.status || filters.priority || filters.q)
 
-  async function handleCreate(data: Partial<Task>) {
+  async function handleCreate(data: Partial<Task>): Promise<Task> {
     const res = await api.createTask({ ...data, projectId: activeProjectId } as Parameters<typeof api.createTask>[0])
     addTask(res.task)
+    return res.task
+  }
+
+  async function handleUploadAttachments(taskId: string, files: File[], onProgress?: (p: number) => void) {
+    const res = await api.uploadTaskAttachments(taskId, files, onProgress)
+    updateTask(taskId, res.task)
+    if (detailTask?.id === taskId) setDetailTask(res.task)
   }
 
   async function handleUpdate(id: string, patch: object) {
@@ -240,6 +247,7 @@ export default function BoardPage() {
           ? (data) => handleUpdate(editTask.id, data)
           : handleCreate
         }
+        onUploadAttachments={handleUploadAttachments}
         onClose={() => { setCreateOpen(false); setEditTask(null) }}
       />
 
@@ -250,6 +258,7 @@ export default function BoardPage() {
         open={!!detailTask}
         onClose={() => setDetailTask(null)}
         onUpdate={handleUpdate}
+        onTaskReplace={(t) => { setDetailTask(t); updateTask(t.id, t) }}
       />
 
       {/* Realtime status change ticker */}

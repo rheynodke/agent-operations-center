@@ -18,6 +18,7 @@ import { PriorityIndicator } from "./PriorityIndicator"
 import { InReviewBanner } from "./InReviewBanner"
 import { AgentWorkSection } from "./AgentWorkSection"
 import { ExecutionStats } from "./ExecutionStats"
+import { AttachmentsSection } from "./AttachmentsSection"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -276,9 +277,11 @@ interface TaskDetailModalProps {
   isActive?: boolean
   onClose: () => void
   onUpdate: (id: string, patch: object) => Promise<void>
+  /** Called when attachments change — allows parent to sync its locally-held task copy. */
+  onTaskReplace?: (task: Task) => void
 }
 
-export function TaskDetailModal({ task, agents, open, isActive = true, onClose, onUpdate }: TaskDetailModalProps) {
+export function TaskDetailModal({ task, agents, open, isActive = true, onClose, onUpdate, onTaskReplace }: TaskDetailModalProps) {
   const currentUser = useAuthStore(s => s.user)
   const [activity, setActivity] = useState<TaskActivity[]>([])
   const [loadingActivity, setLoadingActivity] = useState(false)
@@ -330,11 +333,18 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
     finally { setReviewSubmitting(false) }
   }
 
-  async function handleRequestChanges(note: string, targetStatus: "todo" | "in_progress") {
+  async function handleRequestChanges(note: string, targetStatus: "todo" | "in_progress", files?: File[]) {
     if (!task) return
     setReviewSubmitting(true)
-    try { await onUpdate(task.id, { status: targetStatus, note }) }
-    finally { setReviewSubmitting(false) }
+    try {
+      let newAttachmentIds: string[] | undefined
+      if (files && files.length) {
+        const uploadRes = await api.uploadTaskAttachments(task.id, files)
+        newAttachmentIds = uploadRes.added.map(a => a.id)
+        onTaskReplace?.(uploadRes.task)
+      }
+      await onUpdate(task.id, { status: targetStatus, note, ...(newAttachmentIds ? { newAttachmentIds } : {}) })
+    } finally { setReviewSubmitting(false) }
   }
 
   if (!task) return null
@@ -589,6 +599,12 @@ export function TaskDetailModal({ task, agents, open, isActive = true, onClose, 
               </p>
             </SectionCard>
           )}
+
+          {/* Attachments */}
+          <AttachmentsSection
+            task={task}
+            onUpdated={(updated) => onTaskReplace?.(updated)}
+          />
 
           {/* Pre-flight Analysis */}
           {(task.analysis || (task.status === 'backlog' && task.agentId)) && (

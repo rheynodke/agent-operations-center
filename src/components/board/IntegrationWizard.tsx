@@ -32,6 +32,7 @@ const INTERNAL_FIELDS: { key: keyof IntegrationColumnMapping; label: string; req
   { key: 'status',      label: 'Status',            required: false },
   { key: 'tags',        label: 'Tags (comma-sep)',  required: false },
   { key: 'request_from', label: 'Request From',    required: false },
+  { key: 'attachments',  label: 'Attachment URL',   required: false },
 ]
 
 interface IntegrationWizardProps {

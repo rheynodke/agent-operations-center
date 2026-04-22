@@ -41,6 +41,8 @@ async function syncIntegration(integrationId) {
       const existing = _db.getTaskByExternalId(ticket.external_id, integration.type);
       const priority = VALID_PRIORITIES.includes(ticket.priority) ? ticket.priority : 'medium';
 
+      const sheetAttachments = Array.isArray(ticket.attachments) ? ticket.attachments : [];
+
       if (!existing) {
         _db.createTask({
           title: ticket.title,
@@ -52,16 +54,21 @@ async function syncIntegration(integrationId) {
           externalId: ticket.external_id,
           externalSource: integration.type,
           requestFrom: ticket.request_from || '-',
+          attachments: sheetAttachments,
         });
         created++;
       } else {
-        // Board is master for status — only update metadata fields
+        // Board is master for status — only update metadata fields.
+        // For attachments: keep user-uploaded items, refresh sheet-sourced set to match current sheet.
+        const keep = (existing.attachments || []).filter(a => a.source !== 'sheet');
+        const mergedAttachments = [...keep, ...sheetAttachments];
         _db.updateTask(existing.id, {
           title: ticket.title,
           description: ticket.description,
           priority,
           tags: ticket.tags || [],
           requestFrom: ticket.request_from || '-',
+          attachments: mergedAttachments,
         });
         updated++;
       }

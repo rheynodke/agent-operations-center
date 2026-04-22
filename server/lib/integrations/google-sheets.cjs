@@ -1,7 +1,41 @@
 // server/lib/integrations/google-sheets.cjs
 'use strict';
+const crypto = require('crypto');
+const path = require('path');
 const { google } = require('googleapis');
 const { decrypt } = require('./base.cjs');
+
+const MIME_BY_EXT = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp',
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.zip': 'application/zip', '.tar': 'application/x-tar', '.gz': 'application/gzip',
+  '.txt': 'text/plain', '.csv': 'text/csv', '.json': 'application/json',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.mp3': 'audio/mpeg',
+};
+
+function parseAttachmentUrl(raw) {
+  if (!raw) return null;
+  const url = raw.toString().trim();
+  if (!/^https?:\/\//i.test(url)) return null;
+  let filename;
+  try {
+    const u = new URL(url);
+    filename = decodeURIComponent(path.basename(u.pathname)) || u.hostname;
+  } catch {
+    filename = url.split('/').pop() || 'attachment';
+  }
+  const ext = path.extname(filename).toLowerCase();
+  const mimeType = MIME_BY_EXT[ext] || 'application/octet-stream';
+  const id = crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
+  return { id, url, filename, mimeType, source: 'sheet' };
+}
 
 const STATUS_NORMALIZE = {
   'todo': 'todo', 'to do': 'todo', 'to-do': 'todo',
@@ -153,6 +187,8 @@ const GoogleSheetsAdapter = {
       if (!externalId || !title) continue;
 
       const tagsRaw = getVal(row, 'tags');
+      const attachmentRaw = getVal(row, 'attachments');
+      const attachment = parseAttachmentUrl(attachmentRaw);
       tickets.push({
         external_id: externalId,
         title,
@@ -161,6 +197,7 @@ const GoogleSheetsAdapter = {
         status: getVal(row, 'status') || undefined,
         tags: tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : [],
         request_from: getVal(row, 'request_from') || '-',
+        attachments: attachment ? [attachment] : [],
       });
     }
     return tickets;

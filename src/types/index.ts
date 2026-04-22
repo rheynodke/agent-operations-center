@@ -217,6 +217,21 @@ export interface Task {
   externalSource?: string
   requestFrom?: string
   analysis?: TaskAnalysis | null
+  attachments?: TaskAttachment[]
+}
+
+export interface TaskAttachment {
+  /** Stable per-attachment id (uuid for uploads; hash/url-based for sheet links). */
+  id: string
+  /** Remote URL (for source=sheet) OR server-served URL (for source=upload). */
+  url: string
+  filename: string
+  mimeType?: string
+  size?: number
+  source: 'sheet' | 'upload'
+  /** Local storage path under data/attachments (only for source=upload). */
+  storagePath?: string
+  createdAt?: string
 }
 
 export interface TaskAnalysis {
@@ -685,6 +700,8 @@ export interface IntegrationColumnMapping {
   status?: string
   tags?: string
   request_from?: string
+  /** Column containing a single attachment URL per cell. URL → TaskAttachment with source='sheet'. */
+  attachments?: string
 }
 
 export interface IntegrationConfig {

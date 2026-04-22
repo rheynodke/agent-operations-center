@@ -274,7 +274,7 @@ export const api = {
   },
   createTask: (data: { title: string; description?: string; status?: TaskStatus; priority?: TaskPriority; agentId?: string; tags?: string[] }) =>
     request<{ task: Task }>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
-  updateTask: (id: string, patch: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'tags' | 'cost' | 'sessionId'>> & { assignTo?: string; note?: string }) =>
+  updateTask: (id: string, patch: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'tags' | 'cost' | 'sessionId'>> & { assignTo?: string; note?: string; newAttachmentIds?: string[] }) =>
     request<{ task: Task }>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTask: (id: string) =>
     request<{ ok: boolean }>(`/tasks/${id}`, { method: 'DELETE' }),
@@ -284,6 +284,51 @@ export const api = {
     request<{ ok: boolean }>(`/agents/${agentId}/sync-task-script`, { method: 'POST' }),
   dispatchTask: (taskId: string) =>
     request<{ ok: boolean; sessionKey: string; agentId: string }>(`/tasks/${taskId}/dispatch`, { method: 'POST' }),
+
+  // Attachments
+  uploadTaskAttachments: (
+    taskId: string,
+    files: File[],
+    onProgress?: (pct: number) => void,
+  ): Promise<{ task: Task; added: import('@/types').TaskAttachment[] }> => {
+    const token = useAuthStore.getState().token;
+    const form = new FormData();
+    for (const f of files) form.append('files', f);
+    // Use XHR so we can report upload progress (fetch() lacks a progress event)
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${BASE}/tasks/${taskId}/attachments`);
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      if (onProgress) {
+        xhr.upload.onprogress = (evt) => {
+          if (evt.lengthComputable) onProgress(Math.round((evt.loaded / evt.total) * 100));
+        };
+      }
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          useAuthStore.getState().clearAuth();
+          reject(new Error('Unauthorized'));
+          return;
+        }
+        let body: { task?: Task; added?: import('@/types').TaskAttachment[]; error?: string } = {};
+        try { body = JSON.parse(xhr.responseText || '{}'); } catch {}
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error(body.error || `Upload failed (HTTP ${xhr.status})`));
+          return;
+        }
+        resolve(body as { task: Task; added: import('@/types').TaskAttachment[] });
+      };
+      xhr.onerror = () => reject(new Error('Network error during upload'));
+      xhr.send(form);
+    });
+  },
+  deleteTaskAttachment: (taskId: string, attachmentId: string) =>
+    request<{ task: Task }>(`/tasks/${taskId}/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' }),
+  attachmentUrl: (att: import('@/types').TaskAttachment): string => {
+    if (att.source === 'sheet') return att.url;
+    const token = useAuthStore.getState().token;
+    return token ? `${att.url}?token=${encodeURIComponent(token)}` : att.url;
+  },
   analyzeTask: (taskId: string) =>
     request<{ ok: boolean; analysis: import('@/types').TaskAnalysis }>(`/tasks/${taskId}/analyze`, { method: 'POST' }),
 

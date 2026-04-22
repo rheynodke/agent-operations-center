@@ -15,7 +15,14 @@ const { gatewayProxy } = require('./lib/gateway-ws.cjs');
 const aiLib = require('./lib/ai.cjs');
 const versioning = require('./lib/versioning.cjs');
 const integrations = require('./lib/integrations/index.cjs');
+const attachmentsLib = require('./lib/attachments.cjs');
+const multer = require('multer');
 const { AGENTS_DIR } = require('./lib/config.cjs');
+
+const uploadAttachments = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: attachmentsLib.MAX_SIZE, files: 5 },
+});
 
 /**
  * Find all gateway JSONL session files for an agent that contain a given taskId,
@@ -1913,7 +1920,7 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
     const gate = checkTaskAccess(req, id);
     if (gate) return res.status(403).json({ error: gate });
     // agentId in body = actor identifier (from agent script); assignTo = new assignment (from UI)
-    const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId, inputTokens, outputTokens, requestFrom } = req.body;
+    const { agentId: actorAgentId, assignTo, note, status, priority, title, description, tags, cost, sessionId, inputTokens, outputTokens, requestFrom, newAttachmentIds } = req.body;
     const before = db.getTask(id);
     if (!before) return res.status(404).json({ error: 'Task not found' });
 
@@ -1980,6 +1987,9 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
       } else if (isMovingToTodo) {
         dispatchOpts.additionalContext = note || null;
       }
+      if (Array.isArray(newAttachmentIds) && newAttachmentIds.length) {
+        dispatchOpts.newAttachmentIds = newAttachmentIds;
+      }
       dispatchTaskToAgent(after, dispatchOpts).catch(err =>
         console.warn('[auto-dispatch]', after.id, err.message)
       );
@@ -2011,15 +2021,119 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
 app.delete('/api/tasks/:id', db.authMiddleware, (req, res) => {
   try {
     const { id } = req.params;
-    if (!db.getTask(id)) return res.status(404).json({ error: 'Task not found' });
+    const existing = db.getTask(id);
+    if (!existing) return res.status(404).json({ error: 'Task not found' });
     const gate = checkTaskAccess(req, id);
     if (gate) return res.status(403).json({ error: gate });
+    // Clean up any uploaded attachment files before deleting the row
+    for (const att of (existing.attachments || [])) {
+      if (att.source === 'upload') {
+        try { attachmentsLib.deleteAttachmentFile(id, att.id); } catch {}
+      }
+    }
     db.deleteTask(id);
     broadcastTasksUpdate();
     res.json({ ok: true });
   } catch (err) {
     console.error('[api/tasks DELETE]', err);
     res.status(500).json({ error: 'Failed to delete task' });
+  }
+});
+
+// ─── Task Attachments ─────────────────────────────────────────────────────────
+
+// Upload one or more files to a task
+app.post(
+  '/api/tasks/:id/attachments',
+  db.authMiddleware,
+  uploadAttachments.array('files', 5),
+  (req, res) => {
+    try {
+      const { id } = req.params;
+      const task = db.getTask(id);
+      if (!task) return res.status(404).json({ error: 'Task not found' });
+      const gate = checkTaskAccess(req, id);
+      if (gate) return res.status(403).json({ error: gate });
+
+      const files = req.files || [];
+      if (!files.length) return res.status(400).json({ error: 'No files uploaded (field: files)' });
+
+      const existing = Array.isArray(task.attachments) ? task.attachments : [];
+      if (existing.length + files.length > attachmentsLib.MAX_PER_TASK) {
+        return res.status(400).json({ error: `Max ${attachmentsLib.MAX_PER_TASK} attachments per task` });
+      }
+
+      const added = [];
+      for (const f of files) {
+        const rec = attachmentsLib.storeUpload({
+          taskId: id,
+          originalName: f.originalname,
+          buffer: f.buffer,
+          mimeType: f.mimetype,
+        });
+        added.push(rec);
+      }
+
+      const updated = db.updateTask(id, { attachments: [...existing, ...added] });
+      db.addTaskActivity({ taskId: id, type: 'comment', actor: 'user', note: `Uploaded ${added.length} attachment(s)` });
+      broadcastTasksUpdate();
+      res.status(201).json({ task: updated, added });
+    } catch (err) {
+      console.error('[api/tasks/:id/attachments POST]', err);
+      res.status(400).json({ error: err.message || 'Upload failed' });
+    }
+  }
+);
+
+// Delete a single attachment from a task
+app.delete('/api/tasks/:id/attachments/:attachmentId', db.authMiddleware, (req, res) => {
+  try {
+    const { id, attachmentId } = req.params;
+    const task = db.getTask(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const gate = checkTaskAccess(req, id);
+    if (gate) return res.status(403).json({ error: gate });
+
+    const existing = Array.isArray(task.attachments) ? task.attachments : [];
+    const target = existing.find(a => a.id === attachmentId);
+    if (!target) return res.status(404).json({ error: 'Attachment not found' });
+
+    if (target.source === 'upload') {
+      attachmentsLib.deleteAttachmentFile(id, attachmentId);
+    }
+    const remaining = existing.filter(a => a.id !== attachmentId);
+    const updated = db.updateTask(id, { attachments: remaining });
+    broadcastTasksUpdate();
+    res.json({ task: updated });
+  } catch (err) {
+    console.error('[api/tasks/:id/attachments DELETE]', err);
+    res.status(500).json({ error: 'Failed to delete attachment' });
+  }
+});
+
+// Serve an uploaded attachment file. Auth required (token in header or ?token= query
+// for direct <img src> / browser download usage).
+function attachmentAuthMiddleware(req, res, next) {
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
+  if (queryToken && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${queryToken}`;
+  }
+  return db.authMiddleware(req, res, next);
+}
+app.get('/api/attachments/:taskId/:attachmentId', attachmentAuthMiddleware, (req, res) => {
+  try {
+    const { taskId, attachmentId } = req.params;
+    const task = db.getTask(taskId);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    // Read access is allowed for any authenticated user (matches GET /api/tasks behavior).
+    const resolved = attachmentsLib.resolveAttachmentFile(taskId, attachmentId, task.attachments || []);
+    if (!resolved) return res.status(404).json({ error: 'Attachment not found' });
+    if (resolved.att.mimeType) res.setHeader('Content-Type', resolved.att.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(resolved.att.filename)}"`);
+    res.sendFile(resolved.absPath);
+  } catch (err) {
+    console.error('[api/attachments GET]', err);
+    res.status(500).json({ error: 'Failed to serve attachment' });
   }
 });
 
@@ -2058,6 +2172,39 @@ async function dispatchTaskToAgent(task, opts = {}) {
   const aocUrl   = `http://localhost:${aocPort}`;
   const curlBase = `curl -sf -X PATCH ${aocUrl}/api/tasks/${task.id} -H "Authorization: Bearer ${aocToken}" -H "Content-Type: application/json"`;
   const tagsLine = (task.tags || []).length > 0 ? `Tags: ${task.tags.join(', ')}` : '';
+
+  // Build attachments context — list URLs agent can fetch via fetch_attachment.sh
+  const attachments = Array.isArray(task.attachments) ? task.attachments : [];
+  function renderAttachmentLines(list) {
+    return list.map(att => {
+      const fullUrl = att.source === 'upload' ? `${aocUrl}${att.url}` : att.url;
+      const mime = att.mimeType ? ` · \`${att.mimeType}\`` : '';
+      return `  - **${att.filename}**${mime} (${att.source})\n    URL: \`${fullUrl}\`\n    Fetch: \`fetch_attachment.sh "${fullUrl}"\``;
+    }).join('\n');
+  }
+  let attachmentsContext = '';
+  if (attachments.length > 0) {
+    attachmentsContext = [
+      '',
+      '**Attachments** (download with `fetch_attachment.sh` — it auto-adds `AOC_TOKEN` for internal URLs, extracts `.zip`, and converts `.docx` to plain text):',
+      renderAttachmentLines(attachments),
+      '',
+    ].join('\n');
+  }
+
+  // Build a narrower "new attachments" block for re-dispatches (change request, etc.)
+  let newAttachmentsBlock = '';
+  if (Array.isArray(opts.newAttachmentIds) && opts.newAttachmentIds.length && attachments.length) {
+    const newOnes = attachments.filter(a => opts.newAttachmentIds.includes(a.id));
+    if (newOnes.length) {
+      newAttachmentsBlock = [
+        '',
+        '**📎 New attachments from reviewer:**',
+        renderAttachmentLines(newOnes),
+        '',
+      ].join('\n');
+    }
+  }
 
   // Build project context
   let projectContext = '';
@@ -2129,6 +2276,7 @@ async function dispatchTaskToAgent(task, opts = {}) {
       ``,
       task.description ? `**Description:**\n${task.description}` : '',
       projectContext,
+      attachmentsContext,
       extraContext ? `\n**Additional Context from operator:**\n${extraContext}` : '',
       connectionsContext,
       ``,
@@ -2160,18 +2308,18 @@ async function dispatchTaskToAgent(task, opts = {}) {
           ``,
           `The issue that was blocking you has been fixed:`,
           resolvedNote,
-          ``,
+          newAttachmentsBlock,
           `You already have the full context from your previous work. Please continue where you left off.`,
           `When done, update status to "in_review".`,
-        ].join('\n')
+        ].filter(Boolean).join('\n')
       : [
           `---`,
           `✅ **Blocker resolved — please continue.**`,
-          ``,
+          newAttachmentsBlock,
           `The issue that was blocking you has been fixed. You already have the full context from your previous work.`,
           `Please continue where you left off.`,
           `When done, update status to "in_review".`,
-        ].join('\n');
+        ].filter(Boolean).join('\n');
   } else {
     // Continue message for re-dispatch — agent already has full context from prior messages
     const changeNote = opts.changeRequestNote;
@@ -2181,10 +2329,10 @@ async function dispatchTaskToAgent(task, opts = {}) {
         `---`,
         `⚠️ **Change Request from reviewer:**`,
         changeNote,
-        ``,
+        newAttachmentsBlock,
         `Please address the feedback above. You already have the full context from your previous work on this ticket.`,
         `When done, update status to "in_review" again.`,
-      ].join('\n');
+      ].filter(Boolean).join('\n');
     } else if (extraContext) {
       message = [
         `---`,
@@ -2192,18 +2340,18 @@ async function dispatchTaskToAgent(task, opts = {}) {
         ``,
         `**Additional instructions from operator:**`,
         extraContext,
-        ``,
+        newAttachmentsBlock,
         `You already have the full context from your previous work. Please continue where you left off.`,
         `When done, update status to "in_review".`,
-      ].join('\n');
+      ].filter(Boolean).join('\n');
     } else {
       message = [
         `---`,
         `🔄 **Continue working on this ticket.**`,
-        ``,
+        newAttachmentsBlock,
         `You already have the full context from your previous work. Please continue where you left off.`,
         `When done, update status to "in_review".`,
-      ].join('\n');
+      ].filter(Boolean).join('\n');
     }
   }
 
@@ -3897,6 +4045,7 @@ function syncConnectionsScriptForAllAgents() {
     parsers.ensureCheckConnectionsScript();
     parsers.ensureGwsCallScript();
     parsers.ensureAocConnectScript();
+    parsers.ensureFetchAttachmentScript();
     const agents = parsers.parseAgentRegistry();
     const allConns = db.getAllConnections();
     for (const agent of agents) {

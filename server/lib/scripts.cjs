@@ -812,6 +812,100 @@ function ensureGwsCallScript() {
   console.log('[scripts] Ensured shared gws-call.sh script');
 }
 
+// ── fetch_attachment.sh — Download task attachments for agent consumption ──
+
+const FETCH_ATTACHMENT_SCRIPT_NAME = 'fetch_attachment.sh';
+const FETCH_ATTACHMENT_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# fetch_attachment — Download a task attachment (by URL) for agent use.
+#
+# Usage:
+#   fetch_attachment.sh <url> [output_dir]
+#
+# - If <url> is an AOC-served path (/api/attachments/...), the AOC_TOKEN is
+#   attached automatically as a Bearer header.
+# - External URLs (e.g. from a synced Google Sheet) are fetched as-is.
+# - Output file is saved under <output_dir> (default: ./inputs/) with a
+#   sanitized filename derived from the URL basename.
+# - For .zip files, the archive is also extracted into a sibling directory.
+# - For .docx files, best-effort plain-text extraction is written next to it.
+#
+# Prints the saved absolute path(s) on stdout. Exit 0 on success.
+
+set -euo pipefail
+
+URL="\${1:?Usage: fetch_attachment.sh <url> [output_dir]}"
+OUTDIR="\${2:-./inputs}"
+mkdir -p "$OUTDIR"
+
+# Resolve AOC base + token if present
+AOC_URL="\${AOC_URL:-http://localhost:\${PORT:-18800}}"
+AOC_TOKEN="\${AOC_TOKEN:-\${DASHBOARD_TOKEN:-}}"
+
+# Build filename from URL path basename, stripping query string
+BASENAME="\$(basename "\${URL%%\\?*}")"
+if [ -z "\$BASENAME" ] || [ "\$BASENAME" = "/" ]; then
+  BASENAME="attachment_\$(date +%s)"
+fi
+# Sanitize
+BASENAME="\$(echo "\$BASENAME" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-200)"
+DEST="\$OUTDIR/\$BASENAME"
+
+# Decide auth
+CURL_ARGS=(-sSL --fail --max-time 120 -o "\$DEST")
+case "\$URL" in
+  /api/attachments/*|"\$AOC_URL"/api/attachments/*)
+    FULL_URL="\$URL"
+    case "\$URL" in /api/*) FULL_URL="\$AOC_URL\$URL" ;; esac
+    if [ -n "\$AOC_TOKEN" ]; then
+      CURL_ARGS+=(-H "Authorization: Bearer \$AOC_TOKEN")
+    fi
+    curl "\${CURL_ARGS[@]}" "\$FULL_URL"
+    ;;
+  *)
+    curl "\${CURL_ARGS[@]}" "\$URL"
+    ;;
+esac
+
+echo "\$DEST"
+
+# Post-processing for common formats
+LOWER="\$(echo "\$BASENAME" | tr '[:upper:]' '[:lower:]')"
+case "\$LOWER" in
+  *.zip)
+    EXTRACT_DIR="\${DEST%.zip}_extracted"
+    if command -v unzip >/dev/null 2>&1; then
+      mkdir -p "\$EXTRACT_DIR"
+      unzip -oq "\$DEST" -d "\$EXTRACT_DIR" && echo "\$EXTRACT_DIR"
+    fi
+    ;;
+  *.docx)
+    TXT="\${DEST%.docx}.txt"
+    if command -v unzip >/dev/null 2>&1; then
+      # docx is a zip of XML — extract word/document.xml and strip tags
+      unzip -p "\$DEST" word/document.xml 2>/dev/null \\
+        | sed -e 's/<[^>]*>/ /g' -e 's/  */ /g' \\
+        > "\$TXT" 2>/dev/null || true
+      [ -s "\$TXT" ] && echo "\$TXT"
+    fi
+    ;;
+esac
+`;
+
+function ensureFetchAttachmentScript() {
+  ensureDir();
+  const scriptPath = path.join(SCRIPTS_DIR, FETCH_ATTACHMENT_SCRIPT_NAME);
+  fs.writeFileSync(scriptPath, FETCH_ATTACHMENT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
+  const meta = readMeta(SCRIPTS_DIR);
+  meta[FETCH_ATTACHMENT_SCRIPT_NAME] = {
+    name: 'fetch_attachment',
+    emoji: '📎',
+    description: 'Download a task attachment (AOC-served or external URL) into ./inputs/. Auto-extracts .zip and converts .docx to plain text. Usage: fetch_attachment.sh <url> [output_dir]',
+    execHint: `${SCRIPTS_DIR}/fetch_attachment.sh <url> [output_dir]`,
+  };
+  writeMeta(SCRIPTS_DIR, meta);
+  console.log('[scripts] Ensured shared fetch_attachment.sh script');
+}
+
 // ── aoc-connect.sh — Generic connection wrapper ─────────────────────────────
 
 const AOC_CONNECT_SCRIPT_NAME = 'aoc-connect.sh';
@@ -1566,6 +1660,7 @@ module.exports = {
   ensureCheckConnectionsScript,
   ensureGwsCallScript,
   ensureAocConnectScript,
+  ensureFetchAttachmentScript,
   injectHeartbeatTaskCheck,
   // ADLC shared scripts installer
   ensureSharedAdlcScripts,

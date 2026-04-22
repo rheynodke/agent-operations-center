@@ -1,7 +1,7 @@
 import React from "react"
 import { useDraggable } from "@dnd-kit/core"
 import { CSS } from "@dnd-kit/utilities"
-import { MoreHorizontal, Pencil, Trash2, Activity, ExternalLink, User, Search, ShieldCheck, ShieldAlert } from "lucide-react"
+import { MoreHorizontal, Pencil, Trash2, Activity, ExternalLink, User, Search, ShieldCheck, ShieldAlert, Paperclip } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Task } from "@/types"
 import {
@@ -58,6 +58,7 @@ export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isD
   const hasAgent = !!(agentEmoji || agentName || agentAvatarPresetId)
   const isSynced = !!task.externalSource
   const taskCode = task.externalId ?? `#${task.id.slice(0, 6)}`
+  const attachmentCount = (task.attachments || []).length
 
   return (
     <div
@@ -91,6 +92,16 @@ export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isD
         {isSynced && (
           <span className="flex items-center gap-0.5 text-[10px] text-emerald-500/60">
             <ExternalLink className="h-2.5 w-2.5" />
+          </span>
+        )}
+
+        {attachmentCount > 0 && (
+          <span
+            className="flex items-center gap-0.5 text-[10px] text-muted-foreground/70"
+            title={`${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`}
+          >
+            <Paperclip className="h-2.5 w-2.5" />
+            {attachmentCount}
           </span>
         )}
 

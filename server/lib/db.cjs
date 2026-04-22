@@ -157,6 +157,7 @@ async function initDatabase() {
   try { db.run('ALTER TABLE tasks ADD COLUMN external_source TEXT'); } catch {}
   try { db.run("ALTER TABLE tasks ADD COLUMN request_from TEXT DEFAULT '-'"); } catch {}
   try { db.run("ALTER TABLE tasks ADD COLUMN analysis TEXT"); } catch {}
+  try { db.run("ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS task_activity (
@@ -325,6 +326,7 @@ function normalizeTask(row) {
     externalSource: row.external_source || undefined,
     requestFrom: row.request_from || '-',
     analysis: (() => { try { return row.analysis ? JSON.parse(row.analysis) : null; } catch { return null; } })(),
+    attachments: (() => { try { return row.attachments ? JSON.parse(row.attachments) : []; } catch { return []; } })(),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at || undefined,
@@ -561,14 +563,14 @@ function getTaskByExternalId(externalId, externalSource) {
   return row.id ? normalizeTask(row) : null;
 }
 
-function createTask({ title, description, status = 'backlog', priority = 'medium', agentId, tags = [], sessionId, projectId = 'general', externalId, externalSource, requestFrom = '-' } = {}) {
+function createTask({ title, description, status = 'backlog', priority = 'medium', agentId, tags = [], sessionId, projectId = 'general', externalId, externalSource, requestFrom = '-', attachments = [] } = {}) {
   if (!db) throw new Error('DB not initialized');
   if (!title) throw new Error('createTask: title is required');
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.run(
-    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, project_id, external_id, external_source, request_from, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, title, description || null, status, priority, agentId || null, sessionId || null, JSON.stringify(tags || []), projectId, externalId || null, externalSource || null, requestFrom || '-', now, now]
+    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, project_id, external_id, external_source, request_from, attachments, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, title, description || null, status, priority, agentId || null, sessionId || null, JSON.stringify(tags || []), projectId, externalId || null, externalSource || null, requestFrom || '-', JSON.stringify(attachments || []), now, now]
   );
   persist();
   return getTask(id);
@@ -593,6 +595,7 @@ function updateTask(id, patch) {
   if (patch.outputTokens !== undefined) { fields.push('output_tokens = ?'); vals.push(patch.outputTokens != null ? Number(patch.outputTokens) : null); }
   if (patch.requestFrom  !== undefined) { fields.push('request_from = ?');  vals.push(patch.requestFrom || '-'); }
   if (patch.analysis     !== undefined) { fields.push('analysis = ?');      vals.push(typeof patch.analysis === 'string' ? patch.analysis : JSON.stringify(patch.analysis)); }
+  if (patch.attachments  !== undefined) { fields.push('attachments = ?');   vals.push(JSON.stringify(Array.isArray(patch.attachments) ? patch.attachments : [])); }
   if (patch.status === 'done' && before.status !== 'done') {
     fields.push('completed_at = ?'); vals.push(now);
   } else if (patch.status !== undefined && patch.status !== 'done' && before.status === 'done') {

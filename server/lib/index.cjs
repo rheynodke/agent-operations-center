@@ -135,6 +135,7 @@ module.exports = {
   ensureCheckConnectionsScript: scriptsLib.ensureCheckConnectionsScript,
   ensureGwsCallScript:          scriptsLib.ensureGwsCallScript,
   ensureAocConnectScript:       scriptsLib.ensureAocConnectScript,
+  ensureFetchAttachmentScript:  scriptsLib.ensureFetchAttachmentScript,
   injectHeartbeatTaskCheck: scriptsLib.injectHeartbeatTaskCheck,
   ensureSharedAdlcScripts:  scriptsLib.ensureSharedAdlcScripts,
   syncAgentConnectionsContext: scriptsLib.syncAgentConnectionsContext,
