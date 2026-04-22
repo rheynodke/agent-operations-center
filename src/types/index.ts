@@ -866,6 +866,24 @@ export interface McpTool {
   inputSchema?: Record<string, unknown>
 }
 
+export type McpOAuthState = 'pending' | 'connected' | 'expired' | 'disconnected'
+
+export interface McpOAuthMetadata {
+  enabled: true
+  authState: McpOAuthState
+  serverUrl?: string
+  authorizationEndpoint?: string
+  tokenEndpoint?: string
+  registrationEndpoint?: string
+  revocationEndpoint?: string
+  clientId?: string
+  scopes?: string[]
+  requestedScopes?: string[]
+  scopesSupported?: string[]
+  connectedAt?: number
+  lastRefreshAt?: number
+}
+
 export interface McpMetadata {
   transport: McpTransport
   preset: McpPreset
@@ -878,6 +896,8 @@ export interface McpMetadata {
   url?: string
   headers?: Record<string, string>   // non-sensitive headers
   headerKeys?: string[]              // names of secret headers stored in credentials JSON
+  // OAuth (for http/sse servers that require authorization)
+  oauth?: McpOAuthMetadata
   // shared
   tools?: McpTool[]                  // populated by test/discovery
   toolsDiscoveredAt?: string
@@ -942,6 +962,7 @@ export interface ConnectionMetadata {
   url?: string
   headers?: Record<string, string>
   headerKeys?: string[]
+  oauth?: McpOAuthMetadata
   tools?: McpTool[]
   toolsDiscoveredAt?: string
 }

@@ -425,6 +425,12 @@ export const api = {
   healthCheckGoogleConnection: (id: string) =>
     request<{ ok: boolean; authState: string; error?: string }>(`/connections/${encodeURIComponent(id)}/google/health`),
 
+  // MCP OAuth flows
+  startMcpOauth: (id: string) =>
+    request<{ authUrl: string }>(`/connections/${encodeURIComponent(id)}/mcp-oauth/start`, { method: 'POST' }),
+  disconnectMcpOauth: (id: string) =>
+    request<{ ok: true }>(`/connections/${encodeURIComponent(id)}/mcp-oauth/disconnect`, { method: 'POST' }),
+
   // Agent ↔ Connection assignments
   getAgentConnections: (agentId: string) =>
     request<{ connectionIds: string[]; connections: Connection[] }>(`/agents/${agentId}/connections`),

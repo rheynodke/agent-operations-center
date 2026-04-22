@@ -19,6 +19,7 @@ const attachmentsLib = require('./lib/attachments.cjs');
 const outputsLib = require('./lib/outputs.cjs');
 const metrics = require('./lib/metrics.cjs');
 const mcpPool = require('./lib/connections/mcp.cjs');
+const mcpOauth = require('./lib/connections/mcp-oauth.cjs');
 const multer = require('multer');
 const { AGENTS_DIR } = require('./lib/config.cjs');
 
@@ -3035,6 +3036,21 @@ app.post('/api/connections', db.authMiddleware, async (req, res) => {
     }
 
     const conn = db.createConnection({ id, name, type, credentials, metadata, enabled, createdBy: req.user?.userId });
+
+    // If this is an MCP connection with OAuth metadata, kick off the flow so
+    // the UI can open a popup. Mirrors the google_workspace create flow.
+    if (type === 'mcp' && metadata && metadata.oauth && metadata.oauth.enabled) {
+      try {
+        const { authUrl } = await mcpOauth.beginAuth(id, {
+          requestedScopes: metadata.oauth.requestedScopes || [],
+        });
+        return res.json({ ok: true, connection: conn, authUrl });
+      } catch (err) {
+        // Leave the connection row in place so user can retry from the card
+        console.warn(`[mcp-oauth] beginAuth failed for ${id}: ${err.message}`);
+        return res.json({ ok: true, connection: conn, oauthError: err.message });
+      }
+    }
     res.json({ ok: true, connection: conn });
   } catch (err) {
     console.error('[api/connections POST]', err);
@@ -3121,6 +3137,71 @@ app.get('/api/connections/google/callback', async (req, res) => {
     res.send(renderHtml({ type: 'oauth-success', connectionId: conn.id }));
   } catch (err) {
     console.error('[oauth/callback]', err);
+    res.status(err.status || 500).send(renderHtml({ type: 'oauth-error', errorMsg: err.message }));
+  }
+});
+
+// ─── MCP OAuth ──────────────────────────────────────────────────────────────
+
+app.post('/api/connections/:id/mcp-oauth/start', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const conn = db.getConnection(req.params.id);
+    if (!conn || conn.type !== 'mcp') return res.status(404).json({ error: 'Not found' });
+    const { authUrl } = await mcpOauth.beginAuth(req.params.id, {
+      requestedScopes: req.body?.requestedScopes || (conn.metadata?.oauth?.requestedScopes) || [],
+    });
+    res.json({ authUrl });
+  } catch (err) {
+    console.error('[api/mcp-oauth/start]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/connections/:id/mcp-oauth/disconnect', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const conn = db.getConnection(req.params.id);
+    if (!conn || conn.type !== 'mcp') return res.status(404).json({ error: 'Not found' });
+    // Drop any live transport so next call re-inits with fresh (or missing) tokens
+    try { await mcpPool.teardown(req.params.id); } catch {}
+    await mcpOauth.disconnect(req.params.id);
+    broadcast({ type: 'connection:auth_expired', payload: { connectionId: req.params.id } });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/mcp-oauth/disconnect]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// PUBLIC OAuth callback — protected by signed state JWT
+app.get('/api/connections/mcp/oauth/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  function renderHtml({ type, connectionId, errorMsg }) {
+    const payload = JSON.stringify({ type, connectionId, error: errorMsg });
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${type === 'oauth-success' ? 'Connected' : 'Error'}</title>
+    <style>body{font-family:system-ui;padding:2rem;text-align:center;color:#222}.ok{color:#0a7a0a}.err{color:#a00}</style></head>
+    <body>
+      <h2 class="${type === 'oauth-success' ? 'ok' : 'err'}">${type === 'oauth-success' ? '\u2713 Connected' : '\u2717 Error'}</h2>
+      <p>${errorMsg || 'You can close this window.'}</p>
+      <script>
+        try { window.opener && window.opener.postMessage(${payload}, '*'); } catch (e) {}
+        setTimeout(function(){ window.close(); }, 1500);
+      </script>
+    </body></html>`;
+  }
+
+  if (error) {
+    return res.status(400).send(renderHtml({ type: 'oauth-error', errorMsg: `Provider returned: ${error}` }));
+  }
+  if (!code || !state) {
+    return res.status(400).send(renderHtml({ type: 'oauth-error', errorMsg: 'Missing code or state' }));
+  }
+  try {
+    const connectionId = await mcpOauth.completeAuth({ stateToken: state, code });
+    broadcast({ type: 'connection:auth_completed', payload: { connectionId } });
+    res.send(renderHtml({ type: 'oauth-success', connectionId }));
+  } catch (err) {
+    console.error('[mcp oauth/callback]', err);
     res.status(err.status || 500).send(renderHtml({ type: 'oauth-error', errorMsg: err.message }));
   }
 });
@@ -3286,10 +3367,13 @@ app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwn
       const m = raw.metadata || {};
       const transport = m.transport || 'stdio';
       const needsUrl = transport === 'http' || transport === 'sse';
+      const usesOauth = !!(m.oauth && m.oauth.enabled);
       if (!needsUrl && !m.command) {
         result = { ok: false, error: 'command not set in metadata' };
       } else if (needsUrl && !m.url) {
         result = { ok: false, error: 'url not set in metadata' };
+      } else if (usesOauth && (m.oauth.authState !== 'connected')) {
+        result = { ok: false, error: `OAuth not completed (state: ${m.oauth.authState || 'unknown'}). Use Connect to authorize first.` };
       } else {
         // Tear down any live instance so we probe with fresh config
         try { await mcpPool.teardown(req.params.id); } catch {}
@@ -3301,6 +3385,7 @@ app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwn
           url: m.url,
           headers: m.headers || {},
           credentials: raw.credentials || '',
+          oauth: usesOauth ? { connId: req.params.id } : undefined,
         });
         if (probe.ok) {
           // Persist discovered tools (minimal fields — strip inputSchema from display)
@@ -3362,6 +3447,7 @@ app.post('/api/mcp/call', db.authMiddleware, async (req, res) => {
       url: m.url,
       headers: m.headers || {},
       credentials: raw.credentials || '',
+      oauth: (m.oauth && m.oauth.enabled) ? { connId: match.id } : undefined,
     };
 
     // --list-tools shortcut — avoids a second round-trip from the shell

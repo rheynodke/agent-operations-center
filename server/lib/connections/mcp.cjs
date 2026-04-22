@@ -37,7 +37,10 @@ function hashSpec(spec) {
     env: spec.env || {},
     url: spec.url || '',
     headers: spec.headers || {},
-    credentials: spec.credentials || '', // already-decrypted JSON string
+    oauth: spec.oauth ? { connId: spec.oauth.connId } : null,
+    // Only hash credentials if no OAuth — oauth tokens rotate and shouldn't
+    // invalidate the pool entry on every refresh.
+    credentials: spec.oauth ? '' : (spec.credentials || ''),
   });
   return crypto.createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
@@ -92,8 +95,15 @@ function buildTransport(spec) {
     try { parsedUrl = new URL(spec.url); }
     catch { throw new Error(`MCP url is not a valid URL: ${spec.url}`); }
 
-    // Merge non-secret headers (metadata.headers) + secret headers (credentials JSON)
-    const headers = { ...(spec.headers || {}), ...parseCredentialsEnv(spec.credentials) };
+    // Merge header sources: static metadata headers + secret headers from
+    // credentials + resolved OAuth Bearer token (if present).
+    const headers = {
+      ...(spec.headers || {}),
+      ...parseCredentialsEnv(spec.credentials),
+    };
+    if (spec._bearerToken) {
+      headers.Authorization = `Bearer ${spec._bearerToken}`;
+    }
     const opts = {
       requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
     };
@@ -145,6 +155,7 @@ async function spawnClient(connId, spec) {
     client,
     transport,
     specHash: hashSpec(spec),
+    bearerToken: spec._bearerToken || null,
     startedAt: Date.now(),
     restartCount: 0,
   };
@@ -167,14 +178,19 @@ async function spawnClient(connId, spec) {
 }
 
 async function getClient(connId, spec) {
+  // Resolve OAuth access token before hashing/spawning. Refreshes
+  // transparently via mcp-oauth.getAccessToken when near expiry.
+  const resolved = await resolveOAuthIfNeeded(spec);
   const existing = pool.get(connId);
-  const nextHash = hashSpec(spec);
+  const nextHash = hashSpec(resolved);
+  const tokenChanged =
+    existing && existing.bearerToken !== resolved._bearerToken;
 
-  if (existing && existing.specHash === nextHash) {
+  if (existing && existing.specHash === nextHash && !tokenChanged) {
     return existing;
   }
-  if (existing && existing.specHash !== nextHash) {
-    // Config changed — tear down and respawn
+  if (existing && (existing.specHash !== nextHash || tokenChanged)) {
+    // Config/token changed — tear down and respawn
     await teardown(connId);
   }
 
@@ -191,6 +207,24 @@ async function getClient(connId, spec) {
   }
 
   return spawnClient(connId, spec);
+}
+
+// Lazy-loaded to avoid a circular require at module load time.
+let _mcpOauth = null;
+function getMcpOauth() {
+  if (_mcpOauth === null) {
+    try { _mcpOauth = require('./mcp-oauth.cjs'); }
+    catch { _mcpOauth = false; } // module missing — stdio-only build
+  }
+  return _mcpOauth;
+}
+
+async function resolveOAuthIfNeeded(spec) {
+  if (!spec.oauth || !spec.oauth.connId) return spec;
+  const oauth = getMcpOauth();
+  if (!oauth) throw new Error('mcp-oauth module not available');
+  const token = await oauth.getAccessToken(spec.oauth.connId);
+  return { ...spec, _bearerToken: token };
 }
 
 async function teardown(connId) {

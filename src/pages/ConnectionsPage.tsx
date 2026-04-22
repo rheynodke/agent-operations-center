@@ -8,7 +8,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { api } from "@/lib/api"
 import { canEditConnection } from "@/lib/permissions"
 import { useAuthStore } from "@/stores"
-import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata, McpPreset, McpTool, McpTransport } from "@/types"
+import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata, McpPreset, McpTool, McpTransport, McpOAuthMetadata } from "@/types"
 import { cn } from "@/lib/utils"
 import { useConnectionsStore } from "@/stores"
 
@@ -39,6 +39,8 @@ interface McpPresetDef {
   url?: string
   secretHeaderKeys?: string[]
   docsUrl?: string
+  // OAuth-backed HTTP server (Mixpanel, future Linear/Notion/etc.)
+  oauth?: boolean
 }
 
 const MCP_PRESETS: McpPresetDef[] = [
@@ -108,15 +110,11 @@ const MCP_PRESETS: McpPresetDef[] = [
   {
     value: 'mixpanel',
     label: 'Mixpanel',
-    description: 'Official Mixpanel MCP (OAuth) — first run opens a browser to sign in',
-    // Official server is HTTP+OAuth (https://mcp.mixpanel.com/mcp). Since the
-    // SDK doesn't ship a ready-to-use OAuthClientProvider, we bridge via
-    // mcp-remote: a stdio shim that runs OAuth on the AOC host and caches the
-    // refresh token in ~/.mcp-auth. No secrets live in our DB.
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', 'mcp-remote', 'https://mcp.mixpanel.com/mcp'],
-    secretEnvKeys: [],
+    description: 'Official Mixpanel MCP — OAuth, works through AOC tunnel',
+    transport: 'http',
+    url: 'https://mcp.mixpanel.com/mcp',
+    secretHeaderKeys: [],
+    oauth: true, // triggers OAuth flow in create + disables header editor
   },
   {
     value: 'context7-http',
@@ -249,6 +247,15 @@ function ConnectionCard({
                        : 'bg-muted text-muted-foreground'
               return <span className={cn("text-[10px] px-1.5 py-0.5 rounded-md font-medium shrink-0", cls)}>{state}</span>
             })()}
+            {conn.type === "mcp" && (conn.metadata as { oauth?: McpOAuthMetadata })?.oauth?.enabled && (() => {
+              const state = (conn.metadata as { oauth?: McpOAuthMetadata })?.oauth?.authState || 'unknown'
+              const cls = state === 'connected' ? 'bg-emerald-500/15 text-emerald-500'
+                       : state === 'expired'   ? 'bg-red-500/15 text-red-500'
+                       : state === 'pending'   ? 'bg-yellow-500/15 text-yellow-500'
+                       : state === 'disconnected' ? 'bg-muted text-muted-foreground'
+                       : 'bg-muted text-muted-foreground'
+              return <span className={cn("text-[10px] px-1.5 py-0.5 rounded-md font-medium shrink-0", cls)}>oauth · {state}</span>
+            })()}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">{getTypeLabel(conn.type)}</p>
           {detail && <p className="text-[11px] text-muted-foreground/60 font-mono mt-1 truncate">{detail}</p>}
@@ -265,6 +272,33 @@ function ConnectionCard({
         </div>
 
         <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+          {conn.type === 'mcp' && (conn.metadata as { oauth?: McpOAuthMetadata })?.oauth?.enabled && (() => {
+            const state = (conn.metadata as { oauth?: McpOAuthMetadata })?.oauth?.authState
+            return (
+              <>
+                {(state === 'pending' || state === 'expired' || state === 'disconnected') && (
+                  <Button size="sm" variant="outline" className="h-7 text-[11px] px-2" onClick={async (e) => {
+                    e.stopPropagation()
+                    try {
+                      const { authUrl } = await api.startMcpOauth(conn.id)
+                      if (onGoogleOauth) {
+                        const result = await onGoogleOauth(authUrl)
+                        if (result) onTest(conn.id)
+                      }
+                    } catch (err) { alert((err as Error).message) }
+                  }}>{state === 'pending' ? 'Connect' : 'Re-authenticate'}</Button>
+                )}
+                {state === 'connected' && (
+                  <Button size="sm" variant="ghost" className="h-7 text-[11px] px-2" onClick={async (e) => {
+                    e.stopPropagation()
+                    if (!window.confirm(`Disconnect ${conn.name}? The MCP server will revoke the token; the connection row is kept.`)) return
+                    try { await api.disconnectMcpOauth(conn.id); onTest(conn.id) }
+                    catch (err) { alert((err as Error).message) }
+                  }}>Disconnect</Button>
+                )}
+              </>
+            )
+          })()}
           {conn.type === 'google_workspace' && (() => {
             const gmeta = (conn.metadata || {}) as Partial<GoogleWorkspaceMetadata>
             return (
@@ -514,6 +548,7 @@ interface ConnFormState {
   mcpUrl: string
   mcpDescription: string
   mcpEnv: Array<{ key: string; value: string; secret: boolean }>     // stdio env OR http/sse headers
+  mcpOauth: boolean
 }
 
 const emptyForm: ConnFormState = {
@@ -532,6 +567,7 @@ const emptyForm: ConnFormState = {
   mcpUrl: "",
   mcpDescription: "",
   mcpEnv: [],
+  mcpOauth: false,
 }
 
 function ConnectionDialog({
@@ -590,6 +626,7 @@ function ConnectionDialog({
         mcpArgs: Array.isArray(m.args) ? (m.args as string[]).join("\n") : "",
         mcpUrl: (m.url as string) || "",
         mcpDescription: (m.description as string) || "",
+        mcpOauth: !!(m.oauth && (m.oauth as { enabled?: boolean }).enabled),
         // Union of env vars (stdio) and headers (http/sse). Credentials never come back; list keys as secret placeholders.
         mcpEnv: [
           ...Object.entries((m.env as Record<string, string>) || {}).map(([k, v]) => ({ key: k, value: v, secret: false })),
@@ -687,8 +724,17 @@ function ConnectionDialog({
         base.envKeys = secretKeys
       } else {
         base.url = form.mcpUrl
-        base.headers = nonSecret
-        base.headerKeys = secretKeys
+        base.headers = form.mcpOauth ? {} : nonSecret
+        base.headerKeys = form.mcpOauth ? [] : secretKeys
+        if (form.mcpOauth) {
+          // Start as pending; the server sets authState='connected' after
+          // completing the callback. Editing an already-connected oauth
+          // connection preserves its state via the editConn init block.
+          const existing = (editConn?.metadata as { oauth?: McpOAuthMetadata } | undefined)?.oauth
+          base.oauth = existing && existing.authState === 'connected'
+            ? existing
+            : { enabled: true, authState: 'pending' }
+        }
       }
       return base
     }
@@ -750,8 +796,12 @@ function ConnectionDialog({
           metadata,
         })
         onClose()
-        if (form.type === 'google_workspace' && authUrl && onGoogleOauth) {
-          await onGoogleOauth(authUrl)
+        // OAuth connections return authUrl to trigger the popup flow.
+        // runOauthPopup is content-agnostic (it's just a postMessage listener).
+        if (authUrl && onGoogleOauth) {
+          if (form.type === 'google_workspace' || (form.type === 'mcp' && form.mcpOauth)) {
+            await onGoogleOauth(authUrl)
+          }
         }
       }
     } catch (e: unknown) {
@@ -1153,7 +1203,8 @@ function ConnectionDialog({
                         mcpCommand: def.command ?? prev.mcpCommand,
                         mcpArgs: def.args ? def.args.join("\n") : prev.mcpArgs,
                         mcpUrl: def.url ?? prev.mcpUrl,
-                        mcpEnv: [...nextSecrets, ...preserved],
+                        mcpEnv: def.oauth ? [] : [...nextSecrets, ...preserved],
+                        mcpOauth: !!def.oauth,
                       }
                     })
                   }}
@@ -1234,6 +1285,11 @@ function ConnectionDialog({
                 </div>
               )}
 
+              {f.mcpOauth ? (
+                <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-400/90 leading-relaxed">
+                  <strong>OAuth flow:</strong> after you click Create, a popup will open to sign into the MCP provider. AOC handles the authorization code exchange and token refresh automatically — no API keys needed in the dashboard.
+                </div>
+              ) : (
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-muted-foreground">{f.mcpTransport === 'stdio' ? 'Environment variables' : 'HTTP headers'}</Label>
@@ -1301,6 +1357,7 @@ function ConnectionDialog({
                 )}
                 <p className="text-[10px] text-muted-foreground/50">Toggle the eye icon to mark a value as secret — secrets are encrypted and never returned by the API.</p>
               </div>
+              )}
 
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Description</Label>
