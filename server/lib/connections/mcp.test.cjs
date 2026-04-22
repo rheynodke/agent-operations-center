@@ -61,6 +61,30 @@ test('callTool invokes echo end-to-end', { timeout: 120_000 }, async () => {
   }
 });
 
+test('stdio args substitute ${VAR} from credentials env', { timeout: 120_000 }, async () => {
+  // Substitute the allowed-directory arg on the filesystem MCP server. If
+  // substitution fails, the server crashes on boot (literal ${VAR} isn't a dir).
+  const connId = 'test-arg-subst';
+  const spec = {
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '${ALLOWED_DIR}'],
+    env: {},
+    credentials: JSON.stringify({ ALLOWED_DIR: '/tmp' }),
+  };
+  try {
+    const tools = await mcp.listTools(connId, spec);
+    assert.ok(tools.length > 0, 'should still discover tools');
+    // Verify the substituted dir is what the server reports back
+    const result = await mcp.callTool(connId, spec, 'list_allowed_directories', {});
+    const text = JSON.stringify(result.content);
+    assert.ok(text.includes('/tmp') || text.includes('/private/tmp'),
+      `expected /tmp in allowed dirs, got: ${text}`);
+  } finally {
+    await mcp.teardown(connId);
+  }
+});
+
 test('teardown is idempotent and removes from pool', async () => {
   await mcp.teardown('nonexistent-id');   // should not throw
   await mcp.teardown('nonexistent-id');   // still fine

@@ -72,11 +72,11 @@ const MCP_PRESETS: McpPresetDef[] = [
   {
     value: 'postgres',
     label: 'PostgreSQL',
-    description: 'Query a Postgres DB read-only',
+    description: 'Query a Postgres DB read-only · credentials via ${DATABASE_URL}',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://user:pass@host/db'],
-    secretEnvKeys: [],
+    args: ['-y', '@modelcontextprotocol/server-postgres', '${DATABASE_URL}'],
+    secretEnvKeys: ['DATABASE_URL'],
   },
   {
     value: 'brave-search',
@@ -106,12 +106,25 @@ const MCP_PRESETS: McpPresetDef[] = [
     secretEnvKeys: [],
   },
   {
+    value: 'mixpanel',
+    label: 'Mixpanel',
+    description: 'Official Mixpanel MCP (OAuth) — first run opens a browser to sign in',
+    // Official server is HTTP+OAuth (https://mcp.mixpanel.com/mcp). Since the
+    // SDK doesn't ship a ready-to-use OAuthClientProvider, we bridge via
+    // mcp-remote: a stdio shim that runs OAuth on the AOC host and caches the
+    // refresh token in ~/.mcp-auth. No secrets live in our DB.
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'mcp-remote', 'https://mcp.mixpanel.com/mcp'],
+    secretEnvKeys: [],
+  },
+  {
     value: 'context7-http',
     label: 'Context7',
-    description: 'Up-to-date library docs for coding agents · no auth',
+    description: 'Up-to-date library docs · Bearer API key (anonymous tier rate-limited)',
     transport: 'http',
     url: 'https://mcp.context7.com/mcp',
-    secretHeaderKeys: [],
+    secretHeaderKeys: ['Authorization'],
   },
   {
     value: 'http-custom',

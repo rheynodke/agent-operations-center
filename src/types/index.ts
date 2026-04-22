@@ -856,8 +856,8 @@ export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'gith
 export type McpTransport = 'stdio' | 'http' | 'sse'
 
 export type McpPreset =
-  | 'filesystem' | 'github' | 'slack' | 'postgres' | 'brave-search' | 'puppeteer' | 'memory'  // stdio
-  | 'context7-http' | 'http-custom' | 'sse-custom'                                              // remote
+  | 'filesystem' | 'github' | 'slack' | 'postgres' | 'brave-search' | 'puppeteer' | 'memory' | 'mixpanel'  // stdio
+  | 'context7-http' | 'http-custom' | 'sse-custom'                                                           // remote
   | 'custom'
 
 export interface McpTool {

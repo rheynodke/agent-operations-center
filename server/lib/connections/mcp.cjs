@@ -104,10 +104,21 @@ function buildTransport(spec) {
 
   // stdio (default)
   if (!spec.command) throw new Error('MCP spec missing command for stdio transport');
+  const childEnv = buildChildEnv(spec);
+  // Substitute ${VAR} placeholders in args with values from the merged env.
+  // This lets users reference secrets without leaking them into plaintext args.
+  // Example: args: ['--token', '${MIXPANEL_TOKEN}'] with MIXPANEL_TOKEN in
+  // credentials → expanded to ['--token', 'abc123'] at spawn time only.
+  const rawArgs = Array.isArray(spec.args) ? spec.args : [];
+  const substitutedArgs = rawArgs.map(a =>
+    typeof a === 'string'
+      ? a.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, k) => childEnv[k] ?? '')
+      : a
+  );
   return new StdioClientTransport({
     command: spec.command,
-    args: Array.isArray(spec.args) ? spec.args : [],
-    env: buildChildEnv(spec),
+    args: substitutedArgs,
+    env: childEnv,
     stderr: 'pipe',
   });
 }
