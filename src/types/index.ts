@@ -993,3 +993,138 @@ export interface ProjectIntegration {
   lastSyncError?: string
   createdAt: string
 }
+
+// ─── Pipelines & Workflows ────────────────────────────────────────────────────
+
+export type PipelineNodeType = 'trigger' | 'agent' | 'condition' | 'human_approval' | 'output'
+export type PipelineHandleType = 'text' | 'json' | 'file' | 'approval'
+export type PipelineTriggerType = 'manual' | 'webhook' | 'cron' | 'task_created'
+export type PipelineRunStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+export type PipelineStepStatus =
+  | 'pending'
+  | 'queued'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+export type PipelineFailurePolicy = 'halt' | 'continue' | 'retry'
+
+export interface PipelineHandle {
+  key: string
+  type: PipelineHandleType
+  label?: string
+  schema?: unknown
+}
+
+export interface PipelineNodeData {
+  label?: string
+  description?: string
+  nodeType?: PipelineNodeType
+  agentId?: string
+  promptTemplate?: string
+  inputs?: PipelineHandle[]
+  outputs?: PipelineHandle[]
+  failurePolicy?: PipelineFailurePolicy
+  maxRetries?: number
+  triggerKind?: PipelineTriggerType
+  triggerConfig?: Record<string, unknown>
+  conditionExpression?: unknown
+  approverUserIds?: number[]
+  approvalMessage?: string
+  approvalTimeoutMs?: number
+  [key: string]: unknown
+}
+
+export interface PipelineNode {
+  id: string
+  type: PipelineNodeType
+  position: { x: number; y: number }
+  data: PipelineNodeData
+}
+
+export interface PipelineEdge {
+  id: string
+  source: string
+  target: string
+  sourceHandle?: string
+  targetHandle?: string
+  label?: string
+  data?: Record<string, unknown>
+}
+
+export interface PipelineGraph {
+  nodes: PipelineNode[]
+  edges: PipelineEdge[]
+  viewport?: { x: number; y: number; zoom: number }
+}
+
+export interface Pipeline {
+  id: string
+  name: string
+  description?: string | null
+  graph: PipelineGraph
+  createdBy?: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PipelineValidationIssue {
+  node_id?: string
+  edge_id?: string
+  code: string
+  message: string
+}
+
+export interface PipelineValidationResult {
+  valid: boolean
+  errors: PipelineValidationIssue[]
+  warnings: PipelineValidationIssue[]
+}
+
+export interface PipelineRun {
+  id: string
+  pipelineId: string
+  status: PipelineRunStatus
+  triggerType: PipelineTriggerType
+  triggeredBy?: number | null
+  concurrencyKey?: string | null
+  startedAt: string
+  endedAt?: string | null
+  error?: string | null
+}
+
+export interface PipelineStep {
+  id: string
+  runId: string
+  nodeId: string
+  nodeType: PipelineNodeType
+  agentId?: string | null
+  sessionKey?: string | null
+  status: PipelineStepStatus
+  attemptCount: number
+  queuedAt?: string | null
+  dispatchedAt?: string | null
+  startedAt?: string | null
+  endedAt?: string | null
+  error?: string | null
+}
+
+export interface PipelineArtifact {
+  id: string
+  runId: string
+  stepId: string
+  key: string
+  contentRef: string
+  mimeType: string
+  sizeBytes: number
+  checksum?: string
+  createdAt: string
+}
+

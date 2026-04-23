@@ -20,6 +20,7 @@ const outputsLib = require('./lib/outputs.cjs');
 const metrics = require('./lib/metrics.cjs');
 const mcpPool = require('./lib/connections/mcp.cjs');
 const mcpOauth = require('./lib/connections/mcp-oauth.cjs');
+const pipelines = require('./lib/pipelines/index.cjs');
 const multer = require('multer');
 const { AGENTS_DIR } = require('./lib/config.cjs');
 
@@ -3411,6 +3412,85 @@ app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwn
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── Pipelines & Workflows ───────────────────────────────────────────────────
+// CRUD + validation. Execution engine lands in Phase 4 (see docs/pipelines-design.md).
+app.get('/api/pipelines', db.authMiddleware, (req, res) => {
+  try {
+    res.json(pipelines.listPipelinesForUser(req));
+  } catch (err) {
+    console.error('[api/pipelines GET]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/pipelines/:id', db.authMiddleware, (req, res) => {
+  const p = pipelines.getPipeline(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  if (!db.userOwnsPipeline(req, req.params.id) && p.createdBy != null) {
+    // Non-admin non-owners get read-only view of shared pipelines (created_by null).
+    if (req.user?.role !== 'admin' && req.user?.role !== 'agent' && p.createdBy !== req.user?.userId) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+  }
+  res.json(p);
+});
+
+app.post('/api/pipelines', db.authMiddleware, (req, res) => {
+  try {
+    const { name, description, graph } = req.body || {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
+    const p = pipelines.createPipeline({
+      name,
+      description: description || null,
+      graph: graph || { nodes: [], edges: [] },
+      createdBy: req.user?.userId || null,
+    });
+    res.status(201).json(p);
+  } catch (err) {
+    if (err.code === 'VALIDATION_FAILED') {
+      return res.status(400).json({ error: 'validation failed', details: err.details });
+    }
+    console.error('[api/pipelines POST]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/pipelines/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
+  try {
+    const { name, description, graph } = req.body || {};
+    const patch = {};
+    if (name !== undefined)        patch.name = name;
+    if (description !== undefined) patch.description = description;
+    if (graph !== undefined)       patch.graph = graph;
+    const p = pipelines.updatePipeline(req.params.id, patch);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    res.json(p);
+  } catch (err) {
+    if (err.code === 'VALIDATION_FAILED') {
+      return res.status(400).json({ error: 'validation failed', details: err.details });
+    }
+    console.error('[api/pipelines PATCH]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/pipelines/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
+  try {
+    pipelines.deletePipeline(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/pipelines DELETE]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/pipelines/:id/validate', db.authMiddleware, (req, res) => {
+  // Accept ad-hoc graph from body (for editor live validation) OR validate stored graph.
+  const graph = req.body?.graph ?? pipelines.getPipeline(req.params.id)?.graph;
+  if (!graph) return res.status(404).json({ error: 'No graph to validate' });
+  res.json(pipelines.validateGraph(graph));
 });
 
 // ─── MCP tool invocation ─────────────────────────────────────────────────────

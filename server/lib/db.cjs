@@ -303,6 +303,102 @@ async function initDatabase() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_id, external_source)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`);
 
+  // ── Pipelines & Workflows ────────────────────────────────────────────────────
+  // See docs/pipelines-design.md for full schema rationale.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pipelines (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      description TEXT,
+      graph_json  TEXT NOT NULL DEFAULT '{"nodes":[],"edges":[]}',
+      created_by  INTEGER,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_pipelines_created_by ON pipelines(created_by)`);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+      id                   TEXT PRIMARY KEY,
+      pipeline_id          TEXT NOT NULL,
+      graph_snapshot_json  TEXT NOT NULL,
+      status               TEXT NOT NULL,
+      trigger_type         TEXT NOT NULL,
+      trigger_payload_json TEXT,
+      triggered_by         INTEGER,
+      concurrency_key      TEXT,
+      started_at           TEXT NOT NULL,
+      ended_at             TEXT,
+      error                TEXT,
+      FOREIGN KEY (pipeline_id) REFERENCES pipelines(id),
+      FOREIGN KEY (triggered_by) REFERENCES users(id)
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status)`);
+  // Concurrency dedup — only enforce when key set AND run still active
+  db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_concurrency
+      ON pipeline_runs(pipeline_id, concurrency_key)
+      WHERE concurrency_key IS NOT NULL AND status IN ('queued','running','waiting_approval')
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pipeline_steps (
+      id                   TEXT PRIMARY KEY,
+      run_id               TEXT NOT NULL,
+      node_id              TEXT NOT NULL,
+      node_type            TEXT NOT NULL,
+      agent_id             TEXT,
+      session_key          TEXT,
+      status               TEXT NOT NULL DEFAULT 'pending',
+      attempt_count        INTEGER NOT NULL DEFAULT 0,
+      input_snapshot_json  TEXT,
+      queued_at            TEXT,
+      dispatched_at        TEXT,
+      started_at           TEXT,
+      ended_at             TEXT,
+      error                TEXT,
+      FOREIGN KEY (run_id) REFERENCES pipeline_runs(id) ON DELETE CASCADE
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_pipeline_steps_run ON pipeline_steps(run_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_pipeline_steps_session ON pipeline_steps(session_key)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_pipeline_steps_status ON pipeline_steps(status)`);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pipeline_artifacts (
+      id           TEXT PRIMARY KEY,
+      run_id       TEXT NOT NULL,
+      step_id      TEXT NOT NULL,
+      key          TEXT NOT NULL,
+      content_ref  TEXT NOT NULL,
+      mime_type    TEXT NOT NULL,
+      size_bytes   INTEGER NOT NULL DEFAULT 0,
+      checksum     TEXT,
+      created_at   TEXT NOT NULL,
+      FOREIGN KEY (run_id) REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (step_id) REFERENCES pipeline_steps(id) ON DELETE CASCADE
+    )
+  `);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_artifacts_step_key ON pipeline_artifacts(step_id, key)`);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pipeline_templates (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      description TEXT,
+      graph_json  TEXT NOT NULL,
+      origin      TEXT NOT NULL DEFAULT 'seed',
+      created_at  TEXT NOT NULL
+    )
+  `);
+
+  // Per-agent concurrency hint (NULL = unlimited)
+  try { db.run('ALTER TABLE agent_profiles ADD COLUMN max_parallel_steps INTEGER DEFAULT NULL'); } catch (_) {}
+
   // ── Persist JWT_SECRET so tokens survive server restarts ──────────────────
   if (!JWT_SECRET) {
     const secretRow = db.exec("SELECT value FROM settings WHERE key = 'jwt_secret'");
@@ -998,6 +1094,29 @@ function getConnectionOwner(connId) {
   return res[0].values[0][0];
 }
 
+function getPipelineOwner(pipelineId) {
+  if (!db) return null;
+  const res = db.exec('SELECT created_by FROM pipelines WHERE id = ?', [pipelineId]);
+  if (!res.length || !res[0].values.length) return null;
+  return res[0].values[0][0];
+}
+
+function userOwnsPipeline(req, pipelineId) {
+  if (!req?.user) return false;
+  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
+  const owner = getPipelineOwner(pipelineId);
+  return owner != null && owner === req.user.userId;
+}
+
+function requirePipelineOwnership(req, res, next) {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: 'pipeline id missing' });
+  if (!userOwnsPipeline(req, id)) {
+    return res.status(403).json({ error: 'You do not have permission to modify this pipeline' });
+  }
+  next();
+}
+
 /** True if `req.user` is admin, OR is the owner of the given agent. */
 function userOwnsAgent(req, agentId) {
   if (!req?.user) return false;
@@ -1254,6 +1373,87 @@ function setAgentConnections(agentId, connectionIds) {
   persist();
 }
 
+// ─── Pipelines ───────────────────────────────────────────────────────────────
+
+function normalizePipeline(row) {
+  if (!row || !row.id) return null;
+  let graph = { nodes: [], edges: [] };
+  try { graph = row.graph_json ? JSON.parse(row.graph_json) : graph; } catch {}
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description || null,
+    graph,
+    createdBy: row.created_by ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function getAllPipelines() {
+  if (!db) return [];
+  const res = db.exec('SELECT * FROM pipelines ORDER BY updated_at DESC');
+  if (!res.length) return [];
+  const cols = res[0].columns;
+  return res[0].values.map(r => {
+    const obj = {}; cols.forEach((c, i) => { obj[c] = r[i]; });
+    return normalizePipeline(obj);
+  }).filter(Boolean);
+}
+
+function getPipeline(id) {
+  if (!db) return null;
+  const res = db.exec('SELECT * FROM pipelines WHERE id = ?', [id]);
+  if (!res.length || !res[0].values.length) return null;
+  const cols = res[0].columns;
+  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
+  return normalizePipeline(obj);
+}
+
+function createPipeline({ id, name, description, graph, createdBy }) {
+  if (!db) throw new Error('DB not initialized');
+  const now = new Date().toISOString();
+  const graphJson = JSON.stringify(graph || { nodes: [], edges: [] });
+  db.run(
+    `INSERT INTO pipelines (id, name, description, graph_json, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, name, description || null, graphJson, createdBy || null, now, now]
+  );
+  persist();
+  return getPipeline(id);
+}
+
+function updatePipeline(id, patch) {
+  if (!db) throw new Error('DB not initialized');
+  const now = new Date().toISOString();
+  const fields = ['updated_at = ?'];
+  const vals = [now];
+  if (patch.name        !== undefined) { fields.push('name = ?');        vals.push(patch.name); }
+  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description); }
+  if (patch.graph       !== undefined) { fields.push('graph_json = ?');  vals.push(JSON.stringify(patch.graph)); }
+  vals.push(id);
+  db.run(`UPDATE pipelines SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getPipeline(id);
+}
+
+function deletePipeline(id) {
+  if (!db) throw new Error('DB not initialized');
+  // Cascades via FK to steps/artifacts; manually nuke runs first for safety.
+  db.run('DELETE FROM pipeline_artifacts WHERE run_id IN (SELECT id FROM pipeline_runs WHERE pipeline_id = ?)', [id]);
+  db.run('DELETE FROM pipeline_steps     WHERE run_id IN (SELECT id FROM pipeline_runs WHERE pipeline_id = ?)', [id]);
+  db.run('DELETE FROM pipeline_runs      WHERE pipeline_id = ?', [id]);
+  db.run('DELETE FROM pipelines          WHERE id = ?', [id]);
+  persist();
+}
+
+function listPipelinesForUser(req) {
+  const all = getAllPipelines();
+  if (!req?.user) return [];
+  if (req.user.role === 'admin' || req.user.role === 'agent') return all;
+  return all.filter(p => p.createdBy == null || p.createdBy === req.user.userId);
+}
+
 function getAgentConnectionsRaw(agentId) {
   if (!db) return [];
   const ids = getAgentConnectionIds(agentId);
@@ -1318,10 +1518,13 @@ module.exports = {
   requireAdmin,
   requireAgentOwnership,
   requireConnectionOwnership,
+  requirePipelineOwnership,
   userOwnsAgent,
   userOwnsConnection,
+  userOwnsPipeline,
   getAgentOwner,
   getConnectionOwner,
+  getPipelineOwner,
   deleteUser,
   updateUser,
   // Invitations
@@ -1349,4 +1552,7 @@ module.exports = {
   // Agent ↔ Connection assignments
   getAgentConnectionIds, getConnectionAgentIds, setAgentConnections,
   getAgentConnectionsRaw, getAllAgentConnectionAssignments,
+  // Pipelines
+  getAllPipelines, getPipeline, createPipeline, updatePipeline, deletePipeline,
+  listPipelinesForUser,
 };
