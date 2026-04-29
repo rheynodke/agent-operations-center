@@ -75,7 +75,9 @@ function validateGraph(graph) {
     if (type === 'output')  outputs.push(n);
 
     if (type === 'agent' && !n.data?.agentId) {
-      errors.push({ node_id: n.id, code: 'agent_node_missing_agent', message: `agent node ${n.id} missing agentId` });
+      // Warn only — templates may be saved with agents unassigned; the runtime
+      // will block execution until they're set.
+      warnings.push({ node_id: n.id, code: 'agent_node_missing_agent', message: `agent node ${n.id} has no agent assigned` });
     }
   }
 

@@ -1718,7 +1718,21 @@ interface EditConfig {
   channelDmPolicy: string
   avatarPresetId: string
   fsWorkspaceOnly: boolean
+  /** ADLC role — drives Missions playbook agent matching. */
+  adlcRole: string
 }
+
+const ADLC_ROLE_OPTIONS: Array<{ value: string; label: string; emoji: string }> = [
+  { value: "",             label: "— none / autonomous —",   emoji: "⚪" },
+  { value: "biz-analyst",  label: "Biz Analyst",              emoji: "📈" },
+  { value: "pm-analyst",   label: "PM Analyst",               emoji: "📊" },
+  { value: "ux-designer",  label: "UX Designer",              emoji: "🎨" },
+  { value: "em-architect", label: "EM Architect",             emoji: "🏗" },
+  { value: "swe",          label: "SWE",                      emoji: "💻" },
+  { value: "qa-engineer",  label: "QA Engineer",              emoji: "🧪" },
+  { value: "doc-writer",   label: "Doc Writer",               emoji: "📝" },
+  { value: "data-analyst", label: "Data Analyst",             emoji: "📊" },
+]
 
 function EditConfigModal({
   detail,
@@ -1739,6 +1753,7 @@ function EditConfigModal({
     channelDmPolicy: detail.channel?.dmPolicy ?? "pairing",
     avatarPresetId: detail.profile?.avatarPresetId ?? "",
     fsWorkspaceOnly: detail.fsWorkspaceOnly !== false,
+    adlcRole: detail.profile?.role ?? "",
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -1793,7 +1808,13 @@ function EditConfigModal({
       }
 
       const currentPresetId = detail.profile?.avatarPresetId ?? ""
-      if (Object.keys(updates).length === 0 && cfg.avatarPresetId === currentPresetId) {
+      const currentRole = detail.profile?.role ?? ""
+      const roleChanged = cfg.adlcRole !== currentRole
+      if (
+        Object.keys(updates).length === 0 &&
+        cfg.avatarPresetId === currentPresetId &&
+        !roleChanged
+      ) {
         onClose(); return
       }
 
@@ -1805,14 +1826,19 @@ function EditConfigModal({
         }
       }
 
-      // Save avatar only if it actually changed (rename migration is handled server-side)
+      // Avatar / role are stored in the profile row (SQLite), not openclaw.json.
+      const profileUpdates: Record<string, unknown> = {}
       if (cfg.avatarPresetId !== currentPresetId) {
-        const profileId = newAgentId ?? orig.id
         const preset = AVATAR_PRESETS.find(p => p.id === cfg.avatarPresetId)
-        await api.updateAgentProfile(profileId, {
-          avatarPresetId: cfg.avatarPresetId || undefined,
-          color: preset?.color ?? undefined,
-        })
+        profileUpdates.avatarPresetId = cfg.avatarPresetId || undefined
+        if (preset?.color) profileUpdates.color = preset.color
+      }
+      if (roleChanged) {
+        profileUpdates.role = cfg.adlcRole || null
+      }
+      if (Object.keys(profileUpdates).length > 0) {
+        const profileId = newAgentId ?? orig.id
+        await api.updateAgentProfile(profileId, profileUpdates)
       }
 
       const needsRestart = !!(updates.model || updates.channel)
@@ -1917,6 +1943,30 @@ function EditConfigModal({
                 <Input value={cfg.model} onChange={e => setCfg(c => ({ ...c, model: e.target.value }))} className="h-8 text-sm font-mono text-xs" />
               </div>
             )}
+          </section>
+
+          {/* ADLC Role — used by Missions to match agents to playbook steps. */}
+          <section>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">ADLC Role</span>
+              <div className="flex-1 h-px bg-foreground/5" />
+              <span className="text-[9px] text-muted-foreground bg-foreground/5 px-1.5 py-0.5 rounded">for Missions</span>
+            </div>
+            <div>
+              <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Role Identity</label>
+              <select
+                value={cfg.adlcRole}
+                onChange={(e) => setCfg(c => ({ ...c, adlcRole: e.target.value }))}
+                className="w-full h-8 px-2 rounded-md border border-input bg-background text-sm"
+              >
+                {ADLC_ROLE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.emoji} {o.label}</option>
+                ))}
+              </select>
+              <div className="mt-1.5 text-[10px] text-muted-foreground">
+                Assign so this agent can be picked by Missions playbooks that need this role.
+              </div>
+            </div>
           </section>
 
           {/* Channel */}

@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, Pipeline, PipelineGraph, PipelineValidationResult, PipelineRun, PipelineRunDetail, AgentCapabilities } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -676,6 +676,103 @@ export const api = {
     request<{ ok: boolean; section: string }>(`/config/${section}`, {
       method: "PATCH",
       body: JSON.stringify({ value }),
+    }),
+
+  // Pipelines
+  listPipelines: () => request<Pipeline[]>("/pipelines"),
+  getPipeline: (id: string) => request<Pipeline>(`/pipelines/${id}`),
+  createPipeline: (data: { name: string; description?: string | null; graph?: PipelineGraph }) =>
+    request<Pipeline>("/pipelines", { method: "POST", body: JSON.stringify(data) }),
+  updatePipeline: (id: string, patch: { name?: string; description?: string | null; graph?: PipelineGraph }) =>
+    request<Pipeline>(`/pipelines/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deletePipeline: (id: string) =>
+    request<{ ok: true }>(`/pipelines/${id}`, { method: "DELETE" }),
+  validatePipeline: (id: string, graph?: PipelineGraph) =>
+    request<PipelineValidationResult>(`/pipelines/${id}/validate`, {
+      method: "POST",
+      body: JSON.stringify(graph ? { graph } : {}),
+    }),
+
+  // Agent capabilities (composite — for workflow editor)
+  getAgentCapabilities: (id: string) => request<AgentCapabilities>(`/agents/${id}/capabilities`),
+
+  // Missions (canonical). Backed by the same run entities as before — the API
+  // just surfaces the new vocabulary. "Runs" aliases below remain for
+  // anywhere code still references the old names.
+  listMissions: () => request<PipelineRun[]>("/missions"),
+  getMission: (id: string) => request<PipelineRunDetail>(`/missions/${id}`),
+  createMission: (data: {
+    playbookId: string
+    title?: string
+    description?: string
+    agentResolution?: Record<string, string>
+  }) =>
+    request<PipelineRunDetail>("/missions", { method: "POST", body: JSON.stringify(data) }),
+  approveMissionStep: (missionId: string, stepId: string, comment?: string) =>
+    request<PipelineRunDetail>(`/missions/${missionId}/steps/${stepId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+    }),
+  rejectMissionStep: (missionId: string, stepId: string, reason?: string) =>
+    request<PipelineRunDetail>(`/missions/${missionId}/steps/${stepId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  completeMissionStep: (missionId: string, stepId: string, output?: string) =>
+    request<PipelineRunDetail>(`/missions/${missionId}/steps/${stepId}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ output }),
+    }),
+  cancelMission: (missionId: string, reason?: string) =>
+    request<PipelineRunDetail>(`/missions/${missionId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+
+  // Playbooks — alias vocab over pipelines.
+  listPlaybooks: () => request<Pipeline[]>("/playbooks"),
+  getPlaybook: (id: string) => request<Pipeline>(`/playbooks/${id}`),
+  createPlaybook: (data: { name: string; description?: string | null; graph?: PipelineGraph }) =>
+    request<Pipeline>("/playbooks", { method: "POST", body: JSON.stringify(data) }),
+  updatePlaybook: (id: string, patch: { name?: string; description?: string | null; graph?: PipelineGraph }) =>
+    request<Pipeline>(`/playbooks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deletePlaybook: (id: string) => request<{ ok: true }>(`/playbooks/${id}`, { method: "DELETE" }),
+
+  // Legacy aliases for older code paths — safe to remove once all callers migrate.
+  listRuns: () => request<PipelineRun[]>("/missions"),
+  getRun: (id: string) => request<PipelineRunDetail>(`/missions/${id}`),
+  createRun: (data: {
+    pipelineId: string
+    title?: string
+    description?: string
+    agentResolution?: Record<string, string>
+  }) =>
+    request<PipelineRunDetail>("/missions", {
+      method: "POST",
+      body: JSON.stringify({ playbookId: data.pipelineId, title: data.title, description: data.description, agentResolution: data.agentResolution }),
+    }),
+  approveRunStep: (runId: string, stepId: string, comment?: string) =>
+    request<PipelineRunDetail>(`/missions/${runId}/steps/${stepId}/approve`, { method: "POST", body: JSON.stringify({ comment }) }),
+  rejectRunStep: (runId: string, stepId: string, reason?: string) =>
+    request<PipelineRunDetail>(`/missions/${runId}/steps/${stepId}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
+  completeRunStep: (runId: string, stepId: string, output?: string) =>
+    request<PipelineRunDetail>(`/missions/${runId}/steps/${stepId}/complete`, { method: "POST", body: JSON.stringify({ output }) }),
+  cancelRun: (runId: string, reason?: string) =>
+    request<PipelineRunDetail>(`/missions/${runId}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }),
+
+  // Filesystem browser (host fs — for Playbook repo picker)
+  browseFs: (path?: string) =>
+    request<{
+      path: string
+      parent: string | null
+      home: string
+      currentIsGitRepo: boolean
+      entries: Array<{ name: string; isDir: boolean; isGitRepo: boolean; isSymlink: boolean }>
+    }>(`/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  initRepo: (path: string) =>
+    request<{ ok: boolean; path: string; existing: boolean }>("/fs/init-repo", {
+      method: "POST",
+      body: JSON.stringify({ path }),
     }),
 
   // Health

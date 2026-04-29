@@ -19,6 +19,8 @@ import {
   Webhook,
   Plug,
   Users,
+  Workflow,
+  Target,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -47,6 +49,7 @@ const navGroups = [
     items: [
       { to: "/cron", label: "Schedules", icon: Timer },
       { to: "/hooks", label: "Webhooks", icon: Webhook },
+      { to: "/missions", label: "Missions", icon: Target },
     ],
   },
   {

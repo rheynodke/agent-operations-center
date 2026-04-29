@@ -1474,7 +1474,11 @@ function getAllAgentConnectionAssignments() {
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
+// Raw DB accessor — for modules that need to run ad-hoc queries.
+function getRawDb() { return db; }
+
 module.exports = {
+  getRawDb,
   initDatabase,
   getDb: () => db,
   persist,

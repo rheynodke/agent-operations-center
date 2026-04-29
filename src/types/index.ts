@@ -994,6 +994,36 @@ export interface ProjectIntegration {
   createdAt: string
 }
 
+// ─── Agent Capabilities (composite view for workflow editor) ────────────────
+
+export interface AgentCapabilities {
+  agentId: string
+  displayName: string
+  role?: string | null
+  emoji?: string | null
+  skills: Array<{
+    name: string
+    description?: string | null
+    enabled: boolean
+    source: string
+  }>
+  tools: Array<{
+    name: string
+    description?: string | null
+    category: string
+  }>
+  customTools: {
+    agent: Array<{ name: string; description?: string | null; enabled: boolean }>
+    shared: Array<{ name: string; description?: string | null; enabled: boolean }>
+  }
+  connections: Array<{
+    id: string
+    name: string
+    type: string
+    enabled: boolean
+  }>
+}
+
 // ─── Pipelines & Workflows ────────────────────────────────────────────────────
 
 export type PipelineNodeType = 'trigger' | 'agent' | 'condition' | 'human_approval' | 'output'
@@ -1059,10 +1089,26 @@ export interface PipelineEdge {
   data?: Record<string, unknown>
 }
 
+export interface PipelineRepoConfig {
+  /** Absolute path to local git checkout. Required for worktrees. */
+  path?: string
+  /** Optional GitHub/GitLab URL — display only. */
+  url?: string
+  /** Branch to worktree from. Empty = current HEAD of repo. */
+  baseBranch?: string
+  /** If true, worktree gets a new branch named `mission/{MIS-XXX}` (default). */
+  autoBranch?: boolean
+}
+
+export interface PipelineGraphMetadata {
+  repo?: PipelineRepoConfig
+}
+
 export interface PipelineGraph {
   nodes: PipelineNode[]
   edges: PipelineEdge[]
   viewport?: { x: number; y: number; zoom: number }
+  metadata?: PipelineGraphMetadata
 }
 
 export interface Pipeline {
@@ -1090,14 +1136,54 @@ export interface PipelineValidationResult {
 
 export interface PipelineRun {
   id: string
+  /** Human-friendly identifier like "ADLC-123" — generated per-template sequential */
+  displayId?: string
   pipelineId: string
+  pipelineName?: string
+  title?: string
+  description?: string
   status: PipelineRunStatus
   triggerType: PipelineTriggerType
   triggeredBy?: number | null
+  triggeredByName?: string
   concurrencyKey?: string | null
   startedAt: string
   endedAt?: string | null
   error?: string | null
+  /** Summary counts (totalSteps, doneSteps, approvalWaiting, etc.) */
+  progress?: {
+    total: number
+    done: number
+    failed: number
+    /** Step id currently awaiting approval, if any */
+    awaitingApprovalStepId?: string
+    /** Step id currently running, if any */
+    runningStepId?: string
+  }
+  /** Git worktree provisioned for this mission (if playbook has repo config). */
+  worktree?: {
+    path: string
+    branch: string
+    baseBranch: string
+    repoPath: string
+    repoUrl?: string
+  }
+}
+
+/** Run with full step + artifact detail (used by Run Detail page). */
+export interface PipelineRunDetail extends PipelineRun {
+  steps: PipelineStep[]
+  artifacts: PipelineArtifact[]
+  /** Per-step display metadata derived from the graph snapshot. */
+  stepDisplay: Array<{
+    stepId: string
+    nodeId: string
+    label: string
+    roleId?: string
+    emoji?: string
+    agentName?: string
+    approvalMessage?: string
+  }>
 }
 
 export interface PipelineStep {

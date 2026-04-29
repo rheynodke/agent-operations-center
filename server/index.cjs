@@ -21,6 +21,11 @@ const metrics = require('./lib/metrics.cjs');
 const mcpPool = require('./lib/connections/mcp.cjs');
 const mcpOauth = require('./lib/connections/mcp-oauth.cjs');
 const pipelines = require('./lib/pipelines/index.cjs');
+const workflowRuns = require('./lib/pipelines/runs.cjs');
+// Wire gateway into the runs module so agent steps can dispatch real sessions.
+try { workflowRuns.setGatewayProxy(require('./lib/gateway-ws.cjs').gatewayProxy); } catch (e) {
+  console.warn('[runs] gateway wiring failed:', e.message);
+}
 const multer = require('multer');
 const { AGENTS_DIR } = require('./lib/config.cjs');
 
@@ -927,13 +932,13 @@ app.get('/api/agents/:id/profile', db.authMiddleware, (req, res) => {
   }
 });
 
-// Update agent profile metadata (color, description, tags, notes)
+// Update agent profile metadata (color, description, tags, notes, ADLC role)
 app.patch('/api/agents/:id/profile', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
-    const { color, description, tags, notes, emoji, displayName, avatarPresetId } = req.body;
+    const { color, description, tags, notes, emoji, displayName, avatarPresetId, role } = req.body;
     const profile = db.upsertAgentProfile({
       agentId: req.params.id,
-      displayName, emoji, avatarPresetId, color, description, tags, notes,
+      displayName, emoji, avatarPresetId, color, description, tags, notes, role,
       provisionedBy: req.user?.userId || null,
     });
     res.json({ ok: true, profile });
@@ -1069,6 +1074,53 @@ app.get('/api/agents/:id/tools', db.authMiddleware, (req, res) => {
     res.json({ tools });
   } catch (err) {
     console.error('[api/agents/tools]', err);
+    const status = err.message?.includes('not found') ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// Composite capabilities — for workflow editor UI. Returns skills + enabled
+// built-in tools + assigned connections + custom scripts in one call so the
+// agent capability card can render without 4 round-trips.
+app.get('/api/agents/:id/capabilities', db.authMiddleware, (req, res) => {
+  try {
+    const id = req.params.id;
+    const profile = db.getAgentProfile(id);
+    const skills = parsers.getAgentSkills(id) || [];
+    const tools = (parsers.getAgentTools(id) || []).filter((t) => t.enabled !== false);
+    const connIds = db.getAgentConnectionIds(id);
+    const connections = connIds.map((cid) => db.getConnection(cid)).filter(Boolean);
+    let customTools = { agent: [], shared: [] };
+    try { customTools = parsers.listAgentCustomTools(id); } catch {}
+    res.json({
+      agentId: id,
+      displayName: profile?.display_name || id,
+      role: profile?.role || null,
+      emoji: profile?.emoji || null,
+      skills: skills.map((s) => ({
+        name: s.name,
+        description: s.description || null,
+        enabled: s.enabled !== false,
+        source: s.source || 'local',
+      })),
+      tools: tools.map((t) => ({
+        name: t.name,
+        description: t.description || null,
+        category: t.category || 'builtin',
+      })),
+      customTools: {
+        agent: (customTools.agent || []).map((t) => ({ name: t.filename, description: t.description || null, enabled: t.enabled })),
+        shared: (customTools.shared || []).map((t) => ({ name: t.filename, description: t.description || null, enabled: t.enabled })),
+      },
+      connections: connections.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        enabled: c.enabled,
+      })),
+    });
+  } catch (err) {
+    console.error('[api/agents/capabilities]', err);
     const status = err.message?.includes('not found') ? 404 : 500;
     res.status(status).json({ error: err.message });
   }
@@ -3486,11 +3538,191 @@ app.delete('/api/pipelines/:id', db.authMiddleware, db.requirePipelineOwnership,
   }
 });
 
+// Playbook alias endpoints — same backing as pipelines, surfaces new vocab.
+app.get('/api/playbooks', db.authMiddleware, (req, res) => {
+  try { res.json(pipelines.listPipelinesForUser(req)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.get('/api/playbooks/:id', db.authMiddleware, (req, res) => {
+  const p = pipelines.getPipeline(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Playbook not found' });
+  res.json(p);
+});
+app.post('/api/playbooks', db.authMiddleware, (req, res) => {
+  try {
+    const { name, description, graph } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'name required' });
+    res.status(201).json(pipelines.createPipeline({
+      name, description: description || null,
+      graph: graph || { nodes: [], edges: [] },
+      createdBy: req.user?.userId || null,
+    }));
+  } catch (err) {
+    if (err.code === 'VALIDATION_FAILED') return res.status(400).json({ error: 'validation failed', details: err.details });
+    res.status(500).json({ error: err.message });
+  }
+});
+app.patch('/api/playbooks/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
+  try {
+    const patch = {};
+    if (req.body?.name !== undefined) patch.name = req.body.name;
+    if (req.body?.description !== undefined) patch.description = req.body.description;
+    if (req.body?.graph !== undefined) patch.graph = req.body.graph;
+    const p = pipelines.updatePipeline(req.params.id, patch);
+    if (!p) return res.status(404).json({ error: 'Playbook not found' });
+    res.json(p);
+  } catch (err) {
+    if (err.code === 'VALIDATION_FAILED') return res.status(400).json({ error: 'validation failed', details: err.details });
+    res.status(500).json({ error: err.message });
+  }
+});
+app.delete('/api/playbooks/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
+  try { pipelines.deletePipeline(req.params.id); res.json({ ok: true }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/pipelines/:id/validate', db.authMiddleware, (req, res) => {
   // Accept ad-hoc graph from body (for editor live validation) OR validate stored graph.
   const graph = req.body?.graph ?? pipelines.getPipeline(req.params.id)?.graph;
   if (!graph) return res.status(404).json({ error: 'No graph to validate' });
   res.json(pipelines.validateGraph(graph));
+});
+
+// ─── Missions (canonical naming) ────────────────────────────────────────────
+// Mission = a multi-agent work item executing an ADLC playbook. Backed by the
+// same pipeline_runs table as the legacy /api/workflows/runs endpoints, which
+// now act as aliases for compat while the UI migrates.
+app.get('/api/missions', db.authMiddleware, (_req, res) => {
+  try { res.json(workflowRuns.getAllRuns()); }
+  catch (err) { console.error('[missions GET]', err); res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/missions/:id', db.authMiddleware, (req, res) => {
+  const detail = workflowRuns.getRunDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: 'Mission not found' });
+  res.json(detail);
+});
+
+app.post('/api/missions', db.authMiddleware, (req, res) => {
+  try {
+    const { playbookId, pipelineId, title, description, agentResolution } = req.body || {};
+    const effectivePipelineId = playbookId || pipelineId;
+    if (!effectivePipelineId) return res.status(400).json({ error: 'playbookId required' });
+    const detail = workflowRuns.createRun({
+      pipelineId: effectivePipelineId,
+      title,
+      description,
+      agentResolution: agentResolution || {},
+      triggeredBy: req.user?.userId || null,
+    }, broadcast);
+    res.status(201).json(detail);
+  } catch (err) {
+    console.error('[missions POST]', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/missions/:id/steps/:stepId/approve', db.authMiddleware, (req, res) => {
+  try {
+    const { comment } = req.body || {};
+    res.json(workflowRuns.approveStep({ runId: req.params.id, stepId: req.params.stepId, comment }, broadcast));
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/api/missions/:id/steps/:stepId/reject', db.authMiddleware, (req, res) => {
+  try {
+    const { reason } = req.body || {};
+    res.json(workflowRuns.rejectStep({ runId: req.params.id, stepId: req.params.stepId, reason }, broadcast));
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/api/missions/:id/steps/:stepId/complete', db.authMiddleware, (req, res) => {
+  try {
+    const { output } = req.body || {};
+    res.json(workflowRuns.completeAgentStep({ runId: req.params.id, stepId: req.params.stepId, output }, broadcast));
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/api/missions/:id/cancel', db.authMiddleware, (req, res) => {
+  try {
+    const { reason } = req.body || {};
+    res.json(workflowRuns.cancelRun({ runId: req.params.id, reason }, broadcast));
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+// ─── Workflow Runs (legacy alias) ────────────────────────────────────────────
+app.get('/api/workflows/runs', db.authMiddleware, (_req, res) => {
+  try {
+    res.json(workflowRuns.getAllRuns());
+  } catch (err) {
+    console.error('[runs GET]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/workflows/runs/:id', db.authMiddleware, (req, res) => {
+  const detail = workflowRuns.getRunDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: 'Run not found' });
+  res.json(detail);
+});
+
+app.post('/api/workflows/runs', db.authMiddleware, (req, res) => {
+  try {
+    const { pipelineId, title, description, agentResolution } = req.body || {};
+    if (!pipelineId) return res.status(400).json({ error: 'pipelineId required' });
+    const detail = workflowRuns.createRun({
+      pipelineId,
+      title,
+      description,
+      agentResolution: agentResolution || {},
+      triggeredBy: req.user?.userId || null,
+    }, broadcast);
+    res.status(201).json(detail);
+  } catch (err) {
+    console.error('[runs POST]', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/workflows/runs/:id/steps/:stepId/approve', db.authMiddleware, (req, res) => {
+  try {
+    const { comment } = req.body || {};
+    const detail = workflowRuns.approveStep({ runId: req.params.id, stepId: req.params.stepId, comment }, broadcast);
+    res.json(detail);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/workflows/runs/:id/steps/:stepId/reject', db.authMiddleware, (req, res) => {
+  try {
+    const { reason } = req.body || {};
+    const detail = workflowRuns.rejectStep({ runId: req.params.id, stepId: req.params.stepId, reason }, broadcast);
+    res.json(detail);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// MVP helper: mark an agent step done with output (real executor supersedes in R6).
+app.post('/api/workflows/runs/:id/steps/:stepId/complete', db.authMiddleware, (req, res) => {
+  try {
+    const { output } = req.body || {};
+    const detail = workflowRuns.completeAgentStep({ runId: req.params.id, stepId: req.params.stepId, output }, broadcast);
+    res.json(detail);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/workflows/runs/:id/cancel', db.authMiddleware, (req, res) => {
+  try {
+    const { reason } = req.body || {};
+    const detail = workflowRuns.cancelRun({ runId: req.params.id, reason }, broadcast);
+    res.json(detail);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // ─── MCP tool invocation ─────────────────────────────────────────────────────
@@ -4273,6 +4505,91 @@ app.get('/api/browse-dirs', db.authMiddleware, (req, res) => {
 });
 
 // GET /api/config — returns full openclaw.json
+// ─── Host filesystem browser (for Playbook repo picker) ─────────────────────
+// Minimal filesystem navigation so users can locate an existing git checkout or
+// init a fresh one without leaving the dashboard. Dashboard-only (admin user
+// on their own machine); no multi-tenant isolation needed here.
+app.get('/api/fs/browse', db.authMiddleware, (req, res) => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  try {
+    let target = typeof req.query.path === 'string' && req.query.path
+      ? req.query.path
+      : os.homedir();
+    if (target.startsWith('~')) target = path.join(os.homedir(), target.slice(1));
+    target = path.resolve(target);
+    const stat = fs.statSync(target);
+    if (!stat.isDirectory()) return res.status(400).json({ error: 'not a directory' });
+
+    const entries = fs.readdirSync(target, { withFileTypes: true })
+      .filter((d) => !d.name.startsWith('.') || d.name === '.git')
+      .map((d) => {
+        const full = path.join(target, d.name);
+        let isDir = d.isDirectory();
+        let isSymlink = d.isSymbolicLink();
+        if (isSymlink) {
+          try { isDir = fs.statSync(full).isDirectory(); } catch { isDir = false; }
+        }
+        let isGitRepo = false;
+        if (isDir) {
+          try {
+            isGitRepo = fs.existsSync(path.join(full, '.git'));
+          } catch {}
+        }
+        return { name: d.name, isDir, isGitRepo, isSymlink };
+      })
+      .filter((e) => e.isDir && e.name !== '.git')
+      .sort((a, b) => {
+        if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+    const parent = path.dirname(target);
+    // Quick check: is the current dir itself a git repo?
+    const currentIsGitRepo = fs.existsSync(path.join(target, '.git'));
+
+    res.json({
+      path: target,
+      parent: parent !== target ? parent : null,
+      home: os.homedir(),
+      currentIsGitRepo,
+      entries,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/fs/init-repo', db.authMiddleware, (req, res) => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const { execSync } = require('node:child_process');
+  try {
+    let target = (req.body && typeof req.body.path === 'string') ? req.body.path : '';
+    if (!target) return res.status(400).json({ error: 'path required' });
+    if (target.startsWith('~')) target = path.join(os.homedir(), target.slice(1));
+    target = path.resolve(target);
+    // Create directory if missing (user may pick a non-existent name).
+    fs.mkdirSync(target, { recursive: true });
+    // If .git already exists, noop.
+    if (fs.existsSync(path.join(target, '.git'))) {
+      return res.json({ ok: true, path: target, existing: true });
+    }
+    execSync(`git -C ${JSON.stringify(target)} init -b main`, { stdio: 'pipe' });
+    // Create an empty initial commit so the `main` branch actually exists —
+    // worktrees can't be created from a repo with zero commits.
+    try {
+      execSync(`git -C ${JSON.stringify(target)} commit --allow-empty -m "Initial commit"`, { stdio: 'pipe' });
+    } catch {}
+    res.json({ ok: true, path: target, existing: false });
+  } catch (err) {
+    const msg = err && err.stderr ? err.stderr.toString() : (err.message || String(err));
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.get('/api/config', db.authMiddleware, (req, res) => {
   const { readJsonSafe } = require('./lib/config.cjs');
   const configPath = path.join(parsers.OPENCLAW_HOME, 'openclaw.json');
