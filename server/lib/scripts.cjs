@@ -1810,6 +1810,15 @@ const CONN_TYPE_GUIDE = {
       '`mcp-call.sh "<name>" <tool-name> \'{"arg":"val"}\'` — invoke a tool',
     ],
   },
+  composio: {
+    label: 'Composio (100+ SaaS toolkits)',
+    actions: [
+      '`mcp-call.sh "<name>" --list-tools`                            — see meta-tools (SEARCH, EXECUTE, MANAGE_CONNECTIONS, ...)',
+      '`mcp-call.sh "<name>" COMPOSIO_SEARCH_TOOLS \'{"use_case":"send email"}\'`',
+      '`mcp-call.sh "<name>" COMPOSIO_MULTI_EXECUTE_TOOL \'{"tool_name":"GMAIL_SEND_EMAIL","arguments":{...}}\'`',
+      'If a tool needs auth, the response gives a Connect Link the user opens to authorize.',
+    ],
+  },
 };
 
 /**

@@ -1,5 +1,6 @@
 'use strict';
 const { execFile } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, readJsonSafe } = require('./config.cjs');
 
@@ -91,20 +92,162 @@ function approvePairingCode(channel, code, accountId) {
     }
     args.push('--notify');
 
-    execFile(OPENCLAW_BIN, args, { timeout: 15000 }, (err, stdout, stderr) => {
+    // CRITICAL: openclaw CLI interprets OPENCLAW_HOME as the *user home dir*
+    // (then appends `.openclaw` for state dir). AOC uses OPENCLAW_HOME to mean
+    // the state dir directly. Passing AOC's value through to the subprocess
+    // makes the CLI read/write `~/.openclaw/.openclaw/credentials/…` instead
+    // of `~/.openclaw/credentials/…`, so approves silently land in a parallel
+    // tree and the actual pending request is never matched. Strip it.
+    const subprocessEnv = { ...process.env };
+    delete subprocessEnv.OPENCLAW_HOME;
+
+    execFile(OPENCLAW_BIN, args, { timeout: 15000, env: subprocessEnv }, (err, stdout, stderr) => {
+      // Strip ANSI escape codes so success-marker matching is robust.
+      // eslint-disable-next-line no-control-regex
+      const out = (stdout || '').toString().replace(/\x1b\[[0-9;]*m/g, '');
+      // eslint-disable-next-line no-control-regex
+      const errOut = (stderr || '').toString().replace(/\x1b\[[0-9;]*m/g, '');
+
+      // The CLI may exit with a non-zero code even after a successful approve
+      // (e.g., the post-approve `--notify` step fails because the requester's
+      // DMs are closed → "Invalid Recipient(s)"). Detect approval success from
+      // stdout instead of relying solely on exit code.
+      const approved = /Approved\s+\S+\s+sender/i.test(out);
+
+      if (approved) {
+        const notifyFailed = /Failed to notify requester/i.test(out);
+        return resolve({
+          ok: true,
+          stdout: out.trim(),
+          ...(notifyFailed ? { warning: 'Approved, but failed to notify the requester' } : {}),
+        });
+      }
+
       if (err) {
-        // Try to extract meaningful error from stderr
-        const errMsg = (stderr || '').trim() || err.message || 'Approval failed';
+        // Genuine failure — surface a useful message. CLI throws "No pending
+        // pairing request found for code: ..." when the entry is already gone
+        // (often because a previous approve already succeeded).
+        const stackMsg = /Error:\s*([^\n]+)/.exec(errOut + '\n' + out);
+        const errMsg =
+          (stackMsg && stackMsg[1].trim()) ||
+          errOut.trim() ||
+          err.message ||
+          'Approval failed';
         return resolve({ ok: false, error: errMsg });
       }
-      resolve({ ok: true, stdout: (stdout || '').trim() });
+      resolve({ ok: true, stdout: out.trim() });
     });
   });
+}
+
+/**
+ * Reject (delete) a pending pairing request by code, optionally scoped to an
+ * accountId. Removes the matching entry from the pairing store JSON file.
+ * @returns { ok: true, removed: 1 } | { ok: false, error: string }
+ */
+function rejectPairingCode(channel, code, accountId) {
+  if (!SUPPORTED_CHANNELS.includes(channel)) {
+    throw new Error(`Unsupported pairing channel: ${channel}`);
+  }
+  if (!code || typeof code !== 'string') {
+    throw new Error('Pairing code is required');
+  }
+  const filePath = resolvePairingPath(channel);
+  const data = readJsonSafe(filePath);
+  if (!data || !Array.isArray(data.requests)) {
+    return { ok: false, error: 'No pending pairing request found' };
+  }
+
+  const upperCode = code.toUpperCase();
+  const normalizedAccount = accountId ? String(accountId).toLowerCase() : null;
+
+  const before = data.requests.length;
+  const kept = data.requests.filter(r => {
+    if (!r) return false;
+    const rCode = String(r.code || '').toUpperCase();
+    if (rCode !== upperCode) return true;
+    if (normalizedAccount) {
+      const rAccount = String(r.meta?.accountId || 'default').toLowerCase();
+      if (rAccount !== normalizedAccount) return true;
+    }
+    return false; // matched → drop
+  });
+
+  if (kept.length === before) {
+    return { ok: false, error: `No pending pairing request found for code: ${code}` };
+  }
+
+  const next = { ...data, version: data.version || 1, requests: kept };
+  // Atomic write: write to a temp file, then rename.
+  const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, filePath);
+
+  return { ok: true, removed: before - kept.length };
+}
+
+// ── AllowFrom store management ───────────────────────────────────────────────
+
+function readAllowFromFile(channel, accountId) {
+  const filePath = resolveAllowFromPath(channel, accountId);
+  const data = readJsonSafe(filePath);
+  const entries = Array.isArray(data?.allowFrom) ? data.allowFrom.filter(e => typeof e === 'string' && e.trim()) : [];
+  return { filePath, entries };
+}
+
+function writeAllowFromFile(filePath, entries) {
+  const next = { version: 1, allowFrom: entries };
+  const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, filePath);
+}
+
+function listAllowFromEntries(channel, accountId) {
+  if (!SUPPORTED_CHANNELS.includes(channel)) {
+    throw new Error(`Unsupported pairing channel: ${channel}`);
+  }
+  return readAllowFromFile(channel, accountId).entries;
+}
+
+function addAllowFromEntry(channel, accountId, entry) {
+  if (!SUPPORTED_CHANNELS.includes(channel)) {
+    throw new Error(`Unsupported pairing channel: ${channel}`);
+  }
+  const trimmed = String(entry || '').trim();
+  if (!trimmed) throw new Error('Entry is required');
+
+  const { filePath, entries } = readAllowFromFile(channel, accountId);
+  if (entries.includes(trimmed)) {
+    return { ok: true, added: 0, entries };
+  }
+  const next = [...entries, trimmed];
+  writeAllowFromFile(filePath, next);
+  return { ok: true, added: 1, entries: next };
+}
+
+function removeAllowFromEntry(channel, accountId, entry) {
+  if (!SUPPORTED_CHANNELS.includes(channel)) {
+    throw new Error(`Unsupported pairing channel: ${channel}`);
+  }
+  const trimmed = String(entry || '').trim();
+  if (!trimmed) throw new Error('Entry is required');
+
+  const { filePath, entries } = readAllowFromFile(channel, accountId);
+  const next = entries.filter(e => e !== trimmed);
+  if (next.length === entries.length) {
+    return { ok: false, error: `Entry not found: ${trimmed}` };
+  }
+  writeAllowFromFile(filePath, next);
+  return { ok: true, removed: entries.length - next.length, entries: next };
 }
 
 module.exports = {
   listPairingRequests,
   listAllPairingRequests,
   approvePairingCode,
+  rejectPairingCode,
+  listAllowFromEntries,
+  addAllowFromEntry,
+  removeAllowFromEntry,
   SUPPORTED_CHANNELS,
 };

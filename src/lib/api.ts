@@ -431,6 +431,36 @@ export const api = {
   disconnectMcpOauth: (id: string) =>
     request<{ ok: true }>(`/connections/${encodeURIComponent(id)}/mcp-oauth/disconnect`, { method: 'POST' }),
 
+  // Composio
+  composioListConnected: (id: string) =>
+    request<{ accounts: import('@/types').ComposioConnectedAccount[] }>(`/connections/${encodeURIComponent(id)}/composio/connected`),
+  composioListToolkits: (id: string) =>
+    request<{ toolkits: Array<{ slug?: string; name?: string }> }>(`/connections/${encodeURIComponent(id)}/composio/toolkits`),
+  composioCreateLink: (id: string, toolkit: string, alias?: string) =>
+    request<{ redirectUrl: string; connectedAccountId: string; linkToken: string }>(
+      `/connections/${encodeURIComponent(id)}/composio/link`,
+      { method: 'POST', body: JSON.stringify({ toolkit, alias }) },
+    ),
+  composioDisconnectAccount: (id: string, accountId: string) =>
+    request<{ ok: true }>(`/connections/${encodeURIComponent(id)}/composio/connected/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
+  composioRefreshSession: (id: string, toolkits?: string[]) =>
+    request<{ ok: true; sessionId: string }>(`/connections/${encodeURIComponent(id)}/composio/refresh-session`, {
+      method: 'POST',
+      body: JSON.stringify(toolkits ? { toolkits } : {}),
+    }),
+  // Discover toolkits already connected on Composio for the given (apiKey, userId)
+  // — used by the New Connection modal so the toolkit allowlist reflects the
+  // user's actual connected accounts instead of a hardcoded suggestion list.
+  composioDiscoverToolkits: (apiKey: string, userId?: string) =>
+    request<{ userId: string; accountCount: number; toolkits: Array<{ slug: string; label: string; accountCount: number }> }>(
+      `/composio/discover`,
+      { method: 'POST', body: JSON.stringify({ apiKey, userId }) },
+    ),
+  composioDiscoverToolkitsForConn: (id: string) =>
+    request<{ userId: string; accountCount: number; toolkits: Array<{ slug: string; label: string; accountCount: number }> }>(
+      `/connections/${encodeURIComponent(id)}/composio/discover`,
+    ),
+
   // Agent ↔ Connection assignments
   getAgentConnections: (agentId: string) =>
     request<{ connectionIds: string[]; connections: Connection[] }>(`/agents/${agentId}/connections`),
@@ -656,9 +686,41 @@ export const api = {
   getAgentPairing: (agentId: string) =>
     request<import("@/types").PairingRequestsByChannel>(`/agents/${agentId}/pairing`),
   approvePairing: (channel: string, code: string, accountId?: string) =>
-    request<{ ok: boolean; error?: string }>(`/pairing/${channel}/approve`, {
+    request<{ ok: boolean; error?: string; warning?: string }>(`/pairing/${channel}/approve`, {
       method: "POST",
       body: JSON.stringify({ code, accountId }),
+    }),
+  rejectPairing: (channel: string, code: string, accountId?: string) =>
+    request<{ ok: boolean; error?: string; removed?: number }>(`/pairing/${channel}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ code, accountId }),
+    }),
+
+  // Allow-from store management
+  getAgentAllowFrom: (agentId: string) =>
+    request<import("@/types").AllowFromResult>(`/agents/${agentId}/allowfrom`),
+  addAllowFromEntry: (agentId: string, channel: string, accountId: string, entry: string) =>
+    request<{ ok: boolean; added?: number; entries?: string[]; error?: string }>(`/agents/${agentId}/allowfrom`, {
+      method: "POST",
+      body: JSON.stringify({ channel, accountId, entry }),
+    }),
+  removeAllowFromEntry: (agentId: string, channel: string, accountId: string, entry: string) =>
+    request<{ ok: boolean; removed?: number; entries?: string[]; error?: string }>(`/agents/${agentId}/allowfrom`, {
+      method: "DELETE",
+      body: JSON.stringify({ channel, accountId, entry }),
+    }),
+
+  // Discord guild allowlist
+  getAgentDiscordGuilds: (agentId: string) =>
+    request<import("@/types").DiscordGuildsResult>(`/agents/${agentId}/discord/guilds`),
+  upsertAgentDiscordGuild: (agentId: string, guildId: string, opts: { label?: string; requireMention?: boolean; users?: string[] }) =>
+    request<{ ok: boolean; accountId: string; guildId: string; entry: { label?: string; requireMention: boolean; users: string[] }; error?: string }>(`/agents/${agentId}/discord/guilds/${guildId}`, {
+      method: "PUT",
+      body: JSON.stringify(opts),
+    }),
+  removeAgentDiscordGuild: (agentId: string, guildId: string) =>
+    request<{ ok: boolean; accountId?: string; guildId?: string; error?: string }>(`/agents/${agentId}/discord/guilds/${guildId}`, {
+      method: "DELETE",
     }),
 
   // Gateway management

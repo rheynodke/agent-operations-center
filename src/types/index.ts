@@ -78,6 +78,31 @@ export interface AgentChannelsResult {
   discord: AgentChannelDiscord[]
 }
 
+export interface AllowFromBinding {
+  channel: "telegram" | "whatsapp" | "discord"
+  accountId: string
+  entries: string[]
+}
+
+export interface AllowFromResult {
+  bindings: AllowFromBinding[]
+}
+
+// ─── Discord Guild Allowlist ─────────────────────────────────────────────────
+
+export interface DiscordGuildEntry {
+  guildId: string
+  label: string
+  requireMention: boolean
+  users: string[]
+}
+
+export interface DiscordGuildsResult {
+  accountId: string
+  groupPolicy: "allowlist" | "open" | "disabled"
+  guilds: DiscordGuildEntry[]
+}
+
 // ─── DM Pairing Types ──────────────────────────────────────────────────────
 
 export interface PairingRequest {
@@ -851,13 +876,32 @@ export interface IntegrationConfig {
 
 // ─── Connections (Third-party Data Sources) ──────────────────────────────────
 
-export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli' | 'google_workspace' | 'mcp'
+export type ConnectionType = 'bigquery' | 'postgres' | 'ssh' | 'website' | 'github' | 'odoocli' | 'google_workspace' | 'mcp' | 'composio'
+
+export interface ComposioConnectedAccount {
+  id: string
+  toolkit: string
+  toolkitName?: string
+  status: 'INITIALIZING' | 'INITIATED' | 'ACTIVE' | 'FAILED' | 'EXPIRED' | 'INACTIVE'
+  userId?: string
+  createdAt?: string
+  authConfigId?: string
+}
+
+export interface ComposioMetadata {
+  userId: string
+  toolkits: string[]            // allowlist set at create time
+  sessionId?: string
+  mcpUrl?: string
+  mcpType?: 'http'
+  sessionCreatedAt?: string
+}
 
 export type McpTransport = 'stdio' | 'http' | 'sse'
 
 export type McpPreset =
   | 'filesystem' | 'github' | 'slack' | 'postgres' | 'brave-search' | 'puppeteer' | 'memory' | 'mixpanel'  // stdio
-  | 'context7-http' | 'http-custom' | 'sse-custom'                                                           // remote
+  | 'context7-http' | 'composio-mcp' | 'http-custom' | 'sse-custom'                                          // remote
   | 'custom'
 
 export interface McpTool {
@@ -965,6 +1009,8 @@ export interface ConnectionMetadata {
   oauth?: McpOAuthMetadata
   tools?: McpTool[]
   toolsDiscoveredAt?: string
+  // Composio
+  composio?: ComposioMetadata
 }
 
 export interface Connection {

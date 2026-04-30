@@ -227,11 +227,13 @@ class LiveFeedWatcher {
               if (!activeLocks.has(lockPath)) {
                 // New lock appeared — agent started processing
                 activeLocks.add(lockPath);
+                const startSessionId = file.replace('.jsonl.lock', '').replace('.lock', '');
                 this.broadcast({
                   type: 'session:update',
                   action: 'processing_start',
                   agent: agentId,
                   file: file.replace('.lock', ''),
+                  sessionKey: this._sessionIdMap?.get(startSessionId) || null,
                   source: 'gateway',
                 });
               }

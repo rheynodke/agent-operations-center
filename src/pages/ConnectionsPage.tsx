@@ -9,6 +9,7 @@ import { api } from "@/lib/api"
 import { canEditConnection } from "@/lib/permissions"
 import { useAuthStore } from "@/stores"
 import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata, McpPreset, McpTool, McpTransport, McpOAuthMetadata } from "@/types"
+import { ComposioPanel } from "@/components/connections/ComposioPanel"
 import { cn } from "@/lib/utils"
 import { useConnectionsStore } from "@/stores"
 
@@ -20,7 +21,7 @@ const CONNECTION_TYPES: { value: ConnectionType; label: string; icon: React.Comp
   { value: "github", label: "GitHub Repo", icon: GitBranch, description: "Repository access via gh CLI" },
   { value: "odoocli", label: "Odoo (XML-RPC)", icon: Box, description: "Odoo ERP via odoocli — CRUD, methods, debug" },
   { value: "google_workspace", label: "Google Workspace", icon: FileText, description: "Docs, Drive, Sheets — OAuth per account" },
-  { value: "mcp", label: "MCP Server", icon: Workflow, description: "Model Context Protocol — expose external tools to agents" },
+  { value: "mcp", label: "MCP Server", icon: Workflow, description: "Model Context Protocol — expose external tools to agents (incl. Composio MCP preset)" },
 ]
 
 // ── MCP Presets ──────────────────────────────────────────────────────────────
@@ -125,6 +126,15 @@ const MCP_PRESETS: McpPresetDef[] = [
     secretHeaderKeys: ['Authorization'],
   },
   {
+    value: 'composio-mcp',
+    label: 'Composio MCP',
+    description: 'Composio MCP integration · X-CONSUMER-API-KEY (paste ck_x... from app.composio.dev)',
+    transport: 'http',
+    url: 'https://connect.composio.dev/mcp',
+    secretHeaderKeys: ['X-CONSUMER-API-KEY'],
+    docsUrl: 'https://app.composio.dev',
+  },
+  {
     value: 'http-custom',
     label: 'Custom HTTP',
     description: 'Zapier, n8n, any modern remote MCP · URL + optional Bearer token',
@@ -162,12 +172,13 @@ function getTypeLabel(type: string) {
 // ── Connection Card ──────────────────────────────────────────────────────────
 
 function ConnectionCard({
-  conn, onTest, onDelete, onEdit, assignedAgents, onGoogleOauth, canEdit,
+  conn, onTest, onDelete, onEdit, onManageComposio, assignedAgents, onGoogleOauth, canEdit,
 }: {
   conn: Connection
   onTest: (id: string) => void
   onDelete: (conn: Connection) => void
   onEdit: (conn: Connection) => void
+  onManageComposio?: (conn: Connection) => void
   assignedAgents?: string[]
   onGoogleOauth?: (authUrl: string) => Promise<{ connectionId: string } | null>
   canEdit: boolean
@@ -208,6 +219,11 @@ function ConnectionCard({
       target = meta.url || '?'
     }
     detail = `${preset} · ${transport} · ${target} · ${toolCount} tool${toolCount === 1 ? '' : 's'}`
+  } else if (conn.type === "composio") {
+    const co = (meta.composio as Partial<{ userId: string; toolkits: string[] }>) || {}
+    const tk = co.toolkits || []
+    const tkLabel = tk.length === 0 ? 'all toolkits' : `${tk.length} toolkit${tk.length === 1 ? '' : 's'}`
+    detail = `user: ${co.userId || '?'} · ${tkLabel}`
   }
 
   return (
@@ -228,6 +244,7 @@ function ConnectionCard({
           conn.type === "odoocli" ? "bg-violet-500/10 text-violet-400" :
           conn.type === "google_workspace" ? "bg-blue-500/10 text-blue-400" :
           conn.type === "mcp" ? "bg-cyan-500/10 text-cyan-400" :
+          conn.type === "composio" ? "bg-fuchsia-500/10 text-fuchsia-400" :
           "bg-emerald-500/10 text-emerald-400"
         )}>
           <Icon className="h-5 w-5" />
@@ -334,6 +351,15 @@ function ConnectionCard({
           })()}
           {canEdit ? (
             <>
+              {conn.type === 'composio' && onManageComposio && (
+                <Button
+                  size="sm" variant="outline" className="h-7 text-[11px] px-2"
+                  onClick={(e) => { e.stopPropagation(); onManageComposio(conn) }}
+                  title="Manage connected toolkits"
+                >
+                  Manage
+                </Button>
+              )}
               <button
                 onClick={() => onTest(conn.id)}
                 className="p-1.5 rounded-md hover:bg-muted/30 text-muted-foreground/50 hover:text-foreground transition-colors"
@@ -549,6 +575,11 @@ interface ConnFormState {
   mcpDescription: string
   mcpEnv: Array<{ key: string; value: string; secret: boolean }>     // stdio env OR http/sse headers
   mcpOauth: boolean
+  // Composio
+  composioApiKey: string
+  composioUserId: string
+  composioToolkits: string[]   // selected toolkit slugs
+  composioCustomToolkit: string // free-form input for adding off-list slugs
 }
 
 const emptyForm: ConnFormState = {
@@ -568,6 +599,10 @@ const emptyForm: ConnFormState = {
   mcpDescription: "",
   mcpEnv: [],
   mcpOauth: false,
+  composioApiKey: "",
+  composioUserId: "",
+  composioToolkits: [],
+  composioCustomToolkit: "",
 }
 
 function ConnectionDialog({
@@ -584,6 +619,10 @@ function ConnectionDialog({
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
   const [error, setError] = useState("")
+  // Composio discovery state — populated after the user clicks "Discover".
+  const [composioDiscovered, setComposioDiscovered] = useState<{ slug: string; label: string; accountCount: number }[] | null>(null)
+  const [composioDiscovering, setComposioDiscovering] = useState(false)
+  const [composioDiscoverErr, setComposioDiscoverErr] = useState<string | null>(null)
 
   useEffect(() => {
     if (editConn) {
@@ -634,6 +673,10 @@ function ConnectionDialog({
           ...Object.entries((m.headers as Record<string, string>) || {}).map(([k, v]) => ({ key: k, value: v, secret: false })),
           ...((m.headerKeys as string[]) || []).map(k => ({ key: k, value: "", secret: true })),
         ],
+        composioApiKey: "",
+        composioUserId: (m.composio?.userId as string) || "",
+        composioToolkits: (m.composio?.toolkits as string[]) || [],
+        composioCustomToolkit: "",
       })
     } else {
       setForm(emptyForm)
@@ -738,6 +781,15 @@ function ConnectionDialog({
       }
       return base
     }
+    if (form.type === "composio") {
+      const meta: Record<string, unknown> = {
+        composio: {
+          userId: form.composioUserId || undefined, // server falls back to user email
+          toolkits: form.composioToolkits,
+        },
+      }
+      return meta
+    }
     return {}
   }
 
@@ -789,7 +841,9 @@ function ConnectionDialog({
           ? undefined
           : form.type === 'mcp'
             ? (mcpCreds || '')
-            : form.credentials
+            : form.type === 'composio'
+              ? form.composioApiKey
+              : form.credentials
         const { authUrl } = await api.createConnection({
           name: form.name, type: form.type,
           credentials,
@@ -813,6 +867,37 @@ function ConnectionDialog({
 
   const f = form
   const set = (k: keyof ConnFormState, v: string) => setForm(prev => ({ ...prev, [k]: v }))
+
+  // Reset Composio discovery whenever modal closes or apiKey changes — stale
+  // results from a different account would mislead the picker.
+  useEffect(() => {
+    setComposioDiscovered(null)
+    setComposioDiscoverErr(null)
+  }, [form.composioApiKey, form.composioUserId, open])
+
+  async function handleComposioDiscover() {
+    setComposioDiscovering(true)
+    setComposioDiscoverErr(null)
+    try {
+      const res = editConn
+        ? await api.composioDiscoverToolkitsForConn(editConn.id)
+        : (() => {
+            const apiKey = form.composioApiKey.trim()
+            if (!apiKey) throw new Error("Enter API key first")
+            return api.composioDiscoverToolkits(apiKey, form.composioUserId.trim() || undefined)
+          })()
+      const data = await Promise.resolve(res)
+      setComposioDiscovered(data.toolkits)
+      if (data.toolkits.length === 0) {
+        setComposioDiscoverErr(`No connected toolkits for user "${data.userId}". Connect one on app.composio.dev first, or add a slug below.`)
+      }
+    } catch (e) {
+      setComposioDiscoverErr((e as Error).message || "Discovery failed")
+      setComposioDiscovered(null)
+    } finally {
+      setComposioDiscovering(false)
+    }
+  }
 
   const inputClass = "flex h-8 w-full rounded-md px-3 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors"
   const monoInputClass = inputClass + " font-mono"
@@ -1383,6 +1468,7 @@ function ConnectionDialog({
               </p>
             </>
           )}
+
         </div>
 
         {testResult && (
@@ -1407,11 +1493,12 @@ function ConnectionDialog({
           <Button size="sm" className="h-7 text-xs" onClick={handleSave}
             disabled={
               saving || !f.name ||
-              (!editConn && f.type !== "github" && f.type !== "google_workspace" && f.type !== "mcp" && !f.credentials) ||
+              (!editConn && f.type !== "github" && f.type !== "google_workspace" && f.type !== "mcp" && f.type !== "composio" && !f.credentials) ||
               (f.type === "mcp" && f.mcpTransport === "stdio" && !f.mcpCommand) ||
-              (f.type === "mcp" && (f.mcpTransport === "http" || f.mcpTransport === "sse") && !f.mcpUrl)
+              (f.type === "mcp" && (f.mcpTransport === "http" || f.mcpTransport === "sse") && !f.mcpUrl) ||
+              (f.type === "composio" && !editConn && !f.composioApiKey)
             }>
-            {saving ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Saving…</> : editConn ? "Update" : (f.type === "google_workspace" ? "Connect Google Account" : "Create")}
+            {saving ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Saving…</> : editConn ? "Update" : (f.type === "google_workspace" ? "Connect Google Account" : f.type === "composio" ? "Create Session" : "Create")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1428,6 +1515,7 @@ export function ConnectionsPage() {
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editConn, setEditConn] = useState<Connection | null>(null)
+  const [composioPanelConn, setComposioPanelConn] = useState<Connection | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -1575,6 +1663,7 @@ export function ConnectionsPage() {
                       onTest={handleTest}
                       onDelete={setDeleteTarget}
                       onEdit={(c) => { setEditConn(c); setDialogOpen(true) }}
+                      onManageComposio={(c) => setComposioPanelConn(c)}
                       onGoogleOauth={runGoogleOauth}
                       canEdit={canEditConnection(conn, currentUser)}
                     />
@@ -1593,6 +1682,13 @@ export function ConnectionsPage() {
         editConn={editConn}
         onGoogleOauth={runGoogleOauth}
         features={features}
+      />
+
+      {/* Composio Manage Panel */}
+      <ComposioPanel
+        open={!!composioPanelConn}
+        conn={composioPanelConn}
+        onClose={() => { setComposioPanelConn(null); load() }}
       />
 
       {/* Delete Confirm */}

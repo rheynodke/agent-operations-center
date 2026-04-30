@@ -9,3 +9,4 @@ skills/*
 .DS_Store
 superpowers/*
 data/aoc.db
+data/discord-guild-labels.json

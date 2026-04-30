@@ -15,6 +15,7 @@ const cronLib    = require('./automation/cron.cjs');
 const scriptsLib = require('./scripts.cjs');
 const hooksLib   = require('./hooks.cjs');
 const pairingLib = require('./pairing.cjs');
+const discordGuildsLib = require('./discord-guilds.cjs');
 const roleTemplates = require('./role-templates.cjs');
 const oauthG = require('./oauth/google.cjs');
 const googleConnections = require('./connections/google-workspace.cjs');
@@ -153,6 +154,15 @@ module.exports = {
   listPairingRequests:     pairingLib.listPairingRequests,
   listAllPairingRequests:  pairingLib.listAllPairingRequests,
   approvePairingCode:      pairingLib.approvePairingCode,
+  rejectPairingCode:       pairingLib.rejectPairingCode,
+  listAllowFromEntries:    pairingLib.listAllowFromEntries,
+  addAllowFromEntry:       pairingLib.addAllowFromEntry,
+  removeAllowFromEntry:    pairingLib.removeAllowFromEntry,
+
+  // ── discord guilds ────────────────────────────────────────────────────────
+  listAgentDiscordGuilds:   discordGuildsLib.listAgentDiscordGuilds,
+  upsertAgentDiscordGuild:  discordGuildsLib.upsertAgentDiscordGuild,
+  removeAgentDiscordGuild:  discordGuildsLib.removeAgentDiscordGuild,
 
   // ── role templates (Phase 1: read-only + seed) ────────────────────────────
   listRoleTemplates:       roleTemplates.listTemplates,

@@ -2125,8 +2125,7 @@ function ChannelBadge({ type }: { type: "telegram" | "whatsapp" | "discord" }) {
   )
   if (type === "discord") return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/12 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
-      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.033.055a19.912 19.912 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
-      Discord
+      <img src="/discord.png" className="w-3 h-3 rounded-full" alt="" /> Discord
     </span>
   )
   return (
@@ -2174,27 +2173,29 @@ function TelegramChannelCard({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-foreground/2">
+    <div className="rounded-xl border border-sky-500/20 bg-card overflow-hidden shadow-sm">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-sky-500/10 bg-sky-500/5">
         <ChannelBadge type="telegram" />
-        <span className="text-[11px] font-mono text-muted-foreground/60 flex-1 truncate">
-          account: {ch.accountId}
+        <span className="text-[12px] font-mono font-medium text-foreground/80 flex-1 truncate">
+          {ch.accountId}
         </span>
         <div className="flex items-center gap-1">
           <button
             onClick={() => { setEditing(e => !e); setErr("") }}
-            className="w-6 h-6 rounded flex items-center justify-center hover:bg-foreground/8 text-muted-foreground hover:text-foreground transition-colors"
-            title="Edit"
+            className={cn("w-7 h-7 rounded-md flex items-center justify-center transition-colors",
+              editing ? "bg-sky-500/20 text-sky-600" : "hover:bg-foreground/8 text-muted-foreground hover:text-foreground"
+            )}
+            title="Edit Settings"
           >
-            <Pencil className="w-3 h-3" />
+            <Pencil className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setShowRemoveConfirm(true)}
             disabled={removing}
-            className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+            className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-red-500/15 text-muted-foreground hover:text-red-500 transition-colors"
             title="Remove binding"
           >
-            {removing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Unlink className="w-3 h-3" />}
+            {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
@@ -2212,24 +2213,24 @@ function TelegramChannelCard({
       )}
 
       {editing ? (
-        <div className="px-4 py-3 space-y-3">
-          {err && <p className="text-[11px] text-red-500">{err}</p>}
+        <div className="px-5 py-4 space-y-4 bg-foreground/2">
+          {err && <p className="text-[11px] font-medium text-red-500 bg-red-500/10 px-3 py-2 rounded-lg border border-red-500/20">{err}</p>}
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Bot Token</label>
+            <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">Bot Token</label>
             <input
               value={botToken}
               onChange={e => setBotToken(e.target.value)}
-              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              className="w-full text-xs font-mono bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-sky-500/40 focus:ring-2 focus:ring-sky-500/10 transition-all"
               placeholder="123456:ABC-DEF..."
             />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+              <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">DM Policy</label>
               <select
                 value={dmPolicy}
                 onChange={e => setDmPolicy(e.target.value as DmPolicy)}
-                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+                className="w-full text-xs bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-sky-500/40 focus:ring-2 focus:ring-sky-500/10 transition-all"
               >
                 {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
                   <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
@@ -2237,11 +2238,11 @@ function TelegramChannelCard({
               </select>
             </div>
             <div>
-              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Streaming</label>
+              <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">Streaming</label>
               <select
                 value={streaming}
                 onChange={e => setStreaming(e.target.value as Streaming)}
-                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+                className="w-full text-xs bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-sky-500/40 focus:ring-2 focus:ring-sky-500/10 transition-all"
               >
                 {(Object.keys(STREAMING_LABELS) as Streaming[]).map(v => (
                   <option key={v} value={v}>{STREAMING_LABELS[v]}</option>
@@ -2249,36 +2250,39 @@ function TelegramChannelCard({
               </select>
             </div>
           </div>
-          <div className="flex gap-2 pt-1">
+          <div className="flex gap-2 pt-2">
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-500/15 border border-sky-500/25 text-xs font-semibold text-sky-600 dark:text-sky-400 hover:bg-sky-500/25 transition-colors disabled:opacity-50"
             >
-              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-              Save
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              Save Changes
             </button>
-            <button onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => setEditing(false)} className="px-4 py-2 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="px-4 py-2.5 grid grid-cols-3 gap-3 text-[11px]">
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">DM Policy</span>
-            <span className="font-medium text-foreground/80">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
+        <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 gap-4 bg-background">
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">DM Policy</span>
+            <span className="text-[12px] font-medium text-foreground/90">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
           </div>
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Streaming</span>
-            <span className="font-medium text-foreground/80">{STREAMING_LABELS[ch.streaming] ?? ch.streaming}</span>
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">Streaming</span>
+            <span className="text-[12px] font-medium text-foreground/90">{STREAMING_LABELS[ch.streaming] ?? ch.streaming}</span>
           </div>
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Token</span>
-            <span className="font-mono text-foreground/60">{ch.botToken ? ch.botToken.slice(0, 8) + "…" : "—"}</span>
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">Bot Token</span>
+            <span className="text-[12px] font-mono text-muted-foreground/70 bg-foreground/4 px-2 py-0.5 rounded border border-foreground/5 inline-block truncate max-w-full">
+              {ch.botToken ? ch.botToken.slice(0, 8) + "…" : "—"}
+            </span>
           </div>
         </div>
       )}
+      <ChannelAllowFromSection agentId={agentId} channel="telegram" accountId={ch.accountId} />
     </div>
   )
 }
@@ -2368,35 +2372,39 @@ function WhatsAppChannelCard({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-foreground/2">
+    <div className="rounded-xl border border-green-500/20 bg-card overflow-hidden shadow-sm">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-green-500/10 bg-green-500/5">
         <ChannelBadge type="whatsapp" />
-        <span className="text-[11px] font-mono text-muted-foreground/60 flex-1 truncate">
-          account: {ch.accountId}
+        <span className="text-[12px] font-mono font-medium text-foreground/80 flex-1 truncate">
+          {ch.accountId}
         </span>
         {ch.pairingRequired && qrStatus !== "connected" && (
-          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20 uppercase tracking-wider">
+          <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20 uppercase tracking-wider">
             Pairing needed
           </span>
         )}
         {qrStatus === "connected" && (
-          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
+          <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
             Connected
           </span>
         )}
         <div className="flex items-center gap-1">
           <button
             onClick={() => { setEditing(e => !e); setErr("") }}
-            className="w-6 h-6 rounded flex items-center justify-center hover:bg-foreground/8 text-muted-foreground hover:text-foreground transition-colors"
+            className={cn("w-7 h-7 rounded-md flex items-center justify-center transition-colors",
+              editing ? "bg-green-500/20 text-green-600" : "hover:bg-foreground/8 text-muted-foreground hover:text-foreground"
+            )}
+            title="Edit Settings"
           >
-            <Pencil className="w-3 h-3" />
+            <Pencil className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setShowRemoveConfirm(true)}
             disabled={removing}
-            className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+            className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-red-500/15 text-muted-foreground hover:text-red-500 transition-colors"
+            title="Remove binding"
           >
-            {removing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Unlink className="w-3 h-3" />}
+            {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
@@ -2482,14 +2490,14 @@ function WhatsAppChannelCard({
       )}
 
       {editing ? (
-        <div className="px-4 py-3 space-y-3">
-          {err && <p className="text-[11px] text-red-500">{err}</p>}
+        <div className="px-5 py-4 space-y-4 bg-foreground/2">
+          {err && <p className="text-[11px] font-medium text-red-500 bg-red-500/10 px-3 py-2 rounded-lg border border-red-500/20">{err}</p>}
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+            <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">DM Policy</label>
             <select
               value={dmPolicy}
               onChange={e => setDmPolicy(e.target.value as DmPolicy)}
-              className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+              className="w-full text-xs bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-green-500/40 focus:ring-2 focus:ring-green-500/10 transition-all"
             >
               {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
                 <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
@@ -2497,39 +2505,39 @@ function WhatsAppChannelCard({
             </select>
           </div>
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">
-              Allow From <span className="text-muted-foreground/40 font-normal normal-case">(comma-separated phone numbers, leave empty for all)</span>
+            <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">
+              Allow From <span className="text-muted-foreground/50 font-normal normal-case">(comma-separated phone numbers, leave empty for all)</span>
             </label>
             <input
               value={allowFrom}
               onChange={e => setAllowFrom(e.target.value)}
-              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              className="w-full text-xs font-mono bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-green-500/40 focus:ring-2 focus:ring-green-500/10 transition-all"
               placeholder="+62812…, +62813…"
             />
           </div>
-          <div className="flex gap-2 pt-1">
+          <div className="flex gap-2 pt-2">
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-green-500/15 border border-green-500/25 text-xs font-semibold text-green-600 dark:text-green-400 hover:bg-green-500/25 transition-colors disabled:opacity-50"
             >
-              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-              Save
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              Save Changes
             </button>
-            <button onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => setEditing(false)} className="px-4 py-2 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="px-4 py-2.5 grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">DM Policy</span>
-            <span className="font-medium text-foreground/80">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
+        <div className="px-5 py-4 grid grid-cols-1 sm:grid-cols-2 gap-4 bg-background">
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">DM Policy</span>
+            <span className="text-[12px] font-medium text-foreground/90">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
           </div>
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Allow From</span>
-            <span className="font-medium text-foreground/80">{ch.allowFrom.length > 0 ? ch.allowFrom.join(", ") : "Anyone"}</span>
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">Allow From</span>
+            <span className="text-[12px] font-medium text-foreground/90">{ch.allowFrom.length > 0 ? ch.allowFrom.join(", ") : "Anyone"}</span>
           </div>
         </div>
       )}
@@ -2544,6 +2552,7 @@ function WhatsAppChannelCard({
           onCancel={() => setShowRemoveConfirm(false)}
         />
       )}
+      <ChannelAllowFromSection agentId={agentId} channel="whatsapp" accountId={ch.accountId} />
     </div>
   )
 }
@@ -2590,52 +2599,54 @@ function DiscordChannelCard({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-foreground/2">
+    <div className="rounded-xl border border-indigo-500/20 bg-card overflow-hidden shadow-sm">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-indigo-500/10 bg-indigo-500/5">
         <ChannelBadge type="discord" />
-        <span className="text-[11px] font-mono text-muted-foreground/60 flex-1 truncate">
-          account: {ch.accountId}
+        <span className="text-[12px] font-mono font-medium text-foreground/80 flex-1 truncate">
+          {ch.accountId}
         </span>
         <div className="flex items-center gap-1">
           <button
             onClick={() => { setEditing(e => !e); setErr("") }}
-            className="w-6 h-6 rounded flex items-center justify-center hover:bg-foreground/8 text-muted-foreground hover:text-foreground transition-colors"
-            title="Edit"
+            className={cn("w-7 h-7 rounded-md flex items-center justify-center transition-colors",
+              editing ? "bg-indigo-500/20 text-indigo-600" : "hover:bg-foreground/8 text-muted-foreground hover:text-foreground"
+            )}
+            title="Edit Settings"
           >
-            <Pencil className="w-3 h-3" />
+            <Pencil className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setShowRemoveConfirm(true)}
             disabled={removing}
-            className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+            className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-red-500/15 text-muted-foreground hover:text-red-500 transition-colors"
             title="Remove binding"
           >
-            {removing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Unlink className="w-3 h-3" />}
+            {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
 
       {editing ? (
-        <div className="px-4 py-3 space-y-3">
-          {err && <p className="text-[11px] text-red-500">{err}</p>}
+        <div className="px-5 py-4 space-y-4 bg-foreground/2">
+          {err && <p className="text-[11px] font-medium text-red-500 bg-red-500/10 px-3 py-2 rounded-lg border border-red-500/20">{err}</p>}
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Replace Bot Token</label>
+            <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">Replace Bot Token</label>
             <input
               type="password"
               value={botToken}
               onChange={e => setBotToken(e.target.value)}
-              className="w-full text-xs font-mono bg-foreground/4 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary/40"
+              className="w-full text-xs font-mono bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-indigo-500/40 focus:ring-2 focus:ring-indigo-500/10 transition-all"
               placeholder="Leave blank to keep current token"
             />
             <p className="text-[10px] text-muted-foreground/40 mt-1">Only fill this if you want to replace the current Discord bot token.</p>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">DM Policy</label>
+              <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">DM Policy</label>
               <select
                 value={dmPolicy}
                 onChange={e => setDmPolicy(e.target.value as DmPolicy)}
-                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+                className="w-full text-xs bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-indigo-500/40 focus:ring-2 focus:ring-indigo-500/10 transition-all"
               >
                 {(Object.keys(DM_POLICY_LABELS) as DmPolicy[]).map(v => (
                   <option key={v} value={v}>{DM_POLICY_LABELS[v]}</option>
@@ -2643,11 +2654,11 @@ function DiscordChannelCard({
               </select>
             </div>
             <div>
-              <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider block mb-1">Guild/Server Policy</label>
+              <label className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider block mb-1.5">Guild/Server Policy</label>
               <select
                 value={groupPolicy}
                 onChange={e => setGroupPolicy(e.target.value as GroupPolicy)}
-                className="w-full text-xs bg-foreground/4 border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary/40"
+                className="w-full text-xs bg-background border border-border rounded-lg px-3 py-2 outline-none focus:border-indigo-500/40 focus:ring-2 focus:ring-indigo-500/10 transition-all"
               >
                 {(Object.keys(GROUP_POLICY_LABELS) as GroupPolicy[]).map(v => (
                   <option key={v} value={v}>{GROUP_POLICY_LABELS[v]}</option>
@@ -2655,33 +2666,35 @@ function DiscordChannelCard({
               </select>
             </div>
           </div>
-          <div className="flex gap-2 pt-1">
+          <div className="flex gap-2 pt-2">
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 border border-primary/25 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-500/15 border border-indigo-500/25 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/25 transition-colors disabled:opacity-50"
             >
-              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-              Save
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              Save Changes
             </button>
-            <button onClick={() => setEditing(false)} className="px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => setEditing(false)} className="px-4 py-2 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="px-4 py-2.5 grid grid-cols-3 gap-3 text-[11px]">
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">DM Policy</span>
-            <span className="font-medium text-foreground/80">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
+        <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 gap-4 bg-background">
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">DM Policy</span>
+            <span className="text-[12px] font-medium text-foreground/90">{DM_POLICY_LABELS[ch.dmPolicy] ?? ch.dmPolicy}</span>
           </div>
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Guild Policy</span>
-            <span className="font-medium text-foreground/80">{GROUP_POLICY_LABELS[ch.groupPolicy] ?? ch.groupPolicy}</span>
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">Guild Policy</span>
+            <span className="text-[12px] font-medium text-foreground/90">{GROUP_POLICY_LABELS[ch.groupPolicy] ?? ch.groupPolicy}</span>
           </div>
-          <div>
-            <span className="text-muted-foreground/50 block text-[10px] uppercase tracking-wider mb-0.5">Bot Token</span>
-            <span className="font-medium text-foreground/80">{ch.hasToken ? "Configured" : "Missing"}</span>
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold text-muted-foreground/50 uppercase tracking-wider">Bot Token</span>
+            <span className={cn("text-[12px] font-medium", ch.hasToken ? "text-emerald-500" : "text-amber-500")}>
+              {ch.hasToken ? "Configured" : "Missing"}
+            </span>
           </div>
         </div>
       )}
@@ -2696,6 +2709,8 @@ function DiscordChannelCard({
           onCancel={() => setShowRemoveConfirm(false)}
         />
       )}
+      <ChannelAllowFromSection agentId={agentId} channel="discord" accountId={ch.accountId} />
+      <DiscordGuildsSection agentId={agentId} />
     </div>
   )
 }
@@ -3421,7 +3436,11 @@ function PairingRequestsPanel({ agentId }: { agentId: string }) {
   const [pairing, setPairing] = useState<PairingRequestsByChannel | null>(null)
   const [loading, setLoading] = useState(true)
   const [approving, setApproving] = useState<string | null>(null)
+  const [rejecting, setRejecting] = useState<string | null>(null)
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+
+  const agentFromList = useAgentStore((s) => s.agents.find((a) => a.id === agentId))
+  const canEdit = useCanEditAgent(agentFromList)
 
   const load = useCallback(async () => {
     try {
@@ -3454,15 +3473,44 @@ function PairingRequestsPanel({ agentId }: { agentId: string }) {
     try {
       const result = await api.approvePairing(channel, code, agentId)
       if (result.ok) {
-        setToast({ msg: `Approved ${channel} pairing: ${code}`, ok: true })
+        const msg = result.warning
+          ? `Approved ${channel} pairing: ${code} (${result.warning})`
+          : `Approved ${channel} pairing: ${code}`
+        setToast({ msg, ok: true })
         await load()
+        // Notify any mounted ChannelAllowFromSection for this agent to refresh —
+        // approve writes the requester ID into the channel's allowFrom file.
+        window.dispatchEvent(new CustomEvent("aoc:allowfrom-refresh", {
+          detail: { agentId, channel },
+        }))
       } else {
         setToast({ msg: result.error || "Approval failed", ok: false })
+        await load()
       }
     } catch (e) {
       setToast({ msg: (e as Error).message, ok: false })
     } finally {
       setApproving(null)
+      setTimeout(() => setToast(null), 3500)
+    }
+  }
+
+  async function handleReject(channel: string, code: string) {
+    if (!confirm(`Reject ${channel} pairing request ${code}? This deletes the pending request.`)) return
+    setRejecting(code)
+    try {
+      const result = await api.rejectPairing(channel, code, agentId)
+      if (result.ok) {
+        setToast({ msg: `Rejected ${channel} pairing: ${code}`, ok: true })
+        await load()
+      } else {
+        setToast({ msg: result.error || "Reject failed", ok: false })
+        await load()
+      }
+    } catch (e) {
+      setToast({ msg: (e as Error).message, ok: false })
+    } finally {
+      setRejecting(null)
       setTimeout(() => setToast(null), 3500)
     }
   }
@@ -3478,7 +3526,7 @@ function PairingRequestsPanel({ agentId }: { agentId: string }) {
   const channelIcon = (ch: string) => {
     if (ch === "telegram") return <img src="/telegram.webp" className="w-3.5 h-3.5 rounded-full" alt="" />
     if (ch === "whatsapp") return <img src="/wa.png" className="w-3.5 h-3.5 rounded-full" alt="" />
-    return <Globe className="w-3.5 h-3.5" />
+    return <img src="/discord.png" className="w-3.5 h-3.5 rounded-full" alt="" />
   }
 
   return (
@@ -3517,29 +3565,616 @@ function PairingRequestsPanel({ agentId }: { agentId: string }) {
                 ID: {req.id} · {timeAgo(req.createdAt)}
               </div>
             </div>
-            <button
-              onClick={() => handleApprove(req.channel, req.code)}
-              disabled={approving === req.code}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all",
-                approving === req.code
-                  ? "bg-foreground/4 text-muted-foreground cursor-not-allowed"
-                  : "bg-emerald-500/15 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/25"
-              )}
-            >
-              {approving === req.code ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <ShieldCheck className="w-3 h-3" />
-              )}
-              Approve
-            </button>
+            {canEdit ? (
+              <>
+                <button
+                  onClick={() => handleApprove(req.channel, req.code)}
+                  disabled={approving === req.code || rejecting === req.code}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all",
+                    approving === req.code || rejecting === req.code
+                      ? "bg-foreground/4 text-muted-foreground cursor-not-allowed"
+                      : "bg-emerald-500/15 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/25"
+                  )}
+                >
+                  {approving === req.code ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-3 h-3" />
+                  )}
+                  Approve
+                </button>
+                <button
+                  onClick={() => handleReject(req.channel, req.code)}
+                  disabled={approving === req.code || rejecting === req.code}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all",
+                    approving === req.code || rejecting === req.code
+                      ? "bg-foreground/4 text-muted-foreground cursor-not-allowed"
+                      : "bg-red-500/12 border border-red-500/25 text-red-400 hover:bg-red-500/22"
+                  )}
+                >
+                  {rejecting === req.code ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <X className="w-3 h-3" />
+                  )}
+                  Reject
+                </button>
+              </>
+            ) : (
+              <span className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] text-muted-foreground/50">
+                <LockIcon className="w-3 h-3" />
+                Owner only
+              </span>
+            )}
           </div>
         ))}
       </div>
 
       <p className="text-[10px] text-muted-foreground/40">
         Users who message this agent for the first time need approval when DM policy is set to "pairing".
+      </p>
+    </div>
+  )
+}
+
+// ─── Channel Allow-From Section (embedded in each channel card) ──────────────
+
+function ChannelAllowFromSection({
+  agentId, channel, accountId,
+}: {
+  agentId: string; channel: "telegram" | "whatsapp" | "discord"; accountId: string
+}) {
+  const [entries, setEntries] = useState<string[] | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [draft, setDraft] = useState("")
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+
+  const agentFromList = useAgentStore((s) => s.agents.find((a) => a.id === agentId))
+  const canEdit = useCanEditAgent(agentFromList)
+
+  const idHint =
+    channel === "telegram" ? "Telegram chat/user ID (numeric)" :
+    channel === "whatsapp" ? "WhatsApp JID (e.g. 6281234567890@s.whatsapp.net)" :
+    "Discord user ID (numeric snowflake)"
+
+  const channelLabel = channel === "telegram" ? "Telegram" : channel === "whatsapp" ? "WhatsApp" : "Discord"
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.getAgentAllowFrom(agentId)
+      const match = res.bindings.find(b => b.channel === channel && b.accountId === accountId)
+      setEntries(match ? match.entries : [])
+    } catch { setEntries([]) }
+  }, [agentId, channel, accountId])
+
+  useEffect(() => { load() }, [load])
+
+  // Refresh when an approve elsewhere on the page modifies this binding's
+  // allowFrom file (PairingRequestsPanel emits this after a successful approve).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (!detail) return
+      if (detail.agentId !== agentId) return
+      if (detail.channel && detail.channel !== channel) return
+      load()
+    }
+    window.addEventListener("aoc:allowfrom-refresh", handler)
+    return () => window.removeEventListener("aoc:allowfrom-refresh", handler)
+  }, [agentId, channel, load])
+
+  const showToast = (msg: string, ok: boolean) => {
+    setToast({ msg, ok })
+    setTimeout(() => setToast(null), 3000)
+  }
+
+  async function handleAdd() {
+    const value = draft.trim()
+    if (!value) return
+    setBusy(`add:${value}`)
+    try {
+      const res = await api.addAllowFromEntry(agentId, channel, accountId, value)
+      if (res.ok) {
+        setDraft("")
+        showToast(res.added ? `Added ${value}` : `Already in list`, true)
+        await load()
+      } else {
+        showToast(res.error || "Add failed", false)
+      }
+    } catch (e) {
+      showToast((e as Error).message, false)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleRemove(entry: string) {
+    if (!confirm(`Remove ${entry} from ${channelLabel} allow list?`)) return
+    setBusy(`del:${entry}`)
+    try {
+      const res = await api.removeAllowFromEntry(agentId, channel, accountId, entry)
+      if (res.ok) {
+        showToast(`Removed ${entry}`, true)
+        await load()
+      } else {
+        showToast(res.error || "Remove failed", false)
+      }
+    } catch (e) {
+      showToast((e as Error).message, false)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (entries === null) return null
+
+  const adding = busy?.startsWith("add:")
+  const isEmpty = entries.length === 0
+
+  return (
+    <div className="px-5 py-4 border-t border-border bg-background/50 space-y-3">
+      <div className="flex items-center gap-2">
+        <Shield className="w-3.5 h-3.5 text-muted-foreground/50" />
+        <span className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider">Allow From</span>
+        <span className="text-[10px] text-muted-foreground/40 font-medium">DM allowlist (store-side)</span>
+        <span className={cn(
+          "ml-auto text-[10px] font-mono font-bold px-2 py-0.5 rounded border tabular-nums",
+          isEmpty
+            ? "border-foreground/10 bg-foreground/4 text-muted-foreground/50"
+            : "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+        )}>
+          {entries.length} entries
+        </span>
+      </div>
+
+      {toast && (
+        <div className={cn(
+          "flex items-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium",
+          toast.ok
+            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+            : "bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400"
+        )}>
+          {toast.ok ? <Check className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+          {toast.msg}
+        </div>
+      )}
+
+      {isEmpty ? (
+        <div className="flex items-center justify-center p-4 rounded-lg border border-dashed border-foreground/10 bg-foreground/2">
+          <p className="text-[11px] text-muted-foreground/50 font-medium flex items-center gap-2">
+            <LockIcon className="w-3.5 h-3.5" />
+            {canEdit
+              ? "No entries — anyone DM-ing this bot will need to pair first."
+              : "No entries (read-only)."}
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {entries.map(entry => {
+            const removing = busy === `del:${entry}`
+            return (
+              <div
+                key={entry}
+                className="group inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-md border border-border bg-foreground/4 hover:bg-foreground/8 hover:border-foreground/20 transition-all text-[11px] font-mono text-foreground/80 shadow-sm"
+              >
+                <span className="truncate max-w-[280px]">{entry}</span>
+                {canEdit && (
+                  <button
+                    onClick={() => handleRemove(entry)}
+                    disabled={removing}
+                    className="w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-red-500/15 hover:text-red-500 text-muted-foreground disabled:opacity-40 shrink-0"
+                    title="Remove"
+                  >
+                    {removing ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {canEdit ? (
+        <div className="flex items-center gap-2 mt-2">
+          <Input
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAdd() } }}
+            placeholder={idHint}
+            className="h-8 text-[11px] font-mono bg-background border-border focus:border-emerald-500/40 focus:ring-emerald-500/10"
+          />
+          <button
+            onClick={handleAdd}
+            disabled={!draft.trim() || adding}
+            className={cn(
+              "shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold transition-all h-8",
+              !draft.trim() || adding
+                ? "bg-foreground/4 text-muted-foreground/50 cursor-not-allowed border border-transparent"
+                : "bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25"
+            )}
+          >
+            {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+            Add
+          </button>
+        </div>
+      ) : (
+        !isEmpty && (
+          <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground/40 px-1 font-medium mt-2">
+            <LockIcon className="w-3 h-3" />
+            Read-only — only the agent owner or an admin can edit this list.
+          </p>
+        )
+      )}
+    </div>
+  )
+}
+
+// ─── Discord Guilds Section ──────────────────────────────────────────────────
+
+function DiscordGuildsSection({ agentId }: { agentId: string }) {
+  const [data, setData] = useState<import("@/types").DiscordGuildsResult | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+  const [newGuildId, setNewGuildId] = useState("")
+  const [newLabel, setNewLabel] = useState("")
+  const [newRequireMention, setNewRequireMention] = useState(true)
+  const [newUsers, setNewUsers] = useState("")
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editLabel, setEditLabel] = useState("")
+  const [editRequireMention, setEditRequireMention] = useState(true)
+  const [editUsersDraft, setEditUsersDraft] = useState("")
+
+  const agentFromList = useAgentStore((s) => s.agents.find((a) => a.id === agentId))
+  const canEdit = useCanEditAgent(agentFromList)
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.getAgentDiscordGuilds(agentId)
+      setData(res); setLoadErr(null)
+    } catch (e) {
+      setLoadErr((e as Error).message)
+      setData(null)
+    }
+  }, [agentId])
+
+  useEffect(() => { load() }, [load])
+
+  const showToast = (msg: string, ok: boolean) => {
+    setToast({ msg, ok })
+    setTimeout(() => setToast(null), 3500)
+  }
+
+  const parseUserList = (text: string): string[] =>
+    text.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
+
+  async function handleAdd() {
+    const guildId = newGuildId.trim()
+    if (!guildId) return
+    setBusy(`add:${guildId}`)
+    try {
+      const users = parseUserList(newUsers)
+      const res = await api.upsertAgentDiscordGuild(agentId, guildId, {
+        label: newLabel.trim(),
+        requireMention: newRequireMention,
+        users,
+      })
+      if (res.ok) {
+        setNewGuildId(""); setNewLabel(""); setNewUsers(""); setNewRequireMention(true)
+        showToast(`Added guild ${newLabel.trim() || guildId}`, true)
+        await load()
+      } else {
+        showToast(res.error || "Add failed", false)
+      }
+    } catch (e) {
+      showToast((e as Error).message, false)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  function startEdit(g: import("@/types").DiscordGuildEntry) {
+    setEditingId(g.guildId)
+    setEditLabel(g.label || "")
+    setEditRequireMention(g.requireMention)
+    setEditUsersDraft(g.users.join(", "))
+  }
+
+  async function handleSaveEdit(guildId: string) {
+    setBusy(`edit:${guildId}`)
+    try {
+      const users = parseUserList(editUsersDraft)
+      const res = await api.upsertAgentDiscordGuild(agentId, guildId, {
+        label: editLabel.trim(),
+        requireMention: editRequireMention,
+        users,
+      })
+      if (res.ok) {
+        setEditingId(null)
+        showToast(`Updated guild ${editLabel.trim() || guildId}`, true)
+        await load()
+      } else {
+        showToast(res.error || "Update failed", false)
+      }
+    } catch (e) {
+      showToast((e as Error).message, false)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleRemove(guildId: string) {
+    if (!confirm(`Remove guild ${guildId} from allowlist? The agent will stop responding in this server's channels.`)) return
+    setBusy(`del:${guildId}`)
+    try {
+      const res = await api.removeAgentDiscordGuild(agentId, guildId)
+      if (res.ok) {
+        showToast(`Removed guild ${guildId}`, true)
+        await load()
+      } else {
+        showToast(res.error || "Remove failed", false)
+      }
+    } catch (e) {
+      showToast((e as Error).message, false)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (loadErr) {
+    return (
+      <div className="px-5 py-4 border-t border-border bg-red-500/5">
+        <p className="text-[11px] text-red-500 font-medium flex items-center gap-2">
+          <AlertCircle className="w-3.5 h-3.5" />
+          Failed to load guilds: {loadErr}
+        </p>
+      </div>
+    )
+  }
+  if (!data) return null
+
+  const guilds = data.guilds || []
+  const isEmpty = guilds.length === 0
+  const adding = busy === "add:" + newGuildId.trim()
+
+  return (
+    <div className="px-5 py-4 border-t border-border bg-background/50 space-y-4">
+      <div className="flex items-center gap-2">
+        <Globe className="w-3.5 h-3.5 text-muted-foreground/50" />
+        <span className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-wider">Allowed Guilds</span>
+        <span className="text-[10px] text-muted-foreground/40 font-medium">guild allowlist · per-account</span>
+        <span className={cn(
+          "ml-auto text-[10px] font-mono font-bold px-2 py-0.5 rounded border tabular-nums",
+          isEmpty
+            ? "border-foreground/10 bg-foreground/4 text-muted-foreground/50"
+            : "border-indigo-500/20 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400"
+        )}>
+          {guilds.length} {guilds.length === 1 ? "guild" : "guilds"}
+        </span>
+      </div>
+
+      {toast && (
+        <div className={cn(
+          "flex items-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium",
+          toast.ok
+            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+            : "bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400"
+        )}>
+          {toast.ok ? <Check className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+          {toast.msg}
+        </div>
+      )}
+
+      {/* Existing guild entries */}
+      {isEmpty ? (
+        <div className="flex items-center justify-center p-4 rounded-lg border border-dashed border-foreground/10 bg-foreground/2">
+          <p className="text-[11px] text-muted-foreground/50 font-medium flex items-center gap-2">
+            {!canEdit && <LockIcon className="w-3.5 h-3.5" />}
+            {canEdit
+              ? "No guilds configured — agent won't respond in any Discord server channel until added below."
+              : "No guilds configured (read-only)."}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3">
+          {guilds.map(g => {
+            const editing = editingId === g.guildId
+            const removing = busy === `del:${g.guildId}`
+            const saving = busy === `edit:${g.guildId}`
+            return (
+              <div key={g.guildId} className="rounded-xl border border-border bg-card shadow-sm p-3.5 space-y-3 transition-all hover:border-foreground/15">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {g.label ? (
+                        <>
+                          <span className="text-[13px] font-bold text-foreground/90 truncate">{g.label}</span>
+                          <span className="text-[10px] font-mono font-medium text-muted-foreground/60 truncate bg-foreground/5 px-1.5 py-0.5 rounded">{g.guildId}</span>
+                        </>
+                      ) : (
+                        <span className="text-[13px] font-mono font-bold text-foreground/90 truncate">{g.guildId}</span>
+                      )}
+                      <span className={cn(
+                        "text-[9px] font-bold px-2 py-0.5 rounded border ml-1",
+                        g.requireMention
+                          ? "border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                          : "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      )}>
+                        {g.requireMention ? "@mention required" : "respond to all"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] font-medium text-muted-foreground/50">
+                      {g.users.length} authorized {g.users.length === 1 ? "user" : "users"}
+                    </p>
+                  </div>
+                  {canEdit && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      {editing ? (
+                        <>
+                          <button
+                            onClick={() => handleSaveEdit(g.guildId)}
+                            disabled={saving}
+                            className="w-7 h-7 rounded-md flex items-center justify-center bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-40 transition-colors"
+                            title="Save Changes"
+                          >
+                            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="w-7 h-7 rounded-md flex items-center justify-center border border-border text-muted-foreground hover:bg-foreground/5 transition-colors"
+                            title="Cancel Edit"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => startEdit(g)}
+                            className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors"
+                            title="Edit Guild"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleRemove(g.guildId)}
+                            disabled={removing}
+                            className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:bg-red-500/10 hover:text-red-500 disabled:opacity-40 transition-colors"
+                            title="Remove Guild"
+                          >
+                            {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {editing ? (
+                  <div className="bg-foreground/2 p-3 rounded-lg border border-border/50 space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-muted-foreground/60 block mb-1">Friendly Label</label>
+                        <Input
+                          value={editLabel}
+                          onChange={e => setEditLabel(e.target.value)}
+                          placeholder="e.g. Team Server"
+                          maxLength={60}
+                          className="h-8 text-[11px] bg-background focus:border-indigo-500/40 focus:ring-indigo-500/10"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-muted-foreground/60 block mb-1">Authorized Users</label>
+                        <Input
+                          value={editUsersDraft}
+                          onChange={e => setEditUsersDraft(e.target.value)}
+                          placeholder="User IDs (comma separated)"
+                          className="h-8 text-[11px] font-mono bg-background focus:border-indigo-500/40 focus:ring-indigo-500/10"
+                        />
+                      </div>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-medium text-foreground/80 cursor-pointer p-2 rounded hover:bg-foreground/5 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={editRequireMention}
+                        onChange={e => setEditRequireMention(e.target.checked)}
+                        className="w-3.5 h-3.5 accent-indigo-500 rounded-sm"
+                      />
+                      Require @mention for bot to respond
+                    </label>
+                  </div>
+                ) : (
+                  g.users.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-1 border-t border-border/40">
+                      {g.users.map(u => (
+                        <span key={u} className="inline-flex items-center px-2 py-0.5 rounded border border-foreground/10 bg-foreground/4 text-[10px] font-mono font-medium text-muted-foreground">
+                          {u}
+                        </span>
+                      ))}
+                    </div>
+                  )
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Add new guild form */}
+      {canEdit ? (
+        <div className="rounded-xl border border-dashed border-foreground/15 bg-foreground/2 p-4 space-y-3 transition-colors hover:border-foreground/30 hover:bg-foreground/4">
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-5 h-5 rounded flex items-center justify-center bg-indigo-500/10">
+              <Plus className="w-3 h-3 text-indigo-500" />
+            </div>
+            <span className="text-[11px] font-bold text-foreground/80 uppercase tracking-wider">Add Discord Server</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-muted-foreground/60 px-0.5">Server ID *</label>
+              <Input
+                value={newGuildId}
+                onChange={e => setNewGuildId(e.target.value)}
+                placeholder="Numeric snowflake (17–19 digits)"
+                className="h-8 text-[11px] font-mono bg-background focus:border-indigo-500/40 focus:ring-indigo-500/10"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-muted-foreground/60 px-0.5">Friendly Label</label>
+              <Input
+                value={newLabel}
+                onChange={e => setNewLabel(e.target.value)}
+                placeholder="e.g. My Workspace (Optional)"
+                maxLength={60}
+                className="h-8 text-[11px] bg-background focus:border-indigo-500/40 focus:ring-indigo-500/10"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-muted-foreground/60 px-0.5">Authorized Users</label>
+            <Input
+              value={newUsers}
+              onChange={e => setNewUsers(e.target.value)}
+              placeholder="Authorized user IDs (comma separated, optional)"
+              className="h-8 text-[11px] font-mono bg-background focus:border-indigo-500/40 focus:ring-indigo-500/10"
+            />
+          </div>
+          <div className="flex items-center justify-between pt-1">
+            <label className="inline-flex items-center gap-2 text-[11px] font-medium text-foreground/80 cursor-pointer p-1.5 -ml-1.5 rounded hover:bg-foreground/5 transition-colors">
+              <input
+                type="checkbox"
+                checked={newRequireMention}
+                onChange={e => setNewRequireMention(e.target.checked)}
+                className="w-3.5 h-3.5 accent-indigo-500 rounded-sm"
+              />
+              Require @mention
+            </label>
+            <button
+              onClick={handleAdd}
+              disabled={!newGuildId.trim() || adding}
+              className={cn(
+                "flex items-center gap-1.5 px-4 py-2 rounded-lg text-[11px] font-bold transition-all shadow-sm",
+                !newGuildId.trim() || adding
+                  ? "bg-foreground/5 text-muted-foreground/50 cursor-not-allowed border border-transparent"
+                  : "bg-indigo-500/15 border border-indigo-500/30 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/25"
+              )}
+            >
+              {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+              Add Server
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground/40 px-1 font-medium">
+          <LockIcon className="w-3 h-3" />
+          Read-only — only the agent owner or an admin can edit guild allowlist.
+        </p>
+      )}
+
+      <p className="text-[10px] font-medium text-muted-foreground/40 px-1 mt-2">
+        Stored in <span className="font-mono bg-foreground/5 px-1 py-0.5 rounded">channels.discord.accounts.{data.accountId}.guilds</span>. Edits take effect after gateway restart.
       </p>
     </div>
   )
@@ -3652,7 +4287,7 @@ function ChannelsPanel({ agentId, gatewayConnected, onRestart }: {
               key={ch.accountId}
               ch={ch}
               agentId={agentId}
-              onSaved={() => handleSaved("WhatsApp channel updated")}
+                      onSaved={() => handleSaved("WhatsApp channel updated")}
               onRemove={() => handleRemoved("WhatsApp")}
             />
           ))}
@@ -4712,14 +5347,18 @@ export function AgentDetailPage() {
                       }}
                     />
                   )}
-                  <div className="bg-foreground/2 rounded-xl border border-border px-4 py-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <MessageSquare className="w-3.5 h-3.5 text-primary/60 shrink-0" />
-                      <h3 className="text-xs font-display font-bold text-foreground">Recent Sessions</h3>
-                      <span className="text-[9px] text-muted-foreground/50 ml-auto">{detail.sessions.length} total</span>
+                  <div className="bg-card rounded-xl border border-border px-5 py-4 shadow-sm">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-6 h-6 rounded-md flex items-center justify-center bg-primary/10">
+                        <MessageSquare className="w-3.5 h-3.5 text-primary" />
+                      </div>
+                      <h3 className="text-[13px] font-bold text-foreground">Recent Sessions</h3>
+                      <span className="text-[10px] font-medium text-muted-foreground bg-foreground/5 px-2 py-0.5 rounded ml-auto">
+                        {detail.sessions.length} total
+                      </span>
                     </div>
                     {detail.sessions.length > 0 ? (
-                      <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
+                      <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-foreground/10 scrollbar-track-transparent">
                         {detail.sessions.slice(0, 8).map((sess) => {
                           const isActive = sess.status === "active"
                           const handleClick = () => {
@@ -4731,15 +5370,17 @@ export function AgentDetailPage() {
                           }
                           return (
                             <button key={sess.id} onClick={handleClick}
-                              className={cn("flex flex-col gap-1 px-3 py-2 rounded-lg border text-left transition-all group shrink-0 w-52",
-                                isActive ? "bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/8" : "bg-foreground/2 border-border hover:bg-foreground/4 hover:border-foreground/15")}>
-                              <div className="flex items-center gap-1.5">
-                                <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", isActive ? "bg-emerald-400 animate-pulse" : "bg-foreground/20")} />
-                                <span className="text-[10px] font-mono text-muted-foreground/70">{fmtTime(sess.updatedAt)}</span>
-                                {isActive && <span className="text-[8px] px-1 py-px bg-emerald-500/20 text-emerald-400 font-bold uppercase rounded animate-pulse ml-0.5">Live</span>}
-                                <ArrowRight className="w-2.5 h-2.5 text-transparent group-hover:text-muted-foreground/50 ml-auto transition-colors" />
+                              className={cn("flex flex-col gap-1.5 px-3.5 py-3 rounded-lg border text-left transition-all group shrink-0 w-56",
+                                isActive 
+                                  ? "bg-emerald-500/5 border-emerald-500/30 hover:bg-emerald-500/10 shadow-sm" 
+                                  : "bg-foreground/2 border-border hover:bg-foreground/5 hover:border-foreground/20")}>
+                              <div className="flex items-center gap-2 w-full">
+                                <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", isActive ? "bg-emerald-500 animate-pulse" : "bg-foreground/20")} />
+                                <span className="text-[10px] font-mono font-medium text-muted-foreground group-hover:text-foreground/70 transition-colors truncate">{fmtTime(sess.updatedAt)}</span>
+                                {isActive && <span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold uppercase rounded-sm animate-pulse ml-0.5">Live</span>}
+                                <ArrowRight className="w-3 h-3 text-transparent group-hover:text-muted-foreground/50 ml-auto shrink-0 transition-colors" />
                               </div>
-                              <p className="text-[11px] text-foreground/70 font-medium line-clamp-1 leading-tight group-hover:text-foreground transition-colors">
+                              <p className="text-[12px] text-foreground/80 font-medium line-clamp-2 leading-snug group-hover:text-foreground transition-colors mt-0.5">
                                 {sess.lastMessage || `${sess.name} — ${sess.messageCount} messages`}
                               </p>
                             </button>
@@ -4747,9 +5388,9 @@ export function AgentDetailPage() {
                         })}
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 py-1 text-muted-foreground/40">
-                        <MessageSquare className="w-4 h-4" />
-                        <span className="text-xs">No recent activity</span>
+                      <div className="flex flex-col items-center justify-center py-6 text-muted-foreground/50 border border-dashed border-border rounded-lg bg-foreground/2">
+                        <MessageSquare className="w-5 h-5 mb-2 opacity-50" />
+                        <span className="text-[11px] font-medium">No recent activity</span>
                       </div>
                     )}
                   </div>

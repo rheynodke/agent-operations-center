@@ -20,6 +20,7 @@ const outputsLib = require('./lib/outputs.cjs');
 const metrics = require('./lib/metrics.cjs');
 const mcpPool = require('./lib/connections/mcp.cjs');
 const mcpOauth = require('./lib/connections/mcp-oauth.cjs');
+const composio = require('./lib/connections/composio.cjs');
 const pipelines = require('./lib/pipelines/index.cjs');
 const workflowRuns = require('./lib/pipelines/runs.cjs');
 // Wire gateway into the runs module so agent steps can dispatch real sessions.
@@ -1225,6 +1226,13 @@ app.post('/api/pairing/:channel/approve', db.authMiddleware, async (req, res) =>
     const { code, accountId } = req.body;
     if (!code) return res.status(400).json({ error: 'Pairing code is required' });
 
+    // Ownership gate: pairing approval modifies the agent's allowFrom file.
+    // accountId in the body is the agent slug ("default" → "main" by convention).
+    const agentSlug = accountId && accountId !== 'default' ? accountId : 'main';
+    if (!db.userOwnsAgent(req, agentSlug)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this agent' });
+    }
+
     const result = await parsers.approvePairingCode(req.params.channel, code, accountId || undefined);
     if (result.ok) {
       console.log(`[api/pairing] Approved ${req.params.channel} pairing code ${code}${accountId ? ` (account: ${accountId})` : ''}`);
@@ -1233,6 +1241,145 @@ app.post('/api/pairing/:channel/approve', db.authMiddleware, async (req, res) =>
   } catch (err) {
     console.error('[api/pairing/approve]', err);
     const code = err.message?.includes('Unsupported') || err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// Reject (delete) a pending pairing request
+app.post('/api/pairing/:channel/reject', db.authMiddleware, (req, res) => {
+  try {
+    const { code, accountId } = req.body;
+    if (!code) return res.status(400).json({ error: 'Pairing code is required' });
+
+    const agentSlug = accountId && accountId !== 'default' ? accountId : 'main';
+    if (!db.userOwnsAgent(req, agentSlug)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this agent' });
+    }
+
+    const result = parsers.rejectPairingCode(req.params.channel, code, accountId || undefined);
+    if (result.ok) {
+      console.log(`[api/pairing] Rejected ${req.params.channel} pairing code ${code}${accountId ? ` (account: ${accountId})` : ''}`);
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[api/pairing/reject]', err);
+    const code = err.message?.includes('Unsupported') || err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// ─── Allow-from store management ─────────────────────────────────────────────
+
+// Build the (channel, accountId) bindings list for an agent based on the
+// channels currently bound to it. Each entry maps to one allowFrom file.
+function resolveAgentAllowFromBindings(agentId) {
+  const channels = parsers.getAgentChannels(agentId);
+  const bindings = [];
+  for (const t of channels.telegram || []) {
+    bindings.push({ channel: 'telegram', accountId: t.accountId });
+  }
+  for (const w of channels.whatsapp || []) {
+    bindings.push({ channel: 'whatsapp', accountId: w.accountId });
+  }
+  for (const d of channels.discord || []) {
+    bindings.push({ channel: 'discord', accountId: d.accountId });
+  }
+  return bindings;
+}
+
+// GET /api/agents/:id/allowfrom — list allowFrom entries grouped by binding
+app.get('/api/agents/:id/allowfrom', db.authMiddleware, (req, res) => {
+  try {
+    const bindings = resolveAgentAllowFromBindings(req.params.id);
+    const result = bindings.map(b => ({
+      channel: b.channel,
+      accountId: b.accountId,
+      entries: parsers.listAllowFromEntries(b.channel, b.accountId),
+    }));
+    res.json({ bindings: result });
+  } catch (err) {
+    console.error('[api/agents/allowfrom/list]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/agents/:id/allowfrom — add an entry
+// body: { channel, accountId, entry }
+app.post('/api/agents/:id/allowfrom', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+  try {
+    const { channel, accountId, entry } = req.body;
+    if (!channel || !entry) return res.status(400).json({ error: 'channel and entry are required' });
+    const result = parsers.addAllowFromEntry(channel, accountId || undefined, entry);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/allowfrom/add]', err);
+    const code = err.message?.includes('Unsupported') || err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// DELETE /api/agents/:id/allowfrom — remove an entry
+// body: { channel, accountId, entry }
+app.delete('/api/agents/:id/allowfrom', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+  try {
+    const { channel, accountId, entry } = req.body;
+    if (!channel || !entry) return res.status(400).json({ error: 'channel and entry are required' });
+    const result = parsers.removeAllowFromEntry(channel, accountId || undefined, entry);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/allowfrom/remove]', err);
+    const code = err.message?.includes('Unsupported') || err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// ─── Discord guild allowlist management ──────────────────────────────────────
+
+// GET /api/agents/:id/discord/guilds — list configured guilds for the agent's discord account
+app.get('/api/agents/:id/discord/guilds', db.authMiddleware, (req, res) => {
+  try {
+    const result = parsers.listAgentDiscordGuilds(req.params.id, parsers.getAgentChannels);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/discord/guilds/list]', err);
+    const code = err.message?.includes('no Discord binding') ? 404 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// PUT /api/agents/:id/discord/guilds/:guildId — upsert a guild entry
+// body: { label?: string, requireMention?: boolean, users?: string[] }
+app.put('/api/agents/:id/discord/guilds/:guildId', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+  try {
+    const { label, requireMention, users } = req.body || {};
+    const result = parsers.upsertAgentDiscordGuild(
+      req.params.id,
+      req.params.guildId,
+      { label, requireMention, users },
+      parsers.getAgentChannels,
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/discord/guilds/upsert]', err);
+    const msg = err.message || '';
+    const code = /must be a numeric|is required|not configured|no Discord binding/i.test(msg) ? 400 : 500;
+    res.status(code).json({ error: msg });
+  }
+});
+
+// DELETE /api/agents/:id/discord/guilds/:guildId — remove a guild entry
+app.delete('/api/agents/:id/discord/guilds/:guildId', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+  try {
+    const result = parsers.removeAgentDiscordGuild(
+      req.params.id,
+      req.params.guildId,
+      parsers.getAgentChannels,
+    );
+    if (!result.ok) return res.status(404).json(result);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/agents/discord/guilds/remove]', err);
+    const code = err.message?.includes('no Discord binding') ? 404 : 500;
     res.status(code).json({ error: err.message });
   }
 });
@@ -3088,6 +3235,39 @@ app.post('/api/connections', db.authMiddleware, async (req, res) => {
       }
     }
 
+    if (type === 'composio') {
+      const apiKey = (credentials || '').trim();
+      if (!apiKey) return res.status(400).json({ error: 'Composio API key required (credentials field)' });
+      const m = metadata || {};
+      const userId = (m.composio && m.composio.userId) || req.user?.email || `aoc_user_${req.user?.userId || 'anon'}`;
+      const toolkits = (m.composio && Array.isArray(m.composio.toolkits)) ? m.composio.toolkits : [];
+      let session;
+      try {
+        session = await composio.createSession(apiKey, { userId, toolkits });
+      } catch (err) {
+        return res.status(err.status || 502).json({ error: `Failed to create Composio session: ${err.message}` });
+      }
+      const composioMeta = {
+        ...m,
+        composio: {
+          userId,
+          toolkits,
+          sessionId: session.sessionId,
+          mcpUrl: session.mcpUrl,
+          mcpType: session.mcpType,
+          sessionCreatedAt: new Date().toISOString(),
+        },
+      };
+      const conn = db.createConnection({
+        id, name, type,
+        credentials: apiKey,
+        metadata: composioMeta,
+        enabled: enabled !== false,
+        createdBy: req.user?.userId,
+      });
+      return res.json({ ok: true, connection: conn });
+    }
+
     const conn = db.createConnection({ id, name, type, credentials, metadata, enabled, createdBy: req.user?.userId });
 
     // If this is an MCP connection with OAuth metadata, kick off the flow so
@@ -3206,6 +3386,176 @@ app.post('/api/connections/:id/mcp-oauth/start', db.authMiddleware, db.requireCo
     res.json({ authUrl });
   } catch (err) {
     console.error('[api/mcp-oauth/start]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// ─── Composio sub-routes ────────────────────────────────────────────────────
+// All require connection ownership. Connect Link flow is initiated server-side
+// (we hold the API key) and returns the hosted Composio URL for the UI to open
+// in a new tab. Connection status polling is up to the client (refresh button).
+
+function _loadComposio(req, res) {
+  const raw = db.getConnectionRaw(req.params.id);
+  if (!raw || raw.type !== 'composio') { res.status(404).json({ error: 'Composio connection not found' }); return null; }
+  const co = (raw.metadata && raw.metadata.composio) || {};
+  if (!raw.credentials) { res.status(400).json({ error: 'API key missing' }); return null; }
+  return { raw, co };
+}
+
+// List connected accounts (toolkits the Composio user has authorized)
+app.get('/api/connections/:id/composio/connected', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const ctx = _loadComposio(req, res); if (!ctx) return;
+    const statuses = req.query.statuses
+      ? String(req.query.statuses).split(',').filter(Boolean)
+      : ['ACTIVE', 'INITIATED', 'INITIALIZING', 'EXPIRED', 'FAILED'];
+    const items = await composio.listConnectedAccounts(ctx.raw.credentials, {
+      userId: ctx.co.userId,
+      statuses,
+      limit: 100,
+    });
+    res.json({ accounts: items });
+  } catch (err) {
+    console.error('[composio/connected]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// List toolkits enabled in this session (post-allowlist)
+app.get('/api/connections/:id/composio/toolkits', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const ctx = _loadComposio(req, res); if (!ctx) return;
+    if (!ctx.co.sessionId) return res.status(400).json({ error: 'No active session' });
+    const toolkits = await composio.listSessionToolkits(ctx.raw.credentials, ctx.co.sessionId);
+    res.json({ toolkits });
+  } catch (err) {
+    console.error('[composio/toolkits]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Create a Connect Link for a toolkit. Body: { toolkit, alias? }
+// Returns { redirectUrl, connectedAccountId } — UI opens redirectUrl in new tab.
+app.post('/api/connections/:id/composio/link', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const ctx = _loadComposio(req, res); if (!ctx) return;
+    if (!ctx.co.sessionId) return res.status(400).json({ error: 'No active session' });
+    const { toolkit, alias } = req.body || {};
+    if (!toolkit) return res.status(400).json({ error: 'toolkit slug required' });
+    const link = await composio.createLink(ctx.raw.credentials, ctx.co.sessionId, { toolkit, alias });
+    res.json(link);
+  } catch (err) {
+    console.error('[composio/link]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Disconnect (revoke + delete) a connected account on Composio side.
+app.delete('/api/connections/:id/composio/connected/:accountId', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const ctx = _loadComposio(req, res); if (!ctx) return;
+    await composio.deleteConnectedAccount(ctx.raw.credentials, req.params.accountId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[composio/disconnect-account]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Preview connected accounts during the New Connection flow — no stored
+// connection yet. Body: { apiKey, userId? }
+// Used by the "Discover from Composio" button in the create-connection modal
+// so the toolkit allowlist can show actually-connected toolkits instead of a
+// hardcoded list.
+app.post('/api/composio/discover', db.authMiddleware, async (req, res) => {
+  try {
+    const apiKey = String(req.body?.apiKey || '').trim();
+    if (!apiKey) return res.status(400).json({ error: 'apiKey is required' });
+    const userId = String(req.body?.userId || '').trim()
+      || req.user?.email
+      || `aoc_user_${req.user?.userId || 'anon'}`;
+    const accounts = await composio.listConnectedAccounts(apiKey, { userId });
+    // Dedup toolkits from the live account list.
+    const toolkitMap = new Map();
+    for (const a of accounts) {
+      if (!a.toolkit) continue;
+      const slug = String(a.toolkit).toLowerCase();
+      if (!toolkitMap.has(slug)) {
+        toolkitMap.set(slug, { slug, label: a.toolkitName || slug, accountCount: 0 });
+      }
+      toolkitMap.get(slug).accountCount += 1;
+    }
+    res.json({
+      userId,
+      accountCount: accounts.length,
+      toolkits: Array.from(toolkitMap.values()).sort((a, b) => a.label.localeCompare(b.label)),
+    });
+  } catch (err) {
+    console.error('[composio/discover]', err);
+    // Don't propagate upstream 401/403 as-is — the dashboard's request() layer
+    // would treat those as session expiry and force-logout the user. Map all
+    // upstream failures to 502 (bad gateway) with a friendly message.
+    const upstream = err.status >= 400 && err.status < 600 ? err.status : 0;
+    const friendly = upstream === 401 || upstream === 403
+      ? 'Composio rejected the API key (check it at app.composio.dev → Settings → API Keys)'
+      : err.message || 'Composio discovery failed';
+    res.status(upstream === 401 || upstream === 403 ? 502 : (upstream || 500)).json({ error: friendly });
+  }
+});
+
+// Discover toolkits for an existing connection (uses its stored apiKey).
+// Mirror of /api/composio/discover but for the edit flow where the apiKey
+// isn't re-entered by the user.
+app.get('/api/connections/:id/composio/discover', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const ctx = _loadComposio(req, res); if (!ctx) return;
+    const userId = ctx.co.userId || req.user?.email || `aoc_user_${req.user?.userId || 'anon'}`;
+    const accounts = await composio.listConnectedAccounts(ctx.raw.credentials, { userId });
+    const toolkitMap = new Map();
+    for (const a of accounts) {
+      if (!a.toolkit) continue;
+      const slug = String(a.toolkit).toLowerCase();
+      if (!toolkitMap.has(slug)) {
+        toolkitMap.set(slug, { slug, label: a.toolkitName || slug, accountCount: 0 });
+      }
+      toolkitMap.get(slug).accountCount += 1;
+    }
+    res.json({
+      userId,
+      accountCount: accounts.length,
+      toolkits: Array.from(toolkitMap.values()).sort((a, b) => a.label.localeCompare(b.label)),
+    });
+  } catch (err) {
+    console.error('[composio/discover (by-id)]', err);
+    // Don't pass through upstream 401/403 — would force-logout the dashboard.
+    const upstream = err.status >= 400 && err.status < 600 ? err.status : 0;
+    const friendly = upstream === 401 || upstream === 403
+      ? 'Composio rejected the API key (check it at app.composio.dev → Settings → API Keys)'
+      : err.message || 'Composio discovery failed';
+    res.status(upstream === 401 || upstream === 403 ? 502 : (upstream || 500)).json({ error: friendly });
+  }
+});
+
+// Force-recreate the tool router session (e.g. after changing toolkit allowlist
+// or if the session expired). Body: { toolkits?: string[] } — optional override.
+app.post('/api/connections/:id/composio/refresh-session', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+  try {
+    const ctx = _loadComposio(req, res); if (!ctx) return;
+    const toolkits = Array.isArray(req.body?.toolkits) ? req.body.toolkits : (ctx.co.toolkits || []);
+    const fresh = await composio.createSession(ctx.raw.credentials, { userId: ctx.co.userId, toolkits });
+    const meta = ctx.raw.metadata || {};
+    db.updateConnection(req.params.id, {
+      metadata: {
+        ...meta,
+        composio: { ...ctx.co, toolkits, sessionId: fresh.sessionId, mcpUrl: fresh.mcpUrl, sessionCreatedAt: new Date().toISOString() },
+      },
+    });
+    // Tear down any live MCP client so next call uses the new session URL
+    try { await mcpPool.teardown(req.params.id); } catch {}
+    res.json({ ok: true, sessionId: fresh.sessionId });
+  } catch (err) {
+    console.error('[composio/refresh-session]', err);
     res.status(err.status || 500).json({ error: err.message });
   }
 });
@@ -3415,6 +3765,51 @@ app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwn
         result = { ok: true, message: `Connected to ${repo}`, preview: output.trim() };
       } catch (e) {
         result = { ok: false, error: e.message || e.toString() };
+      }
+    } else if (raw.type === 'composio') {
+      const m = raw.metadata || {};
+      const co = m.composio || {};
+      const apiKey = raw.credentials || '';
+      if (!apiKey) {
+        result = { ok: false, error: 'API key missing' };
+      } else if (!co.sessionId || !co.mcpUrl) {
+        result = { ok: false, error: 'Composio session not initialized — re-create connection' };
+      } else {
+        try {
+          // Touch the session via REST first (cheap auth check) — if it 404s
+          // we recreate transparently, since sessions can expire server-side.
+          let sessionAlive = true;
+          try { await composio.getSession(apiKey, co.sessionId); }
+          catch (e) {
+            if (e.status === 404 || e.status === 410) sessionAlive = false;
+            else throw e;
+          }
+          if (!sessionAlive) {
+            const fresh = await composio.createSession(apiKey, { userId: co.userId, toolkits: co.toolkits || [] });
+            db.updateConnection(req.params.id, {
+              metadata: { ...m, composio: { ...co, sessionId: fresh.sessionId, mcpUrl: fresh.mcpUrl, sessionCreatedAt: new Date().toISOString() } },
+            });
+            co.sessionId = fresh.sessionId;
+            co.mcpUrl = fresh.mcpUrl;
+          }
+          // Now probe the MCP layer to confirm tools are reachable.
+          try { await mcpPool.teardown(req.params.id); } catch {}
+          const probe = await mcpPool.probe(composio.buildMcpSpec({ composio: co }));
+          if (probe.ok) {
+            const tools = (probe.tools || []).map(t => ({
+              name: t.name, description: t.description || '', inputSchema: t.inputSchema || undefined,
+            }));
+            db.updateConnection(req.params.id, {
+              metadata: { ...m, tools, toolsDiscoveredAt: new Date().toISOString() },
+            });
+            const preview = tools.slice(0, 5).map(t => t.name).join(', ') + (tools.length > 5 ? ` +${tools.length - 5} more` : '');
+            result = { ok: true, message: `Connected · ${tools.length} meta-tool(s) available`, preview };
+          } else {
+            result = { ok: false, error: `MCP probe failed: ${probe.error}` };
+          }
+        } catch (e) {
+          result = { ok: false, error: e.message || String(e) };
+        }
       }
     } else if (raw.type === 'mcp') {
       const m = raw.metadata || {};
@@ -3734,7 +4129,7 @@ app.post('/api/mcp/call', db.authMiddleware, async (req, res) => {
     if (!connectionName || !tool) {
       return res.status(400).json({ error: 'connectionName and tool are required' });
     }
-    const all = db.getAllConnections().filter(c => c.type === 'mcp' && c.enabled);
+    const all = db.getAllConnections().filter(c => (c.type === 'mcp' || c.type === 'composio') && c.enabled);
     const match = all.find(c => c.name === connectionName);
     if (!match) return res.status(404).json({ error: `MCP connection "${connectionName}" not found or disabled` });
 
@@ -3751,16 +4146,32 @@ app.post('/api/mcp/call', db.authMiddleware, async (req, res) => {
     if (!raw) return res.status(404).json({ error: 'Connection not found' });
     const m = raw.metadata || {};
 
-    const poolSpec = {
-      transport: m.transport || 'stdio',
-      command: m.command,
-      args: m.args || [],
-      env: m.env || {},
-      url: m.url,
-      headers: m.headers || {},
-      credentials: raw.credentials || '',
-      oauth: (m.oauth && m.oauth.enabled) ? { connId: match.id } : undefined,
-    };
+    let poolSpec;
+    if (raw.type === 'composio') {
+      const co = m.composio || {};
+      // Lazy session refresh: if session is missing/expired, recreate before
+      // building the MCP spec so tools never get a dead URL.
+      if (!co.sessionId || !co.mcpUrl) {
+        const fresh = await composio.createSession(raw.credentials, { userId: co.userId, toolkits: co.toolkits || [] });
+        db.updateConnection(match.id, {
+          metadata: { ...m, composio: { ...co, sessionId: fresh.sessionId, mcpUrl: fresh.mcpUrl, sessionCreatedAt: new Date().toISOString() } },
+        });
+        co.sessionId = fresh.sessionId;
+        co.mcpUrl = fresh.mcpUrl;
+      }
+      poolSpec = composio.buildMcpSpec({ composio: co });
+    } else {
+      poolSpec = {
+        transport: m.transport || 'stdio',
+        command: m.command,
+        args: m.args || [],
+        env: m.env || {},
+        url: m.url,
+        headers: m.headers || {},
+        credentials: raw.credentials || '',
+        oauth: (m.oauth && m.oauth.enabled) ? { connId: match.id } : undefined,
+      };
+    }
 
     // --list-tools shortcut — avoids a second round-trip from the shell
     if (tool === '--list-tools' || tool === '__list__') {
@@ -3790,6 +4201,15 @@ app.put('/api/agents/:id/connections', db.authMiddleware, db.requireAgentOwnersh
   try {
     const { connectionIds } = req.body;
     if (!Array.isArray(connectionIds)) return res.status(400).json({ error: 'connectionIds must be an array' });
+    // Constraint: an agent can have at most one Composio connection assigned —
+    // each Composio connection holds a single user session, so multiple would
+    // collide. The UI surfaces this so the user can swap, not stack.
+    const composioCount = connectionIds
+      .map(cid => db.getConnection(cid))
+      .filter(c => c && c.type === 'composio').length;
+    if (composioCount > 1) {
+      return res.status(400).json({ error: 'An agent can be assigned at most one Composio connection' });
+    }
     db.setAgentConnections(req.params.id, connectionIds);
     // Sync connections context into agent's TOOLS.md so it knows about assigned connections during chat
     try {
