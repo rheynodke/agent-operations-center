@@ -28,12 +28,22 @@ const THEME = {
   brightWhite: "#ffffff",
 }
 
-function TerminalBody({ epoch, onRestart, onClose, connected, setConnected }: {
+type CwdToken = "skills" | "scripts" | "agent-scripts"
+
+const CWD_LABEL: Record<CwdToken, string> = {
+  skills:  "~/.openclaw/skills",
+  scripts: "~/.openclaw/scripts",
+  "agent-scripts": "agent workspace · scripts/",
+}
+
+function TerminalBody({ epoch, onRestart, onClose, connected, setConnected, cwd, agentId }: {
   epoch: number
   onRestart: () => void
   onClose: () => void
   connected: boolean
   setConnected: (v: boolean) => void
+  cwd: CwdToken
+  agentId?: string
 }) {
   const token = useAuthStore((s) => s.token)
   const fitAddon = useMemo(() => new FitAddon(), [])
@@ -58,7 +68,9 @@ function TerminalBody({ epoch, onRestart, onClose, connected, setConnected }: {
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const host = window.location.port === "5173" ? "localhost:18800" : window.location.host
-    const ws = new WebSocket(`${protocol}//${host}/ws/terminal?token=${token}`)
+    const qs = new URLSearchParams({ token: token!, cwd })
+    if (agentId) qs.set("agentId", agentId)
+    const ws = new WebSocket(`${protocol}//${host}/ws/terminal?${qs}`)
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -99,7 +111,7 @@ function TerminalBody({ epoch, onRestart, onClose, connected, setConnected }: {
       dataSub.dispose()
       try { ws.close() } catch {}
     }
-  }, [instance, token, epoch, fitAddon, ref, setConnected])
+  }, [instance, token, epoch, fitAddon, ref, setConnected, cwd, agentId])
 
   return (
     <div className="shrink-0 w-[480px] max-w-[60vw] h-full flex flex-col border-l border-foreground/8 bg-background overflow-hidden">
@@ -107,7 +119,7 @@ function TerminalBody({ epoch, onRestart, onClose, connected, setConnected }: {
         <div className="flex items-center gap-2 text-[12px] min-w-0">
           <TerminalIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
           <span className="font-medium text-foreground">Claude Code</span>
-          <span className="text-muted-foreground/60 truncate">~/.openclaw/skills</span>
+          <span className="text-muted-foreground/60 truncate">{CWD_LABEL[cwd]}</span>
           <span className={cn(
             "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px]",
             connected ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"
@@ -140,7 +152,7 @@ function TerminalBody({ epoch, onRestart, onClose, connected, setConnected }: {
   )
 }
 
-export function SkillsTerminal() {
+export function SkillsTerminal({ cwd = "skills", agentId }: { cwd?: CwdToken; agentId?: string } = {}) {
   const [open, setOpen] = useState(false)
   const [connected, setConnected] = useState(false)
   const [epoch, setEpoch] = useState(0)
@@ -151,7 +163,7 @@ export function SkillsTerminal() {
         <button
           onClick={() => setOpen(true)}
           className="w-full h-full flex flex-col items-center gap-2 py-3 text-muted-foreground hover:text-foreground hover:bg-foreground/3 transition-colors"
-          title="Open Skills Terminal"
+          title={`Open Claude Code terminal (${CWD_LABEL[cwd]})`}
         >
           <ChevronLeft className="w-4 h-4" />
           <TerminalIcon className="w-4 h-4" />
@@ -165,8 +177,10 @@ export function SkillsTerminal() {
 
   return (
     <TerminalBody
-      key={epoch}
+      key={`${cwd}:${agentId || ""}:${epoch}`}
       epoch={epoch}
+      cwd={cwd}
+      agentId={agentId}
       onRestart={() => setEpoch(n => n + 1)}
       onClose={() => setOpen(false)}
       connected={connected}

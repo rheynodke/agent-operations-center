@@ -16,6 +16,13 @@ const scriptsLib = require('./scripts.cjs');
 const hooksLib   = require('./hooks.cjs');
 const pairingLib = require('./pairing.cjs');
 const discordGuildsLib = require('./discord-guilds.cjs');
+const browserHarnessInstaller = require('./browser-harness/installer.cjs');
+const browserHarnessLauncher = require('./browser-harness/launcher.cjs');
+const browserHarnessPool = require('./browser-harness/pool.cjs');
+const browserHarnessOdoo = require('./browser-harness/odoo-installer.cjs');
+const aocTasksSkill       = require('./aoc-tasks/installer.cjs');
+const aocConnectionsSkill = require('./aoc-connections/installer.cjs');
+const workspaceBrowser    = require('./workspace-browser.cjs');
 const roleTemplates = require('./role-templates.cjs');
 const oauthG = require('./oauth/google.cjs');
 const googleConnections = require('./connections/google-workspace.cjs');
@@ -143,6 +150,10 @@ module.exports = {
   injectHeartbeatTaskCheck: scriptsLib.injectHeartbeatTaskCheck,
   ensureSharedAdlcScripts:  scriptsLib.ensureSharedAdlcScripts,
   syncAgentConnectionsContext: scriptsLib.syncAgentConnectionsContext,
+  stampBuiltinSharedMeta:   scriptsLib.stampBuiltinSharedMeta,
+  syncAgentBuiltins:        scriptsLib.syncAgentBuiltins,
+  isBuiltinShared:          scriptsLib.isBuiltinShared,
+  purgeLegacyFlatScripts:   scriptsLib.purgeLegacyFlatScripts,
 
   // ── hooks / inbound webhooks ───────────────────────────────────────────────
   getHooksConfig:   hooksLib.getHooksConfig,
@@ -164,10 +175,20 @@ module.exports = {
   upsertAgentDiscordGuild:  discordGuildsLib.upsertAgentDiscordGuild,
   removeAgentDiscordGuild:  discordGuildsLib.removeAgentDiscordGuild,
 
+  // ── browser-harness (Layer 1 core) ────────────────────────────────────────
+  browserHarnessInstaller,
+  browserHarnessLauncher,
+  browserHarnessPool,
+  browserHarnessOdoo,
+  aocTasksSkill,
+  aocConnectionsSkill,
+  workspaceBrowser,
+
   // ── role templates (Phase 1: read-only + seed) ────────────────────────────
   listRoleTemplates:       roleTemplates.listTemplates,
   getRoleTemplate:         roleTemplates.getTemplate,
   seedRoleTemplatesIfEmpty: roleTemplates.seedIfEmpty,
+  refreshBuiltInRoleTemplates: roleTemplates.refreshBuiltInsFromSeed,
   // ── role templates (Phase 2: CRUD) ────────────────────────────────────────
   createRoleTemplate:       roleTemplates.createTemplate,
   updateRoleTemplate:       roleTemplates.updateTemplate,

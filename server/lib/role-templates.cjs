@@ -238,6 +238,45 @@ function seedIfEmpty() {
   return { seeded: count, skipped: false };
 }
 
+/**
+ * Force-refresh the built-in templates from the seed JSON, OVERWRITING any
+ * existing rows whose id matches. Origin/builtIn flags are preserved as
+ * 'builtin'/true. User-authored templates are untouched.
+ *
+ * Used for: rolling out new built-in skills/scripts after a code update
+ * without having to wipe the DB.
+ */
+function refreshBuiltInsFromSeed() {
+  const d = db.getDb();
+  if (!d) throw new Error('Database not initialized');
+
+  const seeds = loadSeed();
+  if (!seeds.length) return { refreshed: 0, skipped: 'no seed entries' };
+
+  const stmt = d.prepare(`
+    INSERT OR REPLACE INTO role_templates (
+      id, adlc_number, role, emoji, color, description, model, tags,
+      agent_files, skill_refs, skill_contents, script_refs,
+      fs_workspace_only, origin, built_in
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let count = 0;
+  const ids = [];
+  for (const t of seeds) {
+    try {
+      stmt.run(templateToParams(t, { origin: 'builtin', builtIn: true }));
+      count++;
+      ids.push(t.id);
+    } catch (err) {
+      console.error('[role-templates] Refresh failed for', t.id, '—', err.message);
+    }
+  }
+  stmt.free();
+  db.persist();
+  console.log(`[role-templates] Refreshed ${count} built-in template${count === 1 ? '' : 's'}: ${ids.join(', ')}`);
+  return { refreshed: count, ids };
+}
+
 // ─── Validation ──────────────────────────────────────────────────────────────
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,63}$/;
@@ -806,6 +845,7 @@ module.exports = {
   getTemplate,
   countTemplates,
   seedIfEmpty,
+  refreshBuiltInsFromSeed,
   listTemplateUsage,
   createTemplate,
   updateTemplate,

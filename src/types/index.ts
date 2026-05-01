@@ -1260,3 +1260,54 @@ export interface PipelineArtifact {
   createdAt: string
 }
 
+// ─── Browser Harness ─────────────────────────────────────────────────────────
+
+export interface BrowserHarnessInstallStatus {
+  installed: boolean
+  pinnedCommit: string
+  currentCommit: string | null
+  upToDate: boolean
+  upstreamDir: string
+  skillRoot: string
+  profilesRoot: string
+  installedAt: string | null
+}
+
+export interface BrowserHarnessSlot {
+  id: number
+  state: "down" | "booting" | "idle" | "busy"
+  port: number
+  pid: number | null
+  pidAlive: boolean
+  profile: string | null
+  version: string | null
+  agentId: string | null
+  since: number
+  lastReleasedAt: number | null
+  idleMs: number | null
+}
+
+export interface BrowserHarnessStatus {
+  install: BrowserHarnessInstallStatus
+  chromePath: string | null
+  slots: BrowserHarnessSlot[]
+}
+
+export interface BrowserHarnessOdooFile {
+  relPath: string
+  exists: boolean
+  protect: boolean
+  upToDate: boolean
+  userEdited: boolean
+}
+
+export interface BrowserHarnessOdooStatus {
+  installed: boolean
+  bundleVersion: string
+  installedVersion: string | null
+  skillRoot: string
+  installedAt: string | null
+  files: BrowserHarnessOdooFile[]
+  moduleCount: number
+}
+

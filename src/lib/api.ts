@@ -126,6 +126,42 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ content }),
     }),
+  /** Read-only workspace browser — list a directory's children */
+  getWorkspaceTree: (id: string, relPath = "") =>
+    request<{
+      path: string
+      parent: string | null
+      workspaceRoot: string
+      entries: Array<{
+        name: string
+        type: "dir" | "file"
+        size: number
+        mtime: string
+        ext: string
+        hidden: boolean
+        previewable: "text" | "image" | "binary" | null
+      }>
+    }>(`/agents/${id}/workspace/tree?path=${encodeURIComponent(relPath)}`),
+  /** Read a small text file inline (returns content); use getWorkspaceFileUrl for binaries/images */
+  getWorkspaceFile: (id: string, relPath: string) =>
+    request<{
+      mode: "text"
+      content: string | null
+      oversize: boolean
+      size: number
+      mtime: string
+      ext: string
+      contentType: string
+    }>(`/agents/${id}/workspace/file?path=${encodeURIComponent(relPath)}`),
+  /** Streaming URL — used by <img src> and download links. Token is passed via query
+   *  param because <img> can't carry Authorization headers. */
+  getWorkspaceFileUrl: (id: string, relPath: string, opts: { download?: boolean } = {}) => {
+    const token = useAuthStore.getState().token
+    const qs = new URLSearchParams({ path: relPath, stream: "1" })
+    if (opts.download) qs.set("download", "1")
+    if (token) qs.set("token", token)
+    return `/api/agents/${id}/workspace/file?${qs}`
+  },
   /** Inject AOC research output standard into a single agent's SOUL.md */
   applySoulStandard: (id: string) =>
     request<{ ok: boolean; status: "injected" | "already_applied" | "error"; error?: string }>(`/agents/${id}/soul-standard`, { method: "POST" }),
@@ -721,6 +757,33 @@ export const api = {
   removeAgentDiscordGuild: (agentId: string, guildId: string) =>
     request<{ ok: boolean; accountId?: string; guildId?: string; error?: string }>(`/agents/${agentId}/discord/guilds/${guildId}`, {
       method: "DELETE",
+    }),
+
+  // Browser Harness — built-in CDP browser automation skill (Layer 1)
+  getBrowserHarnessStatus: () =>
+    request<import("@/types").BrowserHarnessStatus>("/browser-harness/status"),
+  installBrowserHarness: (opts?: { commit?: string; force?: boolean }) =>
+    request<{ ok: boolean; skipped?: boolean; reason?: string; commit?: string; dir?: string; error?: string }>("/browser-harness/install", {
+      method: "POST",
+      body: JSON.stringify(opts || {}),
+    }),
+  bootBrowserHarness: (slotId = 1) =>
+    request<{ ok: boolean; slot?: import("@/types").BrowserHarnessSlot; error?: string }>("/browser-harness/boot", {
+      method: "POST",
+      body: JSON.stringify({ slotId }),
+    }),
+  stopBrowserHarness: (opts?: { slotId?: number; all?: boolean }) =>
+    request<{ ok: boolean; slotId?: number; stopped?: string; error?: string }>("/browser-harness/stop", {
+      method: "POST",
+      body: JSON.stringify(opts || { slotId: 1 }),
+    }),
+  // Layer 2 (browser-harness-odoo)
+  getBrowserHarnessOdooStatus: () =>
+    request<import("@/types").BrowserHarnessOdooStatus>("/browser-harness/odoo/status"),
+  installBrowserHarnessOdoo: (opts?: { force?: boolean }) =>
+    request<{ ok: boolean; written?: number; kept?: number; skippedUserEdit?: number; total?: number; bundleVersion?: string; error?: string }>("/browser-harness/odoo/install", {
+      method: "POST",
+      body: JSON.stringify(opts || {}),
     }),
 
   // Gateway management

@@ -57,7 +57,12 @@ Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18
   - `server/lib/routing.cjs` — `parseRoutes` (enriches `openclaw.json` bindings with agent metadata for the Routing page), `getChannelsConfig` (sanitized global channel config without bot tokens)
   - `server/lib/watchers.cjs` — chokidar file watchers; broadcasts `session:live-event` and `processing_end` WS events with `sessionKey`
   - `server/lib/automation/cron.cjs` — cron CRUD (create/update/delete/toggle/run/runs); tries gateway RPC first, falls back to direct `~/.openclaw/cron/jobs.json` file write. `buildSchedule()` converts form opts to gateway schema (`{kind, everyMs}` etc). `buildJobFromOpts()` produces the full job object.
-  - `server/lib/scripts.cjs` — shared workspace scripts (`~/.openclaw/scripts/`) and agent-specific scripts (`{agentWorkspace}/scripts/`). Metadata stored in `.tools.json` per directory. `listAgentCustomTools()` returns `{shared, agent}` enriched with `enabled` from agent's TOOLS.md. `toggleAgentCustomTool()` injects/removes HTML-comment-delimited blocks in TOOLS.md.
+  - `server/lib/scripts.cjs` — shared workspace scripts (`~/.openclaw/scripts/`) and agent-specific scripts (`{agentWorkspace}/scripts/`). Metadata stored in `.tools.json` per directory. `listAgentCustomTools()` returns `{shared, agent}` enriched with `enabled` from agent's TOOLS.md. `toggleAgentCustomTool()` injects/removes HTML-comment-delimited blocks in TOOLS.md. **Also exports the AOC built-in scripts plumbing**: `BUILTIN_SCRIPT_MANIFEST` (currently empty — all built-ins migrated into skill bundles), `LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS` (cleanup list), `stampBuiltinSharedMeta()`, `syncAgentBuiltins()`, `purgeLegacyFlatScripts()`, `isBuiltinShared()`. See **AOC Built-in Skills & Sync Engine** section below.
+  - `server/lib/browser-harness/odoo-bundle.cjs` + `odoo-installer.cjs` — bundled `browser-harness-odoo` skill (SKILL.md + 10 shell scripts under `scripts/`). `BUNDLE_VERSION` controls re-install. Files marked `protect: true, exec: true` get explicit `chmod 0755` after `fs.writeFileSync` (the `mode` option is ignored when the file already exists).
+  - `server/lib/aoc-tasks/installer.cjs` — bundled `aoc-tasks` skill (task board contract + 5 scripts: `update_task`, `check_tasks`, `fetch_attachment`, `save_output`, `post_comment`). `ensureSkillEnabledForAllAgents()` adds the slug to `agents.defaults.skills` plus each agent's per-agent allowlist.
+  - `server/lib/aoc-connections/installer.cjs` — bundled `aoc-connections` skill (connection layer contract + 4 scripts: `aoc-connect`, `check_connections`, `mcp-call`, `gws-call`). Same auto-enable pattern as `aoc-tasks`.
+  - `server/lib/workspace-browser.cjs` — read-only file manager for an agent's workspace. `tree(agentId, relPath)` lists directory contents (dirs first), `readFileMeta(agentId, relPath)` returns text inline (≤5MB) or binary streaming meta. Path traversal hardened via `path.resolve` + `startsWith` check + symlink refusal (`fs.lstat`). `httpErr(status, msg)` helper for route handlers.
+  - `server/lib/terminal.cjs` — Claude Code WS terminal. `CWD_TARGETS` allowlist + `agent-scripts:<id>` token resolves to `{agentWorkspace}/scripts/`. Token + `cwdToken` + `agentId` flow via WS claims so the same component is reused on the Skills page (`cwd=skills`/`scripts`) and the agent detail Custom Tools sub-tab (`cwd=agent-scripts agentId={id}`).
   - `server/lib/versioning.cjs` — file version history in SQLite (max 50 per scope). Scope key conventions: `agent:{agentId}:{fileName}`, `skill:{agentId}:{skillName}`, `skill:global:{slug}`, `skill-script:{agentId}:{skill}:{file}`, `script:agent:{agentId}:{file}`, `script:global:{file}`. Deduplicates by SHA-256 checksum.
   - `server/lib/integrations/index.cjs` — project integration engine; `init(db, broadcast)` wires up DB + WS broadcast, `syncIntegration(id)` pulls tickets from the adapter and upserts into tasks. Currently supports `google_sheets` adapter (`server/lib/integrations/google-sheets.cjs`). Credentials stored encrypted via `server/lib/integrations/base.cjs`.
 - **Config:** `server/lib/config.cjs` exports `OPENCLAW_HOME`, `OPENCLAW_WORKSPACE`, `AGENTS_DIR`, `readJsonSafe`.
@@ -78,15 +83,47 @@ The backend does NOT own agent data. It reads from OpenClaw's filesystem as the 
 - Run history at `~/.openclaw/cron/runs/{jobId}.jsonl` — JSONL, one entry per execution.
 - `CronPage` accepts optional `filterAgentId` prop; when set (from AgentDetailPage Schedules tab), hides agent filter pills and pre-fills new job form.
 
-### Custom Tools / Scripts
+### Custom Tools / Scripts — Skill-as-Unit Strategy
 
-Two scopes:
-- **Shared** (`~/.openclaw/scripts/`) — all agents can use, managed in Skills & Tools > Custom Tools tab (full CRUD). Read-only preview in agent detail.
-- **Agent-specific** (`{agentWorkspace}/scripts/`) — per-agent, full CRUD in agent detail Custom Tools sub-tab.
+**Core principle:** the unit of capability is a **Skill bundle**, not a loose script. Agents enable a skill; the skill's scripts come along automatically. Loose toggleable "custom tools" are a thin escape hatch, not the primary contract.
 
-Metadata stored in `.tools.json` per directory (not as companion files). When a script is "enabled" for an agent, `toggleAgentCustomTool()` appends a `<!-- custom-tool: name -->` ... `<!-- /custom-tool: name -->` block to the agent's `TOOLS.md` so the agent can read its exec hint and description.
+**Three tiers (mental model):**
+1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled for every agent. Plumbing the user should never need to manage. Currently: `aoc-tasks`, `aoc-connections`, `browser-harness-odoo`. See **AOC Built-in Skills & Sync Engine** below.
+2. **User skills** — full CRUD via Skills page or per-agent. Resolved via the standard `Skill Resolution Order` (workspace → `~/.agents/` → `~/.openclaw/`). Scripts live at `{skillDir}/scripts/`.
+3. **Loose scripts** (`server/lib/scripts.cjs`) — only used for cron/orchestrator wiring or one-offs that don't yet warrant a skill bundle. Two scopes:
+   - **Shared** (`~/.openclaw/scripts/`) — managed in Skills & Tools > Custom Tools tab (full CRUD). Read-only preview in agent detail.
+   - **Agent-specific** (`{agentWorkspace}/scripts/`) — per-agent, full CRUD in agent detail Custom Tools sub-tab.
 
-Allowed extensions: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`, `.lua`. Max 512KB.
+When a loose script is "enabled" for an agent, `toggleAgentCustomTool()` appends a `<!-- custom-tool: name -->` ... `<!-- /custom-tool: name -->` block to the agent's `TOOLS.md` so the agent can read its exec hint and description. Metadata stored in `.tools.json` per directory (not as companion files).
+
+**Do not add new flat shared scripts for capabilities that belong in a skill** — package them as a skill bundle (SKILL.md + scripts/) and either install via the Skills marketplace or, if AOC-owned plumbing, add a new installer under `server/lib/{slug}/installer.cjs` and wire it into the sync engine.
+
+Allowed extensions for loose scripts: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`, `.lua`. Max 512KB.
+
+### AOC Built-in Skills & Sync Engine
+
+AOC ships three skill bundles that every agent must always have. They are NOT shown as toggleable items in the UI — they are infrastructure.
+
+**Bundles (each under `server/lib/{slug}/installer.cjs`):**
+- **`browser-harness-odoo`** — Odoo browser automation. SKILL.md + 10 shell scripts (`runbook-run`, `browser-harness-acquire`, etc.). Bundle version pins re-install — bumping `BUNDLE_VERSION` (currently `0.7.0`) forces overwrite of `protect: true` files. Files marked `exec: true` get explicit `fs.chmodSync(target, 0o755)` after write because `fs.writeFileSync(..., {mode})` is ignored when the file already exists.
+- **`aoc-tasks`** — task board contract: status values, when to comment vs `update_task.sh`, `save_output.sh` rules. Replaces what was previously the flat `update_task.sh` / `check_tasks.sh` shared scripts.
+- **`aoc-connections`** — connection layer contract: `aoc-connect`, `mcp-call`, `gws-call`, `check_connections`. Replaces what was previously the flat connection helper scripts.
+
+**Auto-enable mechanism (each installer):**
+1. Install/refresh the skill bundle to `~/.openclaw/skills/{slug}/`.
+2. Add the slug to `openclaw.json` → `agents.defaults.skills` so newly provisioned agents get it.
+3. Walk every existing agent and add the slug to its per-agent skills allowlist if not present.
+
+**Sync engine (`server/lib/scripts.cjs`):**
+- `syncAgentBuiltins(agentId)` — reconciliation pass per agent. Stamps built-in shared script meta (`stampBuiltinSharedMeta`), purges legacy flat scripts that have been migrated into skill bundles (iterates `LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS` and removes their `<!-- custom-tool: ... -->` blocks from TOOLS.md), and ensures the built-in skills are enabled.
+- `syncBuiltinsForAllAgents()` — applies the above to every agent in `openclaw.json`.
+- Wired into `server/index.cjs` at: startup, connection PUT, skill toggle/create/delete, browser-harness install. The reconciliation is **idempotent** — safe to call multiple times.
+
+**`BUILTIN_SCRIPT_MANIFEST`** in `scripts.cjs` is currently empty (all built-ins migrated to skills). The constant + `isBuiltinShared()` remain for future use if a flat shared script ever needs to be marked as plumbing.
+
+**`LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS`** — the cleanup list (15 entries: `update_task.sh`, `check_tasks.sh`, `aoc-connect.sh`, `mcp-call.sh`, `gws-call.sh`, `check_connections.sh`, plus all `runbook-*` and `browser-harness-*` scripts). Add to this array whenever migrating another flat script into a skill bundle.
+
+**When provisioning a new agent**, `provision.cjs` now calls `syncAgentBuiltins(agentId)` once at the end instead of toggling individual scripts (the old per-script toggle had a long-standing bug where `getFileFn` returned a raw string but `toggleAgentCustomTool` expected `{content}` — gone now).
 
 ### Chat / Gateway Integration
 
@@ -122,11 +159,16 @@ Channel bindings in `openclaw.json` use two patterns:
 
 ### Agent Detail Page Tab Structure
 
-`AgentDetailPage.tsx` uses a 4-tab body layout (`bodyTab` state): **Agent Files** | **Skills & Tools** | **Channels** | **Schedules**.
+`AgentDetailPage.tsx` uses a 5-tab body layout (`bodyTab` state): **Agent Files** | **Skills & Tools** | **Channels** | **Connections** | **Schedules**.
 
-The Skills & Tools tab has its own `activeTab` state: `'skills'` | `'tools'` (built-in) | `'custom-tools'`. The Custom Tools sub-tab shows `CustomToolsPanel` with agent-specific (full CRUD) and shared (toggle + read-only preview) scripts side-by-side.
+- **Agent Files** has two modes (`filesMode` state: `'curated' | 'browse'`):
+  - *Curated* — the editable allowlist (IDENTITY/SOUL/TOOLS/AGENTS/USER/HEARTBEAT/MEMORY.md). Both view (read-only) and edit modes use `MonacoCodeEditor` for proper LSP-grade markdown rendering. No textarea/`<pre>` fallback.
+  - *Browse* — `WorkspaceBrowser` component (read-only file manager): tree view (left, w-64) + preview pane (right). Recursive expand/collapse with lazy-load per directory via `DirCache`. Image preview with click-to-fullscreen modal, text via Monaco, binary as download card. Toggle dotfiles via `showHidden`.
+- **Skills & Tools** has sub-tab state: `'skills'` | `'tools'` (built-in OpenClaw runtime tools — read-only) | `'custom-tools'`. The Custom Tools sub-tab shows `CustomToolsPanel` (agent-specific full CRUD + shared toggle/preview side-by-side) and embeds `SkillsTerminal` with `cwd="agent-scripts" agentId={id}` so the user can spawn a Claude Code terminal inside the agent's `scripts/` directory.
+- **Connections** — `AgentConnectionsTab`. Search + per-type filter chips + collapsible groups + `Assigned only` filter + `Manage` link to `/connections`. Multi-token AND search across name/type/detail/metadata values, with `<mark>` highlight on matches. Group collapse state persisted in `localStorage` (key `aoc.agent-detail.connectionsCollapsed`); auto-expanded while searching. Bulk **Select all / Deselect all** per group. Backed by `api.getAgentConnections` / `api.setAgentConnections`.
+- **Schedules** — embeds `<CronPage filterAgentId={id} />` which filters to the agent's jobs only.
 
-The Schedules tab embeds `<CronPage filterAgentId={id} />` which filters to the agent's jobs only.
+**Compact header mode** (`headerCompact` state, persisted in `localStorage` key `aoc.agent-detail.headerCompact`) — toggles a ~40px single-row header replacing the ~150px back-link + agent card. Targets vertical space at 1366×768. Channel chips in the header use a separate `headerChannels` state populated via `api.getAgentChannels` (the `detail.channel` field is singular and only reflects the primary binding).
 
 ### Agent Rename
 
@@ -140,7 +182,7 @@ When an agent's display name changes, `updateAgent` in `detail.cjs` computes a n
 
 ### Agent Provisioning
 
-`ProvisionAgentWizard.tsx` — 4-step modal (Identity → Personality → Channels → Review). On submit, calls `POST /api/agents/provision` which writes the agent entry to `openclaw.json` and scaffolds the workspace with `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` (and `USER.md` copied from main workspace if available). Also auto-installs `update_task.sh` and `check_tasks.sh` shared scripts for the new agent and injects a heartbeat task check into `HEARTBEAT.md`.
+`ProvisionAgentWizard.tsx` — 4-step modal (Identity → Personality → Channels → Review). On submit, calls `POST /api/agents/provision` which writes the agent entry to `openclaw.json` and scaffolds the workspace with `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` (and `USER.md` copied from main workspace if available). Then runs `syncAgentBuiltins(agentId)` once which installs the AOC built-in skills (`aoc-tasks`, `aoc-connections`, `browser-harness-odoo`) and injects the heartbeat task check into `HEARTBEAT.md`. **Do not** add per-script toggle calls here — built-ins now flow exclusively through the skill-sync engine.
 
 The `fsWorkspaceOnly` boolean (defaults true) maps to `tools.fs.workspaceOnly: false` in the agent's `openclaw.json` entry — controls whether the agent's FS tools are restricted to its workspace directory.
 
@@ -176,9 +218,32 @@ Skill scripts live at `{skillDir}/scripts/` and are managed via `skillScripts.cj
 - `src/data/adlcTemplates.ts` — **deprecated** re-export wrapper; use `src/data/templates/index.ts` directly.
 - `SkillTemplatePicker.tsx` (`src/components/skills/`) — modal picker UI consumed by `SkillsPage` and agent detail Skills tab.
 
-### SyntaxEditor Component
+### Code Editors
 
-`src/components/ui/SyntaxEditor.tsx` — transparent-textarea-over-highlighted-pre pattern. Architecture: fixed-width gutter (48px, line numbers rendered manually) + code area (highlight layer + textarea overlay with `color: transparent; caret-color: #abb2bf`). Both layers share identical `font`, `fontSize`, `lineHeight`, and `padding` — the gutter is a separate column to avoid em-calculation drift. Uses `react-syntax-highlighter` (lazy-loaded) for the highlight layer. Used in `CustomToolsTab.tsx` and `AgentDetailPage.tsx` for script editing.
+**`MonacoCodeEditor` (`src/components/ui/MonacoCodeEditor.tsx`)** — preferred everywhere. Lazy-loaded Monaco with bundled workers (CSP-safe, no CDN): `editorWorker`, `jsonWorker`, `tsWorker`. Auto-language detection from `filename` via `EXT_LANGUAGE` map (`.sh`/`.bash` → shell, `.py` → python, `.ts`/`.tsx` → typescript, etc.). Theme-aware (dark/light), `automaticLayout: true`. Props: `value`, `onChange`, `filename`, `language`, `height`, `readOnly`, `onSave`, `minimap`. Used in: agent files curated view + edit (both modes), skills detail script editor, agent custom tools editor, shared script preview, workspace browser file preview. **Single editor pattern** — adding a new editable code surface should use `MonacoCodeEditor`, not `<textarea>` or `<pre>`.
+
+**`SyntaxEditor` (`src/components/ui/SyntaxEditor.tsx`)** — legacy transparent-textarea-over-highlighted-pre pattern. Still present but no longer the default; prefer Monaco for new surfaces.
+
+### Workspace Browser API
+
+`server/lib/workspace-browser.cjs` exposes a read-only file manager rooted at the agent's workspace.
+
+- `GET /api/agents/:id/workspace/tree?path=` — directory tree listing (dirs first, then files alpha).
+- `GET /api/agents/:id/workspace/file?path=` — file content. Text files (≤5MB by extension) inline; binaries stream with `Content-Type` from `MIME_BY_EXT`. Auth uses `authMiddlewareWithQueryToken` wrapper which accepts `?token=` query param so `<img src>` and direct downloads work (browsers can't attach `Authorization` headers to image requests).
+- Frontend helpers in `src/lib/api.ts`: `getWorkspaceTree(id, relPath)`, `getWorkspaceFile(id, relPath)`, `getWorkspaceFileUrl(id, relPath, opts)`.
+- **Security:** path traversal blocked via `path.resolve` + `startsWith` check + reject `..` segments. Symlinks refused via `fs.lstat`. Allowlisted text/image extensions in `TEXT_EXTS`/`IMAGE_EXTS`.
+
+### Settings Page Tab Layout
+
+`src/pages/SettingsPage.tsx` `Tab` union: `'account' | 'engine' | 'channels' | ...openclaw.json sections`.
+
+- **Account** — user/profile/auth settings.
+- **Engine** — AOC's own built-in feature configuration (NOT `openclaw.json`). Currently hosts `AgentStandardsCard` (research output standard) and `BrowserHarnessCard` (re-install the `browser-harness-odoo` skill bundle). New AOC-owned engine config (built-in skill versions, sync triggers, etc.) belongs here, not in the openclaw.json tabs.
+- The sidebar has a visible group separator between user-section tabs (Account/Engine) and openclaw.json config tabs (Channels/Bindings/...).
+
+### Sidebar Component
+
+`src/components/layout/Sidebar.tsx` — uses `min-h-0 overflow-y-auto` on `<nav>` so menu content scrolls at short viewports (1366×768). Logo block has `shrink-0` and reduced bottom margin so collapsing/scrolling never truncates it.
 
 ### Agent World (3D View)
 

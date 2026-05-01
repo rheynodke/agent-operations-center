@@ -16,17 +16,21 @@ import {
   RotateCcw, ChevronDown, Cpu, Radio,
   FolderOpen, Eye, Edit3, FilePlus,
   Plus, Package, Power, PowerOff, Sparkles,
-  Activity, PanelLeftClose, PanelLeftOpen,
+  Activity, PanelLeftClose, PanelLeftOpen, Minimize2, Maximize2,
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
   Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer, History,
   Wand2, StopCircle, CornerDownLeft, LayoutTemplate, Plug, ShieldCheck, UserCheck,
 } from "lucide-react"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
+import { WorkspaceBrowser } from "@/components/agents/WorkspaceBrowser"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 import { CronPage } from "@/pages/CronPage"
 import { SyntaxEditor } from "@/components/ui/SyntaxEditor"
+import { MonacoCodeEditor } from "@/components/ui/MonacoCodeEditor"
 import { InstallSkillModal } from "@/components/skills/InstallSkillModal"
+import { SkillsTerminal } from "@/components/skills/SkillsTerminal"
+import { useCanUseClaudeTerminal } from "@/lib/permissions"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
@@ -543,27 +547,21 @@ function InlineFilePanel({
         </div>
       )}
 
-      {/* Content area */}
-      <div className="flex-1 overflow-auto relative">
+      {/* Content area — Monaco for both view (read-only) and edit modes */}
+      <div className="flex-1 min-h-0 relative">
         {loading ? (
           <div className="flex items-center justify-center h-full py-16">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
           </div>
-        ) : editMode ? (
-          <textarea
-            ref={textareaRef}
-            value={content}
-            onChange={e => setContent(e.target.value)}
-            spellCheck={false}
-            className="w-full h-full min-h-[300px] resize-none bg-transparent text-[13px] font-mono text-foreground/90 leading-relaxed p-4 outline-none placeholder:text-muted-foreground/40 caret-primary"
-            placeholder={`# ${filename}\n\nStart writing…`}
-          />
         ) : (
-          <div className="p-4">
-            <pre className="text-[13px] font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap wrap-break-word">
-              {content || <span className="text-muted-foreground/40 italic">Empty file</span>}
-            </pre>
-          </div>
+          <MonacoCodeEditor
+            value={content}
+            onChange={editMode ? setContent : undefined}
+            filename={filename}
+            readOnly={!editMode}
+            onSave={editMode ? handleSave : undefined}
+            minimap={false}
+          />
         )}
       </div>
 
@@ -635,6 +633,7 @@ function SkillScriptsPanel({
   const [newFilename, setNewFilename] = useState("")
   const [newError, setNewError] = useState("")
   const [creating, setCreating] = useState(false)
+  const [scriptsListCollapsed, setScriptsListCollapsed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const loadScripts = useCallback(async () => {
@@ -763,37 +762,44 @@ function SkillScriptsPanel({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Path hint bar */}
-      {pathInfo && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-emerald-500/4 shrink-0">
-          <Code2 className="w-3 h-3 text-emerald-400/70 shrink-0" />
-          <span className="text-[10px] font-mono text-emerald-400/80 truncate flex-1">
-            {selected ? `${pathInfo.relPath}/${selected}` : pathInfo.relPath + '/'}
-          </span>
-          {selected && (
-            <button
-              onClick={handleCopyPath}
-              title="Copy exec command"
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] border border-emerald-500/20 text-emerald-400/70 hover:text-emerald-300 hover:border-emerald-500/40 transition-colors shrink-0"
-            >
-              {copied ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
-              {copied ? "Copied" : "Copy exec"}
-            </button>
-          )}
-        </div>
-      )}
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Collapsed strip — click to expand */}
+        {scriptsListCollapsed && (
+          <button
+            onClick={() => setScriptsListCollapsed(false)}
+            title="Expand scripts list"
+            className="w-7 shrink-0 border-r border-border bg-foreground/1 flex flex-col items-center justify-center gap-2 hover:bg-foreground/4 transition-colors group"
+          >
+            <PanelLeftOpen className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-foreground" />
+            <span className="text-[9px] font-bold tracking-widest text-muted-foreground/60 [writing-mode:vertical-rl] rotate-180 group-hover:text-foreground">
+              SCRIPTS · {scripts.length}
+            </span>
+          </button>
+        )}
         {/* Script list sidebar */}
-        <div className="w-44 border-r border-border shrink-0 flex flex-col">
+        <div className={cn(
+          "border-r border-border shrink-0 flex flex-col",
+          "w-40",
+          scriptsListCollapsed && "hidden",
+        )}>
           <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-foreground/1">
             <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground/60">Scripts</span>
-            <button
-              onClick={() => setShowNewScript(true)}
-              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 border border-primary/20 text-[9px] text-primary hover:bg-primary/20 transition-colors"
-            >
-              <Plus className="w-2.5 h-2.5" /> New
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowNewScript(true)}
+                className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 border border-primary/20 text-[9px] text-primary hover:bg-primary/20 transition-colors"
+              >
+                <Plus className="w-2.5 h-2.5" /> New
+              </button>
+              <button
+                onClick={() => setScriptsListCollapsed(true)}
+                title="Collapse scripts list"
+                className="p-0.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
+              >
+                <PanelLeftClose className="w-3 h-3" />
+              </button>
+            </div>
           </div>
 
           {/* New script inline form */}
@@ -889,20 +895,21 @@ function SkillScriptsPanel({
                 </div>
               </div>
               {error && <p className="text-[10px] text-red-400 px-3 py-1 bg-red-500/5 border-b border-red-500/10">{error}</p>}
-              {/* Code textarea */}
+              {/* Code editor (Monaco — LSP-grade highlighting + folding) */}
               {scriptLoading ? (
                 <div className="flex items-center justify-center flex-1">
                   <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                 </div>
               ) : (
-                <textarea
-                  ref={textareaRef}
-                  value={scriptContent}
-                  onChange={e => setScriptContent(e.target.value)}
-                  spellCheck={false}
-                  className="flex-1 w-full resize-none bg-foreground/8 text-[12px] font-mono text-foreground/90 leading-relaxed p-3 outline-none caret-primary"
-                  placeholder="#!/bin/bash\n# Your script here"
-                />
+                <div className="flex-1 min-h-0">
+                  <MonacoCodeEditor
+                    value={scriptContent}
+                    onChange={setScriptContent}
+                    filename={selected}
+                    onSave={() => { if (isDirty) handleSave() }}
+                    minimap={false}
+                  />
+                </div>
               )}
               {/* Footer */}
               <div className="flex items-center justify-between px-3 py-1 border-t border-border shrink-0 bg-foreground/1">
@@ -3075,19 +3082,16 @@ function AgentScriptEditor({
           className="bg-transparent text-[11px] text-muted-foreground placeholder:text-muted-foreground/30 focus:outline-none border-b border-transparent focus:border-border/30 py-0.5 transition-colors w-full"
         />
       </div>
-      {/* Editor with live syntax highlighting */}
-      <SyntaxEditor
-        value={content}
-        onChange={v => { setContent(v); setDirty(true) }}
-        ext={tool.name.match(/(\.[^.]+)$/)?.[1] || ''}
-        className="flex-1 min-h-0"
-        onKeyDown={e => {
-          if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-            e.preventDefault()
-            if (dirty || metaDirty) handleSave()
-          }
-        }}
-      />
+      {/* Editor — Monaco for full LSP-style highlight + folding + bracket guides */}
+      <div className="flex-1 min-h-0">
+        <MonacoCodeEditor
+          value={content}
+          onChange={v => { setContent(v); setDirty(true) }}
+          filename={tool.name}
+          onSave={() => { if (dirty || metaDirty) handleSave() }}
+          minimap={false}
+        />
+      </div>
       <div className="shrink-0 flex items-center gap-3 px-3 py-1.5 border-t border-border/30 text-[10px] text-muted-foreground/40">
         <span><kbd>⌘S</kbd> save</span><span><kbd>Tab</kbd> indent</span>
         <span className="ml-auto">{content.split('\n').length} lines</span>
@@ -3221,7 +3225,7 @@ function SharedScriptPreview({ tool, onClose }: { tool: CustomTool; onClose: () 
       <div className="flex-1 min-h-0">
         {content === null
           ? <div className="flex items-center justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" /></div>
-          : <SyntaxEditor value={content} onChange={() => {}} ext={ext} readOnly className="h-full" />
+          : <MonacoCodeEditor value={content} filename={`script${ext}`} readOnly minimap={false} />
         }
       </div>
     </div>
@@ -3387,18 +3391,19 @@ function CustomToolsPanel({ agentId, onCountChange }: { agentId: string; onCount
                 </div>
               </div>
 
-              <div className="mx-3 border-t border-border/40 my-2" />
-
-              {/* Shared scripts */}
-              <div className="px-3 pb-3">
-                <span className="text-[9px] font-bold uppercase tracking-widest text-sky-400 block mb-1.5">Shared Scripts</span>
-                {data.shared.length === 0 && (
-                  <p className="text-[10px] text-muted-foreground/40 italic py-1">No scripts in ~/.openclaw/scripts/</p>
-                )}
-                <div className="space-y-1">
-                  {data.shared.map(t => <ToolRow key={t.name} tool={t} />)}
-                </div>
-              </div>
+              {/* Shared scripts — user-authored only. AOC-managed engine scripts
+                  (connections, tasks, browser-uat) are auto-injected based on agent state. */}
+              {data.shared.length > 0 && (
+                <>
+                  <div className="mx-3 border-t border-border/40 my-2" />
+                  <div className="px-3 pb-3">
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-sky-400 block mb-1.5">Shared Scripts</span>
+                    <div className="space-y-1">
+                      {data.shared.map(t => <ToolRow key={t.name} tool={t} />)}
+                    </div>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -4457,20 +4462,77 @@ function DeleteAgentModal({
 /*  AGENT CONNECTIONS TAB                                               */
 /* ─────────────────────────────────────────────────────────────────── */
 
-const CONN_TYPE_META: Record<string, { label: string; color: string }> = {
-  bigquery: { label: 'BigQuery', color: 'text-blue-400' },
-  postgres: { label: 'PostgreSQL', color: 'text-indigo-400' },
-  ssh:      { label: 'SSH/VPS', color: 'text-emerald-400' },
-  website:  { label: 'Website', color: 'text-orange-400' },
-  github:   { label: 'GitHub', color: 'text-purple-400' },
-  odoocli:  { label: 'Odoo', color: 'text-violet-400' },
+const CONN_TYPE_META: Record<string, { label: string; color: string; bg: string; icon: React.ComponentType<{ className?: string }> }> = {
+  bigquery: { label: 'BigQuery',   color: 'text-blue-400',     bg: 'bg-blue-500/10',     icon: Database },
+  postgres: { label: 'PostgreSQL', color: 'text-indigo-400',   bg: 'bg-indigo-500/10',   icon: Database },
+  ssh:      { label: 'SSH/VPS',    color: 'text-emerald-400',  bg: 'bg-emerald-500/10',  icon: Terminal },
+  website:  { label: 'Website',    color: 'text-orange-400',   bg: 'bg-orange-500/10',   icon: Globe },
+  github:   { label: 'GitHub',     color: 'text-purple-400',   bg: 'bg-purple-500/10',   icon: Code2 },
+  odoocli:  { label: 'Odoo',       color: 'text-violet-400',   bg: 'bg-violet-500/10',   icon: Package },
+}
+
+function connectionDetail(conn: import("@/types").Connection): string {
+  const meta = conn.metadata || {}
+  switch (conn.type) {
+    case 'bigquery': return meta.projectId || ''
+    case 'postgres': return `${meta.host || 'localhost'}:${meta.port || 5432}/${meta.database || '?'}`
+    case 'ssh':      return `${meta.sshUser || 'root'}@${meta.sshHost || '?'}`
+    case 'website':  return meta.url || ''
+    case 'github':   return `${meta.repoOwner || ''}/${meta.repoName || ''} · ${meta.branch || 'main'}`
+    case 'odoocli':  return `${meta.odooUrl || '?'} · ${meta.odooDb || '?'}`
+    default:         return ''
+  }
+}
+
+const COLLAPSED_KEY = "aoc.agent-detail.connectionsCollapsed"
+
+function highlightMatch(text: string, tokens: string[]): React.ReactNode {
+  if (!tokens.length || !text) return text
+  // Build a case-insensitive regex covering all tokens
+  const escaped = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean)
+  if (!escaped.length) return text
+  const re = new RegExp(`(${escaped.join('|')})`, 'gi')
+  const parts = text.split(re)
+  return parts.map((p, i) =>
+    re.test(p)
+      ? <mark key={i} className="bg-primary/25 text-primary-foreground/95 rounded px-0.5">{p}</mark>
+      : <React.Fragment key={i}>{p}</React.Fragment>
+  )
+}
+
+function flattenSearchable(conn: import("@/types").Connection): string {
+  // Searchable haystack — name, type, detail line, plus selected metadata values
+  const meta = conn.metadata || {}
+  const metaVals = Object.values(meta).filter(v => typeof v === 'string' || typeof v === 'number').join(' ')
+  return `${conn.name} ${conn.type} ${connectionDetail(conn)} ${metaVals}`.toLowerCase()
 }
 
 function AgentConnectionsTab({ agentId }: { agentId: string }) {
+  const navigate = useNavigate()
   const [allConns, setAllConns] = useState<import("@/types").Connection[]>([])
   const [assignedIds, setAssignedIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [search, setSearch] = useState('')
+  const [typeFilter, setTypeFilter] = useState<string | null>(null)
+  const [showOnlyAssigned, setShowOnlyAssigned] = useState(false)
+  const [collapsedTypes, setCollapsedTypes] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_KEY)
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set()
+    } catch { return new Set() }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsedTypes])) } catch {}
+  }, [collapsedTypes])
+
+  const toggleCollapsed = (type: string) => {
+    setCollapsedTypes(prev => {
+      const next = new Set(prev)
+      if (next.has(type)) next.delete(type); else next.add(type)
+      return next
+    })
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -4487,77 +4549,287 @@ function AgentConnectionsTab({ agentId }: { agentId: string }) {
 
   useEffect(() => { load() }, [load])
 
-  const toggle = async (connId: string) => {
-    const next = new Set(assignedIds)
-    if (next.has(connId)) next.delete(connId)
-    else next.add(connId)
+  const persist = useCallback(async (next: Set<string>) => {
+    const prev = assignedIds
     setAssignedIds(next)
     setSaving(true)
-    try {
-      await api.setAgentConnections(agentId, [...next])
-    } catch { /* revert on error */ setAssignedIds(assignedIds) }
+    try { await api.setAgentConnections(agentId, [...next]) }
+    catch { setAssignedIds(prev) }
     setSaving(false)
+  }, [agentId, assignedIds])
+
+  const toggle = (connId: string) => {
+    const next = new Set(assignedIds)
+    if (next.has(connId)) next.delete(connId); else next.add(connId)
+    persist(next)
   }
+
+  const setManyAssigned = (ids: string[], assign: boolean) => {
+    const next = new Set(assignedIds)
+    for (const id of ids) { if (assign) next.add(id); else next.delete(id) }
+    persist(next)
+  }
+
+  // Group by type for stable section ordering
+  const groups = useMemo(() => {
+    const byType = new Map<string, import("@/types").Connection[]>()
+    for (const c of allConns) {
+      if (!byType.has(c.type)) byType.set(c.type, [])
+      byType.get(c.type)!.push(c)
+    }
+    return Array.from(byType.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+  }, [allConns])
+
+  const typeCounts = useMemo(() => groups.map(([t, list]) => ({
+    type: t,
+    total: list.length,
+    assigned: list.filter(c => assignedIds.has(c.id)).length,
+  })), [groups, assignedIds])
+
+  // Multi-token AND search — every space-separated token must match the haystack
+  const tokens = useMemo(
+    () => search.trim().toLowerCase().split(/\s+/).filter(Boolean),
+    [search],
+  )
+  const isSearching = tokens.length > 0
+  const matches = (c: import("@/types").Connection) => {
+    if (typeFilter && c.type !== typeFilter) return false
+    if (showOnlyAssigned && !assignedIds.has(c.id)) return false
+    if (!tokens.length) return true
+    const hay = flattenSearchable(c)
+    return tokens.every(t => hay.includes(t))
+  }
+
+  const filteredGroups = groups
+    .map(([t, list]) => [t, list.filter(matches)] as const)
+    .filter(([, list]) => list.length > 0)
+
+  const totalMatches = filteredGroups.reduce((acc, [, list]) => acc + list.length, 0)
 
   if (loading) return <div className="flex-1 flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
 
   if (allConns.length === 0) return (
-    <div className="flex-1 flex flex-col items-center justify-center py-12 text-center gap-2">
-      <Plug className="w-8 h-8 text-muted-foreground/30" />
-      <p className="text-sm text-muted-foreground">No connections configured yet.</p>
-      <p className="text-xs text-muted-foreground/50">Go to Connections page to add data sources, repos, or services.</p>
+    <div className="flex-1 flex flex-col items-center justify-center py-12 text-center gap-3">
+      <div className="w-14 h-14 rounded-full bg-muted/30 flex items-center justify-center">
+        <Plug className="w-7 h-7 text-muted-foreground/40" />
+      </div>
+      <div>
+        <p className="text-sm font-medium text-foreground">No connections configured</p>
+        <p className="text-xs text-muted-foreground/60 mt-0.5">Add data sources, repos, or services to assign them to this agent.</p>
+      </div>
+      <button
+        onClick={() => navigate('/connections')}
+        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90"
+      >
+        <Plus className="w-3.5 h-3.5" /> Manage Connections
+      </button>
     </div>
   )
 
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 px-4 py-4 space-y-2">
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-muted-foreground">
-          Toggle connections this agent can access. {saving && <span className="text-primary ml-1">Saving…</span>}
-        </p>
-        <span className="text-xs text-muted-foreground/50">{assignedIds.size}/{allConns.length} assigned</span>
-      </div>
-      {allConns.map(conn => {
-        const assigned = assignedIds.has(conn.id)
-        const meta = conn.metadata || {}
-        const typeMeta = CONN_TYPE_META[conn.type] || { label: conn.type, color: 'text-muted-foreground' }
-        let detail = ''
-        if (conn.type === 'bigquery') detail = meta.projectId || ''
-        else if (conn.type === 'postgres') detail = `${meta.host || 'localhost'}:${meta.port || 5432}/${meta.database || '?'}`
-        else if (conn.type === 'ssh') detail = `${meta.sshUser || 'root'}@${meta.sshHost || '?'}`
-        else if (conn.type === 'website') detail = meta.url || ''
-        else if (conn.type === 'github') detail = `${meta.repoOwner || ''}/${meta.repoName || ''} · ${meta.branch || 'main'}`
-        else if (conn.type === 'odoocli') detail = `${meta.odooUrl || '?'} · ${meta.odooDb || '?'}`
-
-        return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Toolbar */}
+      <div className="px-4 py-3 border-b border-border/40 space-y-2 shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name, host, project, branch, repo… (space = AND)"
+              className="h-8 text-xs pl-7 pr-14"
+            />
+            <Hash className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
+            {search && (
+              <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                <span className="text-[9px] text-muted-foreground/60 font-mono">{totalMatches}</span>
+                <button
+                  onClick={() => setSearch('')}
+                  className="w-5 h-5 rounded hover:bg-muted/40 flex items-center justify-center text-muted-foreground hover:text-foreground"
+                  title="Clear search"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+          </div>
           <button
-            key={conn.id}
-            onClick={() => toggle(conn.id)}
+            onClick={() => setShowOnlyAssigned(v => !v)}
             className={cn(
-              "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-all",
-              assigned
-                ? "border-primary/40 bg-primary/5"
-                : "border-border/40 bg-card/30 opacity-60 hover:opacity-100"
+              "h-8 px-2.5 rounded-md text-[11px] font-medium border transition-colors flex items-center gap-1.5",
+              showOnlyAssigned
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border/40 bg-card/30 text-muted-foreground hover:text-foreground"
             )}
           >
-            <div className={cn("w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
-              assigned ? "border-primary bg-primary" : "border-muted-foreground/30"
-            )}>
-              {assigned && <Check className="w-3 h-3 text-primary-foreground" />}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium truncate">{conn.name}</span>
-                <span className={cn("text-[10px] font-medium", typeMeta.color)}>{typeMeta.label}</span>
-              </div>
-              {detail && <p className="text-[11px] text-muted-foreground/50 font-mono truncate">{detail}</p>}
-            </div>
-            {!conn.enabled && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/30 text-muted-foreground/50 shrink-0">Disabled</span>
-            )}
+            <Check className="w-3 h-3" /> Assigned only
           </button>
-        )
-      })}
+          <button
+            onClick={() => navigate('/connections')}
+            className="h-8 px-2.5 rounded-md text-[11px] font-medium border border-border/40 bg-card/30 text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5"
+            title="Open Connections page"
+          >
+            <Plug className="w-3 h-3" /> Manage
+          </button>
+        </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={() => setTypeFilter(null)}
+            className={cn(
+              "h-6 px-2 rounded-full text-[10px] font-medium border transition-colors",
+              !typeFilter
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border/40 bg-card/30 text-muted-foreground hover:text-foreground"
+            )}
+          >
+            All · {allConns.length}
+          </button>
+          {typeCounts.map(({ type, total, assigned }) => {
+            const meta = CONN_TYPE_META[type] || { label: type, color: 'text-muted-foreground' }
+            const active = typeFilter === type
+            return (
+              <button
+                key={type}
+                onClick={() => setTypeFilter(active ? null : type)}
+                className={cn(
+                  "h-6 px-2 rounded-full text-[10px] font-medium border transition-colors inline-flex items-center gap-1",
+                  active
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-border/40 bg-card/30 hover:text-foreground"
+                )}
+              >
+                <span className={cn(active ? "text-primary" : meta.color)}>{meta.label}</span>
+                <span className="text-muted-foreground/50">{assigned}/{total}</span>
+              </button>
+            )
+          })}
+          <button
+            onClick={() => {
+              const allTypes = groups.map(([t]) => t)
+              const allCollapsed = allTypes.every(t => collapsedTypes.has(t))
+              setCollapsedTypes(allCollapsed ? new Set() : new Set(allTypes))
+            }}
+            className="ml-auto text-[10px] text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1"
+            title="Collapse / expand all groups"
+          >
+            <ChevronDown className={cn("w-3 h-3 transition-transform", groups.every(([t]) => collapsedTypes.has(t)) && "-rotate-90")} />
+            {groups.every(([t]) => collapsedTypes.has(t)) ? 'Expand all' : 'Collapse all'}
+          </button>
+          <span className="text-[10px] text-muted-foreground/50">
+            {assignedIds.size}/{allConns.length} assigned
+            {saving && <span className="text-primary ml-1.5">Saving…</span>}
+          </span>
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-4">
+        {filteredGroups.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center gap-2">
+            <Hash className="w-6 h-6 text-muted-foreground/30" />
+            <p className="text-xs text-muted-foreground">No connections match your filter.</p>
+            <button
+              onClick={() => { setSearch(''); setTypeFilter(null); setShowOnlyAssigned(false) }}
+              className="text-[10px] text-primary hover:underline"
+            >
+              Clear filters
+            </button>
+          </div>
+        ) : filteredGroups.map(([type, list]) => {
+          const meta = CONN_TYPE_META[type] || { label: type, color: 'text-muted-foreground', bg: 'bg-muted/20', icon: Plug }
+          const Icon = meta.icon
+          const ids = list.map(c => c.id)
+          const assignedHere = ids.filter(id => assignedIds.has(id)).length
+          const allAssigned = assignedHere === ids.length
+          // While searching, force-expand groups so users see hits regardless of saved collapsed state
+          const collapsed = !isSearching && collapsedTypes.has(type)
+          return (
+            <div key={type} className="rounded-lg border border-border/30 bg-card/20 overflow-hidden">
+              <div className="flex items-center gap-2 px-2.5 py-1.5 hover:bg-card/40 transition-colors">
+                <button
+                  onClick={() => toggleCollapsed(type)}
+                  className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                  disabled={isSearching}
+                  title={isSearching ? "Auto-expanded while searching" : (collapsed ? "Expand" : "Collapse")}
+                >
+                  <ChevronRight className={cn(
+                    "w-3.5 h-3.5 text-muted-foreground/60 transition-transform shrink-0",
+                    !collapsed && "rotate-90",
+                  )} />
+                  <div className={cn("w-5 h-5 rounded flex items-center justify-center shrink-0", meta.bg)}>
+                    <Icon className={cn("w-3 h-3", meta.color)} />
+                  </div>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/80 shrink-0">{meta.label}</span>
+                  <span className={cn(
+                    "text-[10px] shrink-0",
+                    assignedHere > 0 ? "text-primary/80" : "text-muted-foreground/50",
+                  )}>
+                    {assignedHere}/{list.length}
+                  </span>
+                  {collapsed && assignedHere > 0 && (
+                    <span className="text-[10px] text-muted-foreground/40 truncate">
+                      · {list.filter(c => assignedIds.has(c.id)).map(c => c.name).join(', ')}
+                    </span>
+                  )}
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setManyAssigned(ids, !allAssigned) }}
+                  className="text-[10px] text-muted-foreground hover:text-primary transition-colors shrink-0"
+                >
+                  {allAssigned ? 'Deselect all' : 'Select all'}
+                </button>
+              </div>
+              {!collapsed && (
+                <div className="space-y-1 p-1.5 pt-0">
+                  {list.map(conn => {
+                    const assigned = assignedIds.has(conn.id)
+                    const detail = connectionDetail(conn)
+                    return (
+                      <button
+                        key={conn.id}
+                        onClick={() => toggle(conn.id)}
+                        className={cn(
+                          "group w-full flex items-center gap-3 px-3 py-2 rounded-md border text-left transition-all",
+                          assigned
+                            ? "border-primary/40 bg-primary/5 hover:bg-primary/10"
+                            : "border-border/40 bg-card/30 hover:border-border hover:bg-card/60",
+                          !conn.enabled && "opacity-60"
+                        )}
+                      >
+                        <div className={cn("w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+                          assigned ? "border-primary bg-primary" : "border-muted-foreground/30 group-hover:border-muted-foreground/60"
+                        )}>
+                          {assigned && <Check className="w-2.5 h-2.5 text-primary-foreground" strokeWidth={3} />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium truncate">{highlightMatch(conn.name, tokens)}</span>
+                            {!conn.enabled && (
+                              <span className="text-[9px] uppercase px-1 py-px rounded bg-amber-500/10 text-amber-400 shrink-0">Disabled</span>
+                            )}
+                          </div>
+                          {detail && (
+                            <p className="text-[11px] text-muted-foreground/60 font-mono truncate">
+                              {highlightMatch(detail, tokens)}
+                            </p>
+                          )}
+                        </div>
+                        <span
+                          role="button"
+                          onClick={(e) => { e.stopPropagation(); navigate(`/connections?focus=${conn.id}`) }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 p-1 rounded hover:bg-muted/40 text-muted-foreground/60 hover:text-foreground"
+                          title="Open in Connections page"
+                        >
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -4585,6 +4857,17 @@ export function AgentDetailPage() {
   const [restartReason, setRestartReason] = useState("")
   const [saveMsg, setSaveMsg] = useState("")
   const [testingChat, setTestingChat] = useState(false)
+  // Header channel chips — fetched separately so we can show ALL bound channels
+  // (detail.channel is singular and only reflects the primary binding).
+  const [headerChannels, setHeaderChannels] = useState<{ type: string; accountId: string }[]>([])
+  // Compact header mode — reclaims vertical space at small viewports (1366×768).
+  // Persisted per session in localStorage so the user's preference sticks.
+  const [headerCompact, setHeaderCompact] = useState<boolean>(() => {
+    try { return localStorage.getItem("aoc.agent-detail.headerCompact") === "1" } catch { return false }
+  })
+  useEffect(() => {
+    try { localStorage.setItem("aoc.agent-detail.headerCompact", headerCompact ? "1" : "0") } catch {}
+  }, [headerCompact])
 
   // File explorer
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -4605,14 +4888,15 @@ export function AgentDetailPage() {
   // Active tab in Skills & Tools panel
   const [activeTab, setActiveTab] = useState<'skills' | 'tools' | 'custom-tools'>('skills')
   const [customToolsTotal, setCustomToolsTotal] = useState(0)
+  const canUseTerminal = useCanUseClaudeTerminal()
 
   // Sidebar collapse states
-  const [fileSidebarCollapsed, setFileSidebarCollapsed] = useState(false)
   const [skillSidebarCollapsed, setSkillSidebarCollapsed] = useState(false)
   const [collapsedSkillGroups, setCollapsedSkillGroups] = useState<Set<string>>(new Set())
 
   // Main body tab
   const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels' | 'connections' | 'schedules'>('files')
+  const [filesMode, setFilesMode] = useState<'curated' | 'browse'>('curated')
 
   // Live session monitoring
   const [viewingSession, setViewingSession] = useState<Session | null>(null)
@@ -4674,6 +4958,21 @@ export function AgentDetailPage() {
   }, [id])
 
   useEffect(() => { initialFileAutoSelected.current = false; loadDetail() }, [loadDetail])
+
+  // Load all bound channels for header chips (separate from detail.channel which is singular)
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    api.getAgentChannels(id).then(r => {
+      if (cancelled) return
+      const flat: { type: string; accountId: string }[] = []
+      for (const t of r.telegram || []) flat.push({ type: "telegram", accountId: t.accountId })
+      for (const w of r.whatsapp || []) flat.push({ type: "whatsapp", accountId: w.accountId })
+      for (const d of r.discord  || []) flat.push({ type: "discord",  accountId: d.accountId })
+      setHeaderChannels(flat)
+    }).catch(() => setHeaderChannels([]))
+    return () => { cancelled = true }
+  }, [id])
 
   // Detect if agent is currently processing.
   // Realtime signal from WS (processing_start/end) takes precedence over the
@@ -4822,6 +5121,63 @@ export function AgentDetailPage() {
         </div>
       ) : detail ? (
         <div className="flex flex-col flex-1 min-h-0">
+          {headerCompact ? (
+            /* ── Thin compact bar — reclaims ~150px vertical ── */
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-foreground/2 border border-border rounded-lg mb-2 shrink-0">
+              <button
+                onClick={() => navigate("/agents")}
+                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground/60 hover:text-foreground hover:bg-foreground/5 transition-colors shrink-0"
+                title="Back to Registry"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+              </button>
+              <AgentAvatar avatarPresetId={detail.profile?.avatarPresetId} emoji={detail.identity.emoji} size="w-5 h-5" />
+              <h2 className="text-xs font-display font-bold text-foreground truncate">{detail.identity.name}</h2>
+              <span className="text-[9px] font-mono text-muted-foreground/50 bg-foreground/5 px-1 py-px rounded border border-border shrink-0">
+                {detail.id.toUpperCase()}
+              </span>
+              <span className={cn(
+                "text-[9px] font-bold px-1.5 py-px rounded-full uppercase tracking-wider border shrink-0",
+                isProcessing
+                  ? "text-emerald-400 bg-emerald-500/15 border-emerald-500/20 animate-pulse"
+                  : "text-muted-foreground bg-foreground/5 border-foreground/10"
+              )}>
+                {isProcessing ? "LIVE" : detail.status}
+              </span>
+              {headerChannels.length > 0 && (
+                <span className="hidden md:flex items-center gap-1 shrink-0">
+                  {headerChannels.map((c, i) => (
+                    <span key={`${c.type}-${i}`} className="text-[9px] font-medium uppercase tracking-wide px-1.5 py-px rounded border border-foreground/10 text-muted-foreground/70 bg-foreground/2">
+                      {c.type}
+                    </span>
+                  ))}
+                </span>
+              )}
+              <span className="text-[10px] text-muted-foreground/50 truncate hidden lg:inline">
+                · {formatTokens(detail.stats.totalSessions)} sessions · {formatTokens(detail.stats.totalMessages)} msgs · ${detail.stats.totalCost.toFixed(2)}
+              </span>
+              <div className="ml-auto flex items-center gap-1 shrink-0">
+                <button
+                  onClick={handleTestChat}
+                  disabled={testingChat || !gatewayConnected}
+                  title={!gatewayConnected ? "Gateway offline" : "Test Chat"}
+                  className={cn(
+                    "w-6 h-6 rounded flex items-center justify-center transition-colors disabled:opacity-40",
+                    gatewayConnected ? "text-emerald-500 hover:bg-emerald-500/10" : "text-muted-foreground/40"
+                  )}
+                >
+                  {testingChat ? <Loader2 className="w-3 h-3 animate-spin" /> : <MessageSquarePlus className="w-3 h-3" />}
+                </button>
+                <button
+                  onClick={() => setHeaderCompact(false)}
+                  title="Expand header"
+                  className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/5 transition-colors"
+                >
+                  <Maximize2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ) : (<>
           {/* ── Back nav ── */}
           <button
             onClick={() => navigate("/agents")}
@@ -4855,10 +5211,18 @@ export function AgentDetailPage() {
                 <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground/60 min-w-0">
                   <Cpu className="w-2.5 h-2.5 shrink-0" />
                   <span className="font-mono text-primary/60 truncate">{detail.model}</span>
-                  {detail.channel && (
-                    <><span className="text-foreground/15">·</span>
-                    <Globe className="w-2.5 h-2.5 shrink-0" />
-                    <span className="truncate">{detail.channel.type}</span></>
+                  {headerChannels.length > 0 && (
+                    <>
+                      <span className="text-foreground/15">·</span>
+                      <Globe className="w-2.5 h-2.5 shrink-0" />
+                      <span className="flex items-center gap-1 truncate">
+                        {headerChannels.map((c, i) => (
+                          <span key={`${c.type}-${i}`} className="text-[9px] font-medium uppercase tracking-wide px-1 py-px rounded border border-foreground/10 bg-foreground/2 text-muted-foreground/80 shrink-0">
+                            {c.type}
+                          </span>
+                        ))}
+                      </span>
+                    </>
                   )}
                 </div>
               </div>
@@ -4886,6 +5250,10 @@ export function AgentDetailPage() {
                 <button onClick={loadDetail}
                   className="w-7 h-7 rounded-lg border border-foreground/10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
                   <RefreshCw className="w-3 h-3" />
+                </button>
+                <button onClick={() => setHeaderCompact(true)} title="Compact header (more vertical room)"
+                  className="w-7 h-7 rounded-lg border border-foreground/10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+                  <Minimize2 className="w-3 h-3" />
                 </button>
                 {canEdit && (
                   <button onClick={() => setShowDeleteModal(true)} title="Delete agent"
@@ -4933,6 +5301,7 @@ export function AgentDetailPage() {
               </button>
             )}
           </div>
+          </>)}
 
           {/* ── Body with tab navigation ── */}
           <div className="flex-1 min-h-0 flex flex-col bg-foreground/1 border border-border rounded-2xl overflow-hidden shadow-sm">
@@ -4974,35 +5343,41 @@ export function AgentDetailPage() {
             </div>
 
             {/* ═══ FILES TAB ═══ */}
-            {bodyTab === 'files' && (
+            {bodyTab === 'files' && id && (
               <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                <div className="hidden md:flex items-center gap-2 px-5 py-3 border-b border-border bg-foreground/2 shrink-0">
-                  {detail.workspace.hasCustomWorkspace && (
-                    <span className="text-[9px] font-bold text-amber-400 bg-amber-400/10 border border-amber-400/20 px-1.5 py-0.5 rounded uppercase tracking-wider">Custom Workspace</span>
-                  )}
-                  <button
-                    onClick={() => setFileSidebarCollapsed(c => !c)}
-                    title={fileSidebarCollapsed ? "Expand file list" : "Collapse file list"}
-                    className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
-                  >
-                    {fileSidebarCollapsed
-                      ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span>Expand</span></>
-                      : <><PanelLeftClose className="w-3.5 h-3.5" /><span>Collapse</span></>
-                    }
-                  </button>
+                {/* Mode toggle — Curated (8 .md) vs Browse (full workspace, read-only) */}
+                <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-foreground/2">
+                  <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5">
+                    <button
+                      onClick={() => setFilesMode('curated')}
+                      className={cn("px-2.5 py-0.5 rounded text-[11px] font-bold transition-all whitespace-nowrap",
+                        filesMode === 'curated' ? "bg-primary/20 text-primary border border-primary/30" : "text-muted-foreground hover:text-foreground")}
+                    >
+                      Curated
+                    </button>
+                    <button
+                      onClick={() => setFilesMode('browse')}
+                      className={cn("px-2.5 py-0.5 rounded text-[11px] font-bold transition-all whitespace-nowrap",
+                        filesMode === 'browse' ? "bg-sky-500/15 text-sky-400 border border-sky-500/30" : "text-muted-foreground hover:text-foreground")}
+                    >
+                      Browse
+                    </button>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground/40 italic hidden sm:inline truncate">
+                    {filesMode === 'curated' ? "Edit the 8 standard agent files" : "Read-only workspace file manager"}
+                  </span>
                 </div>
+
+                {filesMode === 'browse' ? (
+                  <WorkspaceBrowser agentId={id} />
+                ) : (
                 <div className="flex flex-1 min-h-0 overflow-hidden">
                   {/* File list
-                      Mobile: always render; hide when a file is selected (full-screen preview)
-                      Desktop: respect fileSidebarCollapsed; always show when file selected (both panels) */}
+                      Mobile: always render; hide when a file is selected (full-screen preview) */}
                   <div className={cn(
                     "border-r border-border shrink-0 py-1.5 overflow-y-auto",
-                    // Mobile: full-width; desktop: fixed sidebar width
                     "w-full md:w-52",
-                    // Mobile hide when viewing a file; desktop show unless collapsed
-                    selectedFile ? "hidden md:block" : "block",
-                    // Desktop collapse toggle (only applies at md+)
-                    fileSidebarCollapsed && "md:hidden"
+                    selectedFile ? "hidden md:block" : "block"
                   )}>
                       {WORKSPACE_FILES.map(file => {
                         const fileKey = file.replace(".md", "").toLowerCase()
@@ -5060,26 +5435,28 @@ export function AgentDetailPage() {
                     )}
                   </div>
                 </div>
+                )}
               </div>
             )}
 
             {/* ═══ SKILLS & TOOLS TAB ═══ */}
             {bodyTab === 'skills' && (
               <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                {/* Sub-tab bar — responsive two-row layout on mobile */}
-                <div className="flex flex-col gap-1.5 px-3 py-2 border-b border-border bg-foreground/2 shrink-0">
+                {/* Single-row toolbar — pills on left, contextual actions on right.
+                    Saves ~32px vertical compared to the old two-row layout. */}
+                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-foreground/2 shrink-0">
                   {/* Sub-tab pills */}
-                  <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5 overflow-x-auto scrollbar-none">
+                  <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5 overflow-x-auto scrollbar-none shrink-0">
                     <button
                       onClick={() => setActiveTab('skills')}
-                      className={cn("flex-1 sm:flex-none px-3 py-1 rounded text-[11px] font-bold transition-all whitespace-nowrap",
+                      className={cn("px-2.5 py-0.5 rounded text-[11px] font-bold transition-all whitespace-nowrap",
                         activeTab === 'skills' ? "bg-primary/20 text-primary border border-primary/30" : "text-muted-foreground hover:text-foreground")}
                     >
                       Skills <span className={cn("ml-1 text-[9px] px-1 py-px rounded", activeTab === 'skills' ? "bg-primary/20 text-primary" : "bg-foreground/5 text-muted-foreground")}>{skills.length}</span>
                     </button>
                     <button
                       onClick={() => setActiveTab('tools')}
-                      className={cn("flex-1 sm:flex-none px-3 py-1 rounded text-[11px] font-bold transition-all whitespace-nowrap",
+                      className={cn("px-2.5 py-0.5 rounded text-[11px] font-bold transition-all whitespace-nowrap",
                         activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-300 border border-violet-500/30" : "text-muted-foreground hover:text-foreground")}
                     >
                       Built-in <span className={cn("ml-1 text-[9px] px-1 py-px rounded", activeTab === 'tools' ? "bg-violet-500/15 text-violet-600 dark:text-violet-400" : "bg-foreground/5 text-muted-foreground")}>
@@ -5088,50 +5465,42 @@ export function AgentDetailPage() {
                     </button>
                     <button
                       onClick={() => setActiveTab('custom-tools')}
-                      className={cn("flex-1 sm:flex-none px-3 py-1 rounded text-[11px] font-bold transition-all whitespace-nowrap",
+                      className={cn("px-2.5 py-0.5 rounded text-[11px] font-bold transition-all whitespace-nowrap",
                         activeTab === 'custom-tools' ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : "text-muted-foreground hover:text-foreground")}
                     >
                       Custom {customToolsTotal > 0 && <span className={cn("ml-1 text-[9px] px-1 py-px rounded", activeTab === 'custom-tools' ? "bg-amber-500/20 text-amber-400" : "bg-foreground/5 text-muted-foreground")}>{customToolsTotal}</span>}
                     </button>
                   </div>
-                  {/* Action buttons row */}
-                  {activeTab === 'skills' && (
-                    <div className="flex items-center gap-1.5">
-                      <button onClick={() => setSkillSidebarCollapsed(c => !c)}
-                        className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-md border border-foreground/10 text-[10px] text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors">
-                        {skillSidebarCollapsed ? <><PanelLeftOpen className="w-3 h-3" /><span>Expand</span></> : <><PanelLeftClose className="w-3 h-3" /><span>Collapse</span></>}
-                      </button>
-                      <div className="ml-auto flex items-center gap-1.5">
-                        <button onClick={() => setShowInstallSkill(true)}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400 font-medium hover:bg-amber-500/20 transition-colors">
-                          <Download className="w-3 h-3" /> Install
-                        </button>
-                        <button onClick={() => setShowCreateSkill(true)}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 border border-primary/20 text-[11px] text-primary font-bold hover:bg-primary/20 transition-colors">
-                          <Plus className="w-3 h-3" /> New
-                        </button>
-                      </div>
-                    </div>
-                  )}
+
+                  {/* Inline note for tools tab */}
                   {activeTab === 'tools' && (
-                    <p className="text-[10px] text-muted-foreground/40 italic">Toggles write to tools.deny</p>
+                    <p className="text-[10px] text-muted-foreground/40 italic truncate hidden sm:block">Toggles write to tools.deny</p>
                   )}
-                  {activeTab === 'custom-tools' && (
-                    <div className="flex items-center gap-2">
+
+                  {/* Right-aligned action cluster — only on Skills sub-tab */}
+                  {activeTab === 'skills' && (
+                    <div className="ml-auto flex items-center gap-0.5 shrink-0">
                       <button
-                        onClick={async () => {
-                          try {
-                            await api.syncAgentTaskScript(id!)
-                            setSaveMsg("✓ Task script synced")
-                            setTimeout(() => setSaveMsg(""), 3000)
-                          } catch (e) {
-                            setSaveMsg(`❌ Sync failed`)
-                            setTimeout(() => setSaveMsg(""), 4000)
-                          }
-                        }}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400 font-medium hover:bg-amber-500/20 transition-colors"
+                        onClick={() => setSkillSidebarCollapsed(c => !c)}
+                        title={skillSidebarCollapsed ? "Expand skills list" : "Collapse skills list"}
+                        className="hidden md:flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-foreground/5 transition-colors"
                       >
-                        📋 Sync Task Script
+                        {skillSidebarCollapsed ? <PanelLeftOpen className="w-3.5 h-3.5" /> : <PanelLeftClose className="w-3.5 h-3.5" />}
+                      </button>
+                      <div className="w-px h-4 bg-border/40 mx-0.5 hidden md:block" />
+                      <button
+                        onClick={() => setShowInstallSkill(true)}
+                        title="Install from external source"
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-amber-400 font-medium hover:bg-amber-500/10 transition-colors"
+                      >
+                        <Download className="w-3 h-3" /> <span className="hidden sm:inline">Install</span>
+                      </button>
+                      <button
+                        onClick={() => setShowCreateSkill(true)}
+                        title="Create a new skill"
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-primary/15 border border-primary/25 text-[11px] text-primary font-bold hover:bg-primary/25 transition-colors"
+                      >
+                        <Plus className="w-3 h-3" /> <span className="hidden sm:inline">New</span>
                       </button>
                     </div>
                   )}
@@ -5139,10 +5508,23 @@ export function AgentDetailPage() {
 
                 {activeTab === 'skills' && (
                   <div className="flex flex-1 min-h-0 overflow-hidden">
+                    {/* Collapsed strip — click to expand the skill list */}
+                    {skillSidebarCollapsed && (
+                      <button
+                        onClick={() => setSkillSidebarCollapsed(false)}
+                        title="Expand skills list"
+                        className="w-7 shrink-0 border-r border-border bg-foreground/1 hidden md:flex flex-col items-center justify-center gap-2 hover:bg-foreground/4 transition-colors group"
+                      >
+                        <PanelLeftOpen className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-foreground" />
+                        <span className="text-[9px] font-bold tracking-widest text-muted-foreground/60 [writing-mode:vertical-rl] rotate-180 group-hover:text-foreground">
+                          SKILLS · {skills.length}
+                        </span>
+                      </button>
+                    )}
                     {/* Skills list — full-width on mobile, hide when skill selected */}
                     <div className={cn(
                       "border-r border-border shrink-0 py-1.5 overflow-y-auto",
-                      "w-full md:w-52",
+                      "w-full md:w-48",
                       // Mobile: hide when a skill is open (show detail full-screen)
                       selectedSkill ? "hidden md:block" : "block",
                       // Desktop: respect collapse toggle
@@ -5264,7 +5646,12 @@ export function AgentDetailPage() {
                 )}
 
                 {activeTab === 'custom-tools' && id && (
-                  <CustomToolsPanel agentId={id} onCountChange={setCustomToolsTotal} />
+                  <div className="flex flex-1 min-h-0 overflow-hidden">
+                    <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+                      <CustomToolsPanel agentId={id} onCountChange={setCustomToolsTotal} />
+                    </div>
+                    {canUseTerminal && <SkillsTerminal cwd="agent-scripts" agentId={id} />}
+                  </div>
                 )}
 
                 {activeTab === 'tools' && (

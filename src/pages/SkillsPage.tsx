@@ -1524,7 +1524,7 @@ export function SkillsPage() {
         )}
       </div>
 
-        {canUseTerminal && <SkillsTerminal />}
+        {canUseTerminal && <SkillsTerminal cwd={tab === "custom-tools" ? "scripts" : "skills"} />}
       </div>
     </div>
   )

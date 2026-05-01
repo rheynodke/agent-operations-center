@@ -5,7 +5,10 @@ import {
   Shield, Info, Wifi, BrainCircuit, Wrench, KeyRound,
   Code2, Save, RefreshCw, Eye, EyeOff, Plus, Trash2,
   CheckCircle2, AlertCircle, ChevronRight, Link2,
+  Wand2, Maximize2, Minimize2, Cpu,
 } from "lucide-react"
+import { BrowserHarnessCard } from "@/components/browser-harness/BrowserHarnessCard"
+import { JsonMonacoEditor } from "@/components/ui/JsonMonacoEditor"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,7 +17,7 @@ import { cn } from "@/lib/utils"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = "account" | "gateway" | "models" | "tools" | "env" | "raw"
+type Tab = "account" | "engine" | "gateway" | "models" | "tools" | "env" | "raw"
 
 interface SaveStatus { ok: boolean; message: string }
 
@@ -424,15 +427,36 @@ function RawTab({ config, configPath, onReload }: {
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState<SaveStatus | null>(null)
   const [parseError, setParseError] = useState<string | null>(null)
+  const [fullscreen, setFullscreen] = useState(false)
 
   // sync text when config reloads from outside
   useEffect(() => {
     setText(JSON.stringify(config, null, 2))
   }, [config])
 
+  // Esc to exit fullscreen
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false) }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [fullscreen])
+
   function handleChange(val: string) {
     setText(val)
     try { JSON.parse(val); setParseError(null) } catch (e) { setParseError(String(e)) }
+  }
+
+  function format() {
+    try {
+      const parsed = JSON.parse(text)
+      setText(JSON.stringify(parsed, null, 2))
+      setParseError(null)
+      setStatus({ ok: true, message: "Formatted" })
+      setTimeout(() => setStatus(null), 1500)
+    } catch (e) {
+      setStatus({ ok: false, message: `Cannot format: ${String(e)}` })
+    }
   }
 
   async function save() {
@@ -455,22 +479,71 @@ function RawTab({ config, configPath, onReload }: {
     }
   }
 
-  return (
-    <div>
-      <p className="text-xs text-muted-foreground mb-2 font-mono">{configPath}</p>
-      <textarea
-        value={text}
-        onChange={e => handleChange(e.target.value)}
-        rows={28}
-        spellCheck={false}
-        className={cn(
-          "w-full rounded-md border bg-background px-3 py-2 text-xs font-mono text-foreground resize-y focus:outline-none focus:ring-1",
-          parseError ? "border-destructive focus:ring-destructive" : "border-border focus:ring-primary"
-        )}
-      />
+  // Editor area — height follows viewport. In fullscreen the parent flex chain
+  // gives it the entire viewport (minus toolbar + savebar). In normal (inline)
+  // mode we use calc(100vh - <chrome>) so the editor stretches with the window
+  // but always leaves room for the dashboard header, tab nav, toolbar, save bar.
+  // 240px was measured against the current SettingsPage chrome; min 360px
+  // protects very short viewports (small laptops, split screens).
+  const editorBlock = (
+    <div className={cn(
+      "flex flex-col min-h-0",
+      fullscreen
+        ? "flex-1"
+        : "h-[calc(100vh-260px)] min-h-[360px]"
+    )}>
+      <div className={cn(
+        "flex-1 min-h-0 rounded-md border overflow-hidden",
+        parseError ? "border-destructive" : "border-border"
+      )}>
+        <JsonMonacoEditor
+          value={text}
+          onChange={handleChange}
+          onSave={save}
+          onFormat={format}
+        />
+      </div>
       {parseError && (
-        <p className="text-xs text-destructive mt-1 font-mono">{parseError}</p>
+        <p className="text-[11px] text-destructive mt-1 font-mono shrink-0 truncate" title={parseError}>
+          {parseError}
+        </p>
       )}
+    </div>
+  )
+
+  const toolbar = (
+    <div className="flex items-center gap-2 mb-2 shrink-0">
+      <p className="text-xs text-muted-foreground font-mono truncate flex-1">{configPath}</p>
+      <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={format} disabled={!!parseError}>
+        <Wand2 className="h-3 w-3 mr-1" /> Format
+      </Button>
+      <Button
+        variant="outline" size="sm" className="h-7 text-[11px]"
+        onClick={() => setFullscreen(v => !v)}
+        title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+      >
+        {fullscreen ? <Minimize2 className="h-3 w-3 mr-1" /> : <Maximize2 className="h-3 w-3 mr-1" />}
+        {fullscreen ? "Exit full screen" : "Full screen"}
+      </Button>
+    </div>
+  )
+
+  if (fullscreen) {
+    return (
+      <div className="fixed inset-0 z-[60] bg-background flex flex-col p-4">
+        {toolbar}
+        {editorBlock}
+        <div className="shrink-0 mt-2">
+          <SaveBar saving={saving} status={status} onSave={save} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col">
+      {toolbar}
+      {editorBlock}
       <SaveBar saving={saving} status={status} onSave={save} />
     </div>
   )
@@ -478,13 +551,14 @@ function RawTab({ config, configPath, onReload }: {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
-  { key: "account", label: "Account",  icon: <Shield className="h-4 w-4" /> },
-  { key: "gateway", label: "Gateway",  icon: <Wifi className="h-4 w-4" /> },
-  { key: "models",  label: "Models",   icon: <BrainCircuit className="h-4 w-4" /> },
-  { key: "tools",   label: "Tools",    icon: <Wrench className="h-4 w-4" /> },
-  { key: "env",     label: "Env Vars", icon: <KeyRound className="h-4 w-4" /> },
-  { key: "raw",     label: "Raw JSON", icon: <Code2 className="h-4 w-4" /> },
+const TABS: { key: Tab; label: string; icon: React.ReactNode; group?: string }[] = [
+  { key: "account", label: "Account",  icon: <Shield className="h-4 w-4" />,        group: "user" },
+  { key: "engine",  label: "Engine",   icon: <Cpu className="h-4 w-4" />,           group: "user" },
+  { key: "gateway", label: "Gateway",  icon: <Wifi className="h-4 w-4" />,          group: "config" },
+  { key: "models",  label: "Models",   icon: <BrainCircuit className="h-4 w-4" />,  group: "config" },
+  { key: "tools",   label: "Tools",    icon: <Wrench className="h-4 w-4" />,        group: "config" },
+  { key: "env",     label: "Env Vars", icon: <KeyRound className="h-4 w-4" />,      group: "config" },
+  { key: "raw",     label: "Raw JSON", icon: <Code2 className="h-4 w-4" />,         group: "config" },
 ]
 
 // ─── Agent Standards Card ─────────────────────────────────────────────────────
@@ -586,22 +660,33 @@ export function SettingsPage() {
     <div className="flex gap-6 animate-fade-in max-w-5xl">
       {/* Sidebar nav */}
       <nav className="shrink-0 w-44 flex flex-col gap-0.5 pt-0.5">
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={cn(
-              "flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors text-left",
-              tab === t.key
-                ? "bg-primary/10 text-primary font-medium"
-                : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-            )}
-          >
-            {t.icon}
-            {t.label}
-            {tab === t.key && <ChevronRight className="h-3.5 w-3.5 ml-auto" />}
-          </button>
-        ))}
+        {TABS.map((t, i) => {
+          const showDivider = i > 0 && t.group !== TABS[i - 1].group
+          return (
+            <div key={t.key}>
+              {showDivider && (
+                <div className="my-1.5 px-3">
+                  <div className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/40">
+                    openclaw.json
+                  </div>
+                </div>
+              )}
+              <button
+                onClick={() => setTab(t.key)}
+                className={cn(
+                  "w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors text-left",
+                  tab === t.key
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
+                )}
+              >
+                {t.icon}
+                {t.label}
+                {tab === t.key && <ChevronRight className="h-3.5 w-3.5 ml-auto" />}
+              </button>
+            </div>
+          )
+        })}
       </nav>
 
       {/* Content */}
@@ -637,11 +722,26 @@ export function SettingsPage() {
                 <p className="text-xs font-mono text-muted-foreground/60">v2.0.0 — Vite + React + Tailwind v4 + shadcn/ui</p>
               </CardContent>
             </Card>
-            <AgentStandardsCard />
           </div>
         )}
 
-        {tab !== "account" && (
+        {tab === "engine" && (
+          <div className="flex flex-col gap-4">
+            <div className="flex items-start gap-3 px-1">
+              <Cpu className="h-4 w-4 mt-0.5 text-primary shrink-0" />
+              <div className="flex flex-col gap-0.5">
+                <h2 className="text-sm font-semibold text-foreground">AOC Engine Features</h2>
+                <p className="text-xs text-muted-foreground">
+                  Built-in capabilities that AOC layers on top of OpenClaw — manage installation, updates, and global behavior here.
+                </p>
+              </div>
+            </div>
+            <AgentStandardsCard />
+            <BrowserHarnessCard />
+          </div>
+        )}
+
+        {tab !== "account" && tab !== "engine" && (
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">

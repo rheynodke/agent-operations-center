@@ -49,7 +49,16 @@ function getScriptMeta(dir, filename) {
 
 function saveScriptMeta(dir, filename, meta) {
   const all = readMeta(dir);
-  all[filename] = { name: meta.name || '', description: meta.description || '' };
+  const prev = all[filename] || {};
+  // Preserve provenance fields (source/capability) when callers only update user-facing fields.
+  const next = {
+    ...prev,
+    name: meta.name !== undefined ? meta.name : (prev.name || ''),
+    description: meta.description !== undefined ? meta.description : (prev.description || ''),
+  };
+  if (meta.source !== undefined) next.source = meta.source;
+  if (meta.capability !== undefined) next.capability = meta.capability;
+  all[filename] = next;
   writeMeta(dir, all);
   return all[filename];
 }
@@ -77,6 +86,8 @@ function scriptMeta(filename) {
     name:        filename,
     displayName: meta.name || '',
     description: meta.description || '',
+    source:      meta.source || 'user',
+    capability:  meta.capability || null,
     ext,
     emoji:       EXT_EMOJI[ext] || '📄',
     lang:        EXT_LANG[ext]  || 'text',
@@ -87,6 +98,103 @@ function scriptMeta(filename) {
     relPath:     `~/.openclaw/scripts/${filename}`,
     execHint:    buildExecHint(filename, ext),
   };
+}
+
+// ─── AOC built-in shared scripts manifest ────────────────────────────────────
+// These scripts are owned by AOC dashboard and auto-installed via ensure*Script
+// helpers. They should NOT appear in the user-facing Custom Tools list — they
+// activate automatically based on agent state (connections / tasks / skills).
+//
+// trigger:
+//   'always'           → injected for every agent
+//   'connection-type'  → injected when agent has a connection of `types`
+//   'skill'            → injected when agent has `skill` installed (enabled)
+const BUILTIN_SCRIPT_MANIFEST = {
+  // All AOC built-in capabilities are now packaged as skill bundles:
+  //   - aoc-connections     → ~/.openclaw/skills/aoc-connections/
+  //   - aoc-tasks           → ~/.openclaw/skills/aoc-tasks/
+  //   - browser-harness-odoo → ~/.openclaw/skills/browser-harness-odoo/
+  // The manifest is intentionally empty: agents get scripts via SKILL.md when
+  // the corresponding skill is enabled (which is automatic for built-ins).
+  // Kept as an empty object to preserve syncAgentBuiltins's API contract.
+};
+
+// Filenames of legacy flat scripts that have moved INTO their owning skill.
+// At startup we delete these from ~/.openclaw/scripts/ to avoid two copies of
+// the same script existing on disk. The skill bundle is now the source of truth.
+const LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS = [
+  // → browser-harness-odoo skill
+  'browser-harness-acquire.sh',
+  'browser-harness-release.sh',
+  'runbook-validate.sh',
+  'runbook-run.sh',
+  'runbook-list.sh',
+  'runbook-show.sh',
+  'runbook-publish.sh',
+  'runbook-history.sh',
+  'runbook-promote-selectors.sh',
+  'dom-snapshot.sh',
+  // → aoc-tasks skill
+  'update_task.sh',
+  'check_tasks.sh',
+  'fetch_attachment.sh',
+  'save_output.sh',
+  'post_comment.sh',
+  // → aoc-connections skill
+  'aoc-connect.sh',
+  'check_connections.sh',
+  'mcp-call.sh',
+  'gws-call.sh',
+];
+
+function purgeLegacyFlatScripts() {
+  let removed = 0;
+  const meta = readMeta(SCRIPTS_DIR);
+  let metaChanged = false;
+  for (const f of LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS) {
+    const p = path.join(SCRIPTS_DIR, f);
+    try {
+      if (fs.existsSync(p)) { fs.unlinkSync(p); removed++; }
+    } catch (e) {
+      console.warn(`[scripts] failed to remove legacy ${f}:`, e.message);
+    }
+    if (meta[f]) { delete meta[f]; metaChanged = true; }
+  }
+  if (metaChanged) writeMeta(SCRIPTS_DIR, meta);
+  if (removed > 0) console.log(`[scripts] removed ${removed} legacy flat scripts (now living inside skills)`);
+  return { removed };
+}
+
+function isBuiltinShared(filename) {
+  return Object.prototype.hasOwnProperty.call(BUILTIN_SCRIPT_MANIFEST, filename);
+}
+
+/** Stamp source/capability metadata for known built-in scripts. Idempotent.
+ *  Run at startup once. Only touches scripts in BUILTIN_SCRIPT_MANIFEST —
+ *  user-authored scripts are left untouched (default source='user'). */
+function stampBuiltinSharedMeta() {
+  ensureDir();
+  const all = readMeta(SCRIPTS_DIR);
+  let touched = 0;
+  for (const [filename, info] of Object.entries(BUILTIN_SCRIPT_MANIFEST)) {
+    const filePath = path.join(SCRIPTS_DIR, filename);
+    if (!fs.existsSync(filePath)) continue;
+    const prev = all[filename] || {};
+    if (prev.source === 'aoc-builtin' && prev.capability === info.capability) continue;
+    all[filename] = {
+      ...prev,
+      name: prev.name || '',
+      description: prev.description || '',
+      source: 'aoc-builtin',
+      capability: info.capability,
+    };
+    touched++;
+  }
+  if (touched > 0) {
+    writeMeta(SCRIPTS_DIR, all);
+    console.log(`[scripts] stamped ${touched} built-in scripts with source/capability metadata`);
+  }
+  return { touched };
 }
 
 function buildExecHint(filename, ext) {
@@ -298,17 +406,23 @@ function buildToolBlock(s) {
   return lines.join('\n');
 }
 
-/** Returns both shared (~/.openclaw/scripts) and agent-specific scripts with enabled status */
-function listAgentCustomTools(agentId, getAgentFileFn) {
+/** Returns both shared (~/.openclaw/scripts) and agent-specific scripts with enabled status.
+ *  By default, AOC built-in shared scripts (source='aoc-builtin') are filtered out —
+ *  they activate automatically based on agent state (connections / tasks / skills),
+ *  not via this UI. Pass { includeBuiltin: true } to include them (admin/debug). */
+function listAgentCustomTools(agentId, getAgentFileFn, opts = {}) {
+  const includeBuiltin = !!opts.includeBuiltin;
   let toolsMd = '';
   try { toolsMd = getAgentFileFn(agentId, 'TOOLS.md').content || ''; } catch {}
 
   // Shared scripts — read-only preview, toggle to assign
-  const shared = listScripts().map((s) => ({
-    ...s,
-    scope: 'shared',
-    enabled: toolsMd.includes(MARKER_START(s.name)),
-  }));
+  const shared = listScripts()
+    .filter((s) => includeBuiltin || s.source !== 'aoc-builtin')
+    .map((s) => ({
+      ...s,
+      scope: 'shared',
+      enabled: toolsMd.includes(MARKER_START(s.name)),
+    }));
 
   // Agent-specific scripts — full CRUD, always shown, toggle to enable
   const agentSpecific = listAgentScripts(agentId).map((s) => ({
@@ -406,25 +520,10 @@ curl -sf -X PATCH "$AOC_URL/api/tasks/$TASK_ID" \\
   -d "$PAYLOAD"
 `;
 
-function ensureUpdateTaskScript() {
-  ensureDir(); // ensures SCRIPTS_DIR exists
-  const scriptPath = path.join(SCRIPTS_DIR, UPDATE_TASK_SCRIPT_NAME);
-  if (fs.existsSync(scriptPath)) return; // idempotent
-
-  fs.writeFileSync(scriptPath, UPDATE_TASK_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-
-  // Write metadata to .tools.json
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[UPDATE_TASK_SCRIPT_NAME] = {
-    name: 'update_task',
-    emoji: '📋',
-    description: 'Report task progress to AOC Board. Usage: update_task.sh <taskId> <status> [note] [sessionId] [inputTokens] [outputTokens]',
-    execHint: `${SCRIPTS_DIR}/update_task.sh <taskId> <status> [note] [sessionId] [inputTokens] [outputTokens]`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-
-  console.log('[scripts] Created shared update_task.sh script');
-}
+// Task scripts now live in the aoc-tasks skill bundle (see
+// server/lib/aoc-tasks/installer.cjs). These ensure*Script functions are
+// kept as no-ops for backward compatibility with existing call sites.
+function ensureUpdateTaskScript() { /* moved to aoc-tasks skill */ }
 
 const CHECK_TASKS_SCRIPT_NAME = 'check_tasks.sh';
 const CHECK_TASKS_SCRIPT_CONTENT = `#!/usr/bin/env bash
@@ -455,39 +554,26 @@ for t in sorted(tasks, key=lambda t: order.get(t.get('priority', 'medium'), 2)):
 "
 `;
 
-function ensureCheckTasksScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, CHECK_TASKS_SCRIPT_NAME);
-  if (fs.existsSync(scriptPath)) return; // idempotent
-
-  fs.writeFileSync(scriptPath, CHECK_TASKS_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[CHECK_TASKS_SCRIPT_NAME] = {
-    name: 'check_tasks',
-    emoji: '🔍',
-    description: 'List todo tasks assigned to this agent, sorted by priority. Called via HEARTBEAT.md.',
-    execHint: `${SCRIPTS_DIR}/check_tasks.sh`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-
-  console.log('[scripts] Created shared check_tasks.sh script');
-}
+function ensureCheckTasksScript() { /* moved to aoc-tasks skill */ }
 
 const HEARTBEAT_BLOCK_START = '<!-- aoc-task-check -->';
 const HEARTBEAT_BLOCK_END   = '<!-- /aoc-task-check -->';
 const HEARTBEAT_BLOCK_CONTENT = `${HEARTBEAT_BLOCK_START}
 ## Autonomous Task Check
 
-Check if you have tasks assigned to you:
+Check if you have tasks assigned to you. The heartbeat runs without your
+shell PATH being set up, so use absolute paths:
 
-1. Run: \`bash ~/.openclaw/scripts/check_tasks.sh\`
+1. Run: \`bash ~/.openclaw/skills/aoc-tasks/scripts/check_tasks.sh\`
 2. If tasks are listed, pick the **highest priority** task (shown first) and start working on it immediately
 3. You may work on **multiple tasks in parallel** — do not wait for current tasks to finish
 4. For each task you start, immediately run:
-   \`update_task.sh <taskId> in_progress "Starting work"\`
-5. When done: \`update_task.sh <taskId> done "Summary of what was done"\`
-6. If blocked: \`update_task.sh <taskId> blocked "Specific reason"\`
+   \`bash ~/.openclaw/skills/aoc-tasks/scripts/update_task.sh <taskId> in_progress "Starting work"\`
+5. When done: \`bash ~/.openclaw/skills/aoc-tasks/scripts/update_task.sh <taskId> done "Summary of what was done"\`
+6. If blocked: \`bash ~/.openclaw/skills/aoc-tasks/scripts/update_task.sh <taskId> blocked "Specific reason"\`
+
+After this check, your subsequent work can use the bare names (the
+\`aoc-tasks\` skill SKILL.md instructs you to put its scripts/ on PATH).
 ${HEARTBEAT_BLOCK_END}`;
 
 function injectHeartbeatTaskCheck(agentId, workspacePath) {
@@ -654,23 +740,7 @@ for c in conns:
 PYEOF
 `;
 
-function ensureCheckConnectionsScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, CHECK_CONNECTIONS_SCRIPT_NAME);
-
-  // Always overwrite to keep script up to date
-  fs.writeFileSync(scriptPath, CHECK_CONNECTIONS_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[CHECK_CONNECTIONS_SCRIPT_NAME] = {
-    name: 'check_connections',
-    emoji: '🔌',
-    description: 'List available third-party connections (BigQuery, PostgreSQL, SSH, Website, GitHub, Odoo) assigned to this agent. Usage: check_connections.sh [type]',
-    execHint: `${SCRIPTS_DIR}/check_connections.sh [bigquery|postgres|ssh|website|github|odoocli]`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-  console.log('[scripts] Ensured shared check_connections.sh script');
-}
+function ensureCheckConnectionsScript() { /* moved to aoc-connections skill */ }
 
 // ── gws-call.sh ─────────────────────────────────────────────────────────────
 
@@ -805,20 +875,7 @@ sys.exit(r.returncode)
 PYEOF
 `;
 
-function ensureGwsCallScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, GWS_CALL_SCRIPT_NAME);
-  fs.writeFileSync(scriptPath, GWS_CALL_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[GWS_CALL_SCRIPT_NAME] = {
-    name: 'gws-call',
-    emoji: '📄',
-    description: 'Call Google Workspace APIs via an assigned google_workspace connection. Usage: gws-call.sh <connection-id> <service> <method> [json-body]',
-    execHint: `${SCRIPTS_DIR}/gws-call.sh <connection-id> <service> <method> [json-body]`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-  console.log('[scripts] Ensured shared gws-call.sh script');
-}
+function ensureGwsCallScript() { /* moved to aoc-connections skill */ }
 
 // ── fetch_attachment.sh — Download task attachments for agent consumption ──
 
@@ -899,20 +956,7 @@ case "\$LOWER" in
 esac
 `;
 
-function ensureFetchAttachmentScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, FETCH_ATTACHMENT_SCRIPT_NAME);
-  fs.writeFileSync(scriptPath, FETCH_ATTACHMENT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[FETCH_ATTACHMENT_SCRIPT_NAME] = {
-    name: 'fetch_attachment',
-    emoji: '📎',
-    description: 'Download a task attachment (AOC-served or external URL) into ./inputs/. Auto-extracts .zip and converts .docx to plain text. Usage: fetch_attachment.sh <url> [output_dir]',
-    execHint: `${SCRIPTS_DIR}/fetch_attachment.sh <url> [output_dir]`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-  console.log('[scripts] Ensured shared fetch_attachment.sh script');
-}
+function ensureFetchAttachmentScript() { /* moved to aoc-tasks skill */ }
 
 // ── save_output.sh — Register a deliverable for a task ──────────────────────
 
@@ -1006,20 +1050,7 @@ fi
 echo "$DEST"
 `;
 
-function ensureSaveOutputScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, SAVE_OUTPUT_SCRIPT_NAME);
-  fs.writeFileSync(scriptPath, SAVE_OUTPUT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[SAVE_OUTPUT_SCRIPT_NAME] = {
-    name: 'save_output',
-    emoji: '📤',
-    description: 'Save an agent deliverable into the task output folder ({workspace}/outputs/{taskId}/). Updates MANIFEST.json. Usage: save_output.sh <task_id> <source|-> <filename> [--description "..."]',
-    execHint: `${SCRIPTS_DIR}/save_output.sh <task_id> <source|-> <filename> [--description "..."]`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-  console.log('[scripts] Ensured shared save_output.sh script');
-}
+function ensureSaveOutputScript() { /* moved to aoc-tasks skill */ }
 
 // ── post_comment.sh — Post a message to a task's comment thread ─────────────
 
@@ -1078,20 +1109,7 @@ RES="$(curl -sf -X POST "$AOC_URL/api/tasks/$TASK_ID/comments" \\
 echo "$RES" | python3 -c "import json,sys; print(json.load(sys.stdin)['comment']['id'])"
 `;
 
-function ensurePostCommentScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, POST_COMMENT_SCRIPT_NAME);
-  fs.writeFileSync(scriptPath, POST_COMMENT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[POST_COMMENT_SCRIPT_NAME] = {
-    name: 'post_comment',
-    emoji: '💬',
-    description: 'Post a free-form comment to a task thread without changing status. Usage: post_comment.sh <task_id> <message|->',
-    execHint: `${SCRIPTS_DIR}/post_comment.sh <task_id> <message|->`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-  console.log('[scripts] Ensured shared post_comment.sh script');
-}
+function ensurePostCommentScript() { /* moved to aoc-tasks skill */ }
 
 // ── aoc-connect.sh — Generic connection wrapper ─────────────────────────────
 
@@ -1605,23 +1623,7 @@ echo "  odoocli:  <odoocli subcommand> (auth, record, model, method, debug, modu
 exit 1
 `;
 
-function ensureAocConnectScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, AOC_CONNECT_SCRIPT_NAME);
-
-  // Always overwrite to keep script up to date
-  fs.writeFileSync(scriptPath, AOC_CONNECT_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[AOC_CONNECT_SCRIPT_NAME] = {
-    name: 'aoc_connect',
-    emoji: '🔗',
-    description: 'Generic connection wrapper — query databases, execute SSH commands, browse websites, access GitHub repos. Credentials never appear in stdout. Usage: aoc-connect.sh <connection-name> <action> [args]',
-    execHint: `${SCRIPTS_DIR}/aoc-connect.sh <connection-name> <action> [args...]`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-  console.log('[scripts] Ensured shared aoc-connect.sh script');
-}
+function ensureAocConnectScript() { /* moved to aoc-connections skill */ }
 
 // ── mcp-call.sh — Thin client for AOC's MCP proxy ───────────────────────────
 
@@ -1693,20 +1695,7 @@ else
 fi
 `;
 
-function ensureMcpCallScript() {
-  ensureDir();
-  const scriptPath = path.join(SCRIPTS_DIR, MCP_CALL_SCRIPT_NAME);
-  fs.writeFileSync(scriptPath, MCP_CALL_SCRIPT_CONTENT, { mode: 0o755, encoding: 'utf-8' });
-  const meta = readMeta(SCRIPTS_DIR);
-  meta[MCP_CALL_SCRIPT_NAME] = {
-    name: 'mcp_call',
-    emoji: '🧩',
-    description: 'Invoke tools on MCP (Model Context Protocol) servers registered as connections. Credentials are handled server-side. Usage: mcp-call.sh <connection-name> <tool> [json-args]',
-    execHint: `${SCRIPTS_DIR}/mcp-call.sh <connection-name> <tool-name|--list-tools> [json-args]`,
-  };
-  writeMeta(SCRIPTS_DIR, meta);
-  console.log('[scripts] Ensured shared mcp-call.sh script');
-}
+function ensureMcpCallScript() { /* moved to aoc-connections skill */ }
 
 // ── Shared ADLC Scripts ──────────────────────────────────────────────────────
 
@@ -1934,6 +1923,60 @@ function syncAgentConnectionsContext(agentId, connections, getAgentFileFn, saveA
   saveAgentFileFn(agentId, 'TOOLS.md', updated);
 }
 
+// ─── Agent built-in script auto-injection ────────────────────────────────────
+//
+// Reconciles which AOC built-in scripts should be active in the agent's
+// TOOLS.md based on its current state (assigned connections, enabled skills).
+// Replaces the old pattern of per-script manual toggles for built-ins.
+//
+// Inputs:
+//   agentId        — id of the agent
+//   ctx.connections — array of connection objects assigned to agent (each has .type)
+//   ctx.skills     — array of enabled skill names (strings) for the agent
+//   getAgentFileFn — (id, filename) => { content }
+//   saveAgentFileFn — (id, filename, content) => void
+//
+// Idempotent. Toggles each built-in on/off via the existing custom-tool block
+// machinery so descriptions stay current.
+function syncAgentBuiltins(agentId, ctx, getAgentFileFn, saveAgentFileFn) {
+  const connectionTypes = new Set((ctx?.connections || []).map(c => c?.type).filter(Boolean));
+  const enabledSkills   = new Set(ctx?.skills || []);
+
+  // Clean up custom-tool blocks for scripts that no longer live as flat shared
+  // scripts (they migrated into a skill folder). The skill's SKILL.md teaches
+  // the agent about them now, so the TOOLS.md block is just stale noise.
+  for (const stale of LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS) {
+    try {
+      toggleAgentCustomTool(agentId, stale, false, 'shared', getAgentFileFn, saveAgentFileFn);
+    } catch {}
+  }
+
+  for (const [filename, info] of Object.entries(BUILTIN_SCRIPT_MANIFEST)) {
+    let shouldEnable = false;
+    if (info.trigger === 'always') {
+      shouldEnable = true;
+    } else if (info.trigger === 'connection-type') {
+      shouldEnable = (info.types || []).some(t => connectionTypes.has(t));
+    } else if (info.trigger === 'skill') {
+      shouldEnable = enabledSkills.has(info.skill);
+    }
+
+    try {
+      // Force re-inject when enabled so descriptions stay fresh.
+      toggleAgentCustomTool(agentId, filename, false, 'shared', getAgentFileFn, saveAgentFileFn);
+      if (shouldEnable) {
+        toggleAgentCustomTool(agentId, filename, true, 'shared', getAgentFileFn, saveAgentFileFn);
+      }
+    } catch (e) {
+      // Built-in script may not be installed yet (e.g. browser-uat slot before
+      // bundle install). Silently skip — next sync after install will pick up.
+      if (e?.status !== 404) {
+        console.warn(`[builtins] sync ${agentId}/${filename}:`, e.message);
+      }
+    }
+  }
+}
+
 module.exports = {
   // Shared scripts (~/.openclaw/scripts)
   listScripts, getScript, saveScript, deleteScript, renameScript, updateScriptMeta,
@@ -1957,5 +2000,21 @@ module.exports = {
   ensureSharedAdlcScripts,
   // Connection context injector
   syncAgentConnectionsContext,
+  // Built-in stamping + auto-injection
+  stampBuiltinSharedMeta,
+  syncAgentBuiltins,
+  isBuiltinShared,
+  purgeLegacyFlatScripts,
+  BUILTIN_SCRIPT_MANIFEST,
+  // Script content constants (consumed by skill bundles)
+  UPDATE_TASK_SCRIPT_CONTENT,
+  CHECK_TASKS_SCRIPT_CONTENT,
+  FETCH_ATTACHMENT_SCRIPT_CONTENT,
+  SAVE_OUTPUT_SCRIPT_CONTENT,
+  POST_COMMENT_SCRIPT_CONTENT,
+  AOC_CONNECT_SCRIPT_CONTENT,
+  CHECK_CONNECTIONS_SCRIPT_CONTENT,
+  MCP_CALL_SCRIPT_CONTENT,
+  GWS_CALL_SCRIPT_CONTENT,
   SCRIPTS_DIR, ALLOWED_EXT,
 };

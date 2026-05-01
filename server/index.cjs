@@ -921,6 +921,79 @@ app.put('/api/agents/:id/files/:filename', db.authMiddleware, db.requireAgentOwn
   }
 });
 
+// ─── Agent Workspace Browser (read-only file manager) ───────────────────────
+// List immediate children of a directory inside the agent's workspace.
+// Path-traversal guarded; symlinks refused. See server/lib/workspace-browser.cjs.
+app.get('/api/agents/:id/workspace/tree', db.authMiddleware, (req, res) => {
+  try {
+    const rel = String(req.query.path || '');
+    const result = parsers.workspaceBrowser.tree(req.params.id, rel);
+    res.json(result);
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('[api/workspace/tree]', err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// Auth wrapper that also accepts ?token=... so <img src> / <a href> can authenticate
+// (browsers can't attach Authorization headers to native asset requests).
+function authMiddlewareWithQueryToken(req, res, next) {
+  if (req.headers.authorization) return db.authMiddleware(req, res, next);
+  const t = req.query.token;
+  if (t) {
+    req.headers.authorization = `Bearer ${t}`;
+    return db.authMiddleware(req, res, next);
+  }
+  return res.status(401).json({ error: 'Missing token' });
+}
+
+// Read a file inside the agent's workspace.
+//   - text files (.md/.json/.sh/...) under 5 MB → JSON { mode: 'text', content, ... }
+//   - everything else (or oversize text) → streamed with proper Content-Type
+//     so <img src=...> works directly and the user can download.
+app.get('/api/agents/:id/workspace/file', authMiddlewareWithQueryToken, (req, res) => {
+  try {
+    const rel = String(req.query.path || '');
+    if (!rel) return res.status(400).json({ error: 'path query param required' });
+    const wantStream = req.query.stream === '1';
+    const meta = parsers.workspaceBrowser.readFileMeta(req.params.id, rel);
+
+    // For binaries (or when client explicitly asks for stream), pipe the file.
+    if (wantStream || meta.mode !== 'text') {
+      if (meta.size > meta.binaryCap) return res.status(413).json({ error: 'File too large to stream' });
+      res.setHeader('Content-Type', meta.contentType);
+      res.setHeader('Content-Length', String(meta.size));
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      // For non-image binary, suggest download with original filename
+      if (!meta.isImage && req.query.download === '1') {
+        res.setHeader('Content-Disposition', `attachment; filename="${require('path').basename(rel)}"`);
+      }
+      require('fs').createReadStream(meta.filePath).pipe(res);
+      return;
+    }
+
+    // Small text → JSON
+    if (meta.size > meta.textCap) {
+      return res.json({
+        mode: 'text', oversize: true,
+        size: meta.size, mtime: meta.mtime, ext: meta.ext, contentType: meta.contentType,
+        content: null,
+      });
+    }
+    const content = require('fs').readFileSync(meta.filePath, 'utf-8');
+    res.json({
+      mode: 'text', oversize: false,
+      size: meta.size, mtime: meta.mtime, ext: meta.ext, contentType: meta.contentType,
+      content,
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('[api/workspace/file]', err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
 // ─── Agent Profile (SQLite) ──────────────────────────────────────────────────
 
 // Get agent profile (dashboard-specific metadata)
@@ -1032,6 +1105,7 @@ app.post('/api/agents/:id/skills', db.authMiddleware, db.requireAgentOwnership, 
     if (!content) return res.status(400).json({ error: 'content is required' });
     const result = parsers.createSkill(req.params.id, name, scope || 'workspace', content);
     console.log(`[api/agents/skills] Created skill "${name}" (scope: ${scope || 'workspace'}) for agent "${req.params.id}"`);
+    syncBuiltinsForAgent(req.params.id);
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[api/agents/skills/create]', err);
@@ -1047,6 +1121,7 @@ app.patch('/api/agents/:id/skills/:name/toggle', db.authMiddleware, db.requireAg
     if (enabled === undefined) return res.status(400).json({ error: 'enabled is required' });
     const result = parsers.toggleAgentSkill(req.params.id, req.params.name, !!enabled);
     console.log(`[api/agents/skills] Toggled skill "${req.params.name}" for agent "${req.params.id}" => enabled: ${enabled}`);
+    syncBuiltinsForAgent(req.params.id);
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[api/agents/skills/toggle]', err);
@@ -1060,6 +1135,7 @@ app.delete('/api/agents/:id/skills/:name', db.authMiddleware, db.requireAgentOwn
   try {
     const result = parsers.deleteAgentSkill(req.params.id, req.params.name);
     console.log(`[api/agents/skills] Deleted skill "${req.params.name}" for agent "${req.params.id}"`);
+    syncBuiltinsForAgent(req.params.id);
     res.json(result);
   } catch (err) {
     console.error('[api/agents/skills/delete]', err);
@@ -1384,6 +1460,127 @@ app.delete('/api/agents/:id/discord/guilds/:guildId', db.authMiddleware, db.requ
   }
 });
 
+// ─── Browser Harness (Layer 1 core) ──────────────────────────────────────────
+//
+// Built-in skill that bundles browser-use/browser-harness and manages a pool
+// of real Chrome instances on the AOC host. Admin-only mutations.
+
+// GET /api/browser-harness/status — install + Chrome detection + pool snapshot
+app.get('/api/browser-harness/status', db.authMiddleware, (req, res) => {
+  try {
+    const installer = parsers.browserHarnessInstaller;
+    const launcher = parsers.browserHarnessLauncher;
+    const pool = parsers.browserHarnessPool;
+    res.json({
+      install: installer.status(),
+      chromePath: launcher.detectChromePath(),
+      slots: pool.snapshot(),
+    });
+  } catch (err) {
+    console.error('[browser-harness/status]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/browser-harness/install — clone or update upstream (admin)
+// body: { commit?: string, force?: boolean }
+app.post('/api/browser-harness/install', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    const { commit, force } = req.body || {};
+    const result = parsers.browserHarnessInstaller.installCore({ commit, force: !!force });
+    res.json(result);
+  } catch (err) {
+    console.error('[browser-harness/install]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/browser-harness/boot — boot a Chrome slot (admin)
+// body: { slotId?: number } — defaults to 1
+app.post('/api/browser-harness/boot', db.authMiddleware, db.requireAdmin, async (req, res) => {
+  try {
+    const slotId = Number(req.body?.slotId || 1);
+    const result = await parsers.browserHarnessPool.boot(slotId);
+    res.json({ ok: true, slot: result });
+  } catch (err) {
+    console.error('[browser-harness/boot]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/browser-harness/odoo/status — Layer 2 install state + module list
+app.get('/api/browser-harness/odoo/status', db.authMiddleware, (req, res) => {
+  try {
+    res.json(parsers.browserHarnessOdoo.status());
+  } catch (err) {
+    console.error('[browser-harness/odoo/status]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/browser-harness/odoo/install — re-write bundled files (admin)
+// body: { force?: boolean } — force=true overwrites user-edited files
+app.post('/api/browser-harness/odoo/install', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    const result = parsers.browserHarnessOdoo.install({ force: !!req.body?.force });
+    // Re-sync built-in scripts for all agents — runbook-* scripts may have just
+    // become available, so agents with browser-harness-odoo skill enabled need them injected.
+    syncBuiltinsForAllAgents();
+    res.json(result);
+  } catch (err) {
+    console.error('[browser-harness/odoo/install]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/browser-harness/acquire — agent-facing slot acquisition.
+// Auto-boots Chrome if slot is down. Authenticated only (not admin) — agents
+// authenticate via service token. body: { agentId?: string, slotId?: number }
+app.post('/api/browser-harness/acquire', db.authMiddleware, async (req, res) => {
+  try {
+    // slotId omitted → pool finds the best available slot (idle preferred,
+    // then down). slotId=0 also means "any".
+    const requested = Number(req.body?.slotId || 0);
+    const slotId = requested > 0 ? requested : null;
+    const agentId = String(req.body?.agentId || req.user?.username || 'unknown');
+    const result = await parsers.browserHarnessPool.acquire(slotId, agentId);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[browser-harness/acquire]', err);
+    res.status(503).json({ error: err.message });
+  }
+});
+
+// POST /api/browser-harness/release — release a slot back to the pool
+// body: { slotId?: number }
+app.post('/api/browser-harness/release', db.authMiddleware, (req, res) => {
+  try {
+    const slotId = Number(req.body?.slotId || 1);
+    const released = parsers.browserHarnessPool.release(slotId);
+    res.json({ ok: true, slotId, released });
+  } catch (err) {
+    console.error('[browser-harness/release]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/browser-harness/stop — stop a slot (admin)
+// body: { slotId?: number } — defaults to 1; pass slotId=0 (or all=true) for all slots
+app.post('/api/browser-harness/stop', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    if (req.body?.all) {
+      parsers.browserHarnessPool.stopAll();
+      return res.json({ ok: true, stopped: 'all' });
+    }
+    const slotId = Number(req.body?.slotId || 1);
+    parsers.browserHarnessPool.stop(slotId);
+    res.json({ ok: true, slotId });
+  } catch (err) {
+    console.error('[browser-harness/stop]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── ClawHub Skill Install ────────────────────────────────────────────────────
 
 const skillsInstall = require('./lib/skills-install.cjs');
@@ -1640,6 +1837,20 @@ app.post('/api/role-templates', db.authMiddleware, (req, res) => {
   } catch (err) {
     console.error('[api/role-templates][POST]', err.message);
     res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code, details: err.details });
+  }
+});
+
+// POST /api/role-templates/refresh-builtins — re-seed built-in templates
+// from server/data/role-templates-seed.json, overwriting existing built-in
+// rows. User templates are untouched. Admin only.
+app.post('/api/role-templates/refresh-builtins', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    const result = parsers.refreshBuiltInRoleTemplates();
+    console.log('[api/role-templates/refresh-builtins]', result);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/role-templates/refresh-builtins]', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -4219,6 +4430,8 @@ app.put('/api/agents/:id/connections', db.authMiddleware, db.requireAgentOwnersh
     } catch (e) {
       console.warn(`[connections] Failed to sync context for ${req.params.id}:`, e.message);
     }
+    // Reconcile built-in scripts (mcp-call/gws-call appear/disappear with connection types)
+    syncBuiltinsForAgent(req.params.id);
     res.json({ ok: true, connectionIds });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -4317,6 +4530,55 @@ app.get('/api/agent/connections', db.authMiddleware, (req, res) => {
     });
     res.json({ connections: result });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/agent/connections/by-name/:name/credentials?agentId=...
+// Returns normalized credentials for one assigned connection. Used by
+// browser-harness-odoo (and similar skills) so the agent doesn't have to
+// parse the full /api/agent/connections payload. Only website/odoocli are
+// supported for now — those are what login flows need.
+app.get('/api/agent/connections/by-name/:name/credentials', db.authMiddleware, (req, res) => {
+  try {
+    const agentId = req.query.agentId;
+    if (!agentId) return res.status(400).json({ error: 'agentId query param required' });
+    const name = decodeURIComponent(req.params.name || '');
+    if (!name) return res.status(400).json({ error: 'connection name required' });
+
+    const conns = db.getAgentConnectionsRaw(agentId);
+    const c = conns.find(x => x.name === name);
+    if (!c) return res.status(404).json({ error: `Connection "${name}" not assigned to agent ${agentId}` });
+
+    const meta = c.metadata || {};
+    let payload;
+    if (c.type === 'website') {
+      payload = {
+        type: 'website',
+        url: meta.url || null,
+        loginUrl: meta.loginUrl ? `${(meta.url || '').replace(/\/$/, '')}${meta.loginUrl}` : null,
+        username: meta.authUsername || null,
+        password: meta.authType !== 'none' ? (c.credentials || null) : null,
+      };
+    } else if (c.type === 'odoocli') {
+      payload = {
+        type: 'odoocli',
+        url: meta.odooUrl || null,
+        db: meta.odooDb || null,
+        username: meta.odooUsername || null,
+        password: c.credentials || null,
+        authType: meta.odooAuthType || 'password',
+      };
+    } else {
+      return res.status(400).json({ error: `Connection type "${c.type}" does not support credential fetch (only website, odoocli)` });
+    }
+
+    // Lightweight audit log
+    console.log(`[credentials/by-name] agent=${agentId} conn=${name} type=${c.type} user=${req.user?.username || 'service'}`);
+
+    res.json(payload);
+  } catch (err) {
+    console.error('[agent/connections/by-name]', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -5519,6 +5781,46 @@ function syncConnectionsScriptForAllAgents() {
   }
 }
 
+// ─── AOC built-in scripts auto-injection ─────────────────────────────────────
+// Reconciles agent's TOOLS.md with the AOC built-in script manifest based on
+// current connections + enabled skills. Replaces per-script manual toggles for
+// all aoc-builtin-source scripts. See server/lib/scripts.cjs:BUILTIN_SCRIPT_MANIFEST.
+function syncBuiltinsForAgent(agentId) {
+  try {
+    const allConns = db.getAllConnections();
+    const assignedIds = db.getAgentConnectionIds(agentId);
+    const connections = allConns.filter(c => assignedIds.includes(c.id));
+
+    let skills = [];
+    try {
+      skills = parsers.getAgentSkills(agentId)
+        .filter(s => s.enabled)
+        .map(s => s.name)
+        .concat(parsers.getAgentSkills(agentId).filter(s => s.enabled).map(s => s.slug).filter(Boolean));
+    } catch {}
+
+    parsers.syncAgentBuiltins(
+      agentId,
+      { connections, skills },
+      parsers.getAgentFile,
+      parsers.saveAgentFile,
+    );
+  } catch (err) {
+    console.warn(`[builtins] syncBuiltinsForAgent(${agentId}):`, err.message);
+  }
+}
+
+function syncBuiltinsForAllAgents() {
+  try {
+    parsers.stampBuiltinSharedMeta();
+    const agents = parsers.parseAgentRegistry();
+    for (const agent of agents) syncBuiltinsForAgent(agent.id);
+    console.log(`[builtins] reconciled built-in scripts for ${agents.length} agent(s)`);
+  } catch (err) {
+    console.warn('[builtins] syncBuiltinsForAllAgents failed:', err.message);
+  }
+}
+
 function syncHeartbeatForAllAgents() {
   try {
     parsers.ensureCheckTasksScript();
@@ -5612,11 +5914,35 @@ async function start() {
   parsers.ensureAocEnvFile();   // write ~/.openclaw/.aoc_env with current token
   syncTaskScriptForAllAgents(); // non-blocking, fire-and-forget
   syncConnectionsScriptForAllAgents(); // ensure check_connections.sh is available
+  syncBuiltinsForAllAgents();   // stamp + reconcile built-in scripts for every agent
   ensureHeartbeatConfig();      // backfill heartbeat: {} in openclaw.json for all agents
   syncHeartbeatForAllAgents();  // inject HEARTBEAT task check into all agent workspaces
 
   // Ensure all agents have skills: [] field in openclaw.json
   try { parsers.ensureAgentSkillsFields(); } catch (e) { console.warn('[startup] ensureAgentSkillsFields failed:', e.message); }
+
+  // browser-harness Layer 1 (core): clone upstream + start pool GC
+  try {
+    parsers.browserHarnessInstaller.installCoreSafe();
+    parsers.browserHarnessPool.startIdleGc();
+  } catch (e) { console.warn('[startup] browser-harness core init failed:', e.message); }
+  // browser-harness Layer 2 (Odoo): write bundled skill files
+  try { parsers.browserHarnessOdoo.installSafe(); }
+  catch (e) { console.warn('[startup] browser-harness odoo init failed:', e.message); }
+  // aoc-tasks built-in skill: install bundle + auto-enable for every agent.
+  try {
+    parsers.aocTasksSkill.installSafe();
+    parsers.aocTasksSkill.ensureSkillEnabledForAllAgents();
+  } catch (e) { console.warn('[startup] aoc-tasks skill init failed:', e.message); }
+  // aoc-connections built-in skill: install bundle + auto-enable for every agent.
+  try {
+    parsers.aocConnectionsSkill.installSafe();
+    parsers.aocConnectionsSkill.ensureSkillEnabledForAllAgents();
+  } catch (e) { console.warn('[startup] aoc-connections skill init failed:', e.message); }
+  // After all skill bundles install, purge legacy flat copies of skill scripts
+  // (they live inside the skill folder now). Idempotent.
+  try { parsers.purgeLegacyFlatScripts(); }
+  catch (e) { console.warn('[startup] purgeLegacyFlatScripts failed:', e.message); }
 
   // Connect to OpenClaw Gateway for real-time chat
   gatewayProxy.connect();

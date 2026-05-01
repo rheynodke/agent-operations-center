@@ -111,7 +111,7 @@ export function Sidebar() {
         {/* Logo & App Name */}
         <div
           className={cn(
-            "flex items-center mb-8 transition-all duration-200",
+            "flex items-center mb-4 lg:mb-6 shrink-0 transition-all duration-200",
             sidebarCollapsed ? "md:justify-center md:px-0 gap-3 px-2" : "gap-3 px-2"
           )}
         >
@@ -129,8 +129,8 @@ export function Sidebar() {
           )}
         </div>
 
-        {/* Nav */}
-        <nav className="flex flex-col gap-0.5 flex-1">
+        {/* Nav — scrollable so all items reach when viewport is short (e.g. 768px) */}
+        <nav className="flex flex-col gap-0.5 flex-1 min-h-0 overflow-y-auto">
           {navGroups.map((group, gi) => (
             <div key={gi} className={cn("flex flex-col gap-0.5", gi > 0 && "mt-3")}>
               {group.label && !sidebarCollapsed && (

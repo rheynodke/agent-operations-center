@@ -14,15 +14,54 @@ try {
 }
 
 const wss = new WebSocketServer({ noServer: true });
-const SKILLS_DIR = path.join(OPENCLAW_HOME, 'skills');
+const SKILLS_DIR  = path.join(OPENCLAW_HOME, 'skills');
+const SCRIPTS_DIR = path.join(OPENCLAW_HOME, 'scripts');
 
-function ensureSkillsDir() {
-  try { fs.mkdirSync(SKILLS_DIR, { recursive: true }); } catch {}
+// Allowlist of cwd targets. Clients pass a short token; server resolves it
+// to a vetted absolute path. No raw paths from the client.
+const CWD_TARGETS = {
+  skills:  SKILLS_DIR,
+  scripts: SCRIPTS_DIR,
+};
+
+function ensureDirs() {
+  for (const p of Object.values(CWD_TARGETS)) {
+    try { fs.mkdirSync(p, { recursive: true }); } catch {}
+  }
+}
+
+// Resolve agent-scripts:<id> → {agentWorkspace}/scripts/. Server-side lookup
+// against openclaw.json so the client never passes raw paths.
+function resolveAgentScriptsDir(agentId) {
+  if (!agentId || !/^[a-z0-9_-]+$/i.test(agentId)) return null;
+  try {
+    const cfgPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    const agent = (cfg.agents?.list || []).find(a => a.id === agentId);
+    if (!agent) return null;
+    const ws = agent.workspace || cfg.agents?.defaults?.workspace;
+    if (!ws) return null;
+    const expanded = ws.replace(/^~/, process.env.HOME || '~');
+    const dir = path.join(expanded, 'scripts');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
+function resolveCwd(token, agentId) {
+  if (token === 'agent-scripts') {
+    return resolveAgentScriptsDir(agentId) || SKILLS_DIR;
+  }
+  return CWD_TARGETS[token] || SKILLS_DIR;
 }
 
 function handleUpgrade(request, socket, head, db) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const token = url.searchParams.get('token');
+  const cwdToken = url.searchParams.get('cwd') || 'skills';
+  const agentId  = url.searchParams.get('agentId') || null;
 
   const claims = token && db.verifyToken(token);
   if (!claims) {
@@ -45,7 +84,7 @@ function handleUpgrade(request, socket, head, db) {
   }
 
   wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request, claims);
+    wss.emit('connection', ws, request, { ...claims, cwdToken, agentId });
   });
 }
 
@@ -61,7 +100,8 @@ wss.on('connection', (ws, _request, claims) => {
     return;
   }
 
-  ensureSkillsDir();
+  ensureDirs();
+  const cwd = resolveCwd(claims.cwdToken, claims.agentId);
 
   // Resolve claude binary: explicit override → desktop bundle (newest) → package installs.
   // CLAUDE_CODE_EXECPATH is set by the Claude Code desktop app and points to its
@@ -127,7 +167,7 @@ wss.on('connection', (ws, _request, claims) => {
       name: 'xterm-256color',
       cols: 100,
       rows: 30,
-      cwd: SKILLS_DIR,
+      cwd,
       env: spawnEnv,
     });
   } catch (err) {
@@ -138,7 +178,7 @@ wss.on('connection', (ws, _request, claims) => {
     return;
   }
 
-  console.log(`[terminal] pty spawned pid=${term.pid} bin=${claudeBin} user=${claims.username} cwd=${SKILLS_DIR}`);
+  console.log(`[terminal] pty spawned pid=${term.pid} bin=${claudeBin} user=${claims.username} cwd=${cwd}`);
 
   term.onData((data) => {
     if (ws.readyState === ws.OPEN) {
@@ -170,4 +210,4 @@ wss.on('connection', (ws, _request, claims) => {
   ws.on('error', () => { try { term.kill(); } catch {} });
 });
 
-module.exports = { handleUpgrade, SKILLS_DIR };
+module.exports = { handleUpgrade, SKILLS_DIR, SCRIPTS_DIR, CWD_TARGETS };
