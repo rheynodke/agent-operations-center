@@ -75,7 +75,7 @@ function rolesAvailable(agents: Agent[]): RoleInventoryEntry[] {
     .map(([roleId, count]) => ({ roleId, count }))
     .sort((a, b) => {
       const order: AdlcRoleId[] = [
-        "biz-analyst", "pm-analyst", "ux-designer", "em-architect",
+        "biz-analyst", "pm-discovery", "ux-designer", "em-architect",
         "swe", "qa-engineer", "doc-writer", "data-analyst",
       ]
       return order.indexOf(a.roleId) - order.indexOf(b.roleId)

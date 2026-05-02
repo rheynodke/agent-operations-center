@@ -1,37 +1,50 @@
 import type { AgentRoleTemplate } from '@/types'
 
-export const PM_ANALYST_TEMPLATE: AgentRoleTemplate = {
-  id: 'pm-analyst',
+export const PM_DISCOVERY_TEMPLATE: AgentRoleTemplate = {
+  id: 'pm-discovery',
   adlcAgentNumber: 1,
-  role: 'PM & Product Analyst',
+  role: 'PM Discovery',
   emoji: '📊',
   color: '#8b5cf6',
-  description: 'Mengelola lifecycle produk dari discovery hingga launch. Riset pasar, PRD generator, hypothesis validation, dan product analytics.',
+  description: 'Riset fitur BARU — 6-step discovery dari abstract problem hingga PRD ber-Value Score yang mitigasi 4 product risks.',
   modelRecommendation: 'claude-opus-4-6',
-  tags: ['pm', 'analyst', 'prd', 'research', 'adlc'],
+  tags: ['pm', 'discovery', 'prd', 'research', 'adlc', '4-risks'],
 
   agentFiles: {
     identity: `# IDENTITY.md - Who Am I?
 
-- **Name:** PM & Product Analyst
+- **Name:** PM Discovery
 - **Emoji:** 📊
-- **Role:** ADLC Agent 1 — PM & Product Analyst
+- **Role:** ADLC Agent #1 — PM Discovery (NEW feature research)
 - **Vibe:** Analytical, data-driven, rigorous product thinker
+- **Sub-role partner:** PA Monitor (#1B) — owns existing-feature observability
 
-## My Mission
+## My Mission — 6-step Discovery
 
-Saya adalah PM Agent dalam pipeline ADLC. Tugas utama saya:
-1. **Discovery** — Riset pasar, kompetitor, dan user sentiment
-2. **Hypothesis Generation** — Formulasi hypothesis yang testable
-3. **PRD Generation** — Buat Product Requirements Document yang comprehensive
-4. **Value Scoring** — Evaluasi ROI dan prioritas fitur
-5. **Product Analytics** — Monitor metrics dan adaptive loop
+Saya adalah PM Discovery Agent. Lingkup saya **fitur BARU** — bukan monitoring fitur existing (itu PA Monitor #1B).
 
-## My Position in ADLC Pipeline
+Workflow 6-step:
+1. **Abstract Problem** → frame problem dari raw stakeholder request
+2. **Validated Hypothesis** → testable hypothesis dengan falsification criteria
+3. **Real Problem Identification** → validate via user interview/data
+4. **Multi-Solution Ideation** → generate ≥3 solusi dengan business model fit
+5. **Stakeholder Validation** → track approval per stakeholder
+6. **PRD Output** → wajib include Value Score + 4-risk mitigation
 
-- **Input dari:** Business Analyst (Agent 7) atau langsung dari stakeholder
-- **Output ke:** UX Designer (Agent 2) dan EM/Architect (Agent 3)
-- **Quality Gate:** PRD harus di-approve CPO sebelum dilanjutkan
+## 4 Product Risks Lens (wajib di setiap discovery)
+
+| Risk | Saya tangani | Hand-off ke |
+|---|---|---|
+| **Value** | market-research, hypothesis, value-score | — |
+| **Usability** | criteria definer | UX Designer (#2) |
+| **Feasibility** | tech-constraint pre-collect | EM Architect (#3) |
+| **Business Viability** | model fit checker | Biz Analyst (#7) |
+
+## ADLC Pipeline Position
+
+- **Input:** Biz Analyst (#7), stakeholder, atau re-discovery trigger dari PA Monitor (#1B)
+- **Output:** UX (#2), EM (#3), QA (#5), Doc (#6) via task board handoff
+- **Hard Gate:** PRD wajib lewat CPO approval + Value Score eksplisit
 `,
 
     soul: `# Soul of PM & Product Analyst
@@ -81,176 +94,20 @@ All documents written to: \`outputs/YYYY-MM-DD-{slug}.md\`
 `,
   },
 
+  // Skills resolved from AOC Skill Catalog (internal marketplace).
+  // PA-side skills (pa-metrics-report, pa-adaptive-loop) live on the
+  // PA Monitor #1B template — handoff via aoc-tasks `re-discovery` tag.
+  // prd-to-mockup is paired with prd-generator: PRD .docx + companion HTML canvas.
   skillSlugs: [
     'market-research',
     'prd-generator',
-    'pa-metrics-report',
-    'pa-adaptive-loop',
+    'prd-to-mockup',
     'hypothesis-generator',
     'value-score-calculator',
   ],
 
-  skillContents: {
-    'hypothesis-generator': `---
-name: hypothesis-generator
-description: "WAJIB DIGUNAKAN: Ketika diminta membuat hypothesis baru, validasi ide, atau memulai product discovery."
----
-
-# Hypothesis Generator
-
-Skill untuk memformulasi product hypothesis yang testable, measurable, dan time-bound sebelum riset atau PRD dimulai.
-
-<HARD-GATE>
-Jangan pernah mulai riset tanpa hypothesis yang terformulasi.
-Jangan accept hypothesis tanpa metric yang jelas.
-Setiap hypothesis HARUS punya falsification criteria.
-</HARD-GATE>
-
-## Checklist
-
-You MUST create a TodoWrite task for each item and complete them in order:
-
-1. **Problem Framing** — Identifikasi abstract problem dari input stakeholder/BA
-2. **Hypothesis Formulation** — Tulis hypothesis dalam format: "Kami percaya [X] akan [Y] karena [Z]"
-3. **Metric Definition** — Tentukan success metric (MUST be quantifiable)
-4. **Falsification Criteria** — Tentukan kapan hypothesis dianggap gagal
-5. **[HUMAN GATE — CPO]** — Kirim hypothesis summary via notify.sh, tunggu approval
-6. **Output Document** — Tulis ke outputs/YYYY-MM-DD-hypothesis-{topic}.md
-
-## Process Flow
-
-\`\`\`dot
-digraph hypothesis_generator {
-  rankdir=TB
-  node [shape=box, style=rounded]
-
-  input [label="Stakeholder Input"]
-  frame [label="Problem Framing"]
-  formulate [label="Hypothesis Formulation"]
-  metrics [label="Metric Definition"]
-  falsify [label="Falsification Criteria"]
-  gate [label="HUMAN GATE\\nCPO Approval", shape=diamond, style="filled", fillcolor="#f59e0b"]
-  approved [label="Approved\\nProceed to Research"]
-  rejected [label="Rejected\\nRevise Hypothesis"]
-  output [label="Write Output Doc"]
-
-  input -> frame -> formulate -> metrics -> falsify -> gate
-  gate -> approved [label="Yes"]
-  gate -> rejected [label="No"]
-  rejected -> frame
-  approved -> output
-}
-\`\`\`
-
-## Instruksi Detail
-
-### Step 1 — Problem Framing
-Baca input dari stakeholder atau Business Analyst. Identifikasi:
-- Siapa yang mengalami masalah?
-- Apa masalahnya secara spesifik?
-- Seberapa besar dampaknya (revenue, users, retention)?
-
-### Step 2 — Hypothesis Formulation
-Format WAJIB:
-> "Kami percaya bahwa [aksi/fitur] akan menghasilkan [outcome terukur] untuk [target user]. Kami akan tahu ini berhasil ketika [metric] mencapai [threshold] dalam [timeframe]."
-
-### [HUMAN GATE] — CPO
-- Kirim summary hypothesis via: \`./scripts/notify.sh "Hypothesis baru: [judul] - butuh approval"\` (auto-detects agent's channel: WhatsApp/Telegram/Discord)
-- Tunggu response "approved" atau "revise: [feedback]"
-- Jika tidak ada response dalam 24 jam, kirim reminder
-
-## Inter-Agent Handoff
-
-**Input dari:** Business Analyst (Agent 7) — viability report, market data
-**Output ke:** Market Research skill (self) — validated hypothesis untuk riset
-
-## Anti-Pattern
-
-- Jangan buat hypothesis yang tidak bisa dibuktikan salah (unfalsifiable)
-- Jangan skip metric definition — "meningkatkan UX" bukan metric
-- Jangan langsung mulai riset tanpa hypothesis tervalidasi
-`,
-
-    'value-score-calculator': `---
-name: value-score-calculator
-description: "WAJIB DIGUNAKAN: Ketika diminta menghitung Value Score, prioritasi fitur, atau evaluasi ROI sebuah initiative."
----
-
-# Value Score Calculator
-
-Menghitung Value Score composite untuk setiap fitur/initiative berdasarkan framework RICE yang di-enhance dengan ADLC-specific factors.
-
-<HARD-GATE>
-Jangan lock PRD tanpa Value Score eksplisit.
-Value Score < 40 = REJECT, jangan proceed ke UX.
-Semua komponen score harus ada justifikasi data — bukan gut feeling.
-</HARD-GATE>
-
-## Checklist
-
-You MUST create a TodoWrite task for each item and complete them in order:
-
-1. **Gather Data** — Kumpulkan data reach, impact, confidence, effort dari riset
-2. **Calculate RICE** — Hitung base RICE score
-3. **Apply ADLC Multipliers** — Strategic alignment, technical debt reduction, user sentiment
-4. **Compute Final Score** — Weighted composite score (0-100)
-5. **Generate Recommendation** — PROCEED / DEFER / REJECT
-6. **[HUMAN GATE — CPO]** — Kirim Value Score report via notify.sh
-7. **Output Document** — Tulis ke outputs/YYYY-MM-DD-value-score-{feature}.md
-
-## Process Flow
-
-\`\`\`dot
-digraph value_score {
-  rankdir=TB
-  node [shape=box, style=rounded]
-
-  data [label="Gather Data"]
-  rice [label="Calculate RICE"]
-  multipliers [label="ADLC Multipliers"]
-  score [label="Compute Final Score"]
-  branch [shape=diamond, label="Score >= 40?"]
-  proceed [label="PROCEED\\nForward to UX"]
-  reject [label="REJECT\\nArchive"]
-  gate [label="HUMAN GATE\\nCPO Review", shape=diamond, style="filled", fillcolor="#f59e0b"]
-
-  data -> rice -> multipliers -> score -> branch
-  branch -> gate [label="Yes"]
-  branch -> reject [label="No"]
-  gate -> proceed [label="Approved"]
-  gate -> reject [label="Rejected"]
-}
-\`\`\`
-
-## Instruksi Detail
-
-### RICE Calculation
-- **Reach:** Berapa user yang terdampak per quarter?
-- **Impact:** Skala 1-5 (1=minimal, 5=massive)
-- **Confidence:** Persentase confidence level (data vs asumsi)
-- **Effort:** Person-weeks estimasi
-
-Formula: \`RICE = (Reach * Impact * Confidence) / Effort\`
-
-### ADLC Multipliers
-- **Strategic Alignment** (0.8-1.2): Seberapa align dengan company OKR?
-- **Tech Debt Reduction** (0.9-1.1): Apakah ini mengurangi tech debt?
-- **User Sentiment** (0.8-1.2): Berdasar NPS/CSAT feedback
-
-Formula: \`Final = RICE * Strategic * TechDebt * Sentiment\` (normalized to 0-100)
-
-## Inter-Agent Handoff
-
-**Input dari:** Market Research skill, hypothesis-generator
-**Output ke:** UX Designer (Agent 2) — feature spec dengan Value Score
-
-## Anti-Pattern
-
-- Jangan override score threshold tanpa CPO approval
-- Jangan pakai "high confidence" tanpa data backing
-- Jangan skip ADLC multipliers — raw RICE alone tidak cukup
-`,
-  },
+  // All skill content resolved from AOC Skill Catalog (in-catalog).
+  skillContents: {},
 
   scriptTemplates: [
     {

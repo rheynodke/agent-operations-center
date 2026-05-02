@@ -563,6 +563,117 @@ const TABS: { key: Tab; label: string; icon: React.ReactNode; group?: string }[]
 
 // ─── Agent Standards Card ─────────────────────────────────────────────────────
 
+function SeedRefreshCard() {
+  type Result = { kind: "catalog" | "templates"; count: number; ids?: string[] } | null
+  const [busy, setBusy] = useState<"catalog" | "templates" | "both" | null>(null)
+  const [result, setResult] = useState<Result>(null)
+  const [error, setError] = useState("")
+
+  async function refreshCatalog() {
+    setBusy("catalog"); setResult(null); setError("")
+    try {
+      const r = await api.refreshCatalogSeed()
+      setResult({ kind: "catalog", count: r.refreshed })
+    } catch (err) {
+      setError((err as Error).message)
+    } finally { setBusy(null) }
+  }
+
+  async function refreshTemplates() {
+    setBusy("templates"); setResult(null); setError("")
+    try {
+      const r = await api.refreshRoleTemplatesSeed()
+      setResult({ kind: "templates", count: r.refreshed, ids: r.ids })
+    } catch (err) {
+      setError((err as Error).message)
+    } finally { setBusy(null) }
+  }
+
+  async function refreshBoth() {
+    setBusy("both"); setResult(null); setError("")
+    try {
+      const cat = await api.refreshCatalogSeed()
+      const tpl = await api.refreshRoleTemplatesSeed()
+      setResult({ kind: "templates", count: cat.refreshed + tpl.refreshed, ids: tpl.ids })
+    } catch (err) {
+      setError((err as Error).message)
+    } finally { setBusy(null) }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <RefreshCw className="h-4 w-4 text-violet-400" />
+          Seed Refresh
+        </CardTitle>
+        <CardDescription className="text-xs">
+          Reload built-in seed data from disk JSON without restarting the server. Use this after a code update or
+          after I (Claude) modify <span className="font-mono">server/data/*-seed.json</span>.
+          Seed entries (origin: <span className="font-mono">seed</span>) are overwritten;
+          user-authored rows are untouched.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs text-muted-foreground space-y-1.5">
+          <p>
+            <span className="font-mono font-medium text-foreground/80">Skill Catalog</span> —
+            reloads <span className="font-mono">skill-catalog-seed.json</span> ({" "}
+            <span className="font-mono">~/.openclaw/skills/</span> on disk is NOT modified — only DB rows).
+          </p>
+          <p>
+            <span className="font-mono font-medium text-foreground/80">Role Templates</span> —
+            reloads <span className="font-mono">role-templates-seed.json</span>; user forks are preserved.
+          </p>
+        </div>
+        {result && (
+          <div className="text-xs text-violet-400/90">
+            ✓ Refreshed {result.count} {result.kind === "catalog" ? "skill catalog entries" : "row(s)"}
+            {result.ids && result.ids.length > 0 && (
+              <span className="text-muted-foreground/70"> · {result.ids.join(", ")}</span>
+            )}
+          </div>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={refreshCatalog}
+            disabled={busy !== null}
+            className="border-violet-500/30 text-violet-400 hover:bg-violet-500/10 hover:border-violet-500/50"
+          >
+            {busy === "catalog"
+              ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Refreshing…</>
+              : <><RefreshCw className="h-3.5 w-3.5 mr-1.5" />Refresh Skill Catalog</>}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={refreshTemplates}
+            disabled={busy !== null}
+            className="border-violet-500/30 text-violet-400 hover:bg-violet-500/10 hover:border-violet-500/50"
+          >
+            {busy === "templates"
+              ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Refreshing…</>
+              : <><RefreshCw className="h-3.5 w-3.5 mr-1.5" />Refresh Role Templates</>}
+          </Button>
+          <Button
+            size="sm"
+            onClick={refreshBoth}
+            disabled={busy !== null}
+            className="bg-violet-500/15 hover:bg-violet-500/25 text-violet-300 border border-violet-500/40"
+          >
+            {busy === "both"
+              ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Refreshing both…</>
+              : <><RefreshCw className="h-3.5 w-3.5 mr-1.5" />Refresh Both</>}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function AgentStandardsCard() {
   const [applying, setApplying] = useState(false)
   const [results, setResults] = useState<Array<{ agentId: string; status: string }> | null>(null)
@@ -736,6 +847,7 @@ export function SettingsPage() {
                 </p>
               </div>
             </div>
+            <SeedRefreshCard />
             <AgentStandardsCard />
             <BrowserHarnessCard />
           </div>

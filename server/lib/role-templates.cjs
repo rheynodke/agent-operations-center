@@ -33,6 +33,8 @@ function rowToTemplate(row) {
   return {
     id:                 row.id,
     adlcAgentNumber:    row.adlc_number,
+    adlcAgentSuffix:    row.adlc_suffix || null,
+    subRoleOf:          row.sub_role_of || null,
     role:               row.role,
     emoji:              row.emoji || null,
     color:              row.color || null,
@@ -72,6 +74,8 @@ function templateToParams(t, { origin = 'user', builtIn = false } = {}) {
     t.fsWorkspaceOnly ? 1 : 0,
     origin,
     builtIn ? 1 : 0,
+    t.adlcAgentSuffix ?? null,
+    t.subRoleOf ?? null,
   ];
 }
 
@@ -86,11 +90,14 @@ function listTemplates() {
   const res = d.exec(`
     SELECT id, adlc_number, role, emoji, color, description, model, tags,
            agent_files, skill_refs, skill_contents, script_refs,
-           fs_workspace_only, origin, built_in, created_at, updated_at
+           fs_workspace_only, origin, built_in, created_at, updated_at,
+           adlc_suffix, sub_role_of
     FROM role_templates
     ORDER BY
       CASE WHEN adlc_number IS NULL THEN 1 ELSE 0 END,
       adlc_number ASC,
+      CASE WHEN adlc_suffix IS NULL OR adlc_suffix = '' THEN 0 ELSE 1 END,
+      adlc_suffix ASC,
       created_at ASC
   `);
   if (!res.length) return [];
@@ -108,7 +115,8 @@ function getTemplate(id) {
   const stmt = d.prepare(`
     SELECT id, adlc_number, role, emoji, color, description, model, tags,
            agent_files, skill_refs, skill_contents, script_refs,
-           fs_workspace_only, origin, built_in, created_at, updated_at
+           fs_workspace_only, origin, built_in, created_at, updated_at,
+           adlc_suffix, sub_role_of
     FROM role_templates WHERE id = ?
   `);
   stmt.bind([id]);
@@ -220,8 +228,8 @@ function seedIfEmpty() {
     INSERT OR IGNORE INTO role_templates (
       id, adlc_number, role, emoji, color, description, model, tags,
       agent_files, skill_refs, skill_contents, script_refs,
-      fs_workspace_only, origin, built_in
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      fs_workspace_only, origin, built_in, adlc_suffix, sub_role_of
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let count = 0;
   for (const t of seeds) {
@@ -257,8 +265,8 @@ function refreshBuiltInsFromSeed() {
     INSERT OR REPLACE INTO role_templates (
       id, adlc_number, role, emoji, color, description, model, tags,
       agent_files, skill_refs, skill_contents, script_refs,
-      fs_workspace_only, origin, built_in
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      fs_workspace_only, origin, built_in, adlc_suffix, sub_role_of
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let count = 0;
   const ids = [];
@@ -361,8 +369,8 @@ function createTemplate(data) {
     INSERT INTO role_templates (
       id, adlc_number, role, emoji, color, description, model, tags,
       agent_files, skill_refs, skill_contents, script_refs,
-      fs_workspace_only, origin, built_in
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      fs_workspace_only, origin, built_in, adlc_suffix, sub_role_of
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(templateToParams(data, { origin: data.origin || 'user', builtIn: false }));
   stmt.free();
@@ -400,7 +408,8 @@ function updateTemplate(id, patch) {
   const merged = { ...existing };
   for (const key of [
     'role', 'emoji', 'color', 'description', 'modelRecommendation',
-    'adlcAgentNumber', 'tags', 'agentFiles', 'skillSlugs', 'skillContents',
+    'adlcAgentNumber', 'adlcAgentSuffix', 'subRoleOf',
+    'tags', 'agentFiles', 'skillSlugs', 'skillContents',
     'scriptTemplates', 'fsWorkspaceOnly',
   ]) {
     if (patch[key] !== undefined) merged[key] = patch[key];
@@ -411,6 +420,7 @@ function updateTemplate(id, patch) {
       adlc_number = ?, role = ?, emoji = ?, color = ?, description = ?,
       model = ?, tags = ?, agent_files = ?, skill_refs = ?, skill_contents = ?,
       script_refs = ?, fs_workspace_only = ?,
+      adlc_suffix = ?, sub_role_of = ?,
       updated_at = datetime('now')
     WHERE id = ?
   `);
@@ -427,6 +437,8 @@ function updateTemplate(id, patch) {
     JSON.stringify(merged.skillContents ?? {}),
     JSON.stringify(merged.scriptTemplates ?? []),
     merged.fsWorkspaceOnly ? 1 : 0,
+    merged.adlcAgentSuffix ?? null,
+    merged.subRoleOf ?? null,
     id,
   ]);
   stmt.free();
@@ -517,8 +529,8 @@ function forkTemplate(sourceId, newId, overrides = {}) {
     INSERT INTO role_templates (
       id, adlc_number, role, emoji, color, description, model, tags,
       agent_files, skill_refs, skill_contents, script_refs,
-      fs_workspace_only, origin, built_in
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      fs_workspace_only, origin, built_in, adlc_suffix, sub_role_of
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(templateToParams(copy, { origin: `forked:${sourceId}`, builtIn: false }));
   stmt.free();

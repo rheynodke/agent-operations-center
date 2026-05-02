@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react"
 import {
   Search, Loader2, RefreshCw, Package, Sparkles, Wrench,
   FileText, Tag, Hash, ChevronRight, ChevronDown, FolderOpen,
@@ -49,6 +49,7 @@ function colorStyle(hex: string | null): React.CSSProperties {
 function TemplateCard({
   t, selected, onSelect,
 }: { t: RoleTemplateSummary; selected: boolean; onSelect: () => void }) {
+  const isSubRole = !!t.subRoleOf
   return (
     <button
       onClick={onSelect}
@@ -57,8 +58,23 @@ function TemplateCard({
         selected
           ? "border-primary/40 bg-primary/8"
           : "border-border bg-card/50 hover:bg-card hover:border-foreground/15",
+        // Sub-role: indent + connector visual
+        isSubRole && "ml-5 relative",
       )}
     >
+      {/* Sub-role connector — vertical line + horizontal stub */}
+      {isSubRole && (
+        <>
+          <span
+            aria-hidden
+            className="absolute -left-3 top-0 bottom-1/2 w-px bg-border/60"
+          />
+          <span
+            aria-hidden
+            className="absolute -left-3 top-1/2 w-3 h-px bg-border/60"
+          />
+        </>
+      )}
       {/* Color strip */}
       <div
         className="w-1 self-stretch rounded-full shrink-0"
@@ -75,7 +91,12 @@ function TemplateCard({
               className="text-[9px] font-mono font-bold px-1 py-px rounded border"
               style={colorStyle(t.color)}
             >
-              #{t.adlcAgentNumber}
+              #{t.adlcAgentNumber}{t.adlcAgentSuffix || ""}
+            </span>
+          )}
+          {isSubRole && (
+            <span className="text-[9px] font-mono px-1 py-px rounded bg-muted/30 text-muted-foreground/70" title={`Sub-role of ${t.subRoleOf}`}>
+              sub
             </span>
           )}
         </div>
@@ -132,7 +153,12 @@ function MetadataPanel({ t }: { t: RoleTemplateRecord }) {
   const rows: Array<[string, React.ReactNode]> = [
     ["ID", <code className="font-mono text-[11px] text-foreground/80">{t.id}</code>],
     ["Role", t.role],
-    ["ADLC #", t.adlcAgentNumber ?? <span className="text-muted-foreground/40">—</span>],
+    ["ADLC #", t.adlcAgentNumber != null
+      ? <span className="font-mono">#{t.adlcAgentNumber}{t.adlcAgentSuffix || ""}</span>
+      : <span className="text-muted-foreground/40">—</span>],
+    ...(t.subRoleOf
+      ? [["Sub-role of", <code className="font-mono text-[11px]">{t.subRoleOf}</code>] as [string, React.ReactNode]]
+      : []),
     ["Emoji", t.emoji || <span className="text-muted-foreground/40">—</span>],
     ["Color", t.color ? (
       <span className="inline-flex items-center gap-1.5">
@@ -527,6 +553,8 @@ function InstalledSkillFilesViewer({ slug }: { slug: string }) {
   )
 }
 
+type PickerMode = "catalog" | "installed" | "manual"
+
 function AddSkillPicker({
   existing, onPick, onCancel, disabled,
 }: {
@@ -535,34 +563,87 @@ function AddSkillPicker({
   onCancel: () => void
   disabled: boolean
 }) {
-  const [allSkills, setAllSkills] = useState<Array<{ slug: string; name: string; source?: string }> | null>(null)
+  const [mode, setMode] = useState<PickerMode>("catalog")
+  const [installedSkills, setInstalledSkills] = useState<Array<{ slug: string; name: string; source?: string }>>([])
+  const [catalogSkills, setCatalogSkills] = useState<import("@/types").CatalogSkill[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
-  const [manualMode, setManualMode] = useState(false)
   const [manualSlug, setManualSlug] = useState("")
 
   useEffect(() => {
     let cancelled = false
-    api.getGlobalSkills()
-      .then(d => { if (!cancelled) { setAllSkills(d.skills || []); setLoading(false) } })
-      .catch(e => { if (!cancelled) { setError(e instanceof Error ? e.message : String(e)); setLoading(false) } })
+    Promise.all([
+      api.getGlobalSkills().catch(() => ({ skills: [] })),
+      api.listCatalogSkills().catch(() => ({ skills: [], total: 0 })),
+    ]).then(([inst, cat]) => {
+      if (cancelled) return
+      setInstalledSkills(inst.skills || [])
+      setCatalogSkills(cat.skills || [])
+      setLoading(false)
+    }).catch(e => {
+      if (!cancelled) { setError(e instanceof Error ? e.message : String(e)); setLoading(false) }
+    })
     return () => { cancelled = true }
   }, [])
 
   const existingSet = new Set(existing)
-  const filtered = useMemo(() => {
-    if (!allSkills) return []
-    const q = query.trim().toLowerCase()
-    return allSkills
-      .filter(s => !existingSet.has(s.slug))
-      .filter(s => !q || s.slug.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
-      .slice(0, 12)
-  }, [allSkills, query, existingSet])
+  const q = query.trim().toLowerCase()
+
+  const filteredCatalog = useMemo(() => catalogSkills
+    .filter(s => !existingSet.has(s.slug))
+    .filter(s => {
+      if (!q) return true
+      return s.slug.toLowerCase().includes(q)
+        || s.name.toLowerCase().includes(q)
+        || (s.tags || []).some(t => t.toLowerCase().includes(q))
+    })
+    .slice(0, 30),
+    [catalogSkills, q, existingSet],
+  )
+
+  const filteredInstalled = useMemo(() => installedSkills
+    .filter(s => !existingSet.has(s.slug))
+    .filter(s => !q || s.slug.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
+    .slice(0, 30),
+    [installedSkills, q, existingSet],
+  )
+
+  function tabBtn(m: PickerMode, label: string, count?: number) {
+    const active = mode === m
+    return (
+      <button
+        onClick={() => setMode(m)}
+        className={cn(
+          "px-2 py-0.5 rounded text-[10px] font-medium transition-colors",
+          active
+            ? "bg-primary/15 text-primary border border-primary/30"
+            : "bg-muted/20 text-muted-foreground hover:text-foreground border border-transparent",
+        )}
+      >
+        {label}{typeof count === "number" && <span className="ml-1 text-muted-foreground/50">{count}</span>}
+      </button>
+    )
+  }
 
   return (
     <div className="shrink-0 border-b border-border bg-muted/20 p-2 flex flex-col gap-1.5">
-      {manualMode ? (
+      {/* Source tabs */}
+      <div className="flex items-center gap-1">
+        {tabBtn("catalog",   "AOC Catalog", catalogSkills.length)}
+        {tabBtn("installed", "Installed",   installedSkills.length)}
+        {tabBtn("manual",    "Manual")}
+        <div className="flex-1" />
+        <button
+          onClick={onCancel}
+          className="text-muted-foreground hover:text-foreground p-1 rounded"
+          title="Cancel"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+
+      {mode === "manual" ? (
         <>
           <input
             autoFocus
@@ -572,57 +653,79 @@ function AddSkillPicker({
             placeholder="skill-slug"
             className="w-full bg-input border border-border rounded px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-primary"
           />
-          <div className="flex gap-1">
-            <button
-              onClick={() => manualSlug && onPick(manualSlug)}
-              disabled={disabled || !manualSlug}
-              className="flex-1 text-[10px] py-1 rounded bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 disabled:opacity-40 transition-colors"
-            >
-              Add "{manualSlug || "…"}"
-            </button>
-            <button
-              onClick={() => setManualMode(false)}
-              className="text-[10px] py-1 px-2 rounded bg-muted/30 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              ←
-            </button>
-          </div>
+          <button
+            onClick={() => manualSlug && onPick(manualSlug)}
+            disabled={disabled || !manualSlug}
+            className="text-[10px] py-1 rounded bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 disabled:opacity-40 transition-colors"
+          >
+            Add "{manualSlug || "…"}"
+          </button>
           <p className="text-[9px] text-muted-foreground/60 px-0.5">
-            Reference to a skill slug — even if not yet installed.
+            Reference to a slug — for skills not in catalog and not yet installed.
           </p>
         </>
       ) : (
         <>
-          <div className="flex gap-1">
-            <input
-              autoFocus
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Search installed skills…"
-              className="flex-1 bg-input border border-border rounded px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-            <button
-              onClick={onCancel}
-              className="text-muted-foreground hover:text-foreground p-1 rounded"
-              title="Cancel"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-          <div className="max-h-48 overflow-y-auto flex flex-col gap-0.5">
+          <input
+            autoFocus
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder={mode === "catalog" ? "Search catalog by name, slug, or tag…" : "Search installed skills…"}
+            className="bg-input border border-border rounded px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <div className="max-h-64 overflow-y-auto flex flex-col gap-0.5">
             {loading && (
               <div className="flex items-center justify-center py-3 text-muted-foreground">
                 <Loader2 className="w-3 h-3 animate-spin" />
               </div>
             )}
             {error && <p className="text-[10px] text-destructive px-1">{error}</p>}
-            {!loading && filtered.length === 0 && (
+            {!loading && mode === "catalog" && filteredCatalog.length === 0 && (
               <p className="text-[10px] text-muted-foreground/50 italic text-center py-2">
-                {query ? "No matches" : "All installed skills already added"}
+                {q ? "No matches in catalog" : "All catalog skills already added"}
               </p>
             )}
-            {filtered.map(s => (
+            {!loading && mode === "installed" && filteredInstalled.length === 0 && (
+              <p className="text-[10px] text-muted-foreground/50 italic text-center py-2">
+                {q ? "No matches" : "All installed skills already added"}
+              </p>
+            )}
+            {mode === "catalog" && filteredCatalog.map(s => (
+              <button
+                key={s.slug}
+                onClick={() => onPick(s.slug)}
+                disabled={disabled}
+                className="flex flex-col items-start gap-0.5 px-2 py-1.5 rounded text-left hover:bg-primary/10 transition-colors disabled:opacity-40 border border-transparent hover:border-primary/20"
+              >
+                <div className="flex items-center gap-1.5 w-full">
+                  <Hash className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
+                  <code className="font-mono text-[11px] text-foreground truncate flex-1">{s.slug}</code>
+                  {s.installed && (
+                    <span className="text-[9px] font-mono px-1 py-px rounded bg-sky-500/10 text-sky-400" title="On disk">on-disk</span>
+                  )}
+                  {s.envScope === "odoo" && (
+                    <span className="text-[9px] font-mono px-1 py-px rounded bg-violet-500/10 text-violet-400">odoo</span>
+                  )}
+                  {s.envScope === "frontend" && (
+                    <span className="text-[9px] font-mono px-1 py-px rounded bg-cyan-500/10 text-cyan-400">frontend</span>
+                  )}
+                </div>
+                <p className="text-[10px] text-muted-foreground/70 line-clamp-1 ml-4 w-full">
+                  {s.name}
+                </p>
+                {(s.risksAddressed.length > 0) && (
+                  <div className="flex flex-wrap gap-0.5 ml-4">
+                    {s.risksAddressed.map(r => (
+                      <span key={r} className="text-[8px] px-1 py-px rounded bg-amber-500/10 text-amber-400/80">
+                        {r === "business_viability" ? "biz-viability" : r}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            ))}
+            {mode === "installed" && filteredInstalled.map(s => (
               <button
                 key={s.slug}
                 onClick={() => onPick(s.slug)}
@@ -637,26 +740,20 @@ function AddSkillPicker({
               </button>
             ))}
           </div>
-          <button
-            onClick={() => setManualMode(true)}
-            className="text-[10px] text-muted-foreground hover:text-foreground py-1 border-t border-border/60 pt-1.5"
-          >
-            + Reference a slug not yet installed
-          </button>
         </>
       )}
     </div>
   )
 }
 
-function SkillStatusBadge({ status }: { status: "bundled" | "installed" | "missing" }) {
-  if (status === "bundled") {
-    return (
-      <span className="text-[9px] font-mono px-1 py-px rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-        bundled
-      </span>
-    )
-  }
+/**
+ * Two user-visible statuses:
+ *   installed     — SKILL.md is at ~/.openclaw/skills/{slug}/, agent can use now
+ *   not-installed — anything else (content may still be available for preview/install)
+ */
+type SkillResolutionStatus = "installed" | "not-installed"
+
+function SkillStatusBadge({ status }: { status: SkillResolutionStatus }) {
   if (status === "installed") {
     return (
       <span className="text-[9px] font-mono px-1 py-px rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
@@ -665,8 +762,8 @@ function SkillStatusBadge({ status }: { status: "bundled" | "installed" | "missi
     )
   }
   return (
-    <span className="text-[9px] font-mono px-1 py-px rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-      missing
+    <span className="text-[9px] font-mono px-1 py-px rounded bg-muted/30 text-muted-foreground border border-border">
+      not installed
     </span>
   )
 }
@@ -677,12 +774,31 @@ function SkillsPanel({ t, onChanged }: { t: RoleTemplateRecord; onChanged?: () =
   const [mutating, setMutating] = useState(false)
   const [mutationError, setMutationError] = useState<string | null>(null)
 
+  // Catalog awareness — slugs available in the AOC internal marketplace.
+  const [catalogSlugs, setCatalogSlugs] = useState<Set<string>>(new Set())
+  // Lazy-fetched SKILL.md content from catalog, keyed by slug.
+  // Used to render preview when slug is in catalog but not on disk and not template-bundled.
+  const [catalogContent, setCatalogContent] = useState<Record<string, string>>({})
+  const [activeFetching, setActiveFetching] = useState(false)
+  const [installing, setInstalling] = useState(false)
+  const [installSummary, setInstallSummary] = useState<string | null>(null)
+
   // Reset selection when template changes
   useEffect(() => {
     setActive(t.skillSlugs[0] || null)
     setShowAdd(false)
     setMutationError(null)
+    setInstallSummary(null)
   }, [t.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch catalog once on mount; refresh after install
+  const loadCatalog = useCallback(async () => {
+    try {
+      const r = await api.listCatalogSkills()
+      setCatalogSlugs(new Set(r.skills.map(s => s.slug)))
+    } catch { /* non-fatal */ }
+  }, [])
+  useEffect(() => { loadCatalog() }, [loadCatalog])
 
   const editable = !t.builtIn
 
@@ -728,9 +844,71 @@ function SkillsPanel({ t, onChanged }: { t: RoleTemplateRecord; onChanged?: () =
   }
 
   const resolution = t.skillResolution || {}
+  // Three statuses for the user:
+  // Two states only: installed | not-installed.
+  // Catalog/bundled distinction is internal — surfaced via the install banner, not a badge.
+  function statusFor(slug: string): SkillResolutionStatus {
+    return resolution[slug]?.status === "installed" ? "installed" : "not-installed"
+  }
   const activeRes = active ? resolution[active] : null
-  const activeContent = activeRes?.content || ""
-  const activeStatus = activeRes?.status || "missing"
+  // Resolve preview content from 3 sources (priority): on-disk → template-bundled → catalog-fetched
+  const activeContent =
+    (activeRes?.status !== "missing" ? activeRes?.content : null)
+    || (active ? catalogContent[active] : null)
+    || ""
+  const activeStatus: SkillResolutionStatus = active ? statusFor(active) : "not-installed"
+
+  // Slugs that live in the catalog but aren't on disk yet — eligible for bulk install.
+  const installableMissing = useMemo(
+    () => t.skillSlugs.filter(s => {
+      const r = resolution[s]
+      return r?.status !== "installed" && catalogSlugs.has(s)
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t.skillSlugs, catalogSlugs, resolution],
+  )
+
+  // Lazy-fetch catalog content when user selects a slug that:
+  //   - is not on disk
+  //   - is not template-bundled
+  //   - IS in the catalog
+  // Cached per-slug so toggling between skills doesn't re-fetch.
+  useEffect(() => {
+    if (!active) return
+    if (catalogContent[active]) return
+    const r = resolution[active]
+    const hasInlineContent = r?.status === "installed" || r?.status === "bundled"
+    if (hasInlineContent) return
+    if (!catalogSlugs.has(active)) return
+    let cancelled = false
+    setActiveFetching(true)
+    api.getCatalogSkill(active)
+      .then(res => { if (!cancelled) setCatalogContent(prev => ({ ...prev, [active]: res.skill.content })) })
+      .catch(() => { /* non-fatal */ })
+      .finally(() => { if (!cancelled) setActiveFetching(false) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, catalogSlugs, resolution])
+
+  async function installFromCatalog(slugs: string[]) {
+    if (!slugs.length || installing) return
+    setInstalling(true); setInstallSummary(null)
+    try {
+      const r = await api.installCatalogSkills(slugs)
+      const parts: string[] = []
+      if (r.summary.installed) parts.push(`${r.summary.installed} installed`)
+      if (r.summary.updated)   parts.push(`${r.summary.updated} updated`)
+      if (r.summary.noop)      parts.push(`${r.summary.noop} unchanged`)
+      if (r.summary.errors)    parts.push(`${r.summary.errors} failed`)
+      setInstallSummary(parts.join(" · ") || "no changes")
+      onChanged?.()      // refresh template (skillResolution recomputes)
+      await loadCatalog()
+    } catch (e) {
+      setInstallSummary(e instanceof Error ? e.message : String(e))
+    } finally {
+      setInstalling(false)
+    }
+  }
 
   return (
     <div className="flex-1 min-h-0 flex overflow-hidden">
@@ -741,6 +919,19 @@ function SkillsPanel({ t, onChanged }: { t: RoleTemplateRecord; onChanged?: () =
           <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex-1">
             {t.skillSlugs.length} skill{t.skillSlugs.length === 1 ? "" : "s"}
           </p>
+          {installableMissing.length > 0 && (
+            <button
+              onClick={() => installFromCatalog(installableMissing)}
+              disabled={installing}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-500/10 hover:bg-violet-500/20 text-violet-400 border border-violet-500/30 disabled:opacity-50"
+              title={`Install ${installableMissing.length} missing skill(s) from AOC catalog`}
+            >
+              {installing
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <Plus className="w-3 h-3" />}
+              Install {installableMissing.length}
+            </button>
+          )}
           {editable && (
             <button
               onClick={() => setShowAdd(v => !v)}
@@ -757,6 +948,11 @@ function SkillsPanel({ t, onChanged }: { t: RoleTemplateRecord; onChanged?: () =
             </button>
           )}
         </div>
+        {installSummary && (
+          <div className="mx-2 my-1 rounded border border-violet-500/30 bg-violet-500/5 px-2 py-1 text-[10px] text-violet-400/90">
+            {installSummary}
+          </div>
+        )}
         {showAdd && editable && (
           <AddSkillPicker
             existing={t.skillSlugs}
@@ -778,7 +974,7 @@ function SkillsPanel({ t, onChanged }: { t: RoleTemplateRecord; onChanged?: () =
           )}
           {t.skillSlugs.map(slug => {
             const res = resolution[slug]
-            const status = res?.status || "missing"
+            const status = statusFor(slug)
             const bytes = res?.content?.length ?? 0
             const isActive = slug === active
             return (
@@ -836,32 +1032,57 @@ function SkillsPanel({ t, onChanged }: { t: RoleTemplateRecord; onChanged?: () =
               </code>
             )}
             <div className="flex-1" />
-            {activeStatus === "bundled" && activeRes?.content && (
+            {activeContent && (
               <span className="text-[10px] text-muted-foreground/50 font-mono shrink-0">
                 {formatBytes(activeContent.length)} · {activeContent.split("\n").length} lines
               </span>
             )}
           </div>
         )}
-        {/* Body renders based on status */}
-        {activeStatus === "missing" ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center px-6 gap-2 text-muted-foreground/60">
-            <AlertCircle className="w-6 h-6 text-amber-400/60" />
-            <p className="text-sm">Skill not installed</p>
-            <p className="text-[11px] text-muted-foreground/50">
-              Expected at <code className="font-mono">~/.openclaw/skills/{active}</code> but not found.
-              Install via the Skills page or the Install-from-External flow.
-            </p>
+
+        {/* Install banner — shown above preview when slug is in catalog but not on disk */}
+        {active && activeStatus === "not-installed" && catalogSlugs.has(active) && (
+          <div className="shrink-0 flex items-center gap-3 px-4 py-2 border-b border-violet-500/20 bg-violet-500/5">
+            <Sparkles className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] text-foreground/90">
+                Available in AOC — preview below. Install to materialize at <code className="font-mono text-[10px]">~/.openclaw/skills/{active}/</code>
+              </p>
+            </div>
+            <button
+              onClick={() => installFromCatalog([active])}
+              disabled={installing}
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-violet-500/15 hover:bg-violet-500/25 text-violet-400 border border-violet-500/40 text-[11px] font-medium disabled:opacity-50"
+            >
+              {installing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+              Install
+            </button>
           </div>
-        ) : activeStatus === "installed" && active ? (
+        )}
+
+        {/* Content body */}
+        {activeStatus === "installed" && active ? (
           <InstalledSkillFilesViewer slug={active} />
-        ) : (
+        ) : activeFetching && !activeContent ? (
+          <div className="flex-1 flex items-center justify-center">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" />
+          </div>
+        ) : activeContent ? (
           <div className="flex-1 overflow-y-auto">
             <pre className="px-4 py-3 text-[11px] font-mono text-foreground/80 whitespace-pre-wrap leading-relaxed">
               {activeContent}
             </pre>
           </div>
-        )}
+        ) : active ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center px-6 gap-2 text-muted-foreground/60">
+            <AlertCircle className="w-6 h-6 text-amber-400/60" />
+            <p className="text-sm">No content available</p>
+            <p className="text-[11px] text-muted-foreground/50">
+              Slug not on disk, not in template, and not in AOC catalog.
+              Install via Skills page (ClawHub / SkillsMP / Upload) or remove the slug.
+            </p>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -1201,7 +1422,12 @@ function DetailPanel({ id, refreshTick, onRecordLoaded, onEdit, onFork, onDelete
                 className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border"
                 style={colorStyle(record.color)}
               >
-                ADLC #{record.adlcAgentNumber}
+                ADLC #{record.adlcAgentNumber}{record.adlcAgentSuffix || ""}
+              </span>
+            )}
+            {record.subRoleOf && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted/30 text-muted-foreground/80 border border-border" title={`Sub-role of ${record.subRoleOf}`}>
+                sub of {record.subRoleOf}
               </span>
             )}
             <OriginBadge origin={record.origin} builtIn={record.builtIn} />

@@ -1771,6 +1771,8 @@ app.get('/api/role-templates', db.authMiddleware, (req, res) => {
     const summary = templates.map(t => ({
       id:               t.id,
       adlcAgentNumber:  t.adlcAgentNumber,
+      adlcAgentSuffix:  t.adlcAgentSuffix || null,
+      subRoleOf:        t.subRoleOf || null,
       role:             t.role,
       emoji:            t.emoji,
       color:            t.color,
@@ -1942,6 +1944,127 @@ app.post('/api/agents/:agentId/unassign-role', db.authMiddleware, db.requireAgen
   } catch (err) {
     console.error('[api/agents/unassign-role]', err.message);
     res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code });
+  }
+});
+
+// ─── Skill Catalog (Internal Marketplace) ──────────────────────────────────
+// First-party AOC skill registry. Source for resolving "missing" skill refs in
+// role templates without forcing inline content into TS files.
+
+// GET /api/skills/catalog — list with optional filters
+//   query: ?envScope=odoo&role=pm-discovery&risk=value&search=foo
+app.get('/api/skills/catalog', db.authMiddleware, (req, res) => {
+  try {
+    const filters = {
+      envScope: req.query.envScope,
+      role:     req.query.role,
+      risk:     req.query.risk,
+      search:   req.query.search,
+    };
+    const skills = parsers.listCatalogSkills(filters);
+    const slugs = skills.map(s => s.slug);
+    const installed = parsers.catalogInstalledMap(slugs);
+    const enriched = skills.map(s => ({ ...s, installed: !!installed[s.slug] }));
+    res.json({ skills: enriched, total: enriched.length });
+  } catch (err) {
+    console.error('[api/skills/catalog][list]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/skills/catalog/:slug — single skill details
+app.get('/api/skills/catalog/:slug', db.authMiddleware, (req, res) => {
+  try {
+    const skill = parsers.getCatalogSkill(req.params.slug);
+    if (!skill) return res.status(404).json({ error: 'Skill not in catalog' });
+    res.json({ skill: { ...skill, installed: parsers.isCatalogSkillInstalled(skill.slug) } });
+  } catch (err) {
+    console.error('[api/skills/catalog/:slug]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills/catalog — create a user skill (admin only for now)
+app.post('/api/skills/catalog', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    const created = parsers.createCatalogSkill(req.body || {}, { createdBy: req.user?.id || null });
+    console.log(`[api/skills/catalog] Created "${created.slug}"`);
+    res.status(201).json({ skill: created });
+  } catch (err) {
+    console.error('[api/skills/catalog][POST]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code, details: err.details });
+  }
+});
+
+// PATCH /api/skills/catalog/:slug — update; seed origin allowed (editable)
+app.patch('/api/skills/catalog/:slug', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    const updated = parsers.updateCatalogSkill(req.params.slug, req.body || {});
+    res.json({ skill: updated });
+  } catch (err) {
+    console.error('[api/skills/catalog][PATCH]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code, details: err.details });
+  }
+});
+
+// DELETE /api/skills/catalog/:slug — user-origin only; seed protected
+app.delete('/api/skills/catalog/:slug', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    const result = parsers.deleteCatalogSkill(req.params.slug);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/skills/catalog][DELETE]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code });
+  }
+});
+
+// POST /api/skills/catalog/refresh-seed — overwrite seed-origin rows from JSON
+app.post('/api/skills/catalog/refresh-seed', db.authMiddleware, db.requireAdmin, (req, res) => {
+  try {
+    const result = parsers.refreshSkillCatalogSeed();
+    console.log('[api/skills/catalog/refresh-seed]', result);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/skills/catalog/refresh-seed]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills/catalog/:slug/install — materialize skill to ~/.openclaw/skills/{slug}/
+//   body: { force?: boolean }
+app.post('/api/skills/catalog/:slug/install', db.authMiddleware, (req, res) => {
+  try {
+    const force = !!(req.body && req.body.force);
+    const result = parsers.installCatalogSkill(req.params.slug, { force });
+    console.log(`[api/skills/catalog/install] "${req.params.slug}" → ${result.action}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[api/skills/catalog/install]', err.message);
+    res.status(roleTemplateErrorStatus(err)).json({ error: err.message, code: err.code });
+  }
+});
+
+// POST /api/skills/catalog/install-many — bulk install (used for "install all missing")
+//   body: { slugs: string[], force?: boolean }
+app.post('/api/skills/catalog/install-many', db.authMiddleware, (req, res) => {
+  try {
+    const slugs = Array.isArray(req.body?.slugs) ? req.body.slugs : [];
+    if (!slugs.length) return res.status(400).json({ error: 'slugs[] required' });
+    const force = !!req.body.force;
+    const results = parsers.installCatalogSkills(slugs, { force });
+    const summary = {
+      total: results.length,
+      installed: results.filter(r => r.action === 'installed').length,
+      updated:   results.filter(r => r.action === 'updated').length,
+      noop:      results.filter(r => r.action === 'noop').length,
+      missing:   results.filter(r => r.action === 'not-in-catalog').length,
+      errors:    results.filter(r => r.action === 'error').length,
+    };
+    console.log('[api/skills/catalog/install-many]', summary);
+    res.json({ results, summary });
+  } catch (err) {
+    console.error('[api/skills/catalog/install-many]', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -5898,6 +6021,16 @@ async function start() {
     }
   } catch (err) {
     console.error('[startup] Role template seed failed:', err.message);
+  }
+
+  // Seed AOC skill catalog (internal marketplace) on first run (idempotent)
+  try {
+    const skillSeed = parsers.seedSkillCatalogIfEmpty();
+    if (skillSeed.seeded > 0) {
+      console.log(`[startup] Skill catalog seeded: ${skillSeed.seeded}`);
+    }
+  } catch (err) {
+    console.error('[startup] Skill catalog seed failed:', err.message);
   }
 
   function broadcast(event) {

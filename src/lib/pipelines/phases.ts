@@ -43,7 +43,8 @@ export const PHASES: Array<{
 
 const ROLE_TO_PHASE: Record<AdlcRoleId, PhaseId> = {
   "biz-analyst":  "discover",
-  "pm-analyst":   "discover",
+  "pm-discovery": "discover",
+  "pa-monitor":   "discover",
   "ux-designer":  "discover",
   "data-analyst": "discover",
   "em-architect": "develop",

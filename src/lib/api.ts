@@ -659,6 +659,62 @@ export const api = {
       `/agents/${encodeURIComponent(agentId)}/unassign-role`,
       { method: "POST" },
     ),
+  refreshRoleTemplatesSeed: () =>
+    request<{ refreshed: number; ids: string[] }>("/role-templates/refresh-builtins", {
+      method: "POST",
+    }),
+
+  // Skill Catalog (Internal Marketplace)
+  listCatalogSkills: (filters?: {
+    envScope?: string
+    role?: string
+    risk?: string
+    search?: string
+  }) => {
+    const qs = new URLSearchParams()
+    if (filters?.envScope) qs.set("envScope", filters.envScope)
+    if (filters?.role)     qs.set("role", filters.role)
+    if (filters?.risk)     qs.set("risk", filters.risk)
+    if (filters?.search)   qs.set("search", filters.search)
+    const tail = qs.toString()
+    return request<{ skills: import("@/types").CatalogSkill[]; total: number }>(
+      `/skills/catalog${tail ? `?${tail}` : ""}`,
+    )
+  },
+  getCatalogSkill: (slug: string) =>
+    request<{ skill: import("@/types").CatalogSkill }>(
+      `/skills/catalog/${encodeURIComponent(slug)}`,
+    ),
+  createCatalogSkill: (data: Partial<import("@/types").CatalogSkill>) =>
+    request<{ skill: import("@/types").CatalogSkill }>("/skills/catalog", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateCatalogSkill: (slug: string, patch: Partial<import("@/types").CatalogSkill>) =>
+    request<{ skill: import("@/types").CatalogSkill }>(
+      `/skills/catalog/${encodeURIComponent(slug)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    ),
+  deleteCatalogSkill: (slug: string) =>
+    request<{ ok: boolean; slug: string }>(
+      `/skills/catalog/${encodeURIComponent(slug)}`,
+      { method: "DELETE" },
+    ),
+  refreshCatalogSeed: () =>
+    request<{ refreshed: number }>("/skills/catalog/refresh-seed", { method: "POST" }),
+  installCatalogSkill: (slug: string, force = false) =>
+    request<{ ok: boolean; slug: string; action: string; version: string; path?: string }>(
+      `/skills/catalog/${encodeURIComponent(slug)}/install`,
+      { method: "POST", body: JSON.stringify({ force }) },
+    ),
+  installCatalogSkills: (slugs: string[], force = false) =>
+    request<{
+      results: Array<{ ok: boolean; slug: string; action: string; version?: string; error?: string }>
+      summary: { total: number; installed: number; updated: number; noop: number; missing: number; errors: number }
+    }>("/skills/catalog/install-many", {
+      method: "POST",
+      body: JSON.stringify({ slugs, force }),
+    }),
 
   // Upload skill (zip / .skill / raw SKILL.md)
   uploadSkillPreview: (filename: string, bufferB64: string) =>

@@ -1,0 +1,14 @@
+{
+  "name": "prd-generator",
+  "version": "1.0.0",
+  "description": "Generate standard-format PRDs as .docx files using reusable helpers. Configurable org code, locale (id/en), and brand theme.",
+  "main": "lib/prd-builder.js",
+  "scripts": {
+    "example": "node example.js"
+  },
+  "dependencies": {
+    "docx": "^8.5.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

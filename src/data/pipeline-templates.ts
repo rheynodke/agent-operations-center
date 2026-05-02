@@ -61,7 +61,7 @@ const adlcFull = makeTemplate(
   "Complete Discover → Develop → Deliver. Approval between phases, not between every step.",
   "➡️",
   buildStepper(
-    ["pm-analyst", "ux-designer", "em-architect", "swe", "qa-engineer", "doc-writer"],
+    ["pm-discovery", "ux-designer", "em-architect", "swe", "qa-engineer", "doc-writer"],
     //  PM     UX(end disc)   EM     SWE   QA(end dev)  Doc
     [  false, true,           false, false, true,       false],
   ),
@@ -74,7 +74,7 @@ const adlcLean = makeTemplate(
   "Same chain but fully autonomous — no approval gates. Use when you trust the flow.",
   "⚡",
   buildStepper(
-    ["pm-analyst", "ux-designer", "em-architect", "swe", "qa-engineer", "doc-writer"],
+    ["pm-discovery", "ux-designer", "em-architect", "swe", "qa-engineer", "doc-writer"],
     [false, false, false, false, false, false],
   ),
 )
@@ -99,7 +99,7 @@ const bugTriage = makeTemplate(
   "Fast path for bug reports: intake → PM → SWE → QA.",
   "🐛",
   buildStepper(
-    ["biz-analyst", "pm-analyst", "swe", "qa-engineer"],
+    ["biz-analyst", "pm-discovery", "swe", "qa-engineer"],
     [false, true, false, false],
   ),
 )
@@ -111,7 +111,7 @@ const researchOnly = makeTemplate(
   "Stop after Discover — output is a validated PRD + designs. No implementation.",
   "🧪",
   buildStepper(
-    ["pm-analyst", "ux-designer"],
+    ["pm-discovery", "ux-designer"],
     [false, false],
   ),
 )

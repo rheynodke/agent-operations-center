@@ -1,5 +1,6 @@
 export type AdlcRoleId =
-  | 'pm-analyst'
+  | 'pm-discovery'
+  | 'pa-monitor'
   | 'ux-designer'
   | 'em-architect'
   | 'swe'
@@ -11,6 +12,10 @@ export type AdlcRoleId =
 export interface AgentRoleTemplate {
   id: AdlcRoleId
   adlcAgentNumber: number
+  /** Optional alpha suffix for sub-role display, e.g. 'B' → '#1B'. */
+  adlcAgentSuffix?: string
+  /** When set, this template is a sub-role nested under another template id. */
+  subRoleOf?: AdlcRoleId
   role: string
   emoji: string
   color: string
@@ -44,6 +49,8 @@ export type RoleTemplateOrigin = 'builtin' | 'user' | string
 export interface RoleTemplateSummary {
   id: string
   adlcAgentNumber: number | null
+  adlcAgentSuffix?: string | null
+  subRoleOf?: string | null
   role: string
   emoji: string | null
   color: string | null
@@ -114,6 +121,8 @@ export interface SkillRefResolution {
 export interface RoleTemplateRecord {
   id: string
   adlcAgentNumber: number | null
+  adlcAgentSuffix?: string | null
+  subRoleOf?: string | null
   role: string
   emoji: string | null
   color: string | null

@@ -1,0 +1,10 @@
+{
+  "name": "prd-to-mockup-scripts",
+  "version": "1.0.0",
+  "description": "Zero-dep Node scripts for generating HTML mockup canvas from PRD screens spec.",
+  "private": true,
+  "engines": { "node": ">=16" },
+  "scripts": {
+    "example": "node example.js"
+  }
+}

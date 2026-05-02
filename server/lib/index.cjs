@@ -24,6 +24,7 @@ const aocTasksSkill       = require('./aoc-tasks/installer.cjs');
 const aocConnectionsSkill = require('./aoc-connections/installer.cjs');
 const workspaceBrowser    = require('./workspace-browser.cjs');
 const roleTemplates = require('./role-templates.cjs');
+const skillCatalog  = require('./skill-catalog.cjs');
 const oauthG = require('./oauth/google.cjs');
 const googleConnections = require('./connections/google-workspace.cjs');
 const googleHealthCron = require('./cron/google-health.cjs');
@@ -199,6 +200,20 @@ module.exports = {
   previewRoleTemplateApply: roleTemplates.previewApply,
   applyRoleTemplateToAgent: roleTemplates.applyToAgent,
   unassignAgentRole:        roleTemplates.unassignRole,
+
+  // ── skill catalog (internal marketplace) ──────────────────────────────────
+  listCatalogSkills:        skillCatalog.listSkills,
+  getCatalogSkill:          skillCatalog.getSkill,
+  countCatalogSkills:       skillCatalog.countSkills,
+  isCatalogSkillInstalled:  skillCatalog.isInstalled,
+  catalogInstalledMap:      skillCatalog.installedMap,
+  seedSkillCatalogIfEmpty:  skillCatalog.seedIfEmpty,
+  refreshSkillCatalogSeed:  skillCatalog.refreshSeed,
+  createCatalogSkill:       skillCatalog.createSkill,
+  updateCatalogSkill:       skillCatalog.updateSkill,
+  deleteCatalogSkill:       skillCatalog.deleteSkill,
+  installCatalogSkill:      skillCatalog.installSkill,
+  installCatalogSkills:     skillCatalog.installMany,
 
   // ── google workspace oauth helpers ─────────────────────────────────────────
   googleBuildScopes:        oauthG.buildScopes,

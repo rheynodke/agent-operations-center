@@ -5,6 +5,43 @@ export type {
   AgentFileAction, ApplyPreview, ApplyPreviewFile, ApplyResult,
 } from './agentRoleTemplate'
 
+// ─── Skill Catalog (Internal Marketplace) ─────────────────────────────────
+
+export type SkillRisk = "value" | "usability" | "feasibility" | "business_viability"
+export type SkillEnvScope = "odoo" | "frontend" | "agnostic" | "odoo+agnostic"
+export type SkillCatalogOrigin = "seed" | "user"
+export type SkillMaturity = "stub" | "partial" | "full"
+export type SkillCategory =
+  | "discovery" | "spec" | "build" | "verify" | "document" | "operate" | "cross-cutting"
+
+export interface CatalogSkillScript {
+  filename: string
+  content: string
+  executable?: boolean
+}
+
+export interface CatalogSkill {
+  slug: string
+  name: string
+  description: string
+  category: SkillCategory | null
+  adlcRoles: string[]            // e.g. ["pm-discovery","pa-monitor"]
+  risksAddressed: SkillRisk[]
+  envScope: SkillEnvScope
+  requires: string[]             // dep slugs
+  tags: string[]
+  content: string                // SKILL.md
+  scripts: CatalogSkillScript[]
+  version: string
+  origin: SkillCatalogOrigin
+  maturity: SkillMaturity
+  createdBy: number | null
+  createdAt: string
+  updatedAt: string
+  /** Set by GET /api/skills/catalog — true if SKILL.md exists at ~/.openclaw/skills/{slug}/ */
+  installed?: boolean
+}
+
 // ─── Core Agent Types ───────────────────────────────────────────────────────
 
 export type AgentStatus = "active" | "idle" | "paused" | "error" | "terminated"

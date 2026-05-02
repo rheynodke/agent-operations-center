@@ -1,6 +1,7 @@
 import type { AgentRoleTemplate } from '@/types'
 
-import { PM_ANALYST_TEMPLATE } from './role-templates/pm-analyst'
+import { PM_DISCOVERY_TEMPLATE } from './role-templates/pm-discovery'
+import { PA_MONITOR_TEMPLATE }   from './role-templates/pa-monitor'
 import { UX_DESIGNER_TEMPLATE } from './role-templates/ux-designer'
 import { EM_ARCHITECT_TEMPLATE } from './role-templates/em-architect'
 import { SWE_TEMPLATE } from './role-templates/swe'
@@ -10,7 +11,8 @@ import { BIZ_ANALYST_TEMPLATE } from './role-templates/biz-analyst'
 import { DATA_ANALYST_TEMPLATE } from './role-templates/data-analyst'
 
 export const ADLC_ROLE_TEMPLATES: AgentRoleTemplate[] = [
-  PM_ANALYST_TEMPLATE,
+  PM_DISCOVERY_TEMPLATE,
+  PA_MONITOR_TEMPLATE,        // #1B sub-role of PM Discovery
   UX_DESIGNER_TEMPLATE,
   EM_ARCHITECT_TEMPLATE,
   SWE_TEMPLATE,

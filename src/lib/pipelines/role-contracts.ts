@@ -27,8 +27,8 @@ export interface RoleContract {
 // can line up input ↔ upstream-output by name matching. e.g. PM outputs `prd`
 // and any downstream role that needs it declares `prd` as an input.
 export const ROLE_CONTRACTS: Record<AdlcRoleId, RoleContract> = {
-  "pm-analyst": {
-    roleId: "pm-analyst",
+  "pm-discovery": {
+    roleId: "pm-discovery",
     label: "PM Analyst",
     emoji: "📊",
     description: "Turns a brief into a PRD",
@@ -49,7 +49,7 @@ export const ROLE_CONTRACTS: Record<AdlcRoleId, RoleContract> = {
     outputs: [{ key: "wireframes", type: "text" }],
     promptScaffold:
       "Design the UX for this PRD.\n\n" +
-      "PRD:\n{{artifact.pm-analyst.prd}}\n\n" +
+      "PRD:\n{{artifact.pm-discovery.prd}}\n\n" +
       "Produce: user flow diagrams (ASCII or mermaid), wireframe notes per screen.",
     failurePolicy: "halt",
   },
@@ -65,7 +65,7 @@ export const ROLE_CONTRACTS: Record<AdlcRoleId, RoleContract> = {
     outputs: [{ key: "spec", type: "text" }],
     promptScaffold:
       "Produce a technical design document from the inputs below.\n\n" +
-      "PRD:\n{{artifact.pm-analyst.prd}}\n\n" +
+      "PRD:\n{{artifact.pm-discovery.prd}}\n\n" +
       "Wireframes:\n{{artifact.ux-designer.wireframes}}\n\n" +
       "Include: data model, API surface, component breakdown, rollout plan, risks.",
     failurePolicy: "halt",
@@ -112,7 +112,7 @@ export const ROLE_CONTRACTS: Record<AdlcRoleId, RoleContract> = {
     outputs: [{ key: "release_md", type: "text" }],
     promptScaffold:
       "Write release notes for the feature based on the artifacts below.\n\n" +
-      "PRD:\n{{artifact.pm-analyst.prd}}\n\n" +
+      "PRD:\n{{artifact.pm-discovery.prd}}\n\n" +
       "Tech spec:\n{{artifact.em-architect.spec}}\n\n" +
       "PR:\n{{artifact.swe.pr_link}}\n\n" +
       "QA:\n{{artifact.qa-engineer.qa_report}}\n\n" +

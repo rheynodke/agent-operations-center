@@ -39,7 +39,7 @@ const FAILURE_POLICIES: PipelineFailurePolicy[] = ["halt", "continue", "retry"]
 
 const ROLE_PICKER_ORDER: AdlcRoleId[] = [
   "biz-analyst",
-  "pm-analyst",
+  "pm-discovery",
   "ux-designer",
   "em-architect",
   "swe",

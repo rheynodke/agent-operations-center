@@ -295,6 +295,44 @@ async function initDatabase() {
     )
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_role_templates_origin ON role_templates(origin)`);
+  // Sub-role support — alpha suffix (e.g. 'B' → display as #1B) and parent ref
+  try { db.run('ALTER TABLE role_templates ADD COLUMN adlc_suffix TEXT'); } catch (_) {}
+  try { db.run('ALTER TABLE role_templates ADD COLUMN sub_role_of TEXT'); } catch (_) {}
+
+  // ── Skill Catalog (Internal Marketplace) ────────────────────────────────────
+  // First-party skill registry for ADLC. Acts as a 3rd source alongside ClawHub
+  // and SkillsMP. Seeded from server/data/skill-catalog-seed.json on first run.
+  // Built-in skills (origin='seed') are editable but not deletable.
+  // adlc_roles / risks_addressed / requires / tags stored as JSON arrays.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS skill_catalog (
+      slug             TEXT PRIMARY KEY,
+      name             TEXT NOT NULL,
+      description      TEXT NOT NULL DEFAULT '',
+      category         TEXT,
+      adlc_roles       TEXT NOT NULL DEFAULT '[]',
+      risks_addressed  TEXT NOT NULL DEFAULT '[]',
+      env_scope        TEXT NOT NULL DEFAULT 'agnostic',
+      requires         TEXT NOT NULL DEFAULT '[]',
+      tags             TEXT NOT NULL DEFAULT '[]',
+      content          TEXT NOT NULL,
+      scripts_json     TEXT NOT NULL DEFAULT '[]',
+      version          TEXT NOT NULL DEFAULT '1.0.0',
+      origin           TEXT NOT NULL DEFAULT 'user',
+      maturity         TEXT NOT NULL DEFAULT 'stub',
+      created_by       INTEGER,
+      created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_skill_catalog_origin ON skill_catalog(origin)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_skill_catalog_env ON skill_catalog(env_scope)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_skill_catalog_category ON skill_catalog(category)`);
+  // Arbitrary bundled files (references/, SECURITY.md, etc.) — path may include
+  // subdirs like "references/format.md". Distinct from `scripts_json` which is
+  // flat filenames under {skill}/scripts/ with shell-exe semantics.
+  try { db.run("ALTER TABLE skill_catalog ADD COLUMN bundle_files_json TEXT NOT NULL DEFAULT '[]'"); } catch (_) {}
 
   // Tasks migration: add project + external sync columns
   try { db.run("ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'general'"); } catch (_) {}

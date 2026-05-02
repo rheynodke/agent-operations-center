@@ -131,196 +131,23 @@ All documents written to: \`outputs/YYYY-MM-DD-{slug}.md\`
 `,
   },
 
+  // Skills resolved from AOC Skill Catalog (internal marketplace).
+  // - prd-to-mockup: turn PRD bundle into interactive HTML canvas (companion to PM #1)
+  // - uiux-generator: 3-mode toolkit — research / audit / prototype (live canvas :4455)
+  // - uiux-odoo-generator: Odoo 17/18 backend screens + ready-to-install XML scaffold
   skillSlugs: [
     'ux-research',
     'competitor-ux-analysis',
     'usability-testing',
     'design-brief-generator',
     'prototype-generator',
+    'prd-to-mockup',
+    'uiux-generator',
+    'uiux-odoo-generator',
   ],
 
-  skillContents: {
-    'usability-testing': `---
-name: usability-testing
-description: "WAJIB DIGUNAKAN: Ketika diminta membuat test plan usability, mengevaluasi design, atau melakukan heuristic evaluation."
----
-
-# Usability Testing
-
-Design dan execute usability test plan untuk validasi design decisions. Menggunakan Nielsen's heuristics + task-based evaluation.
-
-<HARD-GATE>
-Jangan finalisasi design brief tanpa usability evaluation.
-Minimal 5 Nielsen heuristics harus dicek per screen.
-Setiap critical finding HARUS punya severity rating (1-4).
-</HARD-GATE>
-
-## Checklist
-
-You MUST create a TodoWrite task for each item and complete them in order:
-
-1. **Define Test Objectives** — Apa yang ingin divalidasi? (specific tasks)
-2. **Create Test Scenarios** — 3-5 realistic user scenarios
-3. **Heuristic Evaluation** — Evaluate against Nielsen's 10 heuristics
-4. **Task Analysis** — Expected vs actual user flow per scenario
-5. **Findings & Severity** — Classify: Critical(4) / Major(3) / Minor(2) / Cosmetic(1)
-6. **[HUMAN GATE — Stakeholder]** — Send findings via notify.sh for review
-7. **Recommendations** — Prioritized list of design changes
-8. **Output Document** — Write to outputs/YYYY-MM-DD-usability-test-{feature}.md
-
-## Process Flow
-
-\`\`\`dot
-digraph usability_testing {
-  rankdir=TB
-  node [shape=box, style=rounded]
-  objectives [label="Test Objectives"]
-  scenarios [label="Test Scenarios"]
-  heuristic [label="Heuristic\\nEvaluation"]
-  task [label="Task Analysis"]
-  findings [label="Findings &\\nSeverity Rating"]
-  gate [label="HUMAN GATE\\nStakeholder Review", shape=diamond, style="filled", fillcolor="#f59e0b"]
-  recs [label="Recommendations"]
-  output [label="Write Output Doc"]
-  revise [label="Revise Design"]
-
-  objectives -> scenarios -> heuristic -> task -> findings -> gate
-  gate -> recs [label="Accepted"]
-  gate -> revise [label="Need Changes"]
-  revise -> heuristic
-  recs -> output
-}
-\`\`\`
-
-## Inter-Agent Handoff
-
-**Input dari:** PM Agent (Agent 1) — PRD, feature requirements
-**Output ke:** Design Brief Generator skill (self) — validated UX requirements
-
-## Anti-Pattern
-
-- Jangan skip heuristic evaluation untuk "simple" screens
-- Jangan rate semua findings sebagai "minor" — be honest about severity
-- Jangan test sendiri — usability test perlu perspective orang lain
-`,
-
-    'design-brief-generator': `---
-name: design-brief-generator
-description: "WAJIB DIGUNAKAN: Ketika diminta membuat design brief, translate PRD ke design spec, atau membuat UI specification."
----
-
-# Design Brief Generator
-
-Translate PRD dan UX research findings menjadi actionable design brief yang bisa langsung dikerjakan.
-
-<HARD-GATE>
-Jangan buat design brief tanpa referensi PRD yang valid.
-Setiap screen HARUS punya accessibility notes.
-Design brief HARUS include responsive breakpoints.
-</HARD-GATE>
-
-## Checklist
-
-You MUST create a TodoWrite task for each item and complete them in order:
-
-1. **PRD Review** — Baca dan pahami PRD dari PM Agent
-2. **User Flow Mapping** — Map semua user journeys
-3. **Screen Inventory** — List semua screens yang dibutuhkan
-4. **Component Specification** — Detail per screen (layout, interactions, states)
-5. **Accessibility Notes** — WCAG 2.1 AA compliance per screen
-6. **Responsive Strategy** — Mobile / Tablet / Desktop breakpoints
-7. **[HUMAN GATE — Design Lead]** — Send brief via notify.sh
-8. **Output Document** — Write to outputs/YYYY-MM-DD-design-brief-{feature}.md
-
-## Process Flow
-
-\`\`\`dot
-digraph design_brief {
-  rankdir=TB
-  node [shape=box, style=rounded]
-  prd [label="Read PRD"]
-  flow [label="User Flow Map"]
-  screens [label="Screen Inventory"]
-  specs [label="Component Specs"]
-  a11y [label="Accessibility Notes"]
-  responsive [label="Responsive Strategy"]
-  gate [label="HUMAN GATE\\nDesign Lead", shape=diamond, style="filled", fillcolor="#f59e0b"]
-  output [label="Write Output Doc"]
-  revise [label="Revise Brief"]
-
-  prd -> flow -> screens -> specs -> a11y -> responsive -> gate
-  gate -> output [label="Approved"]
-  gate -> revise [label="Changes"]
-  revise -> specs
-}
-\`\`\`
-
-## Inter-Agent Handoff
-
-**Input dari:** PM Agent (Agent 1) — PRD, Usability Testing — test results
-**Output ke:** EM/Architect (Agent 3) — design brief for technical feasibility review
-
-## Anti-Pattern
-
-- Jangan copy-paste PRD as-is — design brief harus visual-focused
-- Jangan lupa responsive — mobile-first bukan optional
-- Jangan skip accessibility — ini bukan "nice to have"
-`,
-
-    'prototype-generator': `---
-name: prototype-generator
-description: "WAJIB DIGUNAKAN: Ketika diminta membuat prototype, wireframe, atau mockup description untuk fitur baru."
----
-
-# Prototype Generator
-
-Buat detailed wireframe descriptions dan interaction specifications yang bisa dipahami developer.
-
-<HARD-GATE>
-Setiap prototype HARUS cover semua states: empty, loading, error, success, edge case.
-Interaction patterns HARUS consistent dengan existing design system.
-</HARD-GATE>
-
-## Checklist
-
-You MUST create a TodoWrite task for each item and complete them in order:
-
-1. **Reference Design Brief** — Baca design brief yang sudah di-approve
-2. **Component Breakdown** — Identify reusable vs new components
-3. **State Documentation** — Document all states per component
-4. **Interaction Specification** — Hover, click, transition, animation
-5. **Edge Cases** — Empty state, error state, long text, many items
-6. **Output Document** — Write to outputs/YYYY-MM-DD-prototype-{feature}.md
-
-## Process Flow
-
-\`\`\`dot
-digraph prototype_generator {
-  rankdir=TB
-  node [shape=box, style=rounded]
-  brief [label="Read Design Brief"]
-  breakdown [label="Component Breakdown"]
-  states [label="State Documentation"]
-  interactions [label="Interaction Spec"]
-  edges [label="Edge Cases"]
-  output [label="Write Output Doc"]
-
-  brief -> breakdown -> states -> interactions -> edges -> output
-}
-\`\`\`
-
-## Inter-Agent Handoff
-
-**Input dari:** Design Brief Generator (self)
-**Output ke:** EM/Architect (Agent 3) — prototype specs for FSD
-
-## Anti-Pattern
-
-- Jangan lupa empty states — first-time user experience matters
-- Jangan describe "like [app X]" tanpa specific details
-- Jangan assume developer tahu design system — be explicit
-`,
-  },
+  // All skill content resolved from AOC Skill Catalog (in-catalog).
+  skillContents: {},
 
   scriptTemplates: [
     { filename: 'gdocs-export.sh', content: GDOCS_SH },
