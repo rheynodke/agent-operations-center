@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { Agent, Connection } from "@/types"
+import type { Agent, Connection, Project } from "@/types"
 
 /**
  * Role-based permission helpers. Mirror the server-side checks in
@@ -53,4 +53,28 @@ export function canEditConnection(conn: Pick<Connection, "createdBy"> | null | u
   if (!conn || !user) return false
   if (user.role === "admin") return true
   return conn.createdBy != null && conn.createdBy === user.id
+}
+
+/**
+ * True if the current user can write to a given project.
+ *
+ * Mirrors server-side `userOwnsProject` in db.cjs:
+ *   - admin bypass
+ *   - null `createdBy` → shared / legacy project (anyone may mutate)
+ *   - otherwise must match user.id
+ */
+export function useCanEditProject(project: Pick<Project, "createdBy"> | null | undefined): boolean {
+  const userId = useAuthStore((s) => s.user?.id)
+  const role   = useAuthStore((s) => s.user?.role)
+  if (!project) return false
+  if (role === "admin") return true
+  if (project.createdBy == null) return true // shared / legacy
+  return project.createdBy === userId
+}
+
+export function canEditProject(project: Pick<Project, "createdBy"> | null | undefined, user: { id?: number; role?: string } | null): boolean {
+  if (!project || !user) return false
+  if (user.role === "admin") return true
+  if (project.createdBy == null) return true
+  return project.createdBy === user.id
 }

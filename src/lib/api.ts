@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, Pipeline, PipelineGraph, PipelineValidationResult, PipelineRun, PipelineRunDetail, AgentCapabilities } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, AgentCapabilities, ProjectWorkspaceMode, ValidatePathResult, FetchBranchesResult, CreateProjectExtendedPayload, FsBrowseResult, MissionRoom, MissionMessage } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -117,6 +117,25 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ avatarData, avatarMime }),
     }),
+
+  // Mission Rooms
+  getRooms: () => request<{ rooms: { global: MissionRoom[]; project: MissionRoom[] } }>("/rooms"),
+  getRoom: (id: string) => request<{ room: MissionRoom; agents: import("@/types").Agent[] }>(`/rooms/${encodeURIComponent(id)}`),
+  createRoom: (data: { kind: "global" | "project"; projectId?: string | null; name: string; description?: string; memberAgentIds?: string[] }) =>
+    request<{ room: MissionRoom }>("/rooms", { method: "POST", body: JSON.stringify(data) }),
+  patchRoomMembers: (id: string, memberAgentIds: string[]) =>
+    request<{ room: MissionRoom }>(`/rooms/${encodeURIComponent(id)}/members`, { method: "PATCH", body: JSON.stringify({ memberAgentIds }) }),
+  getProjectRoom: (projectId: string) =>
+    request<{ room: MissionRoom }>(`/projects/${encodeURIComponent(projectId)}/room`),
+  getRoomMessages: (id: string, opts: { before?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams()
+    if (opts.before) qs.set("before", opts.before)
+    if (opts.limit) qs.set("limit", String(opts.limit))
+    const tail = qs.toString() ? `?${qs}` : ""
+    return request<{ messages: MissionMessage[] }>(`/rooms/${encodeURIComponent(id)}/messages${tail}`)
+  },
+  postRoomMessage: (id: string, body: string, mentions: string[] = [], meta?: Record<string, any>) =>
+    request<{ message: MissionMessage }>(`/rooms/${encodeURIComponent(id)}/messages`, { method: "POST", body: JSON.stringify({ body, mentions, meta }) }),
   getAvatar: (id: string) =>
     request<{ avatarData: string; avatarMime: string }>(`/agents/${id}/avatar`),
   getAgentFile: (id: string, filename: string) =>
@@ -308,9 +327,9 @@ export const api = {
     const qs = params.toString();
     return request<{ tasks: Task[] }>(`/tasks${qs ? `?${qs}` : ''}`);
   },
-  createTask: (data: { title: string; description?: string; status?: TaskStatus; priority?: TaskPriority; agentId?: string; tags?: string[] }) =>
+  createTask: (data: { title: string; description?: string; status?: TaskStatus; priority?: TaskPriority; agentId?: string; tags?: string[]; projectId?: string; stage?: string | null; role?: string | null; epicId?: string | null }) =>
     request<{ task: Task }>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
-  updateTask: (id: string, patch: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'tags' | 'cost' | 'sessionId'>> & { assignTo?: string; note?: string; newAttachmentIds?: string[] }) =>
+  updateTask: (id: string, patch: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'tags' | 'cost' | 'sessionId'>> & { assignTo?: string; note?: string; newAttachmentIds?: string[]; stage?: string | null; role?: string | null; epicId?: string | null }) =>
     request<{ task: Task }>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTask: (id: string) =>
     request<{ ok: boolean }>(`/tasks/${id}`, { method: 'DELETE' }),
@@ -320,6 +339,16 @@ export const api = {
     request<{ ok: boolean }>(`/agents/${agentId}/sync-task-script`, { method: 'POST' }),
   dispatchTask: (taskId: string) =>
     request<{ ok: boolean; sessionKey: string; agentId: string }>(`/tasks/${taskId}/dispatch`, { method: 'POST' }),
+  approveTask: (taskId: string, note?: string) =>
+    request<{ ok: boolean; task: Task }>(`/tasks/${taskId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note || undefined }),
+    }),
+  requestTaskChange: (taskId: string, reason: string) =>
+    request<{ ok: boolean; task: Task }>(`/tasks/${taskId}/request-change`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
   interruptTask: (taskId: string, note?: string) =>
     request<{ ok: boolean; sessionKey: string }>(`/tasks/${taskId}/interrupt`, {
       method: 'POST',
@@ -510,10 +539,96 @@ export const api = {
     request<{ projects: Project[] }>('/projects'),
   createProject: (data: { name: string; color?: string; description?: string }) =>
     request<{ project: Project }>('/projects', { method: 'POST', body: JSON.stringify(data) }),
-  updateProject: (id: string, patch: Partial<Pick<Project, 'name' | 'color' | 'description'>>) =>
+  /** Workspace-aware variant — accepts greenfield/brownfield fields. */
+  createProjectV2: (data: CreateProjectExtendedPayload) =>
+    request<{ project: Project }>('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  updateProject: (id: string, patch: Partial<Pick<Project, 'name' | 'color' | 'description' | 'kind'>>) =>
     request<{ project: Project }>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-  deleteProject: (id: string) =>
-    request<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
+  deleteProject: (id: string, opts?: { unbind?: boolean; hard?: boolean }) => {
+    const q = opts?.unbind ? `?unbind=true${opts.hard ? '&hard=true' : ''}` : ''
+    return request<{ ok: boolean; unbindResult?: { gitignoreRemoved: boolean; aocRemoved: boolean } }>(
+      `/projects/${id}${q}`, { method: 'DELETE' }
+    )
+  },
+  /** Pre-flight: validate workspace path + detect git repo + existing binding. */
+  validateProjectPath: (data: { path: string; mode: ProjectWorkspaceMode; name?: string }) =>
+    request<ValidatePathResult>('/projects/_validate-path', { method: 'POST', body: JSON.stringify(data) }),
+  /** `git fetch` then list branches. Manual trigger (no debounce). */
+  fetchProjectBranches: (data: { path: string; projectId?: string }) =>
+    request<FetchBranchesResult>('/projects/_fetch-branches', { method: 'POST', body: JSON.stringify(data) }),
+  /** Switch active branch on a bound project. Refuses dirty tree. */
+  switchProjectBranch: (id: string, branch: string) =>
+    request<{ project: Project; switched: boolean; headSha: string }>(`/projects/${id}/branch`, {
+      method: 'PATCH', body: JSON.stringify({ branch }),
+    }),
+  /** Manual fetch + return latest branch list for a bound project. */
+  refetchProjectBranches: (id: string) =>
+    request<FetchBranchesResult & { project: Project }>(`/projects/${id}/refetch`, {
+      method: 'POST', body: JSON.stringify({}),
+    }),
+
+  /** Server-driven directory browser (for the wizard's path picker). */
+  browseProjectDir: (path: string = '~', showHidden = false) => {
+    const q = `?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=true' : ''}`
+    return request<FsBrowseResult>(`/projects/_browse-dir${q}`)
+  },
+
+  // ─── Epics (Phase B) ──────────────────────────────────────────────────────
+  listEpics: (projectId: string) =>
+    request<{ epics: import('@/types').Epic[] }>(`/projects/${encodeURIComponent(projectId)}/epics`),
+  createEpic: (projectId: string, data: { title: string; description?: string; status?: string; color?: string }) =>
+    request<{ epic: import('@/types').Epic }>(`/projects/${encodeURIComponent(projectId)}/epics`, {
+      method: 'POST', body: JSON.stringify(data),
+    }),
+  updateEpic: (id: string, patch: Partial<{ title: string; description: string; status: string; color: string }>) =>
+    request<{ epic: import('@/types').Epic }>(`/epics/${encodeURIComponent(id)}`, {
+      method: 'PATCH', body: JSON.stringify(patch),
+    }),
+  deleteEpic: (id: string) =>
+    request<{ ok: boolean }>(`/epics/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ─── Task dependencies (Phase B) ──────────────────────────────────────────
+  listTaskDependencies: (taskId: string) =>
+    request<{ dependencies: import('@/types').TaskDependency[] }>(`/tasks/${encodeURIComponent(taskId)}/dependencies`),
+  addTaskDependency: (taskId: string, body: { blockerTaskId?: string; blockedTaskId?: string; kind?: 'blocks' | 'relates' }) =>
+    request<{ dependency: import('@/types').TaskDependency }>(`/tasks/${encodeURIComponent(taskId)}/dependencies`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  removeTaskDependency: (taskId: string, depId: string) =>
+    request<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/dependencies/${encodeURIComponent(depId)}`, { method: 'DELETE' }),
+  listProjectDependencies: (projectId: string) =>
+    request<{ dependencies: import('@/types').TaskDependency[] }>(`/projects/${encodeURIComponent(projectId)}/dependencies`),
+
+  // ─── Project memory (Phase A2) ────────────────────────────────────────────
+  listProjectMemory: (projectId: string, opts: { kind?: import('@/types').ProjectMemoryKind; status?: import('@/types').ProjectMemoryStatus } = {}) => {
+    const qs = new URLSearchParams()
+    if (opts.kind) qs.set('kind', opts.kind)
+    if (opts.status) qs.set('status', opts.status)
+    const tail = qs.toString() ? `?${qs}` : ''
+    return request<{ items: import('@/types').ProjectMemoryItem[] }>(`/projects/${encodeURIComponent(projectId)}/memory${tail}`)
+  },
+  createProjectMemory: (projectId: string, body: {
+    kind: import('@/types').ProjectMemoryKind
+    title: string
+    body?: string
+    status?: import('@/types').ProjectMemoryStatus
+    meta?: import('@/types').ProjectMemoryMeta
+    sourceTaskId?: string | null
+  }) =>
+    request<{ item: import('@/types').ProjectMemoryItem }>(`/projects/${encodeURIComponent(projectId)}/memory`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  updateProjectMemory: (id: string, patch: Partial<{
+    title: string; body: string;
+    status: import('@/types').ProjectMemoryStatus;
+    meta: import('@/types').ProjectMemoryMeta;
+    sourceTaskId: string | null;
+  }>) =>
+    request<{ item: import('@/types').ProjectMemoryItem }>(`/memory/${encodeURIComponent(id)}`, {
+      method: 'PATCH', body: JSON.stringify(patch),
+    }),
+  deleteProjectMemory: (id: string) =>
+    request<{ ok: boolean }>(`/memory/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Project Integrations
   getProjectIntegrations: (projectId: string) =>
@@ -859,102 +974,8 @@ export const api = {
       body: JSON.stringify({ value }),
     }),
 
-  // Pipelines
-  listPipelines: () => request<Pipeline[]>("/pipelines"),
-  getPipeline: (id: string) => request<Pipeline>(`/pipelines/${id}`),
-  createPipeline: (data: { name: string; description?: string | null; graph?: PipelineGraph }) =>
-    request<Pipeline>("/pipelines", { method: "POST", body: JSON.stringify(data) }),
-  updatePipeline: (id: string, patch: { name?: string; description?: string | null; graph?: PipelineGraph }) =>
-    request<Pipeline>(`/pipelines/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  deletePipeline: (id: string) =>
-    request<{ ok: true }>(`/pipelines/${id}`, { method: "DELETE" }),
-  validatePipeline: (id: string, graph?: PipelineGraph) =>
-    request<PipelineValidationResult>(`/pipelines/${id}/validate`, {
-      method: "POST",
-      body: JSON.stringify(graph ? { graph } : {}),
-    }),
-
-  // Agent capabilities (composite — for workflow editor)
+  // Agent capabilities (composite — used by skill template selectors)
   getAgentCapabilities: (id: string) => request<AgentCapabilities>(`/agents/${id}/capabilities`),
-
-  // Missions (canonical). Backed by the same run entities as before — the API
-  // just surfaces the new vocabulary. "Runs" aliases below remain for
-  // anywhere code still references the old names.
-  listMissions: () => request<PipelineRun[]>("/missions"),
-  getMission: (id: string) => request<PipelineRunDetail>(`/missions/${id}`),
-  createMission: (data: {
-    playbookId: string
-    title?: string
-    description?: string
-    agentResolution?: Record<string, string>
-  }) =>
-    request<PipelineRunDetail>("/missions", { method: "POST", body: JSON.stringify(data) }),
-  approveMissionStep: (missionId: string, stepId: string, comment?: string) =>
-    request<PipelineRunDetail>(`/missions/${missionId}/steps/${stepId}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ comment }),
-    }),
-  rejectMissionStep: (missionId: string, stepId: string, reason?: string) =>
-    request<PipelineRunDetail>(`/missions/${missionId}/steps/${stepId}/reject`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    }),
-  completeMissionStep: (missionId: string, stepId: string, output?: string) =>
-    request<PipelineRunDetail>(`/missions/${missionId}/steps/${stepId}/complete`, {
-      method: "POST",
-      body: JSON.stringify({ output }),
-    }),
-  cancelMission: (missionId: string, reason?: string) =>
-    request<PipelineRunDetail>(`/missions/${missionId}/cancel`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    }),
-
-  // Playbooks — alias vocab over pipelines.
-  listPlaybooks: () => request<Pipeline[]>("/playbooks"),
-  getPlaybook: (id: string) => request<Pipeline>(`/playbooks/${id}`),
-  createPlaybook: (data: { name: string; description?: string | null; graph?: PipelineGraph }) =>
-    request<Pipeline>("/playbooks", { method: "POST", body: JSON.stringify(data) }),
-  updatePlaybook: (id: string, patch: { name?: string; description?: string | null; graph?: PipelineGraph }) =>
-    request<Pipeline>(`/playbooks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  deletePlaybook: (id: string) => request<{ ok: true }>(`/playbooks/${id}`, { method: "DELETE" }),
-
-  // Legacy aliases for older code paths — safe to remove once all callers migrate.
-  listRuns: () => request<PipelineRun[]>("/missions"),
-  getRun: (id: string) => request<PipelineRunDetail>(`/missions/${id}`),
-  createRun: (data: {
-    pipelineId: string
-    title?: string
-    description?: string
-    agentResolution?: Record<string, string>
-  }) =>
-    request<PipelineRunDetail>("/missions", {
-      method: "POST",
-      body: JSON.stringify({ playbookId: data.pipelineId, title: data.title, description: data.description, agentResolution: data.agentResolution }),
-    }),
-  approveRunStep: (runId: string, stepId: string, comment?: string) =>
-    request<PipelineRunDetail>(`/missions/${runId}/steps/${stepId}/approve`, { method: "POST", body: JSON.stringify({ comment }) }),
-  rejectRunStep: (runId: string, stepId: string, reason?: string) =>
-    request<PipelineRunDetail>(`/missions/${runId}/steps/${stepId}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
-  completeRunStep: (runId: string, stepId: string, output?: string) =>
-    request<PipelineRunDetail>(`/missions/${runId}/steps/${stepId}/complete`, { method: "POST", body: JSON.stringify({ output }) }),
-  cancelRun: (runId: string, reason?: string) =>
-    request<PipelineRunDetail>(`/missions/${runId}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }),
-
-  // Filesystem browser (host fs — for Playbook repo picker)
-  browseFs: (path?: string) =>
-    request<{
-      path: string
-      parent: string | null
-      home: string
-      currentIsGitRepo: boolean
-      entries: Array<{ name: string; isDir: boolean; isGitRepo: boolean; isSymlink: boolean }>
-    }>(`/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
-  initRepo: (path: string) =>
-    request<{ ok: boolean; path: string; existing: boolean }>("/fs/init-repo", {
-      method: "POST",
-      body: JSON.stringify({ path }),
-    }),
 
   // Health
   health: () => request("/health"),

@@ -787,7 +787,7 @@ function groupMessagesIntoTurns(messages: GatewayMessage[]): {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-// 1 Ticket = 1 Session — no multi-session tracking
+// 1 Task = 1 Session — no multi-session tracking
 
 interface AgentWorkSectionProps {
   sessionKey: string

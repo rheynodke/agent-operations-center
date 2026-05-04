@@ -1111,6 +1111,177 @@ echo "$RES" | python3 -c "import json,sys; print(json.load(sys.stdin)['comment']
 
 function ensurePostCommentScript() { /* moved to aoc-tasks skill */ }
 
+// ── project_memory.sh — Read/write project-level structured memory ─────────
+//
+// Phase A2 — surfaces the dispatched task's project memory (decisions /
+// open questions / risks / glossary) and lets the agent contribute.
+// Memory is project-scoped, persistent across sessions, and injected into
+// every agent context.json under \`projectMemory\`.
+
+const PROJECT_MEMORY_SCRIPT_NAME = 'project_memory.sh';
+const PROJECT_MEMORY_SCRIPT_CONTENT = `#!/usr/bin/env bash
+# project_memory — Read or write the current project's structured memory.
+#
+# Memory kinds: decision | question | risk | glossary
+# Statuses:     open | resolved | archived
+#
+# Usage:
+#   project_memory.sh show                                 # all open + recent
+#   project_memory.sh list <kind> [status]                 # filtered list (json)
+#   project_memory.sh add <kind> "<title>" ["<body>"]      # create entry (returns id)
+#   project_memory.sh add risk "<title>" "<body>" <category> <severity>
+#                                                          # category=value|usability|feasibility|viability
+#                                                          # severity=low|medium|high
+#   project_memory.sh resolve <id> ["<answer/note>"]       # mark resolved (questions/risks)
+#   project_memory.sh archive <id>
+#   project_memory.sh delete  <id>
+#
+# Project id is read from .aoc/tasks/<taskId>/context.json (\`projectId\`).
+# The current task id should be set in CURRENT_TASK_ID, or pass --task <id>.
+
+set -euo pipefail
+
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
+
+AOC_URL="\${AOC_URL:-http://localhost:\${PORT:-18800}}"
+[ -z "\${AOC_TOKEN:-}" ] && { echo "project_memory: AOC_TOKEN not set" >&2; exit 2; }
+
+# Resolve project id by inspecting the most recent context.json the agent has.
+# Strategy: look for .aoc/tasks/<taskId>/context.json under either the project
+# workspace (if we can detect it) or PWD.
+resolve_project_id() {
+  local hint
+  hint="\${PROJECT_ID:-}"
+  if [ -n "$hint" ]; then echo "$hint"; return; fi
+  # Try newest context.json under .aoc/tasks anywhere in CWD subtree.
+  local ctx
+  ctx="$(find . -maxdepth 5 -type f -path '*/.aoc/tasks/*/context.json' 2>/dev/null | head -1 || true)"
+  if [ -n "$ctx" ]; then
+    python3 -c "import json,sys; print(json.load(open('$ctx')).get('projectId',''))"
+    return
+  fi
+  echo ""
+}
+
+PROJECT_ID="\${PROJECT_ID:-$(resolve_project_id)}"
+if [ -z "$PROJECT_ID" ]; then
+  echo "project_memory: cannot resolve project id (set PROJECT_ID env or run inside a project workspace)" >&2
+  exit 2
+fi
+
+CMD="\${1:-show}"
+shift || true
+
+api_get() {
+  curl -sf -X GET "$AOC_URL$1" -H "Authorization: Bearer $AOC_TOKEN"
+}
+api_json() {
+  local method="$1" path="$2" body="$3"
+  curl -sf -X "$method" "$AOC_URL$path" \\
+    -H "Authorization: Bearer $AOC_TOKEN" \\
+    -H "Content-Type: application/json" \\
+    -d "$body"
+}
+
+case "$CMD" in
+  show)
+    api_get "/api/projects/$PROJECT_ID/memory" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)['items']
+def section(label, items):
+    if not items: return
+    print(f'\\n## {label} ({len(items)})')
+    for it in items:
+        marker = '·'
+        if it['kind'] == 'risk':
+            sev = (it.get('meta') or {}).get('severity','?')
+            cat = (it.get('meta') or {}).get('category','?')
+            marker = f'[{cat}/{sev}]'
+        title = it['title']
+        body = (it.get('body') or '').strip().replace('\\n',' ')[:120]
+        print(f'  {marker} ({it[\"id\"][:8]}) {title}')
+        if body: print(f'      {body}')
+decisions = [it for it in d if it['kind']=='decision'][:10]
+questions = [it for it in d if it['kind']=='question' and it['status']=='open']
+risks     = [it for it in d if it['kind']=='risk' and it['status']=='open']
+glossary  = [it for it in d if it['kind']=='glossary']
+section('Decisions (recent)', decisions)
+section('Open questions', questions)
+section('Open risks', risks)
+section('Glossary', glossary)
+if not (decisions or questions or risks or glossary):
+    print('(empty)')
+"
+    ;;
+  list)
+    KIND="\${1:?kind required (decision|question|risk|glossary)}"
+    STATUS="\${2:-}"
+    QS="kind=$KIND"
+    [ -n "$STATUS" ] && QS="$QS&status=$STATUS"
+    api_get "/api/projects/$PROJECT_ID/memory?$QS"
+    ;;
+  add)
+    KIND="\${1:?kind required}"
+    TITLE="\${2:?title required}"
+    BODY="\${3:-}"
+    META='{}'
+    if [ "$KIND" = "risk" ]; then
+      CAT="\${4:-value}"
+      SEV="\${5:-medium}"
+      META="$(python3 -c "import json; print(json.dumps({'category':'$CAT','severity':'$SEV'}))")"
+    fi
+    export TITLE BODY META KIND
+    PAYLOAD="$(python3 - <<PY
+import json, os
+print(json.dumps({
+  "kind": os.environ["KIND"],
+  "title": os.environ["TITLE"],
+  "body": os.environ.get("BODY",""),
+  "meta": json.loads(os.environ["META"]),
+}))
+PY
+)"
+    api_json POST "/api/projects/$PROJECT_ID/memory" "$PAYLOAD" | python3 -c "import json,sys; print(json.load(sys.stdin)['item']['id'])"
+    ;;
+  resolve|archive)
+    ID="\${1:?id required}"
+    NEW_STATUS="$([ "$CMD" = "resolve" ] && echo resolved || echo archived)"
+    NOTE="\${2:-}"
+    if [ -n "$NOTE" ] && [ "$CMD" = "resolve" ]; then
+      # Pull current item to merge body with answer note (questions/risks).
+      CUR="$(api_get "/api/projects/$PROJECT_ID/memory" | python3 -c "
+import json,sys; d=json.load(sys.stdin)['items']
+m=[it for it in d if it['id'].startswith('$ID')]
+print(json.dumps(m[0] if m else {}))
+")"
+      if [ "$CUR" != "{}" ]; then
+        REAL_ID="$(echo "$CUR" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")"
+        export NOTE NEW_STATUS REAL_ID
+        PAYLOAD="$(python3 -c "import json,os; print(json.dumps({'status': os.environ['NEW_STATUS'], 'meta': {'answer': os.environ['NOTE']}}))")"
+        api_json PATCH "/api/memory/$REAL_ID" "$PAYLOAD" >/dev/null
+        echo "ok $REAL_ID -> $NEW_STATUS"
+        exit 0
+      fi
+    fi
+    PAYLOAD="$(python3 -c "import json; print(json.dumps({'status':'$NEW_STATUS'}))")"
+    api_json PATCH "/api/memory/$ID" "$PAYLOAD" >/dev/null
+    echo "ok $ID -> $NEW_STATUS"
+    ;;
+  delete)
+    ID="\${1:?id required}"
+    curl -sf -X DELETE "$AOC_URL/api/memory/$ID" -H "Authorization: Bearer $AOC_TOKEN" >/dev/null
+    echo "deleted $ID"
+    ;;
+  *)
+    echo "Unknown command: $CMD" >&2
+    echo "Usage: project_memory.sh show|list|add|resolve|archive|delete ..." >&2
+    exit 2
+    ;;
+esac
+`;
+
 // ── aoc-connect.sh — Generic connection wrapper ─────────────────────────────
 
 const AOC_CONNECT_SCRIPT_NAME = 'aoc-connect.sh';
@@ -2012,6 +2183,8 @@ module.exports = {
   FETCH_ATTACHMENT_SCRIPT_CONTENT,
   SAVE_OUTPUT_SCRIPT_CONTENT,
   POST_COMMENT_SCRIPT_CONTENT,
+  PROJECT_MEMORY_SCRIPT_NAME,
+  PROJECT_MEMORY_SCRIPT_CONTENT,
   AOC_CONNECT_SCRIPT_CONTENT,
   CHECK_CONNECTIONS_SCRIPT_CONTENT,
   MCP_CALL_SCRIPT_CONTENT,

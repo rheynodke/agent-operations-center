@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react"
-import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore, useProcessingStore } from "@/stores"
+import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore, useProcessingStore, useRoomStore } from "@/stores"
 import { useChatStore, parseMediaAttachments, mediaPathToUrl, stripGatewayEnvelopes, isSystemInjectedUserMessage } from "@/stores/useChatStore"
 import { useProjectStore } from '@/stores/useProjectStore'
 import { api } from "@/lib/api"
@@ -457,6 +457,18 @@ export function useWebSocket() {
           break
         }
 
+        case "room:message": {
+          const payload = msg.payload as { roomId?: string; message?: import("@/types").MissionMessage }
+          if (payload?.roomId && payload.message) useRoomStore.getState().appendMessage(payload.roomId, payload.message)
+          break
+        }
+
+        case "room:created": {
+          const room = (msg.payload as { room?: import("@/types").MissionRoom })?.room
+          if (room) useRoomStore.getState().upsertRoom(room)
+          break
+        }
+
         default: {
           // ── Gateway & Chat events (forwarded from gateway-ws.cjs) ──────────
           const chatStore = useChatStore.getState()
@@ -518,7 +530,9 @@ export function useWebSocket() {
                 })
               }
 
-              // User message from external channel (e.g. Telegram) — may contain media
+              // User message from external channel (e.g. Telegram) — may contain media.
+              // Also echoed by the gateway for dashboard-sent messages: suppress those
+              // using the pending-sent set populated by handleSend() in ChatPage.
               if (role === "user" && text) {
                 const rawText = text as string
                 // Skip system-injected user messages (skill invocation context).
@@ -527,20 +541,29 @@ export function useWebSocket() {
                 } else {
                   const { paths, caption } = parseMediaAttachments(rawText)
                   if (caption || paths.length > 0) {
-                    // Dedup: check last 5 user messages by text content only.
-                    // Timestamp comparison is intentionally omitted — local timestamps
-                    // and gateway broadcast timestamps always differ, causing false duplicates.
-                    const existing = chatStore.messages[sk] ?? []
-                    const recentUserMsgs = existing.filter(m => m.role === "user").slice(-5)
-                    const alreadyHas = recentUserMsgs.some(m => m.userText === caption)
-                    if (!alreadyHas) {
-                      chatStore.appendMessage(sk, {
-                        id: `user-ws-${Date.now()}`,
-                        role: "user",
-                        userText: caption,
-                        userImages: paths.length > 0 ? paths.map(mediaPathToUrl) : undefined,
-                        timestamp: Date.now(),
-                      })
+                    // Primary guard: suppress WS echo of messages we sent from this dashboard
+                    // session. hasPendingSent is keyed by sessionKey+text, so it can't false-
+                    // positive on messages from other sessions or external channels.
+                    const isPendingEcho = caption ? chatStore.hasPendingSent(sk, caption) : false
+                    if (isPendingEcho) {
+                      // We already rendered this message optimistically — discard the echo.
+                      // Clear the pending flag so future identical messages aren't blocked.
+                      chatStore.clearSent(sk, caption)
+                    } else {
+                      // Fallback dedup: check last 5 user messages by text content only.
+                      // Catches late echoes after the pending-set TTL expires.
+                      const existing = chatStore.messages[sk] ?? []
+                      const recentUserMsgs = existing.filter(m => m.role === "user").slice(-5)
+                      const alreadyHas = recentUserMsgs.some(m => m.userText === caption)
+                      if (!alreadyHas) {
+                        chatStore.appendMessage(sk, {
+                          id: `user-ws-${Date.now()}`,
+                          role: "user",
+                          userText: caption,
+                          userImages: paths.length > 0 ? paths.map(mediaPathToUrl) : undefined,
+                          timestamp: Date.now(),
+                        })
+                      }
                     }
                   }
                 }
@@ -642,6 +665,9 @@ export function useWebSocket() {
             const { sessionKey } = (msg.payload ?? {}) as Record<string, unknown>
             if (sessionKey) {
               const sk = sessionKey as string
+              // Force clear processing flag to prevent 'Thinking...' from getting stuck
+              useProcessingStore.getState().stop(sk)
+              
               // If response already arrived (from streaming), clear immediately
               const lastAgent = [...(chatStore.messages[sk] ?? [])].reverse().find(m => m.role === "agent")
               if (lastAgent?.responseText) {

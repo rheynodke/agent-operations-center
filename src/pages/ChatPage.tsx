@@ -1,9 +1,12 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react"
-import { useChatStore, gatewayMessagesToGroups, type ChatMessageGroup } from "@/stores/useChatStore"
-import { useAgentStore } from "@/stores"
+import { useSearchParams } from "react-router-dom"
+import { useChatStore, gatewayMessagesToGroups, stripUserMetadataEnvelope, type ChatMessageGroup } from "@/stores/useChatStore"
+import { useAgentStore, useRoomStore } from "@/stores"
+import { api } from "@/lib/api"
 import { chatApi, type ChatSession } from "@/lib/chat-api"
 import { ChatMessage } from "@/components/chat/ChatMessage"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
+import { NewRoomDialog, RoomMain, RoomSidebar } from "@/components/mission-rooms/RoomComponents"
 import { cn } from "@/lib/utils"
 import {
   MessageSquarePlus,
@@ -54,6 +57,66 @@ function relativeTime(ts?: number): string {
   return `${Math.floor(diff / 86400_000)}d ago`
 }
 
+/**
+ * Clean a raw lastMessage string from the API before using it as a title.
+ * Handles truncated metadata envelopes (closing ``` missing due to 200-char cut).
+ */
+function cleanLastMessage(raw: string): string {
+  if (!raw) return ""
+  let text = raw.trim()
+  // Remove full or TRUNCATED metadata blocks — closing ``` may be absent
+  // because the backend slices at 200 chars before the block closes.
+  // Patterns observed:
+  //   "Conversation info (untrusted metadata): ```json {...} ```"
+  //   "Sender (untrusted metadata): ```json { \"l..."
+  text = text
+    // Full block (closing ``` present)
+    .replace(/[A-Za-z][\w\s]*\(untrusted metadata\):\s*```json[\s\S]*?```/g, "")
+    // Truncated block (no closing ```) — wipe from the label to end of string
+    .replace(/[A-Za-z][\w\s]*\(untrusted metadata\):[\s\S]*/g, "")
+    // Gateway timestamp prefix: [Mon 2026-05-01 14:22 GMT+7]
+    .replace(/^\[[^\]]{5,50}\]\s*/, "")
+    // Leftover [media attached: ...] markers
+    .replace(/\[media attached:[^\]]*\]/g, "")
+  // Collapse whitespace
+  text = text.replace(/\n/g, " ").replace(/\s{2,}/g, " ").trim()
+  // Filter out noise:
+  //   - Looks like a UUID/session-id: "5f68d17a" or "5f68d17a (2026-05-01)"
+  //   - Too short to be meaningful (< 4 chars)
+  if (/^[0-9a-f]{6,}(\s*\([^)]+\))?$/i.test(text)) return ""
+  if (text.length < 4) return ""
+  return text.slice(0, 60)
+}
+
+/**
+ * Derive a human-readable title for a chat session.
+ * Priority:
+ *   1. First user message from already-loaded messages (most accurate)
+ *   2. lastMessage from API, aggressively cleaned
+ *   3. Fallback: "New chat"
+ */
+function deriveSessionTitle(
+  sessionKey: string,
+  messages: Record<string, ChatMessageGroup[]>,
+  lastMessageRaw?: string
+): string {
+  // 1. Try loaded messages — find first user message
+  const loaded = messages[sessionKey]
+  if (loaded?.length) {
+    const firstUser = loaded.find(m => m.role === "user" && m.userText?.trim())
+    if (firstUser?.userText) {
+      const t = firstUser.userText.replace(/\n/g, " ").trim().slice(0, 60)
+      if (t) return t
+    }
+  }
+  // 2. Fall back to cleaned API lastMessage
+  if (lastMessageRaw) {
+    const cleaned = cleanLastMessage(lastMessageRaw)
+    if (cleaned) return cleaned
+  }
+  return "New chat"
+}
+
 // ─── Chat Sidebar ─────────────────────────────────────────────────────────────
 
 function ChatSidebar({
@@ -64,10 +127,50 @@ function ChatSidebar({
   onNewChat: () => void
 }) {
   const { sessions, activeSessionKey, gatewayConnected } = useChatStore()
+  // Subscribe to messages so titles update as sessions load
+  const messages = useChatStore((s) => s.messages)
   const agents = useAgentStore((s) => s.agents)
   const [collapsedAgents, setCollapsedAgents] = useState<Set<string>>(new Set())
   const [collapsedChannels, setCollapsedChannels] = useState<Set<string>>(new Set())
   const [allCollapsed, setAllCollapsed] = useState(false)
+
+  // ── Background title prefetch ────────────────────────────────────────────
+  // On mount (and whenever the session list changes) batch-fetch the first
+  // ~1 kB of each session's history so we can show real first-user-message
+  // titles without the user needing to click into the session first.
+  const prefetchedRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!sessions.length) return
+    // Only fetch sessions whose history isn't already in the store
+    const store = useChatStore.getState()
+    const missing = sessions
+      .map(s => s.sessionKey ?? s.key ?? "")
+      .filter(k => k && !store.messages[k]?.length && !prefetchedRef.current.has(k))
+    if (!missing.length) return
+    // Mark as in-flight so concurrent effects don't re-trigger
+    missing.forEach(k => prefetchedRef.current.add(k))
+    // Batch in chunks of 10 to avoid a single huge request
+    const CHUNK = 10
+    const chunks: string[][] = []
+    for (let i = 0; i < missing.length; i += CHUNK) chunks.push(missing.slice(i, i + CHUNK))
+    ;(async () => {
+      for (const chunk of chunks) {
+        try {
+          const result = await chatApi.getHistoryMulti(chunk, 2000)
+          const currentStore = useChatStore.getState()
+          for (const s of result.sessions ?? []) {
+            if (!s.ok || !s.messages?.length) continue
+            // Only update if still empty (don't clobber a session the user opened)
+            if ((currentStore.messages[s.key] ?? []).length > 0) continue
+            const groups = gatewayMessagesToGroups(s.messages)
+            currentStore.setMessages(s.key, groups)
+          }
+        } catch {
+          // prefetch is best-effort — ignore errors
+        }
+      }
+    })()
+  }, [sessions.map(s => s.sessionKey ?? s.key).join(",")])
 
   // Group sessions: agent → channel, each sorted newest first
   const grouped = useMemo(() => {
@@ -269,7 +372,7 @@ function ChatSidebar({
                                         "text-[11px] truncate leading-snug",
                                         isActive ? "font-semibold text-foreground" : "text-foreground/65"
                                       )}>
-                                        {s.lastMessage || "New chat"}
+                                        {deriveSessionTitle(key, messages, s.lastMessage)}
                                       </p>
                                       {ts && (
                                         <p className="text-[10px] text-muted-foreground/35 mt-0.5 flex items-center gap-1">
@@ -630,16 +733,20 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
   useEffect(() => {
     if (!loading && !initialScrollDone.current) {
       initialScrollDone.current = true
-      bottomRef.current?.scrollIntoView({ behavior: "instant" })
+      bottomRef.current?.scrollIntoView({ behavior: "instant", block: "nearest" })
     }
   }, [loading])
   useEffect(() => {
     if (!initialScrollDone.current) return
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
   }, [msgs.length, msgs[msgs.length - 1]?.responseText, msgs[msgs.length - 1]?.toolCalls?.length])
 
   const handleSend = async (text: string, images?: string[]) => {
     if (isRunning) return
+
+    // Mark outbound so the WS echo (gateway echoes every user message) can
+    // be suppressed — avoids the "double message" during sending.
+    useChatStore.getState().markSent(sessionKey, text)
 
     const userMsg: ChatMessageGroup = {
       id: `user-${Math.random().toString(36).slice(2, 10)}`,
@@ -664,7 +771,11 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
 
     try {
       await chatApi.sendMessage(sessionKey, text, agentId, images)
+      // Clear pending flag once server has accepted the message (run started).
+      // Gateway echo should have already arrived by now, but clear regardless.
+      setTimeout(() => useChatStore.getState().clearSent(sessionKey, text), 10_000)
     } catch (err: unknown) {
+      useChatStore.getState().clearSent(sessionKey, text)
       updateLastAgentMessage(sessionKey, (m) => ({
         ...m,
         responseText: `❌ Failed to send: ${err instanceof Error ? err.message : "Unknown error"}`,
@@ -791,6 +902,10 @@ export function ChatPage() {
   const [newChatOpen, setNewChatOpen] = useState(false)
   const [creatingSession, setCreatingSession] = useState(false)
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false)
+  const [searchParams] = useSearchParams()
+  const [chatTab, setChatTab] = useState<"dms" | "rooms">(() => searchParams.get("tab") === "rooms" ? "rooms" : "dms")
+  const [newRoomOpen, setNewRoomOpen] = useState(false)
+  const { rooms, activeRoomId, setRooms, setActiveRoom } = useRoomStore()
 
   // Poll gateway status + sessions
   useEffect(() => {
@@ -808,6 +923,29 @@ export function ChatPage() {
     const t = setInterval(init, 5000)
     return () => clearInterval(t)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const tab = searchParams.get("tab")
+    const roomId = searchParams.get("roomId")
+    if (tab === "rooms") {
+      setChatTab("rooms")
+      if (roomId) setActiveRoom(roomId)
+    }
+  }, [searchParams, setActiveRoom])
+
+  useEffect(() => {
+    if (chatTab !== "rooms") return
+    let cancelled = false
+    api.getRooms().then((res) => {
+      if (cancelled) return
+      setRooms(res.rooms)
+      const allRooms = [...(res.rooms.global || []), ...(res.rooms.project || [])]
+      const requested = searchParams.get("roomId")
+      const next = requested || activeRoomId || allRooms.find((r) => r.id === "room-general")?.id || allRooms[0]?.id || null
+      if (next) setActiveRoom(next)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [chatTab]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectSession = useCallback(async (key: string) => {
     setActiveSessionKey(key)
@@ -859,6 +997,7 @@ export function ChatPage() {
   }, [activeSessionKey, setActiveSessionKey])
 
   const showPicker = newChatOpen || (!activeSessionKey && sessions.length === 0)
+  const allRooms = [...rooms.global, ...rooms.project]
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -871,28 +1010,42 @@ export function ChatPage() {
       )}
       <div className={cn(
         "h-full shrink-0 z-50",
-        "hidden md:flex",
+        chatSidebarOpen ? "flex" : "hidden md:flex",
         chatSidebarOpen ? "flex! fixed inset-y-0 left-0 bg-card border-r border-border" : ""
       )}>
-        <ChatSidebar
-          onSelectSession={(key) => { handleSelectSession(key); setChatSidebarOpen(false) }}
-          onNewChat={() => { handleNewChat(); setChatSidebarOpen(false) }}
-        />
+        <div className="flex flex-col h-full">
+          <div className="w-64 border-r border-border bg-background px-3 pt-3">
+            <div className="flex p-1 bg-muted/40 rounded-xl border border-border/50 text-xs font-semibold relative">
+              <button onClick={() => setChatTab("dms")} className={cn("flex-1 py-1.5 rounded-lg transition-all duration-200 z-10", chatTab === "dms" ? "bg-background shadow-sm text-foreground ring-1 ring-border" : "text-muted-foreground hover:text-foreground/80")}>DMs</button>
+              <button onClick={() => setChatTab("rooms")} className={cn("flex-1 py-1.5 rounded-lg transition-all duration-200 z-10", chatTab === "rooms" ? "bg-background shadow-sm text-foreground ring-1 ring-border" : "text-muted-foreground hover:text-foreground/80")}>Rooms</button>
+            </div>
+          </div>
+          {chatTab === "rooms" ? (
+            <RoomSidebar onNewRoom={() => setNewRoomOpen(true)} onSelectRoom={() => setChatSidebarOpen(false)} />
+          ) : (
+            <ChatSidebar
+              onSelectSession={(key) => { handleSelectSession(key); setChatSidebarOpen(false) }}
+              onNewChat={() => { handleNewChat(); setChatSidebarOpen(false) }}
+            />
+          )}
+        </div>
       </div>
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-background/40">
         {/* Mobile header — Switch Agent button */}
         <div className="md:hidden flex items-center justify-between px-4 py-2 border-b border-border shrink-0 bg-background/60">
-          <span className="text-sm font-medium text-foreground/80">Chat</span>
+          <span className="text-sm font-medium text-foreground/80">{chatTab === "rooms" ? "Rooms" : "Chat"}</span>
           <button
             onClick={() => setChatSidebarOpen(true)}
             className="text-xs text-primary font-medium px-2 py-1 rounded hover:bg-primary/10"
           >
-            Switch Agent
+            {chatTab === "rooms" ? "Switch Room" : "Switch Agent"}
           </button>
         </div>
-        {showPicker ? (
+        {chatTab === "rooms" ? (
+          <RoomMain roomId={activeRoomId || allRooms[0]?.id || null} />
+        ) : showPicker ? (
           creatingSession ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3 text-muted-foreground/50">
@@ -917,6 +1070,7 @@ export function ChatPage() {
           <AgentPicker onPick={handlePickAgent} />
         )}
       </div>
+      <NewRoomDialog open={newRoomOpen} onOpenChange={setNewRoomOpen} />
     </div>
   )
 }

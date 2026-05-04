@@ -158,6 +158,54 @@ async function initDatabase() {
   try { db.run("ALTER TABLE tasks ADD COLUMN request_from TEXT DEFAULT '-'"); } catch {}
   try { db.run("ALTER TABLE tasks ADD COLUMN analysis TEXT"); } catch {}
   try { db.run("ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
+  // ── ADLC fields (Phase B) ──
+  // stage  : where in the ADLC pipeline this task sits
+  //          'discovery' | 'design' | 'architecture' | 'implementation'
+  //          | 'qa' | 'docs' | 'release' | 'ops' | NULL
+  // role   : which ADLC role should handle it (drives auto-assign hints)
+  //          'pm' | 'pa' | 'ux' | 'em' | 'swe' | 'qa' | 'doc' | 'biz' | 'data' | NULL
+  // epic_id: groups tasks under a parent epic (nullable FK to epics.id)
+  try { db.run("ALTER TABLE tasks ADD COLUMN stage TEXT"); } catch {}
+  try { db.run("ALTER TABLE tasks ADD COLUMN role TEXT"); } catch {}
+  try { db.run("ALTER TABLE tasks ADD COLUMN epic_id TEXT"); } catch {}
+  // Phase A2 — closing reflection: marks the task as already prompted for
+  // memory reflection so we don't re-trigger on subsequent status changes.
+  try { db.run("ALTER TABLE tasks ADD COLUMN memory_reviewed_at TEXT"); } catch {}
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_tasks_stage ON tasks(stage)"); } catch {}
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_tasks_role ON tasks(role)"); } catch {}
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_tasks_epic ON tasks(epic_id)"); } catch {}
+
+  // ── Epics: group of tasks pursuing a single outcome within a project ──
+  db.run(`
+    CREATE TABLE IF NOT EXISTS epics (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      description TEXT,
+      status      TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'in_progress' | 'done' | 'cancelled'
+      color       TEXT,
+      created_by  INTEGER,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    )
+  `);
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_epics_project ON epics(project_id, status)"); } catch {}
+
+  // ── Task dependencies: directed edges between tasks ──
+  // kind: 'blocks'   — blocker_task_id must finish before blocked_task_id can start
+  //       'relates'  — informational link (e.g. "see also") with no enforcement
+  db.run(`
+    CREATE TABLE IF NOT EXISTS task_dependencies (
+      id                TEXT PRIMARY KEY,
+      blocker_task_id   TEXT NOT NULL,
+      blocked_task_id   TEXT NOT NULL,
+      kind              TEXT NOT NULL DEFAULT 'blocks',
+      created_at        TEXT NOT NULL,
+      UNIQUE (blocker_task_id, blocked_task_id, kind)
+    )
+  `);
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_taskdeps_blocker ON task_dependencies(blocker_task_id)"); } catch {}
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_taskdeps_blocked ON task_dependencies(blocked_task_id)"); } catch {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS task_activity (
@@ -206,6 +254,104 @@ async function initDatabase() {
     INSERT OR IGNORE INTO projects (id, name, color, created_at, updated_at)
     VALUES ('general', 'General', '#6366f1', datetime('now'), datetime('now'))
   `);
+  // Runtime migration: workspace + repo binding columns (Phase A1)
+  try { db.run("ALTER TABLE projects ADD COLUMN workspace_path TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN workspace_mode TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN kind TEXT DEFAULT 'ops'"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN repo_url TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN repo_branch TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN repo_remote_name TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN bound_at INTEGER"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN last_fetched_at INTEGER"); } catch (_) {}
+  try { db.run("ALTER TABLE projects ADD COLUMN created_by INTEGER"); } catch (_) {}
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_projects_workspace_path ON projects(workspace_path)"); } catch (_) {}
+
+  // ── Mission Rooms ─────────────────────────────────────────────────────────
+  db.run(`
+    CREATE TABLE IF NOT EXISTS mission_rooms (
+      id               TEXT PRIMARY KEY,
+      kind             TEXT NOT NULL DEFAULT 'global',
+      project_id        TEXT,
+      name             TEXT NOT NULL,
+      description      TEXT,
+      member_agent_ids TEXT NOT NULL DEFAULT '["main"]',
+      created_by       INTEGER,
+      created_at       TEXT NOT NULL,
+      updated_at       TEXT NOT NULL
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_mission_rooms_kind ON mission_rooms(kind)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_mission_rooms_project ON mission_rooms(project_id)`);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS mission_messages (
+      id              TEXT PRIMARY KEY,
+      room_id         TEXT NOT NULL,
+      author_type     TEXT NOT NULL,
+      author_id       TEXT,
+      author_name     TEXT,
+      body            TEXT NOT NULL,
+      mentions_json   TEXT NOT NULL DEFAULT '[]',
+      related_task_id TEXT,
+      meta_json       TEXT NOT NULL DEFAULT '{}',
+      created_at      TEXT NOT NULL
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_mission_messages_room_created ON mission_messages(room_id, created_at DESC)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_mission_messages_related_task ON mission_messages(related_task_id)`);
+
+  // ── Room Sessions (tracks gateway sessions triggered by room mentions) ──
+  // Maps gateway session keys to room+agent so we can:
+  //   1. Filter room-triggered sessions from DMs list
+  //   2. Reuse sessions per agent+room for context continuity
+  //   3. Auto-reply agent responses back to the room
+  db.run(`
+    CREATE TABLE IF NOT EXISTS room_sessions (
+      session_key TEXT PRIMARY KEY,
+      room_id     TEXT NOT NULL,
+      agent_id    TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_room_sessions_room_agent ON room_sessions(room_id, agent_id)`);
+
+  // Seed the single master global room — bound to the 'general' master project.
+  // Any other rooms users want at the global scope are created via "+ New Room".
+  db.run(`
+    INSERT OR IGNORE INTO mission_rooms (id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at)
+    VALUES
+      ('room-general', 'global', 'general', 'General', 'Global coordination and mission control.', '["main"]', NULL, datetime('now'), datetime('now'))
+  `);
+  // One-time migration: drop deprecated seeded rooms and the obsolete
+  // 'default' placeholder project. Safe to run repeatedly (idempotent DELETEs).
+  db.run(`DELETE FROM mission_messages WHERE room_id IN ('room-hq', 'room-engineering', 'room-marketing', 'room-project-general', 'room-project-default')`);
+  db.run(`DELETE FROM mission_rooms     WHERE id      IN ('room-hq', 'room-engineering', 'room-marketing', 'room-project-general', 'room-project-default')`);
+  // Also catch any orphaned rooms that pointed at the removed 'default' project.
+  db.run(`DELETE FROM mission_messages WHERE room_id IN (SELECT id FROM mission_rooms WHERE project_id = 'default')`);
+  db.run(`DELETE FROM mission_rooms     WHERE project_id = 'default'`);
+  db.run(`DELETE FROM projects          WHERE id = 'default'`);
+
+  // ── Project memory (Phase A2) ─────────────────────────────────────────────
+  // Structured persistent context per project: decisions, open questions,
+  // risks (4-risk framework: value/usability/feasibility/viability), and
+  // glossary terms. Surfaced into agent dispatch context.json so every turn
+  // sees the latest. Distinct from per-task session memory (which lives in
+  // the gateway session). Created from UI or via project_memory.sh helper.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS project_memory (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      kind            TEXT NOT NULL,            -- 'decision'|'question'|'risk'|'glossary'
+      title           TEXT NOT NULL,
+      body            TEXT,                      -- markdown
+      status          TEXT NOT NULL DEFAULT 'open',  -- 'open'|'resolved'|'archived'
+      meta            TEXT NOT NULL DEFAULT '{}',    -- kind-specific JSON
+      source_task_id  TEXT,                      -- optional link to originating task
+      created_by      INTEGER,
+      created_at      TEXT NOT NULL,
+      updated_at      TEXT NOT NULL
+    )
+  `);
+  try { db.run("CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, kind, status)"); } catch (_) {}
 
   // Project integrations
   db.run(`
@@ -437,6 +583,8 @@ async function initDatabase() {
   // Per-agent concurrency hint (NULL = unlimited)
   try { db.run('ALTER TABLE agent_profiles ADD COLUMN max_parallel_steps INTEGER DEFAULT NULL'); } catch (_) {}
 
+  try { backfillProjectDefaultRooms(); } catch (err) { console.warn('[db] mission room backfill failed:', err.message); }
+
   // ── Persist JWT_SECRET so tokens survive server restarts ──────────────────
   if (!JWT_SECRET) {
     const secretRow = db.exec("SELECT value FROM settings WHERE key = 'jwt_secret'");
@@ -480,6 +628,11 @@ function normalizeTask(row) {
     requestFrom: row.request_from || '-',
     analysis: (() => { try { return row.analysis ? JSON.parse(row.analysis) : null; } catch { return null; } })(),
     attachments: (() => { try { return row.attachments ? JSON.parse(row.attachments) : []; } catch { return []; } })(),
+    // ADLC fields (Phase B)
+    stage: row.stage || undefined,
+    role: row.role || undefined,
+    epicId: row.epic_id || undefined,
+    memoryReviewedAt: row.memory_reviewed_at || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at || undefined,
@@ -522,6 +675,15 @@ function normalizeProject(row) {
     name: row.name,
     color: row.color || '#6366f1',
     description: row.description || undefined,
+    kind: row.kind || 'ops',
+    workspacePath: row.workspace_path || undefined,
+    workspaceMode: row.workspace_mode || undefined,
+    repoUrl: row.repo_url || undefined,
+    repoBranch: row.repo_branch || undefined,
+    repoRemoteName: row.repo_remote_name || undefined,
+    boundAt: row.bound_at != null ? Number(row.bound_at) : undefined,
+    lastFetchedAt: row.last_fetched_at != null ? Number(row.last_fetched_at) : undefined,
+    createdBy: row.created_by != null ? Number(row.created_by) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -544,17 +706,271 @@ function getProject(id) {
   return row.id ? normalizeProject(row) : null;
 }
 
-function createProject({ name, color = '#6366f1', description } = {}) {
+function getProjectByPath(workspacePath) {
+  if (!db) throw new Error('DB not initialized');
+  if (!workspacePath) return null;
+  const stmt = db.prepare('SELECT * FROM projects WHERE workspace_path = :p');
+  const row = stmt.getAsObject({ ':p': workspacePath });
+  stmt.free();
+  return row.id ? normalizeProject(row) : null;
+}
+
+function createProject({
+  name, color = '#6366f1', description,
+  kind, workspacePath, workspaceMode,
+  repoUrl, repoBranch, repoRemoteName,
+  createdBy,
+} = {}) {
   if (!db) throw new Error('DB not initialized');
   if (!name) throw new Error('createProject: name is required');
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  const boundAt = (workspacePath ? Date.now() : null);
   db.run(
-    'INSERT INTO projects (id, name, color, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, name, color, description || null, now, now]
+    `INSERT INTO projects (
+       id, name, color, description, kind,
+       workspace_path, workspace_mode,
+       repo_url, repo_branch, repo_remote_name, bound_at,
+       created_by, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, name, color, description || null, kind || 'ops',
+      workspacePath || null, workspaceMode || null,
+      repoUrl || null, repoBranch || null, repoRemoteName || null, boundAt,
+      createdBy != null ? Number(createdBy) : null,
+      now, now,
+    ]
   );
+  ensureProjectDefaultRoom(id, createdBy);
   persist();
   return getProject(id);
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function normalizeMissionMembers(memberAgentIds) {
+  const ids = Array.isArray(memberAgentIds) ? memberAgentIds : [];
+  const out = [];
+  for (const raw of ['main', ...ids]) {
+    const id = String(raw || '').trim();
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+function normalizeMissionRoom(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    kind: row.kind || 'global',
+    projectId: row.project_id || null,
+    name: row.name,
+    description: row.description || null,
+    memberAgentIds: normalizeMissionMembers(parseJsonArray(row.member_agent_ids)),
+    createdBy: row.created_by != null ? Number(row.created_by) : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeMissionMessage(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    roomId: row.room_id,
+    authorType: row.author_type || 'user',
+    authorId: row.author_id || null,
+    authorName: row.author_name || null,
+    body: row.body || '',
+    mentions: parseJsonArray(row.mentions_json),
+    relatedTaskId: row.related_task_id || null,
+    meta: parseJsonObject(row.meta_json),
+    createdAt: row.created_at,
+  };
+}
+
+function getOwnedAgentIds(userId) {
+  if (!db || userId == null) return [];
+  const res = db.exec('SELECT agent_id FROM agent_profiles WHERE provisioned_by = ?', [Number(userId)]);
+  if (!res.length) return [];
+  return res[0].values.map(r => r[0]).filter(Boolean);
+}
+
+function getMissionRoom(id) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM mission_rooms WHERE id = :id');
+  const row = stmt.getAsObject({ ':id': id });
+  stmt.free();
+  return row.id ? normalizeMissionRoom(row) : null;
+}
+
+function getProjectDefaultRoom(projectId) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare("SELECT * FROM mission_rooms WHERE kind = 'project' AND project_id = :pid ORDER BY created_at ASC LIMIT 1");
+  const row = stmt.getAsObject({ ':pid': projectId });
+  stmt.free();
+  return row.id ? normalizeMissionRoom(row) : null;
+}
+
+function ensureProjectDefaultRoom(projectId, createdBy = null, memberAgentIds = null) {
+  if (!db) throw new Error('DB not initialized');
+  if (!projectId) throw new Error('ensureProjectDefaultRoom: projectId is required');
+  // 'general' is the master project — its room is the seeded global room, not a project room.
+  if (projectId === 'general') return null;
+  const existing = getProjectDefaultRoom(projectId);
+  if (existing) return existing;
+  const project = getProject(projectId);
+  if (!project) return null;
+  const ids = normalizeMissionMembers(memberAgentIds || getOwnedAgentIds(createdBy));
+  const id = `room-project-${projectId}`;
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT OR IGNORE INTO mission_rooms (id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, 'project', projectId, `${project.name} Room`, `Default mission room for ${project.name}.`, JSON.stringify(ids), createdBy != null ? Number(createdBy) : null, now, now]
+  );
+  persist();
+  return getProjectDefaultRoom(projectId);
+}
+
+function backfillProjectDefaultRooms() {
+  if (!db) throw new Error('DB not initialized');
+  const projects = getAllProjects();
+  let created = 0;
+  for (const project of projects) {
+    if (project.id === 'general') continue;
+    if (!getProjectDefaultRoom(project.id)) {
+      ensureProjectDefaultRoom(project.id, project.createdBy ?? null);
+      created++;
+    }
+  }
+  return { created };
+}
+
+function listMissionRooms() {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM mission_rooms ORDER BY kind ASC, created_at ASC');
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeMissionRoom(stmt.getAsObject()));
+  stmt.free();
+  return rows.filter(Boolean);
+}
+
+function listMissionRoomsForUser(req) {
+  const rooms = listMissionRooms();
+  if (!req?.user) return [];
+  if (req.user.role === 'admin' || req.user.role === 'agent') return rooms;
+  return rooms.filter((room) => {
+    if (room.kind === 'global') return true;
+    if (room.projectId && userOwnsProject(req, room.projectId)) return true;
+    return room.memberAgentIds.some((id) => id !== 'main' && userOwnsAgent(req, id));
+  });
+}
+
+function createMissionRoom({ kind = 'global', projectId = null, name, description = null, memberAgentIds = [], createdBy = null } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!name?.trim()) throw new Error('createMissionRoom: name is required');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO mission_rooms (id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, kind, projectId || null, name.trim(), description || null, JSON.stringify(normalizeMissionMembers(memberAgentIds)), createdBy != null ? Number(createdBy) : null, now, now]
+  );
+  persist();
+  return getMissionRoom(id);
+}
+
+function updateMissionRoomMembers(id, memberAgentIds = []) {
+  if (!db) throw new Error('DB not initialized');
+  const now = new Date().toISOString();
+  db.run('UPDATE mission_rooms SET member_agent_ids = ?, updated_at = ? WHERE id = ?', [JSON.stringify(normalizeMissionMembers(memberAgentIds)), now, id]);
+  persist();
+  return getMissionRoom(id);
+}
+
+function listMissionMessages(roomId, { before, limit = 50 } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+  const rows = [];
+  const sql = before
+    ? 'SELECT * FROM mission_messages WHERE room_id = :rid AND created_at < :before ORDER BY created_at DESC LIMIT :limit'
+    : 'SELECT * FROM mission_messages WHERE room_id = :rid ORDER BY created_at DESC LIMIT :limit';
+  const stmt = db.prepare(sql);
+  stmt.bind(before ? { ':rid': roomId, ':before': before, ':limit': safeLimit } : { ':rid': roomId, ':limit': safeLimit });
+  while (stmt.step()) rows.push(normalizeMissionMessage(stmt.getAsObject()));
+  stmt.free();
+  return rows.filter(Boolean);
+}
+
+function createMissionMessage({ roomId, authorType, authorId, authorName, body, mentions = [], relatedTaskId = null, meta = {} } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!roomId) throw new Error('createMissionMessage: roomId is required');
+  if (!body?.trim()) throw new Error('createMissionMessage: body is required');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO mission_messages (id, room_id, author_type, author_id, author_name, body, mentions_json, related_task_id, meta_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, roomId, authorType || 'user', authorId || null, authorName || null, body.trim(), JSON.stringify(mentions || []), relatedTaskId || null, JSON.stringify(meta || {}), now]
+  );
+  persist();
+  return normalizeMissionMessage({ id, room_id: roomId, author_type: authorType || 'user', author_id: authorId || null, author_name: authorName || null, body: body.trim(), mentions_json: JSON.stringify(mentions || []), related_task_id: relatedTaskId || null, meta_json: JSON.stringify(meta || {}), created_at: now });
+}
+
+// ─── Room Sessions (gateway session ↔ room tracking) ──────────────────────────
+
+/** Mark a gateway session as triggered by a room mention */
+function markSessionAsRoomTriggered(sessionKey, roomId, agentId) {
+  if (!db) throw new Error('DB not initialized');
+  db.run(
+    `INSERT OR REPLACE INTO room_sessions (session_key, room_id, agent_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
+    [sessionKey, roomId, agentId]
+  );
+  persist();
+}
+
+/** Get all session keys that were triggered by room mentions */
+function getRoomSessionKeys() {
+  if (!db) return [];
+  const res = db.exec('SELECT session_key FROM room_sessions');
+  if (!res.length) return [];
+  return res[0].values.map(r => r[0]).filter(Boolean);
+}
+
+/** Get the most recent gateway session for a specific agent+room combo (Phase 2: reuse) */
+function getRoomAgentSession(roomId, agentId) {
+  if (!db) return null;
+  const stmt = db.prepare(
+    'SELECT session_key FROM room_sessions WHERE room_id = :rid AND agent_id = :aid ORDER BY created_at DESC LIMIT 1'
+  );
+  const row = stmt.getAsObject({ ':rid': roomId, ':aid': agentId });
+  stmt.free();
+  return row.session_key || null;
+}
+
+/** Get room+agent info for a session key (Phase 3: auto-reply) */
+function getRoomForSession(sessionKey) {
+  if (!db) return null;
+  const stmt = db.prepare(
+    'SELECT room_id, agent_id FROM room_sessions WHERE session_key = :key'
+  );
+  const row = stmt.getAsObject({ ':key': sessionKey });
+  stmt.free();
+  return (row.room_id && row.agent_id) ? { roomId: row.room_id, agentId: row.agent_id } : null;
 }
 
 function updateProject(id, patch) {
@@ -567,8 +983,41 @@ function updateProject(id, patch) {
   if (patch.name        !== undefined) { fields.push('name = ?');        vals.push(patch.name); }
   if (patch.color       !== undefined) { fields.push('color = ?');       vals.push(patch.color); }
   if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description || null); }
+  if (patch.kind        !== undefined) { fields.push('kind = ?');        vals.push(patch.kind || 'ops'); }
   vals.push(id);
   db.run(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getProject(id);
+}
+
+// Set / replace workspace binding on an existing project. Pass null to clear.
+function setProjectWorkspace(id, {
+  workspacePath, workspaceMode,
+  repoUrl, repoBranch, repoRemoteName,
+  boundAt,
+} = {}) {
+  if (!db) throw new Error('DB not initialized');
+  const before = getProject(id);
+  if (!before) return null;
+  const now = new Date().toISOString();
+  const fields = ['updated_at = ?'];
+  const vals = [now];
+  if (workspacePath   !== undefined) { fields.push('workspace_path = ?');   vals.push(workspacePath); }
+  if (workspaceMode   !== undefined) { fields.push('workspace_mode = ?');   vals.push(workspaceMode); }
+  if (repoUrl         !== undefined) { fields.push('repo_url = ?');         vals.push(repoUrl); }
+  if (repoBranch      !== undefined) { fields.push('repo_branch = ?');      vals.push(repoBranch); }
+  if (repoRemoteName  !== undefined) { fields.push('repo_remote_name = ?'); vals.push(repoRemoteName); }
+  if (boundAt         !== undefined) { fields.push('bound_at = ?');         vals.push(boundAt); }
+  vals.push(id);
+  db.run(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getProject(id);
+}
+
+function bumpProjectFetchedAt(id, ts = Date.now()) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('UPDATE projects SET last_fetched_at = ?, updated_at = ? WHERE id = ?',
+    [ts, new Date().toISOString(), id]);
   persist();
   return getProject(id);
 }
@@ -731,14 +1180,28 @@ function getTaskByExternalId(externalId, externalSource) {
   return row.id ? normalizeTask(row) : null;
 }
 
-function createTask({ title, description, status = 'backlog', priority = 'medium', agentId, tags = [], sessionId, projectId = 'general', externalId, externalSource, requestFrom = '-', attachments = [] } = {}) {
+function createTask({
+  title, description, status = 'backlog', priority = 'medium',
+  agentId, tags = [], sessionId,
+  projectId = 'general', externalId, externalSource,
+  requestFrom = '-', attachments = [],
+  // Phase B — ADLC fields (all nullable; surfaced only for adlc-kind projects).
+  stage, role, epicId,
+} = {}) {
   if (!db) throw new Error('DB not initialized');
   if (!title) throw new Error('createTask: title is required');
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.run(
-    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, project_id, external_id, external_source, request_from, attachments, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, title, description || null, status, priority, agentId || null, sessionId || null, JSON.stringify(tags || []), projectId, externalId || null, externalSource || null, requestFrom || '-', JSON.stringify(attachments || []), now, now]
+    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, project_id, external_id, external_source, request_from, attachments, stage, role, epic_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      id, title, description || null, status, priority,
+      agentId || null, sessionId || null, JSON.stringify(tags || []),
+      projectId, externalId || null, externalSource || null,
+      requestFrom || '-', JSON.stringify(attachments || []),
+      stage || null, role || null, epicId || null,
+      now, now,
+    ]
   );
   persist();
   return getTask(id);
@@ -764,6 +1227,10 @@ function updateTask(id, patch) {
   if (patch.requestFrom  !== undefined) { fields.push('request_from = ?');  vals.push(patch.requestFrom || '-'); }
   if (patch.analysis     !== undefined) { fields.push('analysis = ?');      vals.push(typeof patch.analysis === 'string' ? patch.analysis : JSON.stringify(patch.analysis)); }
   if (patch.attachments  !== undefined) { fields.push('attachments = ?');   vals.push(JSON.stringify(Array.isArray(patch.attachments) ? patch.attachments : [])); }
+  if (patch.stage        !== undefined) { fields.push('stage = ?');         vals.push(patch.stage || null); }
+  if (patch.role         !== undefined) { fields.push('role = ?');          vals.push(patch.role || null); }
+  if (patch.epicId       !== undefined) { fields.push('epic_id = ?');       vals.push(patch.epicId || null); }
+  if (patch.memoryReviewedAt !== undefined) { fields.push('memory_reviewed_at = ?'); vals.push(patch.memoryReviewedAt || null); }
   if (patch.status === 'done' && before.status !== 'done') {
     fields.push('completed_at = ?'); vals.push(now);
   } else if (patch.status !== undefined && patch.status !== 'done' && before.status === 'done') {
@@ -778,7 +1245,330 @@ function updateTask(id, patch) {
 function deleteTask(id) {
   if (!db) throw new Error('DB not initialized');
   db.run('DELETE FROM task_activity WHERE task_id = ?', [id]);
+  db.run('DELETE FROM task_dependencies WHERE blocker_task_id = ? OR blocked_task_id = ?', [id, id]);
   db.run('DELETE FROM tasks WHERE id = ?', [id]);
+  persist();
+}
+
+// ─── Epics (Phase B — group of related ADLC tasks) ──────────────────────────
+
+function normalizeEpic(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title,
+    description: row.description || undefined,
+    status: row.status || 'open',
+    color: row.color || undefined,
+    createdBy: row.created_by != null ? Number(row.created_by) : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listEpics(projectId) {
+  if (!db) throw new Error('DB not initialized');
+  if (!projectId) return [];
+  const stmt = db.prepare('SELECT * FROM epics WHERE project_id = :p ORDER BY created_at DESC');
+  stmt.bind({ ':p': projectId });
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeEpic(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+function getEpic(id) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare('SELECT * FROM epics WHERE id = :id');
+  const row = stmt.getAsObject({ ':id': id });
+  stmt.free();
+  return row.id ? normalizeEpic(row) : null;
+}
+
+function createEpic({ projectId, title, description, status = 'open', color, createdBy } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!projectId) throw new Error('createEpic: projectId is required');
+  if (!title) throw new Error('createEpic: title is required');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO epics (id, project_id, title, description, status, color, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, projectId, title, description || null, status, color || null, createdBy != null ? Number(createdBy) : null, now, now]
+  );
+  persist();
+  return getEpic(id);
+}
+
+function updateEpic(id, patch) {
+  if (!db) throw new Error('DB not initialized');
+  const before = getEpic(id);
+  if (!before) return null;
+  const now = new Date().toISOString();
+  const fields = ['updated_at = ?'];
+  const vals = [now];
+  if (patch.title       !== undefined) { fields.push('title = ?');       vals.push(patch.title); }
+  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description || null); }
+  if (patch.status      !== undefined) { fields.push('status = ?');      vals.push(patch.status); }
+  if (patch.color       !== undefined) { fields.push('color = ?');       vals.push(patch.color || null); }
+  vals.push(id);
+  db.run(`UPDATE epics SET ${fields.join(', ')} WHERE id = ?`, vals);
+  persist();
+  return getEpic(id);
+}
+
+function deleteEpic(id) {
+  if (!db) throw new Error('DB not initialized');
+  // Detach tasks (set epic_id = NULL) — don't cascade-delete the work.
+  db.run('UPDATE tasks SET epic_id = NULL, updated_at = ? WHERE epic_id = ?', [new Date().toISOString(), id]);
+  db.run('DELETE FROM epics WHERE id = ?', [id]);
+  persist();
+}
+
+// ─── Task dependencies (Phase B — directed edges) ───────────────────────────
+
+function normalizeDep(row) {
+  if (!row || !row.id) return null;
+  return {
+    id: row.id,
+    blockerTaskId: row.blocker_task_id,
+    blockedTaskId: row.blocked_task_id,
+    kind: row.kind || 'blocks',
+    createdAt: row.created_at,
+  };
+}
+
+function listDependenciesForTask(taskId) {
+  if (!db) throw new Error('DB not initialized');
+  const stmt = db.prepare(
+    'SELECT * FROM task_dependencies WHERE blocker_task_id = :id OR blocked_task_id = :id ORDER BY created_at ASC'
+  );
+  stmt.bind({ ':id': taskId });
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeDep(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+// Returns true if adding edge blocker→blocked would create a cycle.
+// Walk forward from blockedTaskId following its outgoing "blocks" edges
+// (tasks that blockedTaskId blocks) — if we reach blockerTaskId, cycle.
+function wouldCreateDependencyCycle(blockerTaskId, blockedTaskId) {
+  if (!db) return false;
+  const visited = new Set();
+  const queue = [blockedTaskId];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur === blockerTaskId) return true;
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    const stmt = db.prepare('SELECT blocked_task_id FROM task_dependencies WHERE blocker_task_id = ? AND kind = ?');
+    stmt.bind([cur, 'blocks']);
+    while (stmt.step()) queue.push(stmt.getAsObject().blocked_task_id);
+    stmt.free();
+  }
+  return false;
+}
+
+// List of unmet blockers for a task: blocker tasks (tasks blocking this one)
+// whose status is not 'done' or 'cancelled'. Used by dispatch guard + UI.
+function getUnmetBlockers(taskId) {
+  if (!db) return [];
+  const stmt = db.prepare(`
+    SELECT t.* FROM task_dependencies d
+    JOIN tasks t ON t.id = d.blocker_task_id
+    WHERE d.blocked_task_id = ? AND d.kind = 'blocks'
+      AND t.status NOT IN ('done', 'cancelled')
+    ORDER BY t.created_at ASC
+  `);
+  stmt.bind([taskId]);
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeTask(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+// All deps for a project — joins through tasks to filter by project_id.
+// ── Project memory (Phase A2) ─────────────────────────────────────────────
+
+const PROJECT_MEMORY_KINDS = ['decision', 'question', 'risk', 'glossary'];
+const PROJECT_MEMORY_STATUSES = ['open', 'resolved', 'archived'];
+
+function normalizeProjectMemory(row) {
+  if (!row) return null;
+  let meta = {};
+  try { meta = row.meta ? JSON.parse(row.meta) : {}; } catch { meta = {}; }
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    kind: row.kind,
+    title: row.title,
+    body: row.body || '',
+    status: row.status || 'open',
+    meta,
+    sourceTaskId: row.source_task_id || null,
+    createdBy: row.created_by ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listProjectMemory(projectId, { kind, status } = {}) {
+  if (!db) return [];
+  let sql = 'SELECT * FROM project_memory WHERE project_id = ?';
+  const params = [projectId];
+  if (kind) { sql += ' AND kind = ?'; params.push(kind); }
+  if (status) { sql += ' AND status = ?'; params.push(status); }
+  sql += ' ORDER BY created_at DESC';
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeProjectMemory(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+function getProjectMemory(id) {
+  if (!db) return null;
+  const stmt = db.prepare('SELECT * FROM project_memory WHERE id = ?');
+  stmt.bind([id]);
+  const row = stmt.step() ? normalizeProjectMemory(stmt.getAsObject()) : null;
+  stmt.free();
+  return row;
+}
+
+function createProjectMemory({ projectId, kind, title, body, status, meta, sourceTaskId, createdBy } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!projectId) throw new Error('projectId required');
+  if (!PROJECT_MEMORY_KINDS.includes(kind)) throw new Error(`kind must be one of ${PROJECT_MEMORY_KINDS.join(', ')}`);
+  if (!title || !title.trim()) throw new Error('title required');
+  const finalStatus = status && PROJECT_MEMORY_STATUSES.includes(status)
+    ? status
+    : (kind === 'question' || kind === 'risk' ? 'open' : 'resolved');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    `INSERT INTO project_memory (id, project_id, kind, title, body, status, meta, source_task_id, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, projectId, kind, title.trim(), body || '', finalStatus, JSON.stringify(meta || {}),
+     sourceTaskId || null, createdBy ?? null, now, now]
+  );
+  persist();
+  return getProjectMemory(id);
+}
+
+function getTaskSessionKeys() {
+  if (!db) return [];
+  const stmt = db.prepare('SELECT session_id FROM tasks WHERE session_id IS NOT NULL');
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject().session_id);
+  }
+  stmt.free();
+  return rows;
+}
+
+function updateProjectMemory(id, patch = {}) {
+  if (!db) throw new Error('DB not initialized');
+  const cur = getProjectMemory(id);
+  if (!cur) throw new Error('Memory entry not found');
+  const sets = [];
+  const params = [];
+  if (patch.title !== undefined) { sets.push('title = ?'); params.push(patch.title); }
+  if (patch.body !== undefined)  { sets.push('body = ?');  params.push(patch.body); }
+  if (patch.status !== undefined) {
+    if (!PROJECT_MEMORY_STATUSES.includes(patch.status)) throw new Error('invalid status');
+    sets.push('status = ?'); params.push(patch.status);
+  }
+  if (patch.meta !== undefined) {
+    sets.push('meta = ?'); params.push(JSON.stringify(patch.meta || {}));
+  }
+  if (patch.sourceTaskId !== undefined) { sets.push('source_task_id = ?'); params.push(patch.sourceTaskId || null); }
+  if (sets.length === 0) return cur;
+  sets.push('updated_at = ?'); params.push(new Date().toISOString());
+  params.push(id);
+  db.run(`UPDATE project_memory SET ${sets.join(', ')} WHERE id = ?`, params);
+  persist();
+  return getProjectMemory(id);
+}
+
+function deleteProjectMemory(id) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('DELETE FROM project_memory WHERE id = ?', [id]);
+  persist();
+}
+
+// Build a compact snapshot of memory to inject into the agent dispatch
+// context.json. Includes the most relevant items only — open questions,
+// open risks, the latest N decisions, and all glossary terms.
+function buildProjectMemorySnapshot(projectId, { decisionLimit = 10, glossaryLimit = 50 } = {}) {
+  if (!db) return null;
+  const decisions = listProjectMemory(projectId, { kind: 'decision' }).slice(0, decisionLimit);
+  const openQuestions = listProjectMemory(projectId, { kind: 'question', status: 'open' });
+  const openRisks = listProjectMemory(projectId, { kind: 'risk', status: 'open' });
+  const glossary = listProjectMemory(projectId, { kind: 'glossary' }).slice(0, glossaryLimit);
+  if (decisions.length + openQuestions.length + openRisks.length + glossary.length === 0) return null;
+  return {
+    decisions: decisions.map(d => ({ id: d.id, title: d.title, body: d.body, createdAt: d.createdAt })),
+    openQuestions: openQuestions.map(q => ({ id: q.id, title: q.title, body: q.body, createdAt: q.createdAt })),
+    openRisks: openRisks.map(r => ({ id: r.id, title: r.title, body: r.body, category: r.meta?.category, severity: r.meta?.severity })),
+    glossary: glossary.map(g => ({ term: g.title, definition: g.body })),
+  };
+}
+
+function listDependenciesForProject(projectId) {
+  if (!db) return [];
+  const stmt = db.prepare(`
+    SELECT d.* FROM task_dependencies d
+    JOIN tasks t ON t.id = d.blocker_task_id OR t.id = d.blocked_task_id
+    WHERE t.project_id = ?
+    GROUP BY d.id
+    ORDER BY d.created_at ASC
+  `);
+  stmt.bind([projectId]);
+  const rows = [];
+  while (stmt.step()) rows.push(normalizeDep(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+function addTaskDependency({ blockerTaskId, blockedTaskId, kind = 'blocks' } = {}) {
+  if (!db) throw new Error('DB not initialized');
+  if (!blockerTaskId || !blockedTaskId) throw new Error('addTaskDependency: both task ids required');
+  if (blockerTaskId === blockedTaskId) throw new Error('addTaskDependency: cannot depend on self');
+  if (kind === 'blocks' && wouldCreateDependencyCycle(blockerTaskId, blockedTaskId)) {
+    const err = new Error('Adding this dependency would create a cycle');
+    err.code = 'DEP_CYCLE';
+    throw err;
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  try {
+    db.run(
+      'INSERT INTO task_dependencies (id, blocker_task_id, blocked_task_id, kind, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id, blockerTaskId, blockedTaskId, kind, now]
+    );
+    persist();
+  } catch (e) {
+    if (String(e.message || e).includes('UNIQUE')) {
+      // Already exists — return existing edge instead of erroring.
+      const stmt = db.prepare('SELECT * FROM task_dependencies WHERE blocker_task_id = ? AND blocked_task_id = ? AND kind = ?');
+      stmt.bind([blockerTaskId, blockedTaskId, kind]);
+      const row = stmt.step() ? stmt.getAsObject() : null;
+      stmt.free();
+      return row ? normalizeDep(row) : null;
+    }
+    throw e;
+  }
+  const stmt = db.prepare('SELECT * FROM task_dependencies WHERE id = :id');
+  const row = stmt.getAsObject({ ':id': id });
+  stmt.free();
+  return row.id ? normalizeDep(row) : null;
+}
+
+function removeTaskDependency(id) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('DELETE FROM task_dependencies WHERE id = ?', [id]);
   persist();
 }
 
@@ -1189,6 +1979,60 @@ function requireConnectionOwnership(req, res, next) {
   next();
 }
 
+// ── Project ownership ──
+//
+// Rules (mirroring the connections/agents pattern):
+//   - admin role  → bypass all checks
+//   - agent token → bypass (service tokens used by built-in skills)
+//   - 'general' (the default seeded project, owner=null) → treated as shared:
+//     any logged-in user may mutate. Keeps backwards compat with pre-ownership
+//     installations where every task lived under 'general'.
+//   - any other project with owner=null → also treated as shared (legacy rows
+//     created before ownership tracking shipped). Once a row has a non-null
+//     created_by, only that user (or admin) may mutate.
+function getProjectOwner(projectId) {
+  if (!db) return null;
+  const res = db.exec('SELECT created_by FROM projects WHERE id = ?', [projectId]);
+  if (!res.length || !res[0].values.length) return null;
+  return res[0].values[0][0]; // may be null for legacy rows
+}
+
+function userOwnsProject(req, projectId) {
+  if (!req?.user) return false;
+  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
+  const owner = getProjectOwner(projectId);
+  if (owner == null) return true; // shared / legacy project
+  return owner === req.user.userId;
+}
+
+function requireProjectOwnership(req, res, next) {
+  const id = req.params.id || req.params.projectId;
+  if (!id) return res.status(400).json({ error: 'project id missing' });
+  if (!userOwnsProject(req, id)) {
+    return res.status(403).json({ error: 'You do not have permission to modify this project' });
+  }
+  next();
+}
+
+// Variant for routes scoped to a task — looks up the task's projectId then
+// applies the project ownership rule. Falls through (200 OK) for legacy tasks
+// without a projectId.
+function requireProjectOwnershipForTask(req, res, next) {
+  const taskId = req.params.id || req.params.taskId;
+  if (!taskId) return res.status(400).json({ error: 'task id missing' });
+  if (!db) return res.status(500).json({ error: 'DB not initialized' });
+  const result = db.exec('SELECT project_id FROM tasks WHERE id = ?', [taskId]);
+  if (!result.length || !result[0].values.length) {
+    return res.status(404).json({ error: 'task not found' });
+  }
+  const projectId = result[0].values[0][0];
+  if (!projectId) return next(); // legacy task with no project — allow
+  if (!userOwnsProject(req, projectId)) {
+    return res.status(403).json({ error: 'You do not have permission to modify tasks in this project' });
+  }
+  next();
+}
+
 // ─── Agent Profiles ──────────────────────────────────────────────────────────
 
 function getAgentProfile(agentId) {
@@ -1581,10 +2425,27 @@ module.exports = {
   deleteAgentProfile,
   // Tasks
   getAllTasks, getTask, getTaskByExternalId, createTask, updateTask, deleteTask,
-  addTaskActivity, getTaskActivity,
+  addTaskActivity, getTaskActivity, getTaskSessionKeys,
   addTaskComment, getTaskComment, listTaskComments, updateTaskComment, deleteTaskComment, getRecentTaskComments,
+  // Epics + dependencies (Phase B)
+  listEpics, getEpic, createEpic, updateEpic, deleteEpic,
+  listDependenciesForTask, listDependenciesForProject, addTaskDependency, removeTaskDependency,
+  getUnmetBlockers, wouldCreateDependencyCycle,
+  // Project memory (Phase A2)
+  listProjectMemory, getProjectMemory, createProjectMemory, updateProjectMemory, deleteProjectMemory,
+  buildProjectMemorySnapshot,
+  PROJECT_MEMORY_KINDS, PROJECT_MEMORY_STATUSES,
   // Projects
-  getAllProjects, getProject, createProject, updateProject, deleteProject,
+  getAllProjects, getProject, getProjectByPath, createProject, updateProject, deleteProject,
+  setProjectWorkspace, bumpProjectFetchedAt,
+  getProjectOwner, userOwnsProject, requireProjectOwnership, requireProjectOwnershipForTask,
+  // Mission rooms
+  normalizeMissionRoom, normalizeMissionMessage,
+  listMissionRooms, listMissionRoomsForUser, getMissionRoom, createMissionRoom, updateMissionRoomMembers,
+  getProjectDefaultRoom, ensureProjectDefaultRoom, backfillProjectDefaultRooms,
+  listMissionMessages, createMissionMessage,
+  // Room sessions (room ↔ gateway session tracking)
+  markSessionAsRoomTriggered, getRoomSessionKeys, getRoomAgentSession, getRoomForSession,
   // Integrations
   getAllIntegrations, getProjectIntegrations, getIntegrationRaw,
   createIntegration, updateIntegration, deleteIntegration, updateIntegrationSyncState,

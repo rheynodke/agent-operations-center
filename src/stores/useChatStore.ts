@@ -55,9 +55,16 @@ interface ChatState {
   // Selected agent for new chat
   selectedAgentId: string | null
   setSelectedAgentId: (id: string | null) => void
+
+  // Pending outbound messages — used to suppress WS echo of messages we
+  // already rendered optimistically. Key = `${sessionKey}::${text}`.
+  pendingSentMessages: Set<string>
+  markSent: (sessionKey: string, text: string) => void
+  clearSent: (sessionKey: string, text: string) => void
+  hasPendingSent: (sessionKey: string, text: string) => boolean
 }
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>((set, get) => ({
   gatewayConnected: false,
   setGatewayConnected: (v) => set({ gatewayConnected: v }),
 
@@ -93,6 +100,24 @@ export const useChatStore = create<ChatState>((set) => ({
 
   selectedAgentId: null,
   setSelectedAgentId: (id) => set({ selectedAgentId: id }),
+
+  pendingSentMessages: new Set(),
+  markSent: (sessionKey, text) => set((s) => {
+    const key = `${sessionKey}::${text}`
+    const next = new Set(s.pendingSentMessages)
+    next.add(key)
+    return { pendingSentMessages: next }
+  }),
+  clearSent: (sessionKey, text) => set((s) => {
+    const key = `${sessionKey}::${text}`
+    const next = new Set(s.pendingSentMessages)
+    next.delete(key)
+    return { pendingSentMessages: next }
+  }),
+  hasPendingSent: (sessionKey, text) => {
+    const key = `${sessionKey}::${text}`
+    return get().pendingSentMessages.has(key)
+  },
 }))
 
 // Matches: [media attached: /path/file.jpg (image/jpeg) | /path/file.jpg]

@@ -630,10 +630,18 @@ class GatewayWsProxy {
     return this.sendReq('sessions.list', params);
   }
 
-  /** sessions.create — { agentId?, key?, label?, model?, message? } */
-  sessionsCreate(agentId) {
+  /** sessions.create — { agentId?, key?, label?, model?, message? }
+   *
+   * Pass `opts.key` to control the session key — used by AOC to isolate
+   * sessions by context (task / room) so unrelated chat history doesn't
+   * bleed into agent work.
+   */
+  sessionsCreate(agentId, opts = {}) {
     const params = {};
     if (agentId) params.agentId = agentId;
+    if (opts.key) params.key = opts.key;
+    if (opts.label) params.label = opts.label;
+    if (opts.model) params.model = opts.model;
     return this.sendReq('sessions.create', params);
   }
 

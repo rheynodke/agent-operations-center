@@ -1,13 +1,14 @@
 import React from "react"
 import { useDraggable } from "@dnd-kit/core"
 import { CSS } from "@dnd-kit/utilities"
-import { MoreHorizontal, Pencil, Trash2, Activity, ExternalLink, User, Search, ShieldCheck, ShieldAlert, Paperclip } from "lucide-react"
+import { MoreHorizontal, Pencil, Trash2, Activity, ExternalLink, User, Search, ShieldCheck, ShieldAlert, Paperclip, OctagonX, Layers } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Task } from "@/types"
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
+import { STAGE_LABEL, STAGE_TONE, ROLE_LABEL } from "@/lib/projectLabels"
 
 // ── Priority config ────────────────────────────────────────────────────────────
 
@@ -39,6 +40,10 @@ interface TaskCardProps {
   agentEmoji?: string
   agentName?: string
   agentAvatarPresetId?: string | null
+  /** Count of unfinished blocker dependencies — drives the "blocked" indicator. */
+  unmetBlockerCount?: number
+  /** Epic display name (looked up from id by parent). Renders as a chip. */
+  epicName?: string
   isDragging?: boolean
   onEdit: (task: Task) => void
   onDelete: (task: Task) => void
@@ -47,7 +52,8 @@ interface TaskCardProps {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isDragging, onEdit, onDelete, onClick }: TaskCardProps) {
+export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, unmetBlockerCount = 0, epicName, isDragging, onEdit, onDelete, onClick }: TaskCardProps) {
+  const isBlocked = unmetBlockerCount > 0
   const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: task.id })
 
   const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined
@@ -105,6 +111,16 @@ export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isD
           </span>
         )}
 
+        {isBlocked && (
+          <span
+            className="flex items-center gap-0.5 text-[10px] font-medium text-red-400 px-1 py-0.5 rounded bg-red-500/10 border border-red-500/20"
+            title={`Blocked by ${unmetBlockerCount} unfinished task${unmetBlockerCount === 1 ? '' : 's'}`}
+          >
+            <OctagonX className="h-2.5 w-2.5" />
+            {unmetBlockerCount}
+          </span>
+        )}
+
         {/* Menu */}
         <div className="ml-auto">
           <DropdownMenu>
@@ -139,6 +155,34 @@ export function TaskCard({ task, agentEmoji, agentName, agentAvatarPresetId, isD
         <p className="text-xs text-muted-foreground/80 line-clamp-1 mb-2.5 leading-relaxed">
           {task.description}
         </p>
+      )}
+
+      {/* ADLC stage + role + epic badges (Phase B/C) — only visible when set */}
+      {(task.stage || task.role || epicName) && (
+        <div className="flex gap-1 flex-wrap mb-2">
+          {task.stage && (
+            <span className={cn(
+              "inline-flex items-center px-1.5 py-0.5 rounded-md border text-[9px] font-medium uppercase tracking-wide",
+              STAGE_TONE[task.stage]
+            )}>
+              {STAGE_LABEL[task.stage]}
+            </span>
+          )}
+          {task.role && (
+            <span className="text-[9px] uppercase tracking-wide bg-muted/60 text-muted-foreground rounded-md px-1.5 py-0.5 font-medium">
+              {ROLE_LABEL[task.role]}
+            </span>
+          )}
+          {epicName && (
+            <span
+              className="inline-flex items-center gap-0.5 text-[9px] bg-purple-500/10 text-purple-300 border border-purple-500/20 rounded-md px-1.5 py-0.5 font-medium max-w-[120px]"
+              title={`Epic: ${epicName}`}
+            >
+              <Layers className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">{epicName}</span>
+            </span>
+          )}
+        </div>
       )}
 
       {/* Tags */}

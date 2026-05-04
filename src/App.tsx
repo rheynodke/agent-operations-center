@@ -18,6 +18,8 @@ import { AgentsPage } from "@/pages/AgentsPage"
 import { AgentDetailPage } from "@/pages/AgentDetailPage"
 import { SessionsPage } from "@/pages/SessionsPage"
 import BoardPage from "@/pages/BoardPage"
+import ProjectsPage from "@/pages/ProjectsPage"
+import ProjectDetailPage from "@/pages/ProjectDetailPage"
 import MetricsPage from "@/pages/MetricsPage"
 import AgentMetricsPage from "@/pages/AgentMetricsPage"
 import { CronPage } from "@/pages/CronPage"
@@ -28,11 +30,6 @@ import { SkillsPage } from "@/pages/SkillsPage"
 import { RoleTemplatesPage } from "@/pages/RoleTemplatesPage"
 import { ChatPage } from "@/pages/ChatPage"
 import { ConnectionsPage } from "@/pages/ConnectionsPage"
-import { MissionsLayout } from "@/pages/missions/MissionsLayout"
-import { MissionsBoardPage } from "@/pages/missions/MissionsBoardPage"
-import { MissionDetailPage } from "@/pages/missions/MissionDetailPage"
-import { PlaybooksGalleryPage } from "@/pages/missions/PlaybooksGalleryPage"
-import { PlaybookEditorPage } from "@/pages/missions/PlaybookEditorPage"
 import { RegisterPage } from "@/pages/RegisterPage"
 import { UserManagementPage } from "@/pages/UserManagementPage"
 
@@ -60,7 +57,10 @@ function DashboardShell() {
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agents/:id" element={<AgentDetailPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
-            <Route path="/board" element={<BoardPage />} />
+            <Route path="/projects" element={<ProjectsPage />} />
+            <Route path="/projects/:id" element={<ProjectDetailPage />} />
+            {/* Legacy: /board → projects/general (keep links + bookmarks working). */}
+            <Route path="/board" element={<Navigate to="/projects/general" replace />} />
             <Route path="/metrics" element={<MetricsPage />} />
             <Route path="/metrics/agents/:agentId" element={<AgentMetricsPage />} />
             <Route path="/cron" element={<CronPage />} />
@@ -69,21 +69,16 @@ function DashboardShell() {
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/roles" element={<RoleTemplatesPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
-            {/* Legacy redirects to keep old links working */}
-            <Route path="/pipelines" element={<Navigate to="/missions" replace />} />
-            <Route path="/pipelines/:id" element={<Navigate to="/missions/playbooks" replace />} />
-            <Route path="/workflows" element={<Navigate to="/missions" replace />} />
-            <Route path="/workflows/runs" element={<Navigate to="/missions" replace />} />
-            <Route path="/workflows/runs/:id" element={<Navigate to="/missions" replace />} />
-            <Route path="/workflows/templates" element={<Navigate to="/missions/playbooks" replace />} />
-            <Route path="/workflows/templates/:id" element={<Navigate to="/missions/playbooks" replace />} />
-            {/* Missions feature */}
-            <Route path="/missions" element={<MissionsLayout />}>
-              <Route index element={<MissionsBoardPage />} />
-              <Route path=":id" element={<MissionDetailPage />} />
-              <Route path="playbooks" element={<PlaybooksGalleryPage />} />
-              <Route path="playbooks/:id" element={<PlaybookEditorPage />} />
-            </Route>
+            {/* Legacy redirects (Mission/Playbook feature retired). */}
+            <Route path="/pipelines" element={<Navigate to="/projects" replace />} />
+            <Route path="/pipelines/:id" element={<Navigate to="/projects" replace />} />
+            <Route path="/workflows" element={<Navigate to="/projects" replace />} />
+            <Route path="/workflows/runs" element={<Navigate to="/projects" replace />} />
+            <Route path="/workflows/runs/:id" element={<Navigate to="/projects" replace />} />
+            <Route path="/workflows/templates" element={<Navigate to="/projects" replace />} />
+            <Route path="/workflows/templates/:id" element={<Navigate to="/projects" replace />} />
+            <Route path="/missions" element={<Navigate to="/projects" replace />} />
+            <Route path="/missions/*" element={<Navigate to="/projects" replace />} />
             <Route path="/settings" element={<AdminOnly><SettingsPage /></AdminOnly>} />
             <Route path="/users" element={<AdminOnly><UserManagementPage /></AdminOnly>} />
             <Route path="/chat" element={<ChatPage />} />

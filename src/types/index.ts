@@ -252,10 +252,50 @@ export interface Message {
   model?: string
 }
 
+// ─── Mission Rooms ───────────────────────────────────────────────────────────
+
+export type MissionRoomKind = "global" | "project"
+
+export interface MissionRoom {
+  id: string
+  kind: MissionRoomKind
+  projectId?: string | null
+  name: string
+  description?: string | null
+  memberAgentIds: string[]
+  createdBy?: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type MissionMessageAuthorType = "user" | "agent" | "system"
+
+export interface MissionMessage {
+  id: string
+  roomId: string
+  authorType: MissionMessageAuthorType
+  authorId?: string | null
+  authorName?: string | null
+  body: string
+  mentions: string[]
+  relatedTaskId?: string | null
+  meta?: Record<string, unknown>
+  createdAt: string
+}
+
 // ─── Task Board Types ────────────────────────────────────────────────────────
 
 export type TaskStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done" | "blocked"
 export type TaskPriority = "low" | "medium" | "high" | "urgent"
+
+// ADLC pipeline stage — surfaced only for projects with kind='adlc'.
+export type TaskStage =
+  | "discovery" | "design" | "architecture" | "implementation"
+  | "qa" | "docs" | "release" | "ops"
+
+// ADLC role — drives auto-assign hints. May not match the actual agent's role.
+export type TaskRole =
+  | "pm" | "pa" | "ux" | "em" | "swe" | "qa" | "doc" | "biz" | "data"
 
 export interface Task {
   id: string
@@ -280,6 +320,65 @@ export interface Task {
   requestFrom?: string
   analysis?: TaskAnalysis | null
   attachments?: TaskAttachment[]
+  // Phase B — ADLC fields
+  stage?: TaskStage
+  role?: TaskRole
+  epicId?: string
+}
+
+export type EpicStatus = "open" | "in_progress" | "done" | "cancelled"
+
+export interface Epic {
+  id: string
+  projectId: string
+  title: string
+  description?: string
+  status: EpicStatus
+  color?: string
+  createdBy?: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type TaskDependencyKind = "blocks" | "relates"
+
+export interface TaskDependency {
+  id: string
+  blockerTaskId: string
+  blockedTaskId: string
+  kind: TaskDependencyKind
+  createdAt: string
+}
+
+// ─── Project memory (Phase A2) ──────────────────────────────────────────────
+
+export type ProjectMemoryKind = "decision" | "question" | "risk" | "glossary"
+export type ProjectMemoryStatus = "open" | "resolved" | "archived"
+export type ProjectRiskCategory = "value" | "usability" | "feasibility" | "viability"
+export type ProjectRiskSeverity = "low" | "medium" | "high"
+
+/** Free-form per-kind metadata. Risk uses {category, severity}. */
+export interface ProjectMemoryMeta {
+  category?: ProjectRiskCategory
+  severity?: ProjectRiskSeverity
+  /** For questions: the resolved answer text (separate from body to allow edits). */
+  answer?: string
+  /** Free-form extras. */
+  [k: string]: unknown
+}
+
+export interface ProjectMemoryItem {
+  id: string
+  projectId: string
+  kind: ProjectMemoryKind
+  title: string
+  body: string
+  status: ProjectMemoryStatus
+  meta: ProjectMemoryMeta
+  sourceTaskId: string | null
+  createdBy: number | null
+  createdAt: string
+  updatedAt: string
 }
 
 // ─── Metrics Dashboard ───────────────────────────────────────────────────────
@@ -634,6 +733,8 @@ export type WsEventType =
   | "chat:event"
   | "chat:sessions-changed"
   | "chat:done"
+  | "room:message"
+  | "room:created"
   | "skills:updated"
 
 export interface WsMessage {
@@ -880,11 +981,130 @@ export interface FileVersionDetail extends FileVersion {
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 
+export type ProjectKind = 'adlc' | 'codebase' | 'ops' | 'research'
+export type ProjectWorkspaceMode = 'greenfield' | 'brownfield'
+
+// ── Workspace path validation + git branch metadata (Phase A1.3b) ───────────
+export interface UncommittedFile {
+  status: string  // git --porcelain code: " M", "??", etc.
+  path: string
+}
+
+export interface RepoRemote {
+  name: string
+  url: string
+}
+
+export interface RepoInspect {
+  isRepo: boolean
+  currentBranch?: string | null
+  isDirty?: boolean
+  uncommittedFiles?: UncommittedFile[]
+  isDetached?: boolean
+  isSubmodule?: boolean
+  remotes?: RepoRemote[]
+}
+
+export interface ValidatePathResult {
+  ok: boolean
+  mode?: ProjectWorkspaceMode
+  resolvedPath?: string
+  parent?: string | null
+  /** Set when ok=false. */
+  error?: string
+  reason?: string
+  sensitive?: string
+  repo?: RepoInspect | null
+  /** When the path already has a `.aoc/project.json` written in it. */
+  existingBinding?: { id: string; name?: string; kind?: string; mode?: string } | null
+  /** When the DB already has a project row pointing at this path. */
+  pathBoundToOtherProject?: { id: string; name: string } | null
+  warnings?: string[]
+}
+
+export interface BranchInfo {
+  name: string
+  type: 'local' | 'remote'
+  tracking?: string | null
+  ahead: number
+  behind: number
+  lastCommit?: {
+    sha: string
+    subject: string
+    author: string
+    date: number | null
+  }
+}
+
+export interface FetchBranchesResult {
+  ok: boolean
+  isRepo: boolean
+  fetchSucceeded?: boolean
+  fetchError?: string | null
+  fetchDurationMs?: number
+  remoteName?: string | null
+  currentBranch?: string | null
+  isDirty?: boolean
+  uncommittedFiles?: UncommittedFile[]
+  branches: BranchInfo[]
+  error?: string
+}
+
+// Server-driven filesystem browser (used by the directory picker in the wizard).
+export interface FsBrowseEntry {
+  name: string
+  kind: 'dir'
+  isSymlink: boolean
+  isGitRepo: boolean
+  hasAocBinding: boolean
+}
+
+export interface FsBrowseResult {
+  cwd: string         // absolute path
+  display: string     // "~/..." form when under HOME
+  home: string
+  parent: string | null
+  isUnderHome: boolean
+  entries: FsBrowseEntry[]
+}
+
+export interface CreateProjectExtendedPayload {
+  name: string
+  color?: string
+  description?: string
+  kind?: ProjectKind
+  workspaceMode?: ProjectWorkspaceMode
+  /** Required when workspaceMode === 'brownfield'. */
+  workspacePath?: string
+  /** Required when workspaceMode === 'greenfield' (parent dir + name -> target). */
+  parentPath?: string
+  /** Optional checkout branch on bind (brownfield only). */
+  branch?: string
+  /** Greenfield-only: run `git init` in scaffold. */
+  initGit?: boolean
+  /** Greenfield-only: add this URL as `origin` after `git init`. */
+  addRemoteUrl?: string
+}
+
 export interface Project {
   id: string
   name: string
   color: string
   description?: string
+  kind?: ProjectKind
+  /** Absolute filesystem path bound to this project (greenfield/brownfield). */
+  workspacePath?: string
+  workspaceMode?: ProjectWorkspaceMode
+  /** When the project's workspace is a git repo. */
+  repoUrl?: string
+  repoBranch?: string
+  repoRemoteName?: string
+  /** Epoch ms — when the workspace was first bound. */
+  boundAt?: number
+  /** Epoch ms — last successful `git fetch` from AOC. */
+  lastFetchedAt?: number
+  /** User ID of the creator. Null for legacy / shared projects ('general'). */
+  createdBy?: number | null
   createdAt: string
   updatedAt: string
 }
@@ -1347,4 +1567,3 @@ export interface BrowserHarnessOdooStatus {
   files: BrowserHarnessOdooFile[]
   moduleCount: number
 }
-

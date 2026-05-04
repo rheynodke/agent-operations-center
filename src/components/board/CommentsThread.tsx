@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "@/lib/api"
 import { useAuthStore } from "@/stores"
 import type { Agent, Task, TaskComment } from "@/types"
-import { MessageSquare, Send, Bot, User, Pencil, Trash2, Loader2, X, Check } from "lucide-react"
+import { MessageSquare, Bot, User, Pencil, Trash2, Loader2, X, Check } from "lucide-react"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { cn } from "@/lib/utils"
 
@@ -28,8 +28,6 @@ export function CommentsThread({ task, agents }: Props) {
   const [comments, setComments] = useState<TaskComment[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [draft, setDraft] = useState("")
-  const [posting, setPosting] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState("")
   const feedRef = useRef<HTMLDivElement>(null)
@@ -75,19 +73,6 @@ export function CommentsThread({ task, agents }: Props) {
   useEffect(() => {
     if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight
   }, [comments.length])
-
-  async function handlePost() {
-    if (!draft.trim() || posting) return
-    setPosting(true)
-    setError(null)
-    const body = draft.trim()
-    try {
-      await api.postTaskComment(task.id, body)
-      setDraft("")
-    } catch (e) {
-      setError((e as Error).message || "Failed to post")
-    } finally { setPosting(false) }
-  }
 
   async function handleEdit(c: TaskComment) {
     if (!editDraft.trim() || editDraft.trim() === c.body) { setEditingId(null); return }
@@ -226,36 +211,12 @@ export function CommentsThread({ task, agents }: Props) {
         })}
       </div>
 
-      <div className="border-t border-border/30 p-3 space-y-2 bg-muted/5">
-        <textarea
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-              e.preventDefault()
-              handlePost()
-            }
-          }}
-          placeholder="Write a comment… (⌘/Ctrl+Enter to post)"
-          className="w-full text-xs px-3 py-2 rounded-md border border-border/40 bg-background/40 focus:outline-none focus:ring-1 focus:ring-primary/40 resize-none min-h-[60px]"
-        />
-        {error && <p className="text-[11px] text-destructive">{error}</p>}
-        <div className="flex justify-end">
-          <button
-            onClick={handlePost}
-            disabled={!draft.trim() || posting}
-            className={cn(
-              "inline-flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors",
-              draft.trim() && !posting
-                ? "bg-primary text-primary-foreground hover:opacity-90"
-                : "bg-muted/40 text-muted-foreground cursor-not-allowed"
-            )}
-          >
-            {posting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-            Post
-          </button>
+      {/* Composer lives in the parent (TaskPanel sticky bottom). */}
+      {error && (
+        <div className="border-t border-border/30 px-3 py-2 bg-destructive/5">
+          <p className="text-[11px] text-destructive">{error}</p>
         </div>
-      </div>
+      )}
     </div>
   )
 }

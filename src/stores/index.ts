@@ -4,6 +4,7 @@ import type { Agent, Session, Task, TaskStatus, TaskPriority, CronJob, GatewayRo
 
 export * from "./useThemeStore"
 export { useProjectStore } from './useProjectStore'
+export { useRoomStore } from './useRoomStore'
 
 // ─── Auth Store ───────────────────────────────────────────────────────────────
 interface AuthState {
@@ -111,30 +112,58 @@ export const useSessionStore = create<SessionState>((set) => ({
 // server/lib/watchers.cjs). Gives Overview + AgentDetail a realtime indicator
 // without waiting for the next REST poll.
 interface ProcessingState {
-  sessions: Record<string, { agentId?: string; startedAt: number }>  // keyed by file path or sessionKey
+  sessions: Record<string, { agentId?: string; startedAt: number; timerId?: ReturnType<typeof setTimeout> }>  // keyed by file path or sessionKey
   agentCounts: Record<string, number>                                // how many active sessions per agentId
   isAgentProcessing: (agentId: string) => boolean
+  isAgentProcessingInScope: (agentId: string, scope: { roomId?: string; taskId?: string }) => boolean
   isSessionProcessing: (key: string) => boolean
   start: (key: string, agentId?: string) => void
   stop: (key: string) => void
   reset: () => void
 }
 
+const PROCESSING_STALE_MS = 120_000 // 2 minutes auto-expiry
+
 export const useProcessingStore = create<ProcessingState>((set, get) => ({
   sessions: {},
   agentCounts: {},
   isAgentProcessing: (agentId) => (get().agentCounts[agentId] ?? 0) > 0,
+  // Scoped processing check — true only if the agent has an active session
+  // whose key matches the given context (room or task). Session keys follow
+  // `agent:<agentId>:<channel>:<contextId>[...]` where channel is `room` or
+  // `task`. Anything not matching the scope (e.g. DM 1:1, other rooms, other
+  // tasks) is excluded.
+  isAgentProcessingInScope: (agentId, scope) => {
+    const sessions = get().sessions
+    const prefixRoom = scope.roomId ? `agent:${agentId}:room:${scope.roomId}` : null
+    const prefixTask = scope.taskId ? `agent:${agentId}:task:${scope.taskId}` : null
+    for (const key of Object.keys(sessions)) {
+      const entry = sessions[key]
+      if (entry?.agentId && entry.agentId !== agentId) continue
+      if (prefixRoom && (key === prefixRoom || key.startsWith(`${prefixRoom}:`))) return true
+      if (prefixTask && (key === prefixTask || key.startsWith(`${prefixTask}:`))) return true
+    }
+    return false
+  },
   isSessionProcessing: (key) => !!get().sessions[key],
-  start: (key, agentId) => set((s) => {
-    if (s.sessions[key]) return s // already tracked
-    const nextSessions = { ...s.sessions, [key]: { agentId, startedAt: Date.now() } }
-    const nextCounts = { ...s.agentCounts }
-    if (agentId) nextCounts[agentId] = (nextCounts[agentId] ?? 0) + 1
-    return { sessions: nextSessions, agentCounts: nextCounts }
-  }),
+  start: (key, agentId) => {
+    const current = get()
+    if (current.sessions[key]) return // already tracked
+    // Auto-expire stale processing flags after PROCESSING_STALE_MS
+    const timerId = setTimeout(() => {
+      get().stop(key)
+    }, PROCESSING_STALE_MS)
+    set((s) => {
+      const nextSessions = { ...s.sessions, [key]: { agentId, startedAt: Date.now(), timerId } }
+      const nextCounts = { ...s.agentCounts }
+      if (agentId) nextCounts[agentId] = (nextCounts[agentId] ?? 0) + 1
+      return { sessions: nextSessions, agentCounts: nextCounts }
+    })
+  },
   stop: (key) => set((s) => {
     const entry = s.sessions[key]
     if (!entry) return s
+    if (entry.timerId) clearTimeout(entry.timerId)
     const nextSessions = { ...s.sessions }
     delete nextSessions[key]
     const nextCounts = { ...s.agentCounts }
@@ -145,7 +174,13 @@ export const useProcessingStore = create<ProcessingState>((set, get) => ({
     }
     return { sessions: nextSessions, agentCounts: nextCounts }
   }),
-  reset: () => set({ sessions: {}, agentCounts: {} }),
+  reset: () => set((s) => {
+    // Clear all pending timers before resetting
+    Object.values(s.sessions).forEach(entry => {
+      if (entry.timerId) clearTimeout(entry.timerId)
+    })
+    return { sessions: {}, agentCounts: {} }
+  }),
 }))
 
 // ─── Task Store ───────────────────────────────────────────────────────────────
@@ -154,6 +189,8 @@ interface TaskFilters {
   status?: string
   priority?: string
   tag?: string
+  stage?: string
+  epicId?: string
   q?: string
 }
 

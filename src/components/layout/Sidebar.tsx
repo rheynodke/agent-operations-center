@@ -4,10 +4,8 @@ import {
   LayoutDashboard,
   Bot,
   BarChart3,
-  ListChecks,
   Activity,
   Timer,
-  Radio,
   Settings,
   ChevronRight,
   PanelLeftClose,
@@ -19,8 +17,7 @@ import {
   Webhook,
   Plug,
   Users,
-  Workflow,
-  Target,
+  FolderGit2,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -40,7 +37,7 @@ const navGroups = [
       { to: "/agents", label: "Agents", icon: Bot },
       { to: "/sessions", label: "Sessions", icon: Activity },
       { to: "/chat", label: "Chat", icon: MessageSquare },
-      { to: "/board", label: "Task Board", icon: ListChecks },
+      { to: "/projects", label: "Projects", icon: FolderGit2 },
       { to: "/metrics", label: "Metrics", icon: BarChart3 },
     ],
   },
@@ -49,7 +46,6 @@ const navGroups = [
     items: [
       { to: "/cron", label: "Schedules", icon: Timer },
       { to: "/hooks", label: "Webhooks", icon: Webhook },
-      { to: "/missions", label: "Missions", icon: Target },
     ],
   },
   {

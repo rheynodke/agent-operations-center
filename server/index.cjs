@@ -23,6 +23,8 @@ const mcpOauth = require('./lib/connections/mcp-oauth.cjs');
 const composio = require('./lib/connections/composio.cjs');
 const pipelines = require('./lib/pipelines/index.cjs');
 const workflowRuns = require('./lib/pipelines/runs.cjs');
+const projectGit = require('./lib/projects/git-ops.cjs');
+const projectWs = require('./lib/projects/workspace-ops.cjs');
 // Wire gateway into the runs module so agent steps can dispatch real sessions.
 try { workflowRuns.setGatewayProxy(require('./lib/gateway-ws.cjs').gatewayProxy); } catch (e) {
   console.warn('[runs] gateway wiring failed:', e.message);
@@ -50,19 +52,32 @@ function loadAllJSONLMessagesForTask(agentId, taskId) {
       .filter(f => f.endsWith('.jsonl'))
       .map(f => path.join(sessionsDir, f));
 
-    // Filter files that mention the taskId (agent tools return task context containing taskId)
-    const matchingFiles = files.filter(f => {
-      try { return fs.readFileSync(f, 'utf8').includes(taskId); }
-      catch { return false; }
-    });
-
-    if (matchingFiles.length === 0) return [];
-
-    // Parse each file and normalize messages to GatewayMessage-compatible format
+    // For each file, find the FIRST line that mentions the taskId, then take
+    // only messages from that line onwards. This prevents bleed-through when a
+    // session is shared between unrelated chat (e.g. DM with the agent) AND
+    // the task — only the task-relevant tail of the session is exported.
     const allMessages = [];
-    for (const file of matchingFiles) {
-      const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
-      for (const line of lines) {
+    for (const file of files) {
+      let raw;
+      try { raw = fs.readFileSync(file, 'utf8'); } catch { continue; }
+      if (!raw.includes(taskId)) continue;
+
+      const lines = raw.split('\n');
+      // Find index of first line mentioning taskId.
+      let startIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes(taskId)) { startIdx = i; break; }
+      }
+      if (startIdx < 0) continue;
+
+      // Walk back a few lines to capture the user prompt that introduced the
+      // task (typically the line right before the first taskId mention).
+      const lookback = 3;
+      const begin = Math.max(0, startIdx - lookback);
+
+      for (let i = begin; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
         try {
           const entry = JSON.parse(line);
           if (entry.type !== 'message' || !entry.message) continue;
@@ -75,7 +90,7 @@ function loadAllJSONLMessagesForTask(agentId, taskId) {
             toolCallId,
             toolName,
             timestamp: entry.timestamp ? new Date(entry.timestamp).getTime() : 0,
-            _file: path.basename(file, '.jsonl'), // for dedup
+            _file: path.basename(file, '.jsonl'),
           });
         } catch { /* skip malformed lines */ }
       }
@@ -485,6 +500,43 @@ function broadcastTasksUpdate() {
   }
 }
 
+function emitRoomMessage(message) {
+  if (!message?.roomId) return;
+  broadcast({ type: 'room:message', payload: { roomId: message.roomId, message } });
+}
+
+function getAgentDisplayName(agentId) {
+  if (!agentId) return null;
+  try {
+    const agent = getEnrichedAgents().find(a => a.id === agentId);
+    return agent?.name || agent?.displayName || agentId;
+  } catch (_) {
+    return agentId;
+  }
+}
+
+function emitTaskRoomSystemMessage(task, body) {
+  try {
+    if (!task?.projectId) return null;
+    const room = db.ensureProjectDefaultRoom(task.projectId, null);
+    if (!room) return null;
+    const message = db.createMissionMessage({
+      roomId: room.id,
+      authorType: 'system',
+      authorId: 'task-lifecycle',
+      authorName: 'Task Board',
+      body,
+      relatedTaskId: task.id,
+      meta: { taskId: task.id, status: task.status, projectId: task.projectId },
+    });
+    emitRoomMessage(message);
+    return message;
+  } catch (err) {
+    console.warn('[mission-rooms] task lifecycle emit failed:', err.message);
+    return null;
+  }
+}
+
 function checkGatewayPort(port, host = '127.0.0.1') {
   return new Promise((resolve) => {
     const socket = new net.Socket();
@@ -751,6 +803,326 @@ function getEnrichedAgents() {
   });
 }
 
+function canAccessAgent(req, agentId) {
+  if (!agentId) return false;
+  if (agentId === 'main') return true;
+  return db.userOwnsAgent(req, agentId);
+}
+
+function validateAccessibleAgentIds(req, ids = []) {
+  const normalized = [];
+  for (const raw of (Array.isArray(ids) ? ids : [])) {
+    const id = String(raw || '').trim();
+    if (!id || normalized.includes(id)) continue;
+    if (!canAccessAgent(req, id)) {
+      const err = new Error(`You do not have permission to add agent ${id}`);
+      err.status = 403;
+      throw err;
+    }
+    normalized.push(id);
+  }
+  return normalized;
+}
+
+function canAccessRoom(req, room) {
+  if (!room) return false;
+  if (req.user?.role === 'admin' || req.user?.role === 'agent') return true;
+  if (room.kind === 'global') return true;
+  if (room.projectId && db.userOwnsProject(req, room.projectId)) return true;
+  return room.memberAgentIds?.some(id => id !== 'main' && db.userOwnsAgent(req, id));
+}
+
+function groupRoomsForClient(rooms) {
+  return {
+    global: rooms.filter(r => r.kind === 'global'),
+    project: rooms.filter(r => r.kind === 'project'),
+  };
+}
+
+function withRoomAccess(req, res, roomId) {
+  const room = db.getMissionRoom(roomId);
+  if (!room) {
+    res.status(404).json({ error: 'Room not found' });
+    return null;
+  }
+  if (!canAccessRoom(req, room)) {
+    res.status(403).json({ error: 'You do not have access to this room' });
+    return null;
+  }
+  return room;
+}
+
+function roomAgents(room) {
+  const agents = getEnrichedAgents();
+  return (room.memberAgentIds || []).map((id) => {
+    const agent = agents.find(a => a.id === id);
+    return agent || { id, name: id === 'main' ? 'Main' : id, emoji: id === 'main' ? '🧭' : '🤖', status: 'idle', type: 'gateway' };
+  });
+}
+
+function resolveMentions(req, room, body, explicitMentions = []) {
+  const agents = roomAgents(room);
+  const requested = new Set((Array.isArray(explicitMentions) ? explicitMentions : []).map(String).filter(Boolean));
+  const lowerBody = String(body || '').toLowerCase();
+  for (const agent of agents) {
+    const labels = [agent.id, agent.name, agent.displayName].filter(Boolean).map(v => String(v).toLowerCase());
+    if (labels.some(label => lowerBody.includes(`@${label}`))) requested.add(agent.id);
+  }
+  return validateAccessibleAgentIds(req, [...requested]).filter(id => room.memberAgentIds.includes(id));
+}
+
+async function forwardRoomMentionToAgent(room, message, agentId) {
+  if (!gatewayProxy.isConnected) return;
+
+  // Phase 2: Reuse existing session for this agent+room combo (context continuity)
+  let sessionKey = db.getRoomAgentSession(room.id, agentId);
+
+  if (!sessionKey) {
+    // Create a room-scoped session, isolated from DM 1:1 chat and other
+    // rooms. Key shape: `agent:<agentId>:room:<roomId>`.
+    const desiredKey = `agent:${agentId}:room:${room.id}`;
+    const sessionResult = await gatewayProxy.sessionsCreate(agentId, { key: desiredKey });
+    sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
+    if (!sessionKey) throw new Error('Gateway did not return a session key');
+    if (sessionKey !== desiredKey) {
+      console.warn(`[forward-mention] gateway returned session=${sessionKey} but we requested ${desiredKey}`);
+    }
+    // Phase 1: Tag session as room-triggered in SQLite
+    db.markSessionAsRoomTriggered(sessionKey, room.id, agentId);
+  }
+
+  // Build a rich project context — gives the agent enough information to
+  // actually be useful, not just respond "I don't know what this project is".
+  let projectContext = '';
+  if (room.kind === 'project' && room.projectId) {
+    const project = db.getProject(room.projectId);
+    if (project) {
+      const lines = [
+        '',
+        '═══ PROJECT CONTEXT ═══',
+        `Project: ${project.name} (id: ${project.id})`,
+        project.description ? `Description: ${project.description}` : null,
+        project.kind ? `Kind: ${project.kind}` : null,
+      ].filter(Boolean);
+
+      // Project memory — canonical "what we've decided / what's open".
+      try {
+        const mem = db.buildProjectMemorySnapshot(project.id, { decisionLimit: 5, glossaryLimit: 20 });
+        if (mem) {
+          if (mem.decisions?.length) {
+            lines.push('', 'Recent decisions:');
+            for (const d of mem.decisions.slice(0, 5)) lines.push(`  • ${d.title}${d.body ? ` — ${String(d.body).slice(0, 120)}` : ''}`);
+          }
+          if (mem.openQuestions?.length) {
+            lines.push('', 'Open questions:');
+            for (const q of mem.openQuestions.slice(0, 5)) lines.push(`  • ${q.title}`);
+          }
+          if (mem.openRisks?.length) {
+            lines.push('', 'Open risks:');
+            for (const r of mem.openRisks.slice(0, 5)) lines.push(`  • ${r.title}${r.severity ? ` [${r.severity}]` : ''}`);
+          }
+          if (mem.glossary?.length) {
+            lines.push('', 'Glossary:');
+            for (const g of mem.glossary.slice(0, 10)) lines.push(`  • ${g.term}: ${String(g.definition || '').slice(0, 80)}`);
+          }
+        }
+      } catch (_) { /* ignore */ }
+
+      // Active tasks — what's currently in flight.
+      try {
+        const tasks = db.getAllTasks({ projectId: project.id }) || [];
+        const inProgress = tasks.filter(t => t.status === 'in_progress');
+        const inReview   = tasks.filter(t => t.status === 'in_review');
+        const open       = tasks.filter(t => t.status === 'open' || t.status === 'todo');
+        if (inProgress.length || inReview.length || open.length) {
+          lines.push('', 'Tasks:');
+          for (const t of inProgress.slice(0, 5)) lines.push(`  • [in_progress] ${t.title} → ${t.agentId || '?'}${t.priority ? ` (${t.priority})` : ''}`);
+          for (const t of inReview.slice(0, 5))   lines.push(`  • [in_review]   ${t.title} → ${t.agentId || '?'}`);
+          for (const t of open.slice(0, 8))       lines.push(`  • [open]        ${t.title}${t.agentId ? ` → ${t.agentId}` : ''}`);
+        }
+      } catch (_) { /* ignore */ }
+
+      // Epics / plan
+      try {
+        const epics = db.listEpics(project.id) || [];
+        if (epics.length) {
+          lines.push('', 'Epics / Plan:');
+          for (const e of epics.slice(0, 5)) lines.push(`  • ${e.title}${e.status ? ` [${e.status}]` : ''}`);
+        }
+      } catch (_) { /* ignore */ }
+
+      lines.push('═══════════════════════', '');
+      projectContext = lines.join('\n');
+    }
+  }
+
+  // Roster — who else is in this room and what they do. Enables delegation
+  // AND task assignment (the orchestrator needs the agent IDs to pass as
+  // --assignee to mission_room.sh create-task).
+  let rosterContext = '';
+  try {
+    const allAgents = getEnrichedAgents() || [];
+    const roomMembers = (room.memberAgentIds || [])
+      .filter(id => id !== agentId)
+      .map(id => allAgents.find(a => a.id === id))
+      .filter(Boolean);
+    if (roomMembers.length) {
+      const lines = [
+        '',
+        '═══ ROOM MEMBERS ═══',
+        '(Use the @name to delegate inside the room. Use the id="..." value as --assignee when creating tasks via mission_room.sh.)',
+      ];
+      for (const m of roomMembers) {
+        const role = m.role ? ` — role: ${m.role}` : '';
+        const desc = m.description ? ` — ${String(m.description).slice(0, 100)}` : '';
+        lines.push(`  • @${m.name} (id="${m.id}")${role}${desc}`);
+      }
+      lines.push('═══════════════════', '');
+      rosterContext = lines.join('\n');
+    }
+  } catch (_) { /* ignore */ }
+
+  const history = db.listMissionMessages(room.id, { limit: 20 }).reverse();
+  const transcript = history.map(m => `${m.authorName || m.authorId || m.authorType}: ${m.body}`).join('\n');
+
+  // Tools section — only the main orchestrator gets the task-board helpers,
+  // since `mission-orchestrator` skill (and its mission_room.sh) is installed
+  // for `main` only. Specialists drive their own tasks via `update_task.sh`
+  // from the `aoc-tasks` skill, which they already have.
+  const isOrchestrator = agentId === 'main';
+  const projectIdForTools = (room.kind === 'project' && room.projectId) ? room.projectId : null;
+  const toolsBlock = isOrchestrator ? [
+    '',
+    '═══ TASK BOARD TOOLS (you are the orchestrator) ═══',
+    'You can drive plans/tasks/comments/dispatch from this room conversation:',
+    `  • Create task:    mission_room.sh create-task --project ${projectIdForTools || '<projectId>'} --title "..." --assignee <agentId> [--priority high] [--stage ...] [--role swe|qa|ux|...]`,
+    '  • Update task:    mission_room.sh update-task <taskId> --status in_review|done|...',
+    '  • Comment:        mission_room.sh comment-task <taskId> "..."',
+    '  • Dispatch:       mission_room.sh dispatch-task <taskId>     (todo → in_progress)',
+    '  • Approve:        mission_room.sh approve <taskId> [--note "..."]    (in_review → done)',
+    '  • Request change: mission_room.sh request-change <taskId> --reason "..." (in_review → in_progress, auto re-dispatch)',
+    '  • Request approval: mission_room.sh request-approval --room <roomId> --task <taskId> --reason "..."',
+    '',
+    'TASK CLASSIFICATION — every create-task MUST set --stage AND --role correctly:',
+    '',
+    '  Stage / Role mapping (ADLC):',
+    '    Stage          | Role | Use for',
+    '    ───────────────┼──────┼──────────────────────────────────────────────',
+    '    discovery      | pm   | PRD, requirements, scope, user research, briefs',
+    '    discovery      | pa   | analytics scope, metrics definition, hypothesis',
+    '    design         | ux   | wireframes, UI mockups, design specs',
+    '    architecture   | em   | system design, API spec, technical decisions',
+    '    implementation | swe  | coding, integration, refactoring',
+    '    qa             | qa   | test plan, regression, edge cases, validation',
+    '    docs           | doc  | docs, README, runbooks, user guides',
+    '    release        | swe  | deployment, release coordination',
+    '    ops            | swe  | infra, monitoring, on-call work',
+    '',
+    '  Examples:',
+    '    "Buat PRD game pingpong"        → --stage discovery --role pm',
+    '    "Design landing page"            → --stage design --role ux',
+    '    "Implement pricing engine"       → --stage implementation --role swe',
+    '    "QA pricing flow edge cases"     → --stage qa --role qa',
+    '',
+    'Assignment rules:',
+    '  • --assignee MUST be the id="..." of a specialist from the ROOM MEMBERS list above whose role matches the task. NEVER use "main" — you are the orchestrator, you delegate, you do not execute.',
+    '  • If NO room member fits the required role: leave --assignee unset (creates an unassigned task with the correct stage+role tag) AND ask the user "Tidak ada specialist dengan role <role> di room ini — mau saya assign ke siapa atau biarkan unassigned?". Never self-assign as a fallback.',
+    '  • For complex requests, decompose into MULTIPLE tasks: e.g. "build feature X" → PRD (discovery/pm) → Design (design/ux) → Implementation (implementation/swe) → QA (qa/qa).',
+    '',
+    'Dispatch rules:',
+    '  • Only call dispatch-task if the task IS assigned to a specialist. Never dispatch a task assigned to "main" — that would make you execute work that\'s not yours. If the task is unassigned, do not dispatch.',
+    '',
+    'Each create/update fires a Task Board lifecycle hook that posts a system message into this room automatically — do NOT also announce the action manually in your reply.',
+    '═══════════════════════════════════════════════',
+    '',
+  ].join('\n') : '';
+
+  const prompt = [
+    `[Mission Room: "${room.name}" (${room.id})]`,
+    'You are participating in a multi-agent chat room. Use the project context below to give grounded, useful answers — do NOT say "I don\'t know" if the answer is in the context.',
+    projectContext,
+    rosterContext,
+    toolsBlock,
+    'Recent room conversation:',
+    transcript || '(no prior messages)',
+    '',
+    `New message from ${message.authorName || message.authorId || 'user'}:`,
+    message.body,
+    '',
+    'Instructions:',
+    '  • Respond as plain text. AOC captures your assistant message and posts it to the room automatically.',
+    '  • Do NOT call mission_room.sh post to reply to THIS room — it would loop. (mission_room.sh post is only for cross-room broadcasts.)',
+    '  • To delegate to another agent in this room, include "@<their name>" in your reply (e.g. "@Tadaki please investigate X"). AOC will route the message to them.',
+    isOrchestrator
+      ? '  • When the user describes work that needs doing: decompose into tasks, run mission_room.sh create-task / dispatch-task as appropriate, then write a short summary reply. The lifecycle system messages will appear automatically.'
+      : null,
+    '  • If the question is unanswerable from the context, say so concisely AND ask one specific clarifying question.',
+    '  • Reply with the literal token "NO_REPLY" only if no answer is warranted.',
+  ].filter(Boolean).join('\n');
+  try {
+    await gatewayProxy.chatSend(sessionKey, prompt);
+  } catch (err) {
+    console.warn(`[mission-rooms] mention forward failed room=${room.id} agent=${agentId}:`, err.message);
+  }
+}
+
+// Per-message delegation depth tracker. Each room message gets at most one
+// entry; chains exceeding MAX_DELEGATION_DEPTH are dropped to prevent loops.
+const _delegationDepth = new Map(); // messageId → depth (0 = root user post)
+const MAX_DELEGATION_DEPTH = 3;
+
+function forwardAgentMentionChain(room, agentMsg, sourceAgentId) {
+  if (!agentMsg?.body) return;
+  // Parent depth: find the most recent message before this one that we have a
+  // depth entry for. Default to 0 if root (auto-reply to a user mention).
+  const parentDepth = _delegationDepth.get(agentMsg.id) ?? 0;
+  const nextDepth = parentDepth + 1;
+  if (nextDepth > MAX_DELEGATION_DEPTH) {
+    console.log(`[delegation] dropped — max depth ${MAX_DELEGATION_DEPTH} exceeded for msg=${agentMsg.id}`);
+    return;
+  }
+
+  // Resolve mentions in the agent's body — same word-boundary semantics as user mentions.
+  const allAgents = (typeof getEnrichedAgents === 'function' ? getEnrichedAgents() : []) || [];
+  const memberAgents = (room.memberAgentIds || [])
+    .map(id => allAgents.find(a => a.id === id))
+    .filter(Boolean);
+  const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const text = String(agentMsg.body);
+  const mentioned = new Set();
+  for (const a of memberAgents) {
+    if (a.id === sourceAgentId) continue;          // don't self-mention
+    if (a.id === 'main' && sourceAgentId !== 'main') {
+      // Specialists can ping main as orchestrator — that's allowed.
+    }
+    const labels = [a.id, a.name, a.displayName].filter(Boolean).map(String);
+    if (labels.some(l => new RegExp(`(^|[^\\w@])@${escapeRegex(l)}(?![\\w])`, 'i').test(text))) {
+      mentioned.add(a.id);
+    }
+  }
+  if (mentioned.size === 0) return;
+
+  for (const targetAgentId of mentioned) {
+    console.log(`[delegation] ${sourceAgentId} → ${targetAgentId} (depth ${nextDepth}) msg=${agentMsg.id}`);
+    forwardRoomMentionToAgent(room, agentMsg, targetAgentId)
+      .then(() => {
+        // Tag the *next* expected room message ID space — we don't know the
+        // ID yet, so we use a poor-man's approach: track by agentId+roomId+ts.
+        // The simplest correct tracker: tag every newly-created message by
+        // the agent we just forwarded to with depth=nextDepth. We do this in
+        // the auto-reply path by checking the parent reservation source.
+        // For R1 simplicity, we leak a small map keyed by agentId+roomId.
+        _delegationByAgentRoom.set(`${targetAgentId}:${room.id}`, nextDepth);
+      })
+      .catch(() => {});
+  }
+}
+
+// Side map: when an agent gets forwarded-to via delegation, record the
+// expected depth for *its next message* in this room. The auto-reply path
+// reads this and primes _delegationDepth for the new message.
+const _delegationByAgentRoom = new Map(); // `${agentId}:${roomId}` → depth
+
 // Agents
 app.get('/api/agents', db.authMiddleware, (req, res) => {
   try {
@@ -758,6 +1130,128 @@ app.get('/api/agents', db.authMiddleware, (req, res) => {
   } catch (err) {
     console.error('[api/agents]', err);
     res.status(500).json({ error: 'Failed to fetch agents' });
+  }
+});
+
+// ─── Mission Rooms ────────────────────────────────────────────────────────────
+
+app.get('/api/rooms', db.authMiddleware, (req, res) => {
+  try {
+    res.json({ rooms: groupRoomsForClient(db.listMissionRoomsForUser(req)) });
+  } catch (err) {
+    console.error('[api/rooms GET]', err);
+    res.status(500).json({ error: 'Failed to fetch rooms' });
+  }
+});
+
+app.get('/api/rooms/:id', db.authMiddleware, (req, res) => {
+  try {
+    const room = withRoomAccess(req, res, req.params.id);
+    if (!room) return;
+    res.json({ room, agents: roomAgents(room) });
+  } catch (err) {
+    console.error('[api/rooms/:id GET]', err);
+    res.status(500).json({ error: 'Failed to fetch room' });
+  }
+});
+
+app.post('/api/rooms', db.authMiddleware, (req, res) => {
+  try {
+    const { kind = 'global', projectId = null, name, description, memberAgentIds = [] } = req.body || {};
+    if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+    if (kind !== 'global' && kind !== 'project') return res.status(400).json({ error: "kind must be 'global' or 'project'" });
+    if (kind === 'project') {
+      if (!projectId) return res.status(400).json({ error: 'projectId is required for project rooms' });
+      if (!db.userOwnsProject(req, projectId)) return res.status(403).json({ error: 'You do not have access to this project' });
+    }
+    const room = db.createMissionRoom({ kind, projectId, name, description, memberAgentIds: validateAccessibleAgentIds(req, ['main', ...memberAgentIds]), createdBy: req.user?.userId ?? null });
+    broadcast({ type: 'room:created', payload: { room } });
+    res.status(201).json({ room });
+  } catch (err) {
+    console.error('[api/rooms POST]', err);
+    res.status(err.status || 500).json({ error: err.status ? err.message : 'Failed to create room' });
+  }
+});
+
+app.patch('/api/rooms/:id/members', db.authMiddleware, (req, res) => {
+  try {
+    const room = withRoomAccess(req, res, req.params.id);
+    if (!room) return;
+    const updated = db.updateMissionRoomMembers(room.id, validateAccessibleAgentIds(req, ['main', ...(req.body?.memberAgentIds || [])]));
+    broadcast({ type: 'room:created', payload: { room: updated } });
+    res.json({ room: updated });
+  } catch (err) {
+    console.error('[api/rooms/:id/members PATCH]', err);
+    res.status(err.status || 500).json({ error: err.status ? err.message : 'Failed to update room members' });
+  }
+});
+
+app.get('/api/projects/:id/room', db.authMiddleware, (req, res) => {
+  try {
+    if (!db.userOwnsProject(req, req.params.id)) return res.status(403).json({ error: 'You do not have access to this project' });
+    const room = db.ensureProjectDefaultRoom(req.params.id, req.user?.userId ?? null);
+    if (!room) return res.status(404).json({ error: 'Project not found' });
+    res.json({ room });
+  } catch (err) {
+    console.error('[api/projects/:id/room GET]', err);
+    res.status(500).json({ error: 'Failed to fetch project room' });
+  }
+});
+
+app.get('/api/rooms/:id/messages', db.authMiddleware, (req, res) => {
+  try {
+    const room = withRoomAccess(req, res, req.params.id);
+    if (!room) return;
+    res.json({ messages: db.listMissionMessages(room.id, { before: req.query.before, limit: req.query.limit }) });
+  } catch (err) {
+    console.error('[api/rooms/:id/messages GET]', err);
+    res.status(500).json({ error: 'Failed to fetch room messages' });
+  }
+});
+
+app.post('/api/rooms/:id/messages', db.authMiddleware, (req, res) => {
+  try {
+    const room = withRoomAccess(req, res, req.params.id);
+    if (!room) return;
+    const body = String(req.body?.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'body is required' });
+    const mentions = resolveMentions(req, room, body, req.body?.mentions || []);
+    const meta = req.body?.meta || {};
+    const message = db.createMissionMessage({
+      roomId: room.id,
+      authorType: 'user',
+      authorId: String(req.user?.userId ?? ''),
+      authorName: req.user?.displayName || req.user?.username || 'User',
+      body,
+      mentions,
+      meta,
+    });
+    emitRoomMessage(message);
+    res.status(201).json({ message });
+    for (const agentId of mentions) forwardRoomMentionToAgent(room, message, agentId).catch(() => {});
+  } catch (err) {
+    console.error('[api/rooms/:id/messages POST]', err);
+    res.status(err.status || 500).json({ error: err.status ? err.message : 'Failed to post room message' });
+  }
+});
+
+app.post('/api/rooms/:id/messages/agent', db.authMiddleware, (req, res) => {
+  try {
+    if (req.user?.role !== 'agent') return res.status(403).json({ error: 'Agent service token required' });
+    const room = withRoomAccess(req, res, req.params.id);
+    if (!room) return;
+    const agentId = String(req.body?.agentId || '').trim();
+    const body = String(req.body?.body || '').trim();
+    const relatedTaskId = req.body?.relatedTaskId ? String(req.body.relatedTaskId).trim() : null;
+    if (!agentId) return res.status(400).json({ error: 'agentId is required' });
+    if (!body) return res.status(400).json({ error: 'body is required' });
+    if (!room.memberAgentIds.includes(agentId) || !canAccessAgent(req, agentId)) return res.status(403).json({ error: 'Agent cannot post to this room' });
+    const message = db.createMissionMessage({ roomId: room.id, authorType: 'agent', authorId: agentId, authorName: getAgentDisplayName(agentId), body, relatedTaskId });
+    emitRoomMessage(message);
+    res.status(201).json({ message });
+  } catch (err) {
+    console.error('[api/rooms/:id/messages/agent POST]', err);
+    res.status(500).json({ error: 'Failed to post agent room message' });
   }
 });
 
@@ -2581,13 +3075,38 @@ app.get('/api/tasks', db.authMiddleware, (req, res) => {
 
 app.post('/api/tasks', db.authMiddleware, (req, res) => {
   try {
-    const { title, description, status, priority, agentId, tags, requestFrom } = req.body;
+    const { title, description, status, priority, agentId, tags, requestFrom, projectId, stage, role, epicId } = req.body;
     if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
-    if (agentId && !db.userOwnsAgent(req, agentId)) {
+
+    // Orchestrator guardrail: when an agent (service token) creates a task and
+    // its `requestFrom` is the orchestrator (`main`) itself, refuse to assign
+    // the task back to `main`. The orchestrator delegates — it does not
+    // execute. This is enforced server-side so a misbehaving LLM cannot bypass
+    // the prompt instruction. The task is still created (unassigned) so user
+    // can manually assign or specialists can pick it up.
+    let safeAgentId = agentId;
+    if (req.user?.role === 'agent' && requestFrom === 'main' && agentId === 'main') {
+      console.warn(`[tasks/create] orchestrator tried to self-assign task "${title}" — clearing assignee`);
+      safeAgentId = null;
+    }
+
+    if (safeAgentId && !db.userOwnsAgent(req, safeAgentId)) {
       return res.status(403).json({ error: 'You can only assign tasks to agents you own' });
     }
-    const task = db.createTask({ title: title.trim(), description, status, priority, agentId, tags, requestFrom });
+    // Project ownership: tasks must be created inside a project the user owns
+    // (or admin/agent-token bypass; null/legacy projects treated as shared).
+    const targetProjectId = projectId || 'general';
+    if (!db.userOwnsProject(req, targetProjectId)) {
+      return res.status(403).json({ error: 'You can only create tasks in projects you own' });
+    }
+    const task = db.createTask({
+      title: title.trim(), description, status, priority,
+      agentId: safeAgentId, tags, requestFrom, projectId: targetProjectId,
+      stage, role, epicId,
+    });
     db.addTaskActivity({ taskId: task.id, type: 'created', toValue: task.status, actor: 'user' });
+    const assignee = task.agentId ? getAgentDisplayName(task.agentId) : 'unassigned';
+    emitTaskRoomSystemMessage(task, `Task created: ${task.title} · assigned to ${assignee}`);
     broadcastTasksUpdate();
     res.status(201).json({ task });
   } catch (err) {
@@ -2596,7 +3115,7 @@ app.post('/api/tasks', db.authMiddleware, (req, res) => {
   }
 });
 
-app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
+app.patch('/api/tasks/:id', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
   try {
     const { id } = req.params;
     const gate = checkTaskAccess(req, id);
@@ -2622,14 +3141,42 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
     if (assignTo    !== undefined) patch.agentId     = assignTo || null;
     if (requestFrom !== undefined) patch.requestFrom = requestFrom;
 
+    // Auto-transition: assigning a backlog task to an agent moves it to `todo`
+    // (queued, ready to dispatch). User/orchestrator must explicitly dispatch
+    // to push it into in_progress — gives a chance to batch dispatches.
+    // Skipped if the caller is explicitly setting status in the same patch.
+    if (
+      assignTo && assignTo !== before.agentId &&
+      patch.status === undefined &&
+      before.status === 'backlog'
+    ) {
+      patch.status = 'todo';
+    }
+
     const after = db.updateTask(id, patch);
 
+    // Use the resolved patch.status (covers both explicit body.status AND the
+    // backlog→todo auto-transition above) when deciding whether to log an
+    // activity / emit a lifecycle message.
+    const effectiveStatus = patch.status;
+
     // Write activity entries for all meaningful changes (independent, not mutually exclusive)
-    if (status !== undefined && status !== before.status) {
-      db.addTaskActivity({ taskId: id, type: 'status_change', fromValue: before.status, toValue: status, actor, note });
+    if (effectiveStatus !== undefined && effectiveStatus !== before.status) {
+      db.addTaskActivity({ taskId: id, type: 'status_change', fromValue: before.status, toValue: effectiveStatus, actor, note });
     }
     if (assignTo !== undefined && assignTo !== before.agentId) {
       db.addTaskActivity({ taskId: id, type: 'assignment', fromValue: before.agentId || null, toValue: assignTo || null, actor });
+    }
+
+    if (effectiveStatus !== undefined && effectiveStatus !== before.status) {
+      const lifecycleBodies = {
+        todo: `Task queued: ${after.title}${after.agentId ? ` · assigned to ${getAgentDisplayName(after.agentId)}` : ''}`,
+        in_progress: `Task started: ${after.title}`,
+        in_review: `Task moved to review: ${after.title}`,
+        done: `Task completed: ${after.title}`,
+        cancelled: `Task cancelled: ${after.title}`,
+      };
+      if (lifecycleBodies[effectiveStatus]) emitTaskRoomSystemMessage(after, lifecycleBodies[effectiveStatus]);
     }
 
     // Auto-analyze: when agent assigned to a backlog ticket, run pre-flight analysis
@@ -2677,6 +3224,35 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
       );
     }
 
+    // Phase A2.1 — Closing memory reflection.
+    // When the agent closes a task (status → done|in_review) and the project
+    // has a workspace bound, fire a follow-up dispatch asking the agent to
+    // log any decisions / questions / risks / glossary terms before fully
+    // moving on. Only triggers once per task (memory_reviewed_at guard) and
+    // only when the task has a session (i.e. an agent actually worked on it).
+    const isClosing = (status === 'done' || status === 'in_review') && before.status !== status;
+    const shouldReflect = (
+      isClosing &&
+      after.sessionId &&
+      after.projectId && after.projectId !== 'general' &&
+      !after.memoryReviewedAt &&
+      gatewayProxy.isConnected
+    );
+    if (shouldReflect) {
+      // Delay slightly so the agent's closing turn fully settles before we
+      // dispatch the reflection prompt — avoids interleaving with their
+      // active generation.
+      setTimeout(() => {
+        const fresh = db.getTask(after.id);
+        if (!fresh || fresh.memoryReviewedAt) return;
+        // Mark first to prevent duplicate triggers if the user toggles status quickly.
+        db.updateTask(after.id, { memoryReviewedAt: new Date().toISOString() });
+        dispatchTaskToAgent(fresh, { memoryReflection: true, force: true }).catch(err =>
+          console.warn('[memory-reflection]', after.id, err.message)
+        );
+      }, 1500);
+    }
+
     broadcastTasksUpdate();
     res.json({ task: after });
 
@@ -2700,7 +3276,7 @@ app.patch('/api/tasks/:id', db.authMiddleware, (req, res) => {
   }
 });
 
-app.delete('/api/tasks/:id', db.authMiddleware, (req, res) => {
+app.delete('/api/tasks/:id', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
   try {
     const { id } = req.params;
     const existing = db.getTask(id);
@@ -2728,6 +3304,7 @@ app.delete('/api/tasks/:id', db.authMiddleware, (req, res) => {
 app.post(
   '/api/tasks/:id/attachments',
   db.authMiddleware,
+  db.requireProjectOwnershipForTask,
   uploadAttachments.array('files', 5),
   (req, res) => {
     try {
@@ -2768,7 +3345,7 @@ app.post(
 );
 
 // Delete a single attachment from a task
-app.delete('/api/tasks/:id/attachments/:attachmentId', db.authMiddleware, (req, res) => {
+app.delete('/api/tasks/:id/attachments/:attachmentId', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
   try {
     const { id, attachmentId } = req.params;
     const task = db.getTask(id);
@@ -2869,7 +3446,7 @@ app.get('/api/tasks/:id/comments', db.authMiddleware, (req, res) => {
 // Post a comment. Body: { body: string, agentId?: string }
 // - If the caller is the agent service token (role=agent), `agentId` must be provided.
 // - Otherwise author is the authenticated user.
-app.post('/api/tasks/:id/comments', db.authMiddleware, (req, res) => {
+app.post('/api/tasks/:id/comments', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
   try {
     const { id } = req.params;
     const { body, agentId } = req.body || {};
@@ -2935,7 +3512,7 @@ function resolveCommentAuthorGate(req, comment) {
 }
 
 // Edit a comment (body only)
-app.patch('/api/tasks/:id/comments/:cid', db.authMiddleware, (req, res) => {
+app.patch('/api/tasks/:id/comments/:cid', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
   try {
     const { id, cid } = req.params;
     const { body } = req.body || {};
@@ -2956,7 +3533,7 @@ app.patch('/api/tasks/:id/comments/:cid', db.authMiddleware, (req, res) => {
 });
 
 // Soft-delete a comment
-app.delete('/api/tasks/:id/comments/:cid', db.authMiddleware, (req, res) => {
+app.delete('/api/tasks/:id/comments/:cid', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
   try {
     const { id, cid } = req.params;
     const task = db.getTask(id);
@@ -3010,22 +3587,91 @@ async function dispatchTaskToAgent(task, opts = {}) {
   if (!task.agentId) throw new Error('Task has no assigned agent');
   if (!gatewayProxy.isConnected) throw new Error('Gateway not connected');
 
+  // Block dispatch if task has unmet blockers (skip with opts.force).
+  if (!opts.force) {
+    const unmet = db.getUnmetBlockers(task.id);
+    if (unmet.length > 0) {
+      const err = new Error(`Blocked by ${unmet.length} unfinished task${unmet.length === 1 ? '' : 's'}`);
+      err.code = 'TASK_BLOCKED';
+      err.unmetBlockers = unmet.map(t => ({ id: t.id, title: t.title, status: t.status }));
+      throw err;
+    }
+  }
+
   // ── 1 Ticket = 1 Session: reuse existing session if available ──
+  // We force a deterministic per-task session key so the gateway always
+  // returns a session bound 1:1 to this task, with NO bleed-through from
+  // unrelated DM chat or room conversations the agent had previously.
   const isFirstDispatch = !task.sessionId;
   let sessionKey;
 
   if (isFirstDispatch) {
-    // First dispatch → create new session
-    const sessionResult = await gatewayProxy.sessionsCreate(task.agentId);
+    // First dispatch → create a fresh task-scoped session.
+    // Key shape: `agent:<agentId>:task:<taskId>` — matches the existing
+    // 4-segment session key convention (agent:<id>:<channel>:<uuid>) where
+    // channel = "task" and the uuid slot = taskId.
+    const desiredKey = `agent:${task.agentId}:task:${task.id}`;
+    const sessionResult = await gatewayProxy.sessionsCreate(task.agentId, { key: desiredKey });
     sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
     if (!sessionKey) throw new Error('Gateway did not return a session key');
+    if (sessionKey !== desiredKey) {
+      console.warn(`[dispatch] gateway returned session=${sessionKey} but we requested ${desiredKey}; using gateway value`);
+    }
   } else {
     // Subsequent dispatch → reuse the same session (context preserved)
     sessionKey = task.sessionId;
   }
 
+  // ── Resolve project workspace, if any ──
+  // When the task's project has a bound workspace_path (greenfield or brownfield),
+  // the agent should treat that path as primary working directory. We can't
+  // change the agent's CWD per-dispatch (gateway doesn't expose that knob), so
+  // we encode it explicitly in the message and persist a context.json the agent
+  // can read at the start of every turn.
+  let project = null;
+  let projectWorkspaceCtx = null; // { taskDir, ctxFile, inputsDir, outputsDir }
+  if (task.projectId && task.projectId !== 'general') {
+    try {
+      project = db.getProject(task.projectId) || null;
+    } catch {}
+  }
+  if (project?.workspacePath) {
+    try {
+      projectWorkspaceCtx = projectWs.writeTaskContext(project.workspacePath, task.id, {
+        taskId: task.id,
+        title: task.title,
+        status: task.status,
+        priority: task.priority,
+        agentId: task.agentId,
+        projectId: project.id,
+        projectName: project.name,
+        projectKind: project.kind,
+        workspacePath: project.workspacePath,
+        workspaceMode: project.workspaceMode,
+        repoBranch: project.repoBranch || null,
+        repoUrl: project.repoUrl || null,
+        // ADLC stage/role surfaced from the task itself (Phase B). Both
+        // nullable — only meaningful for projects with kind='adlc'.
+        stage: task.stage || null,
+        role: task.role || null,
+        epicId: task.epicId || null,
+        dispatchedAt: new Date().toISOString(),
+        // Project memory snapshot (Phase A2) — open questions/risks + recent
+        // decisions + glossary. Read by agents via project_memory.sh helper
+        // or directly from context.json. Null when memory is empty.
+        projectMemory: db.buildProjectMemorySnapshot(project.id) || null,
+      });
+      projectWs.appendActivityLog(
+        project.workspacePath,
+        `dispatch task=${task.id} agent=${task.agentId} session=${sessionKey}`
+      );
+    } catch (e) { console.warn('[dispatch] failed to write project task context:', e.message); }
+  }
+
   // Ensure the per-task outputs folder exists so the agent can write deliverables
-  // to a predictable location that AOC watches.
+  // to a predictable location that AOC watches. With a bound project, we still
+  // create the legacy per-agent outputs dir (AOC watcher uses it for pickups),
+  // but we ALSO mention the project workspace's outputs/ as the preferred home.
   let outputsDirAbs = null;
   try { outputsDirAbs = outputsLib.ensureOutputsDir(task.agentId, task.id); }
   catch (e) { console.warn('[dispatch] failed to create outputs dir:', e.message); }
@@ -3113,13 +3759,31 @@ async function dispatchTaskToAgent(task, opts = {}) {
     }
   } catch (e) { console.warn('[dispatch] comments context failed:', e.message); }
 
-  // Build project context
+  // Build project context. Two layers:
+  //  - description (legacy, free-form prose)
+  //  - workspace block (NEW): physical path, mode (greenfield/brownfield),
+  //    kind, branch, where to read code, where to save outputs, context.json
+  //    pointer. Only emitted when the project has a bound workspace_path.
   let projectContext = '';
-  if (task.projectId && task.projectId !== 'general') {
-    try {
-      const project = db.getProject(task.projectId);
-      if (project?.description) projectContext = `\n**Project Context:** ${project.description}\n`;
-    } catch {}
+  if (project) {
+    const lines = [];
+    if (project.description) lines.push(`**Project Context:** ${project.description}`);
+    if (project.workspacePath && projectWorkspaceCtx) {
+      const projectOutputsRoot = path.join(project.workspacePath, 'outputs');
+      lines.push(``);
+      lines.push(`**📁 Project Workspace** (your physical working directory for this task):`);
+      lines.push(`- Path: \`${project.workspacePath}\``);
+      lines.push(`- Mode: \`${project.workspaceMode || 'unbound'}\` · Kind: \`${project.kind || 'ops'}\`${project.repoBranch ? ` · Branch: \`${project.repoBranch}\`` : ''}`);
+      if (project.workspaceMode === 'brownfield') {
+        lines.push(`- This is an **existing codebase** — read it as context. Do NOT modify user files unless this task explicitly asks you to.`);
+      } else if (project.workspaceMode === 'greenfield') {
+        lines.push(`- This is a **fresh project** — you may scaffold any structure the task calls for.`);
+      }
+      lines.push(`- Save deliverables to \`${projectOutputsRoot}/\` (organized per ADLC stage when applicable)`);
+      lines.push(`- Task context (read at start of each turn): \`${projectWorkspaceCtx.ctxFile}\``);
+      lines.push(`- Per-task scratch: \`${projectWorkspaceCtx.taskDir}/\` (\`inputs/\`, \`outputs/\` already created)`);
+    }
+    if (lines.length) projectContext = '\n' + lines.join('\n') + '\n';
   }
 
   // Build available connections context for the agent (NO inline credentials, filtered by assignment)
@@ -3239,6 +3903,33 @@ async function dispatchTaskToAgent(task, opts = {}) {
           `Please continue where you left off.`,
           `When done, update status to "in_review".`,
         ].filter(Boolean).join('\n');
+  } else if (opts.memoryReflection) {
+    // Phase A2.1 — closing reflection prompt (Level 2 strategy).
+    // Agent just closed the task. Ask them to log decisions/questions/
+    // risks/glossary terms worth keeping at project level. NO status change
+    // expected — they should just write memory and end the turn.
+    message = [
+      `---`,
+      `📝 **Closing reflection** — task is now ${task.status}, but before we move on:`,
+      ``,
+      `Looking back at this task's work, were there any:`,
+      `- **Decisions** you made that future-you / other agents should know? (e.g. "chose X over Y because Z")`,
+      `- **Open questions** you couldn't fully resolve here? (project-level uncertainty)`,
+      `- **Risks** you identified for the project (Value / Usability / Feasibility / Viability)?`,
+      `- **Glossary terms** specific to this project worth defining?`,
+      ``,
+      `If yes, log them now using \`project_memory.sh\`:`,
+      `\`\`\``,
+      `project_memory.sh add decision "title" "rationale"`,
+      `project_memory.sh add question "the question" "context"`,
+      `project_memory.sh add risk "title" "body" <category> <severity>   # category=value|usability|feasibility|viability`,
+      `project_memory.sh add glossary "Term" "Definition"`,
+      `\`\`\``,
+      ``,
+      `If nothing notable, just reply briefly with "no entries needed". Don't change task status.`,
+      ``,
+      `(This prompt fires once per task at close — see SKILL.md for project memory guidance.)`,
+    ].join('\n');
   } else {
     // Continue message for re-dispatch — agent already has full context from prior messages
     const changeNote = opts.changeRequestNote;
@@ -3283,19 +3974,32 @@ async function dispatchTaskToAgent(task, opts = {}) {
 
   await gatewayProxy.chatSend(sessionKey, message);
 
-  // Update task — always use the same sessionId (no allSessionIds tracking)
-  const patch = { sessionId: sessionKey, status: 'in_progress' };
+  // Update task — always use the same sessionId (no allSessionIds tracking).
+  // For memory-reflection dispatches, keep the existing status (already
+  // done/in_review) so reflection doesn't reopen the task.
+  const patch = opts.memoryReflection
+    ? { sessionId: sessionKey }
+    : { sessionId: sessionKey, status: 'in_progress' };
   db.updateTask(task.id, patch);
-  db.addTaskActivity({
-    taskId: task.id,
-    type: 'status_change',
-    fromValue: task.status,
-    toValue: 'in_progress',
-    actor: 'system',
-    note: isFirstDispatch
-      ? `Dispatched to agent ${task.agentId}`
-      : `Continued by agent ${task.agentId}${opts.changeRequestNote ? ' (change request)' : ''}`,
-  });
+  if (!opts.memoryReflection) {
+    db.addTaskActivity({
+      taskId: task.id,
+      type: 'status_change',
+      fromValue: task.status,
+      toValue: 'in_progress',
+      actor: 'system',
+      note: isFirstDispatch
+        ? `Dispatched to agent ${task.agentId}`
+        : `Continued by agent ${task.agentId}${opts.changeRequestNote ? ' (change request)' : ''}`,
+    });
+  } else {
+    db.addTaskActivity({
+      taskId: task.id,
+      type: 'comment',
+      actor: 'system',
+      note: 'Closing reflection prompt sent (project memory)',
+    });
+  }
   broadcastTasksUpdate();
 
   console.log(`[dispatch] Task ${task.id} → ${task.agentId} (session: ${sessionKey}, first: ${isFirstDispatch})`);
@@ -3418,7 +4122,7 @@ async function analyzeTaskForAgent(task) {
   return analysis;
 }
 
-app.post('/api/tasks/:id/analyze', db.authMiddleware, async (req, res) => {
+app.post('/api/tasks/:id/analyze', db.authMiddleware, db.requireProjectOwnershipForTask, async (req, res) => {
   try {
     const task = db.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: 'Task not found' });
@@ -3436,17 +4140,103 @@ app.post('/api/tasks/:id/analyze', db.authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
+// ── Approve / Request-change actions ─────────────────────────────────────
+// `approve` and `request-change` close the in_review loop:
+//   - approve         → status: in_review → done, emit lifecycle msg
+//   - request-change  → append comment + status: in_review → in_progress
+//                       + (best-effort) re-dispatch as continue + lifecycle msg
+//
+// Both are no-ops outside in_review (returns 409). Callable by users (UI button)
+// AND by agent service token (orchestrator helper script).
+app.post('/api/tasks/:id/approve', db.authMiddleware, db.requireProjectOwnershipForTask, async (req, res) => {
+  try {
+    const task = db.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (task.status !== 'in_review') {
+      return res.status(409).json({ error: `Cannot approve a task in '${task.status}' state — must be 'in_review'` });
+    }
+    const actor = req.user?.role === 'agent' ? (req.body?.agentId || 'agent') : (req.user?.username ? `user:${req.user.username}` : 'user');
+    const note = String(req.body?.note || 'Approved').slice(0, 500);
+
+    const after = db.updateTask(task.id, { status: 'done' });
+    db.addTaskActivity({ taskId: task.id, type: 'status_change', fromValue: 'in_review', toValue: 'done', actor, note });
+    if (note && note !== 'Approved') {
+      db.addTaskActivity({ taskId: task.id, type: 'comment', actor, note: `✅ ${note}` });
+    }
+    emitTaskRoomSystemMessage(after, `Task approved · ${after.title}`);
+    broadcastTasksUpdate();
+    res.json({ ok: true, task: after });
+  } catch (err) {
+    console.error('[api/tasks/approve]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/tasks/:id/request-change', db.authMiddleware, db.requireProjectOwnershipForTask, async (req, res) => {
+  try {
+    const task = db.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'reason is required' });
+    if (task.status !== 'in_review') {
+      return res.status(409).json({ error: `Cannot request-change on a task in '${task.status}' state — must be 'in_review'` });
+    }
+    const actor = req.user?.role === 'agent' ? (req.body?.agentId || 'agent') : (req.user?.username ? `user:${req.user.username}` : 'user');
+
+    // 1. Append change request as a comment so it shows up in the task's
+    //    activity log AND gets injected into the next dispatch's `commentsContext`.
+    db.addTaskActivity({ taskId: task.id, type: 'comment', actor, note: `[change_request] ${reason}` });
+
+    // 2. Status: in_review → in_progress (loop back). NO new session created —
+    //    the same task session is resumed via continue dispatch below.
+    const after = db.updateTask(task.id, { status: 'in_progress' });
+    db.addTaskActivity({ taskId: task.id, type: 'status_change', fromValue: 'in_review', toValue: 'in_progress', actor, note: 'change requested' });
+
+    // 3. Lifecycle msg in room
+    emitTaskRoomSystemMessage(after, `Change requested for ${after.title}: ${reason}`);
+
+    // 4. Best-effort re-dispatch (continue). Reuses the existing task.sessionId
+    //    so the agent receives the new comment as part of the continue context.
+    //    Fails silently — user can manually re-dispatch from UI if needed.
+    if (gatewayProxy.isConnected && after.agentId) {
+      dispatchTaskToAgent(after).catch(err => console.warn('[request-change] re-dispatch failed:', err.message));
+    }
+
+    broadcastTasksUpdate();
+    res.json({ ok: true, task: after });
+  } catch (err) {
+    console.error('[api/tasks/request-change]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/tasks/:id/dispatch', db.authMiddleware, db.requireProjectOwnershipForTask, async (req, res) => {
   try {
     const task = db.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!task.agentId) return res.status(400).json({ error: 'Task must be assigned to an agent first' });
+
+    // Orchestrator guardrail: refuse to dispatch a `main`-assigned task when
+    // the dispatch is initiated by the orchestrator itself. Main is the
+    // delegator, never the executor — this is the same invariant as the
+    // create-task self-assign guard. User can still dispatch manually from UI.
+    if (task.agentId === 'main' && req.user?.role === 'agent') {
+      console.warn(`[tasks/dispatch] orchestrator tried to dispatch main-assigned task ${task.id} — refused`);
+      return res.status(409).json({
+        error: 'Refused: orchestrator cannot dispatch a task assigned to itself. Re-assign the task to a specialist first.',
+        code: 'ORCHESTRATOR_SELF_DISPATCH',
+      });
+    }
+
     const gate = checkTaskAccess(req, task.id);
     if (gate) return res.status(403).json({ error: gate });
     if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
     const result = await dispatchTaskToAgent(task);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (err.code === 'TASK_BLOCKED') {
+      return res.status(409).json({ error: err.message, code: err.code, unmetBlockers: err.unmetBlockers });
+    }
     console.error('[api/tasks/dispatch]', err);
     res.status(500).json({ error: err.message });
   }
@@ -3464,7 +4254,7 @@ app.post('/api/tasks/:id/dispatch', db.authMiddleware, async (req, res) => {
  * (Resume / Mark Blocked / Request Changes). An activity row is logged so
  * the reason is visible in the history.
  */
-app.post('/api/tasks/:id/interrupt', db.authMiddleware, async (req, res) => {
+app.post('/api/tasks/:id/interrupt', db.authMiddleware, db.requireProjectOwnershipForTask, async (req, res) => {
   try {
     const task = db.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: 'Task not found' });
@@ -4195,265 +4985,11 @@ app.post('/api/connections/:id/test', db.authMiddleware, db.requireConnectionOwn
   }
 });
 
-// ─── Pipelines & Workflows ───────────────────────────────────────────────────
-// CRUD + validation. Execution engine lands in Phase 4 (see docs/pipelines-design.md).
-app.get('/api/pipelines', db.authMiddleware, (req, res) => {
-  try {
-    res.json(pipelines.listPipelinesForUser(req));
-  } catch (err) {
-    console.error('[api/pipelines GET]', err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
-app.get('/api/pipelines/:id', db.authMiddleware, (req, res) => {
-  const p = pipelines.getPipeline(req.params.id);
-  if (!p) return res.status(404).json({ error: 'Not found' });
-  if (!db.userOwnsPipeline(req, req.params.id) && p.createdBy != null) {
-    // Non-admin non-owners get read-only view of shared pipelines (created_by null).
-    if (req.user?.role !== 'admin' && req.user?.role !== 'agent' && p.createdBy !== req.user?.userId) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-  }
-  res.json(p);
-});
-
-app.post('/api/pipelines', db.authMiddleware, (req, res) => {
-  try {
-    const { name, description, graph } = req.body || {};
-    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
-    const p = pipelines.createPipeline({
-      name,
-      description: description || null,
-      graph: graph || { nodes: [], edges: [] },
-      createdBy: req.user?.userId || null,
-    });
-    res.status(201).json(p);
-  } catch (err) {
-    if (err.code === 'VALIDATION_FAILED') {
-      return res.status(400).json({ error: 'validation failed', details: err.details });
-    }
-    console.error('[api/pipelines POST]', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.patch('/api/pipelines/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
-  try {
-    const { name, description, graph } = req.body || {};
-    const patch = {};
-    if (name !== undefined)        patch.name = name;
-    if (description !== undefined) patch.description = description;
-    if (graph !== undefined)       patch.graph = graph;
-    const p = pipelines.updatePipeline(req.params.id, patch);
-    if (!p) return res.status(404).json({ error: 'Not found' });
-    res.json(p);
-  } catch (err) {
-    if (err.code === 'VALIDATION_FAILED') {
-      return res.status(400).json({ error: 'validation failed', details: err.details });
-    }
-    console.error('[api/pipelines PATCH]', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/pipelines/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
-  try {
-    pipelines.deletePipeline(req.params.id);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('[api/pipelines DELETE]', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Playbook alias endpoints — same backing as pipelines, surfaces new vocab.
-app.get('/api/playbooks', db.authMiddleware, (req, res) => {
-  try { res.json(pipelines.listPipelinesForUser(req)); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-app.get('/api/playbooks/:id', db.authMiddleware, (req, res) => {
-  const p = pipelines.getPipeline(req.params.id);
-  if (!p) return res.status(404).json({ error: 'Playbook not found' });
-  res.json(p);
-});
-app.post('/api/playbooks', db.authMiddleware, (req, res) => {
-  try {
-    const { name, description, graph } = req.body || {};
-    if (!name) return res.status(400).json({ error: 'name required' });
-    res.status(201).json(pipelines.createPipeline({
-      name, description: description || null,
-      graph: graph || { nodes: [], edges: [] },
-      createdBy: req.user?.userId || null,
-    }));
-  } catch (err) {
-    if (err.code === 'VALIDATION_FAILED') return res.status(400).json({ error: 'validation failed', details: err.details });
-    res.status(500).json({ error: err.message });
-  }
-});
-app.patch('/api/playbooks/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
-  try {
-    const patch = {};
-    if (req.body?.name !== undefined) patch.name = req.body.name;
-    if (req.body?.description !== undefined) patch.description = req.body.description;
-    if (req.body?.graph !== undefined) patch.graph = req.body.graph;
-    const p = pipelines.updatePipeline(req.params.id, patch);
-    if (!p) return res.status(404).json({ error: 'Playbook not found' });
-    res.json(p);
-  } catch (err) {
-    if (err.code === 'VALIDATION_FAILED') return res.status(400).json({ error: 'validation failed', details: err.details });
-    res.status(500).json({ error: err.message });
-  }
-});
-app.delete('/api/playbooks/:id', db.authMiddleware, db.requirePipelineOwnership, (req, res) => {
-  try { pipelines.deletePipeline(req.params.id); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post('/api/pipelines/:id/validate', db.authMiddleware, (req, res) => {
-  // Accept ad-hoc graph from body (for editor live validation) OR validate stored graph.
-  const graph = req.body?.graph ?? pipelines.getPipeline(req.params.id)?.graph;
-  if (!graph) return res.status(404).json({ error: 'No graph to validate' });
-  res.json(pipelines.validateGraph(graph));
-});
-
-// ─── Missions (canonical naming) ────────────────────────────────────────────
-// Mission = a multi-agent work item executing an ADLC playbook. Backed by the
-// same pipeline_runs table as the legacy /api/workflows/runs endpoints, which
-// now act as aliases for compat while the UI migrates.
-app.get('/api/missions', db.authMiddleware, (_req, res) => {
-  try { res.json(workflowRuns.getAllRuns()); }
-  catch (err) { console.error('[missions GET]', err); res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/missions/:id', db.authMiddleware, (req, res) => {
-  const detail = workflowRuns.getRunDetail(req.params.id);
-  if (!detail) return res.status(404).json({ error: 'Mission not found' });
-  res.json(detail);
-});
-
-app.post('/api/missions', db.authMiddleware, (req, res) => {
-  try {
-    const { playbookId, pipelineId, title, description, agentResolution } = req.body || {};
-    const effectivePipelineId = playbookId || pipelineId;
-    if (!effectivePipelineId) return res.status(400).json({ error: 'playbookId required' });
-    const detail = workflowRuns.createRun({
-      pipelineId: effectivePipelineId,
-      title,
-      description,
-      agentResolution: agentResolution || {},
-      triggeredBy: req.user?.userId || null,
-    }, broadcast);
-    res.status(201).json(detail);
-  } catch (err) {
-    console.error('[missions POST]', err);
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/missions/:id/steps/:stepId/approve', db.authMiddleware, (req, res) => {
-  try {
-    const { comment } = req.body || {};
-    res.json(workflowRuns.approveStep({ runId: req.params.id, stepId: req.params.stepId, comment }, broadcast));
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
-
-app.post('/api/missions/:id/steps/:stepId/reject', db.authMiddleware, (req, res) => {
-  try {
-    const { reason } = req.body || {};
-    res.json(workflowRuns.rejectStep({ runId: req.params.id, stepId: req.params.stepId, reason }, broadcast));
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
-
-app.post('/api/missions/:id/steps/:stepId/complete', db.authMiddleware, (req, res) => {
-  try {
-    const { output } = req.body || {};
-    res.json(workflowRuns.completeAgentStep({ runId: req.params.id, stepId: req.params.stepId, output }, broadcast));
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
-
-app.post('/api/missions/:id/cancel', db.authMiddleware, (req, res) => {
-  try {
-    const { reason } = req.body || {};
-    res.json(workflowRuns.cancelRun({ runId: req.params.id, reason }, broadcast));
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
-
-// ─── Workflow Runs (legacy alias) ────────────────────────────────────────────
-app.get('/api/workflows/runs', db.authMiddleware, (_req, res) => {
-  try {
-    res.json(workflowRuns.getAllRuns());
-  } catch (err) {
-    console.error('[runs GET]', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/workflows/runs/:id', db.authMiddleware, (req, res) => {
-  const detail = workflowRuns.getRunDetail(req.params.id);
-  if (!detail) return res.status(404).json({ error: 'Run not found' });
-  res.json(detail);
-});
-
-app.post('/api/workflows/runs', db.authMiddleware, (req, res) => {
-  try {
-    const { pipelineId, title, description, agentResolution } = req.body || {};
-    if (!pipelineId) return res.status(400).json({ error: 'pipelineId required' });
-    const detail = workflowRuns.createRun({
-      pipelineId,
-      title,
-      description,
-      agentResolution: agentResolution || {},
-      triggeredBy: req.user?.userId || null,
-    }, broadcast);
-    res.status(201).json(detail);
-  } catch (err) {
-    console.error('[runs POST]', err);
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/workflows/runs/:id/steps/:stepId/approve', db.authMiddleware, (req, res) => {
-  try {
-    const { comment } = req.body || {};
-    const detail = workflowRuns.approveStep({ runId: req.params.id, stepId: req.params.stepId, comment }, broadcast);
-    res.json(detail);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/workflows/runs/:id/steps/:stepId/reject', db.authMiddleware, (req, res) => {
-  try {
-    const { reason } = req.body || {};
-    const detail = workflowRuns.rejectStep({ runId: req.params.id, stepId: req.params.stepId, reason }, broadcast);
-    res.json(detail);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// MVP helper: mark an agent step done with output (real executor supersedes in R6).
-app.post('/api/workflows/runs/:id/steps/:stepId/complete', db.authMiddleware, (req, res) => {
-  try {
-    const { output } = req.body || {};
-    const detail = workflowRuns.completeAgentStep({ runId: req.params.id, stepId: req.params.stepId, output }, broadcast);
-    res.json(detail);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/workflows/runs/:id/cancel', db.authMiddleware, (req, res) => {
-  try {
-    const { reason } = req.body || {};
-    const detail = workflowRuns.cancelRun({ runId: req.params.id, reason }, broadcast);
-    res.json(detail);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
+// ─── Pipelines/Missions/Playbooks routes — REMOVED in Phase D ───────────────
+// DB tables (pipelines, pipeline_runs, pipeline_steps, pipeline_artifacts,
+// pipeline_templates) intentionally retained for potential reuse in Phase E
+// (ADLC blueprint generator). No HTTP surface today.
 // ─── MCP tool invocation ─────────────────────────────────────────────────────
 // Called by mcp-call.sh. Resolves connection by name, enforces agent assignment,
 // spawns/reuses the MCP child, forwards JSON-RPC call, returns raw tool response.
@@ -4706,26 +5242,349 @@ app.get('/api/agent/connections/by-name/:name/credentials', db.authMiddleware, (
   }
 });
 
-// ─── Projects ─────────────────────────────────────────────────────────────────
-app.get('/api/projects', db.authMiddleware, (_req, res) => {
-  res.json({ projects: db.getAllProjects() });
-});
-
-app.post('/api/projects', db.authMiddleware, (req, res) => {
+// ─── Filesystem browser (used by ProjectCreateWizard's directory picker) ────
+//
+// GET /api/projects/_browse-dir?path=~/projects&showHidden=false
+//   - Defaults to the user's home directory when path is empty / "~".
+//   - Refuses sensitive system paths via the same allowlist used for project
+//     binding. Lists symlink children but skips them.
+app.get('/api/projects/_browse-dir', db.authMiddleware, (req, res) => {
   try {
-    const { name, color, description } = req.body;
-    if (!name) return res.status(400).json({ error: 'name is required' });
-    const project = db.createProject({ name, color, description });
-    res.json({ project });
+    const raw = String(req.query.path || '~');
+    const showHidden = String(req.query.showHidden || '') === 'true';
+
+    const abs = projectWs.normalizeAbsolute(raw);
+    if (!abs) return res.status(400).json({ error: 'path must be absolute or ~ prefixed' });
+
+    const sens = projectWs.findSensitiveMatch(abs);
+    if (sens) return res.status(403).json({ error: `sensitive directory: ${sens}` });
+
+    let st;
+    // For the cwd we follow symlinks (so /tmp -> /private/tmp works), but
+    // children below still use lstat so symlink entries are skipped.
+    try { st = fs.statSync(abs); } catch { return res.status(404).json({ error: 'path does not exist' }); }
+    if (!st.isDirectory()) return res.status(400).json({ error: 'not a directory' });
+
+    let names;
+    try { names = fs.readdirSync(abs); }
+    catch (e) { return res.status(403).json({ error: `cannot read directory: ${e.code || e.message}` }); }
+
+    const entries = [];
+    for (const name of names) {
+      if (!showHidden && name.startsWith('.')) continue;
+      const full = path.join(abs, name);
+      let sst;
+      try { sst = fs.lstatSync(full); } catch { continue; }
+      const isLink = sst.isSymbolicLink();
+      // Only descend into real dirs; mark symlinks unselectable.
+      const kind = sst.isDirectory() ? 'dir' : (sst.isFile() ? 'file' : 'other');
+      // Skip files entirely — picker is for directories.
+      if (kind !== 'dir') continue;
+      // Cheap "looks like a project" hint
+      let isGitRepo = false;
+      try { isGitRepo = fs.existsSync(path.join(full, '.git')); } catch {}
+      let hasAocBinding = false;
+      try { hasAocBinding = fs.existsSync(path.join(full, '.aoc', 'project.json')); } catch {}
+      entries.push({ name, kind: 'dir', isSymlink: isLink, isGitRepo, hasAocBinding });
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Compute breadcrumb segments (above home shown abbreviated as ~).
+    const home = os.homedir();
+    const isUnderHome = abs === home || abs.startsWith(home + path.sep);
+    const display = isUnderHome ? '~' + abs.slice(home.length) : abs;
+
+    const parent = path.dirname(abs);
+    res.json({
+      cwd: abs,
+      display,
+      home,
+      parent: parent !== abs ? parent : null,
+      isUnderHome,
+      entries,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.patch('/api/projects/:id', db.authMiddleware, (req, res) => {
+// ─── Projects ─────────────────────────────────────────────────────────────────
+
+// Helpers (workspace + repo) — must register BEFORE `/:id` to avoid path collision.
+//
+// POST /api/projects/_validate-path
+//   body: { path, mode: 'greenfield'|'brownfield', name? }
+//   returns: { ok, mode, resolvedPath, parent?, repo: { isRepo, ... } | null,
+//              existingBinding: {id,name,kind,mode}|null, warnings: [] }
+app.post('/api/projects/_validate-path', db.authMiddleware, async (req, res) => {
   try {
-    const { name, color, description } = req.body;
-    const project = db.updateProject(req.params.id, { name, color, description });
+    const { path: rawPath, mode, name } = req.body || {};
+    if (!rawPath) return res.status(400).json({ ok: false, error: 'path is required' });
+    if (mode !== 'greenfield' && mode !== 'brownfield') {
+      return res.status(400).json({ ok: false, error: "mode must be 'greenfield' or 'brownfield'" });
+    }
+
+    let validation;
+    if (mode === 'brownfield') {
+      validation = projectWs.validateBrownfieldPath(rawPath);
+    } else {
+      validation = projectWs.validateGreenfieldPath(rawPath, name || '');
+    }
+    if (!validation.ok) {
+      return res.json({ ok: false, mode, error: validation.reason, ...validation });
+    }
+
+    const resolvedPath = validation.path;
+    const warnings = [];
+
+    // Brownfield-specific: detect existing binding + repo state
+    let repo = null;
+    let existingBinding = null;
+    let pathBoundToOtherProject = null;
+
+    if (mode === 'brownfield') {
+      // Existing .aoc binding
+      existingBinding = projectWs.readAocBinding(resolvedPath);
+      if (existingBinding && existingBinding.id) {
+        // Check if a row exists for that ID
+        const owned = db.getProject(existingBinding.id);
+        const byPath = db.getProjectByPath(resolvedPath);
+        if (byPath && byPath.id !== existingBinding.id) {
+          warnings.push(`Path bound to project '${byPath.id}' in DB, but .aoc/project.json says '${existingBinding.id}'`);
+        }
+        if (owned) pathBoundToOtherProject = { id: owned.id, name: owned.name };
+      } else {
+        const byPath = db.getProjectByPath(resolvedPath);
+        if (byPath) pathBoundToOtherProject = { id: byPath.id, name: byPath.name };
+      }
+
+      // Repo inspection
+      const insp = await projectGit.inspectRepo(resolvedPath);
+      if (insp.isRepo) {
+        if (insp.isSubmodule) {
+          warnings.push('Path is a git submodule — choose the superproject root instead.');
+        }
+        if (insp.isDetached) {
+          warnings.push('Repo is in detached HEAD state — checkout a branch before binding.');
+        }
+        repo = insp;
+      }
+    }
+
+    res.json({
+      ok: true,
+      mode,
+      resolvedPath,
+      parent: validation.parent || null,
+      repo,
+      existingBinding,
+      pathBoundToOtherProject,
+      warnings,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/projects/_fetch-branches
+//   body: { path, projectId? }   (projectId optional — used to bump last_fetched_at)
+//   returns: { ok, fetchSucceeded, fetchError?, branches, currentBranch, isDirty, uncommittedFiles }
+app.post('/api/projects/_fetch-branches', db.authMiddleware, async (req, res) => {
+  try {
+    const { path: rawPath, projectId } = req.body || {};
+    if (!rawPath) return res.status(400).json({ ok: false, error: 'path is required' });
+    const validation = projectWs.validateBrownfieldPath(rawPath);
+    if (!validation.ok) return res.status(400).json({ ok: false, error: validation.reason });
+    const cwd = validation.path;
+
+    const isRepo = await projectGit.isGitRepo(cwd);
+    if (!isRepo) return res.json({ ok: true, isRepo: false, branches: [] });
+
+    const remotes = await projectGit.getRemotes(cwd);
+    const remoteName = (remotes.find((r) => r.name === 'origin') || remotes[0])?.name;
+
+    let fetch = { succeeded: false, error: 'no remote configured', durationMs: 0 };
+    if (remoteName) fetch = await projectGit.fetchRemote(cwd, remoteName);
+
+    const [branches, currentBranch, status] = await Promise.all([
+      projectGit.listBranches(cwd),
+      projectGit.getCurrentBranch(cwd),
+      projectGit.getStatus(cwd),
+    ]);
+
+    if (projectId && fetch.succeeded) {
+      try { db.bumpProjectFetchedAt(projectId); } catch {}
+    }
+
+    res.json({
+      ok: true,
+      isRepo: true,
+      fetchSucceeded: fetch.succeeded,
+      fetchError: fetch.succeeded ? null : fetch.error,
+      fetchDurationMs: fetch.durationMs,
+      remoteName: remoteName || null,
+      currentBranch,
+      isDirty: status.isDirty,
+      uncommittedFiles: status.uncommittedFiles,
+      branches,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/projects', db.authMiddleware, (_req, res) => {
+  res.json({ projects: db.getAllProjects() });
+});
+
+// POST /api/projects
+//   body: { name, color?, description?, kind?,
+//           workspaceMode?: 'greenfield'|'brownfield',
+//           workspacePath?, parentPath?,         // greenfield: parentPath+name; brownfield: workspacePath
+//           branch?,                              // brownfield: which branch to checkout
+//           initGit?, addRemoteUrl? }            // greenfield options
+//
+//  - No workspaceMode → behaves exactly like the legacy endpoint (creates an unbound project row).
+//  - greenfield → scaffolds folder, optional `git init`, binds .aoc/.
+//  - brownfield → checks dirty, optional checkout branch, binds .aoc/ + appends .gitignore block.
+app.post('/api/projects', db.authMiddleware, async (req, res) => {
+  try {
+    const {
+      name, color, description, kind,
+      workspaceMode, workspacePath, parentPath,
+      branch, initGit, addRemoteUrl,
+    } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'name is required' });
+
+    const createdBy = req.user?.userId ?? null;
+
+    // Legacy / unbound path
+    if (!workspaceMode) {
+      const project = db.createProject({ name, color, description, kind, createdBy });
+      return res.json({ project });
+    }
+
+    if (workspaceMode !== 'greenfield' && workspaceMode !== 'brownfield') {
+      return res.status(400).json({ error: "workspaceMode must be 'greenfield' or 'brownfield'" });
+    }
+
+    // ── Greenfield ──
+    if (workspaceMode === 'greenfield') {
+      if (!parentPath) return res.status(400).json({ error: 'parentPath is required for greenfield' });
+      const validation = projectWs.validateGreenfieldPath(parentPath, name);
+      if (!validation.ok) return res.status(400).json({ error: validation.reason });
+      const targetPath = validation.path;
+
+      // Create DB row first (gets id), then scaffold using that id.
+      const project = db.createProject({
+        name, color, description, kind: kind || 'ops',
+        workspacePath: targetPath, workspaceMode: 'greenfield',
+        createdBy,
+      });
+
+      try {
+        projectWs.scaffoldGreenfield({
+          workspacePath: targetPath, projectId: project.id, name, kind: kind || 'ops',
+        });
+      } catch (e) {
+        // scaffold failed — best-effort cleanup of the DB row and target dir
+        try { db.deleteProject(project.id); } catch {}
+        try { require('fs').rmSync(targetPath, { recursive: true, force: true }); } catch {}
+        return res.status(500).json({ error: `scaffold failed: ${e.message}` });
+      }
+
+      // Optional git init
+      let repoUrl = null, repoBranch = null, repoRemoteName = null;
+      if (initGit) {
+        const initResult = await projectGit._run(['init', '-b', 'main'], { cwd: targetPath });
+        if (!initResult.ok) {
+          // Don't fail the whole project — just warn
+          console.warn(`[projects] git init failed for ${targetPath}: ${initResult.stderr}`);
+        } else {
+          repoBranch = 'main';
+          if (addRemoteUrl) {
+            const r = await projectGit._run(['remote', 'add', 'origin', String(addRemoteUrl)], { cwd: targetPath });
+            if (r.ok) { repoUrl = String(addRemoteUrl); repoRemoteName = 'origin'; }
+          }
+        }
+      }
+      const updated = db.setProjectWorkspace(project.id, {
+        repoUrl, repoBranch, repoRemoteName, boundAt: Date.now(),
+      });
+      return res.json({ project: updated });
+    }
+
+    // ── Brownfield ──
+    if (!workspacePath) return res.status(400).json({ error: 'workspacePath is required for brownfield' });
+    const validation = projectWs.validateBrownfieldPath(workspacePath);
+    if (!validation.ok) return res.status(400).json({ error: validation.reason });
+    const targetPath = validation.path;
+
+    // Refuse if path already bound to another project
+    const existingByPath = db.getProjectByPath(targetPath);
+    if (existingByPath) {
+      return res.status(409).json({
+        error: 'path already bound to another project',
+        boundProjectId: existingByPath.id,
+        boundProjectName: existingByPath.name,
+      });
+    }
+
+    // Repo inspect + dirty/branch handling
+    const insp = await projectGit.inspectRepo(targetPath);
+    let repoUrl = null, repoBranch = null, repoRemoteName = null;
+    if (insp.isRepo) {
+      if (insp.isSubmodule) return res.status(400).json({ error: 'path is a git submodule — choose superproject root instead' });
+      if (insp.isDetached) return res.status(400).json({ error: 'repo is in detached HEAD; checkout a branch first' });
+      if (insp.isDirty) {
+        return res.status(409).json({
+          error: 'working tree dirty — commit or stash before binding',
+          uncommittedFiles: insp.uncommittedFiles,
+        });
+      }
+
+      // Switch branch if requested + different from current
+      if (branch && branch !== insp.currentBranch) {
+        const isRemoteRef = branch.includes('/') && (insp.remotes || []).some((r) => branch.startsWith(r.name + '/'));
+        const co = await projectGit.checkoutBranch(targetPath, branch, { createLocalFromRemote: isRemoteRef });
+        if (!co.ok) {
+          return res.status(409).json({ error: `checkout failed: ${co.error}`, uncommittedFiles: co.uncommittedFiles });
+        }
+        repoBranch = co.currentBranch;
+      } else {
+        repoBranch = insp.currentBranch;
+      }
+
+      const origin = (insp.remotes || []).find((r) => r.name === 'origin') || insp.remotes?.[0];
+      if (origin) { repoUrl = origin.url; repoRemoteName = origin.name; }
+    }
+
+    // Create DB row (uses generated id) then bind
+    const project = db.createProject({
+      name, color, description, kind: kind || 'ops',
+      workspacePath: targetPath, workspaceMode: 'brownfield',
+      repoUrl, repoBranch, repoRemoteName,
+      createdBy,
+    });
+    try {
+      projectWs.bindBrownfield({
+        workspacePath: targetPath, projectId: project.id, name, kind: kind || 'ops',
+      });
+    } catch (e) {
+      try { db.deleteProject(project.id); } catch {}
+      return res.status(500).json({ error: `bind failed: ${e.message}` });
+    }
+
+    res.json({ project: db.getProject(project.id) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/projects/:id', db.authMiddleware, db.requireProjectOwnership, (req, res) => {
+  try {
+    const { name, color, description, kind } = req.body;
+    const project = db.updateProject(req.params.id, { name, color, description, kind });
     if (!project) return res.status(404).json({ error: 'not found' });
     res.json({ project });
   } catch (err) {
@@ -4733,22 +5592,247 @@ app.patch('/api/projects/:id', db.authMiddleware, (req, res) => {
   }
 });
 
-app.delete('/api/projects/:id', db.authMiddleware, (req, res) => {
+// DELETE /api/projects/:id
+//   query: ?unbind=true   → remove .gitignore block + project.json (soft, keeps .aoc dir)
+//          ?unbind=true&hard=true  → also rm -rf .aoc/ directory
+//   default: leave workspace untouched (paranoid — DB row deleted only)
+app.delete('/api/projects/:id', db.authMiddleware, db.requireProjectOwnership, (req, res) => {
   try {
     if (req.params.id === 'general') return res.status(403).json({ error: 'Cannot delete the default project' });
+    const project = db.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'not found' });
+
+    const unbind = String(req.query.unbind || '') === 'true';
+    const hard   = String(req.query.hard   || '') === 'true';
+    let unbindResult = null;
+    if (unbind && project.workspacePath) {
+      try {
+        unbindResult = projectWs.unbindWorkspace(project.workspacePath, { removeAocDir: hard });
+      } catch (e) {
+        unbindResult = { error: e.message };
+      }
+    }
     db.deleteProject(req.params.id);
-    res.json({ ok: true });
+    res.json({ ok: true, unbindResult });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/projects/:id/branch — switch active branch on a brownfield-bound project.
+//   body: { branch }
+app.patch('/api/projects/:id/branch', db.authMiddleware, db.requireProjectOwnership, async (req, res) => {
+  try {
+    const { branch } = req.body || {};
+    if (!branch) return res.status(400).json({ error: 'branch is required' });
+    const project = db.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'not found' });
+    if (!project.workspacePath) return res.status(400).json({ error: 'project has no workspace bound' });
+
+    const insp = await projectGit.inspectRepo(project.workspacePath);
+    if (!insp.isRepo) return res.status(400).json({ error: 'workspace is not a git repo' });
+    if (insp.isDirty) {
+      return res.status(409).json({ error: 'working tree dirty', uncommittedFiles: insp.uncommittedFiles });
+    }
+    const isRemoteRef = branch.includes('/') && (insp.remotes || []).some((r) => branch.startsWith(r.name + '/'));
+    const co = await projectGit.checkoutBranch(project.workspacePath, branch, { createLocalFromRemote: isRemoteRef });
+    if (!co.ok) return res.status(409).json({ error: co.error, uncommittedFiles: co.uncommittedFiles });
+
+    const updated = db.setProjectWorkspace(project.id, { repoBranch: co.currentBranch });
+    projectWs.appendActivityLog(
+      project.workspacePath,
+      `switch-branch project=${project.id} from=${insp.currentBranch} to=${co.currentBranch}`
+    );
+    res.json({ project: updated, switched: co.switched, headSha: co.headSha });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/projects/:id/refetch — manual fetch trigger; returns latest branch list.
+app.post('/api/projects/:id/refetch', db.authMiddleware, db.requireProjectOwnership, async (req, res) => {
+  try {
+    const project = db.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'not found' });
+    if (!project.workspacePath) return res.status(400).json({ error: 'project has no workspace bound' });
+
+    const isRepo = await projectGit.isGitRepo(project.workspacePath);
+    if (!isRepo) return res.json({ ok: true, isRepo: false, branches: [] });
+
+    const remoteName = project.repoRemoteName || 'origin';
+    const fetch = await projectGit.fetchRemote(project.workspacePath, remoteName);
+    if (fetch.succeeded) db.bumpProjectFetchedAt(project.id);
+
+    const [branches, currentBranch, status] = await Promise.all([
+      projectGit.listBranches(project.workspacePath),
+      projectGit.getCurrentBranch(project.workspacePath),
+      projectGit.getStatus(project.workspacePath),
+    ]);
+    res.json({
+      ok: true,
+      isRepo: true,
+      fetchSucceeded: fetch.succeeded,
+      fetchError: fetch.succeeded ? null : fetch.error,
+      currentBranch,
+      isDirty: status.isDirty,
+      uncommittedFiles: status.uncommittedFiles,
+      branches,
+      project: db.getProject(project.id),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ─── Project Integrations ──────────────────────────────────────────────────────
+// ─── Epics (Phase B — ADLC grouping) ────────────────────────────────────────
+//
+// Epics group related tasks within a project. Visible/usable across all
+// project kinds, but the wizard surfaces them mostly for `kind=adlc`. Read
+// access is open (any logged-in user can list); writes require project
+// ownership (mirrors the project mutation rules).
+
+app.get('/api/projects/:id/epics', db.authMiddleware, (req, res) => {
+  try { res.json({ epics: db.listEpics(req.params.id) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/projects/:id/epics', db.authMiddleware, db.requireProjectOwnership, (req, res) => {
+  try {
+    const { title, description, status, color } = req.body || {};
+    if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
+    const epic = db.createEpic({
+      projectId: req.params.id,
+      title: title.trim(),
+      description, status, color,
+      createdBy: req.user?.userId ?? null,
+    });
+    res.status(201).json({ epic });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// :id here refers to the EPIC id; ownership is checked via the parent project.
+app.patch('/api/epics/:id', db.authMiddleware, (req, res) => {
+  try {
+    const epic = db.getEpic(req.params.id);
+    if (!epic) return res.status(404).json({ error: 'epic not found' });
+    if (!db.userOwnsProject(req, epic.projectId)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this epic' });
+    }
+    const updated = db.updateEpic(req.params.id, req.body || {});
+    res.json({ epic: updated });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/epics/:id', db.authMiddleware, (req, res) => {
+  try {
+    const epic = db.getEpic(req.params.id);
+    if (!epic) return res.status(404).json({ error: 'epic not found' });
+    if (!db.userOwnsProject(req, epic.projectId)) {
+      return res.status(403).json({ error: 'You do not have permission to delete this epic' });
+    }
+    db.deleteEpic(req.params.id);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Task dependencies (Phase B — directed edges) ───────────────────────────
+
+app.get('/api/tasks/:id/dependencies', db.authMiddleware, (req, res) => {
+  try { res.json({ dependencies: db.listDependenciesForTask(req.params.id) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/tasks/:id/dependencies', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
+  try {
+    const { blockerTaskId, blockedTaskId, kind } = req.body || {};
+    // Caller passes the OTHER task's id; we infer from :id which side it is
+    // based on whether the body specified blocker or blocked. For ergonomics,
+    // accept either — the route param is the "current" task.
+    const me = req.params.id;
+    const other = blockerTaskId || blockedTaskId;
+    if (!other) return res.status(400).json({ error: 'blockerTaskId or blockedTaskId is required' });
+    const dep = db.addTaskDependency({
+      blockerTaskId: blockerTaskId || me,
+      blockedTaskId: blockedTaskId || me,
+      kind: kind || 'blocks',
+    });
+    res.status(201).json({ dependency: dep });
+  } catch (err) {
+    if (err.code === 'DEP_CYCLE') return res.status(409).json({ error: err.message, code: err.code });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/tasks/:id/dependencies/:depId', db.authMiddleware, db.requireProjectOwnershipForTask, (req, res) => {
+  try { db.removeTaskDependency(req.params.depId); res.json({ ok: true }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Bulk: all dependency edges for a project. Used by the board to render
+// blocked indicators on TaskCards without N+1 fetches.
+app.get('/api/projects/:id/dependencies', db.authMiddleware, (req, res) => {
+  try { res.json({ dependencies: db.listDependenciesForProject(req.params.id) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Project memory (Phase A2 — decisions/questions/risks/glossary) ─────────
+
+app.get('/api/projects/:id/memory', db.authMiddleware, (req, res) => {
+  try {
+    const { kind, status } = req.query;
+    res.json({ items: db.listProjectMemory(req.params.id, { kind, status }) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/projects/:id/memory', db.authMiddleware, db.requireProjectOwnership, (req, res) => {
+  try {
+    const { kind, title, body, status, meta, sourceTaskId } = req.body || {};
+    const item = db.createProjectMemory({
+      projectId: req.params.id,
+      kind, title, body, status, meta, sourceTaskId,
+      createdBy: req.user?.id ?? null,
+    });
+    res.status(201).json({ item });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.patch('/api/memory/:id', db.authMiddleware, (req, res) => {
+  try {
+    const cur = db.getProjectMemory(req.params.id);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    // Project-scoped ownership: re-use requireProjectOwnership semantics manually.
+    if (req.user?.role !== 'admin' && req.user?.role !== 'agent') {
+      const ownerId = db.getProjectOwner(cur.projectId);
+      if (ownerId != null && ownerId !== req.user?.id) {
+        return res.status(403).json({ error: 'Not project owner' });
+      }
+    }
+    const item = db.updateProjectMemory(req.params.id, req.body || {});
+    res.json({ item });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.delete('/api/memory/:id', db.authMiddleware, (req, res) => {
+  try {
+    const cur = db.getProjectMemory(req.params.id);
+    if (!cur) return res.json({ ok: true });
+    if (req.user?.role !== 'admin' && req.user?.role !== 'agent') {
+      const ownerId = db.getProjectOwner(cur.projectId);
+      if (ownerId != null && ownerId !== req.user?.id) {
+        return res.status(403).json({ error: 'Not project owner' });
+      }
+    }
+    db.deleteProjectMemory(req.params.id);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/projects/:id/integrations', db.authMiddleware, (req, res) => {
   res.json({ integrations: db.getProjectIntegrations(req.params.id) });
 });
 
-app.post('/api/projects/:id/integrations', db.authMiddleware, async (req, res) => {
+app.post('/api/projects/:id/integrations', db.authMiddleware, db.requireProjectOwnership, async (req, res) => {
   try {
     const { type, credentials, spreadsheetId, sheetName, mapping, syncIntervalMs, enabled, syncFromRow, syncLimit } = req.body;
     if (!type) return res.status(400).json({ error: 'type is required' });
@@ -4791,7 +5875,7 @@ app.post('/api/projects/:id/integrations', db.authMiddleware, async (req, res) =
   }
 });
 
-app.patch('/api/projects/:id/integrations/:iid', db.authMiddleware, async (req, res) => {
+app.patch('/api/projects/:id/integrations/:iid', db.authMiddleware, db.requireProjectOwnership, async (req, res) => {
   try {
     const existing = db.getIntegrationRaw(req.params.iid);
     if (!existing) return res.status(404).json({ error: 'not found' });
@@ -4823,7 +5907,7 @@ app.patch('/api/projects/:id/integrations/:iid', db.authMiddleware, async (req, 
   }
 });
 
-app.delete('/api/projects/:id/integrations/:iid', db.authMiddleware, (req, res) => {
+app.delete('/api/projects/:id/integrations/:iid', db.authMiddleware, db.requireProjectOwnership, (req, res) => {
   try {
     integrations.unscheduleIntegration(req.params.iid);
     db.deleteIntegration(req.params.iid);
@@ -4874,7 +5958,7 @@ app.post('/api/projects/:id/integrations/:iid/headers', db.authMiddleware, async
 });
 
 // Manual sync trigger — responds immediately, runs sync async
-app.post('/api/projects/:id/integrations/:iid/sync', db.authMiddleware, async (req, res) => {
+app.post('/api/projects/:id/integrations/:iid/sync', db.authMiddleware, db.requireProjectOwnership, async (req, res) => {
   const integration = db.getIntegrationRaw(req.params.iid);
   if (!integration) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true, message: 'Sync started' });
@@ -5310,90 +6394,6 @@ app.get('/api/browse-dirs', db.authMiddleware, (req, res) => {
 });
 
 // GET /api/config — returns full openclaw.json
-// ─── Host filesystem browser (for Playbook repo picker) ─────────────────────
-// Minimal filesystem navigation so users can locate an existing git checkout or
-// init a fresh one without leaving the dashboard. Dashboard-only (admin user
-// on their own machine); no multi-tenant isolation needed here.
-app.get('/api/fs/browse', db.authMiddleware, (req, res) => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const os = require('node:os');
-  try {
-    let target = typeof req.query.path === 'string' && req.query.path
-      ? req.query.path
-      : os.homedir();
-    if (target.startsWith('~')) target = path.join(os.homedir(), target.slice(1));
-    target = path.resolve(target);
-    const stat = fs.statSync(target);
-    if (!stat.isDirectory()) return res.status(400).json({ error: 'not a directory' });
-
-    const entries = fs.readdirSync(target, { withFileTypes: true })
-      .filter((d) => !d.name.startsWith('.') || d.name === '.git')
-      .map((d) => {
-        const full = path.join(target, d.name);
-        let isDir = d.isDirectory();
-        let isSymlink = d.isSymbolicLink();
-        if (isSymlink) {
-          try { isDir = fs.statSync(full).isDirectory(); } catch { isDir = false; }
-        }
-        let isGitRepo = false;
-        if (isDir) {
-          try {
-            isGitRepo = fs.existsSync(path.join(full, '.git'));
-          } catch {}
-        }
-        return { name: d.name, isDir, isGitRepo, isSymlink };
-      })
-      .filter((e) => e.isDir && e.name !== '.git')
-      .sort((a, b) => {
-        if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-
-    const parent = path.dirname(target);
-    // Quick check: is the current dir itself a git repo?
-    const currentIsGitRepo = fs.existsSync(path.join(target, '.git'));
-
-    res.json({
-      path: target,
-      parent: parent !== target ? parent : null,
-      home: os.homedir(),
-      currentIsGitRepo,
-      entries,
-    });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/fs/init-repo', db.authMiddleware, (req, res) => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const os = require('node:os');
-  const { execSync } = require('node:child_process');
-  try {
-    let target = (req.body && typeof req.body.path === 'string') ? req.body.path : '';
-    if (!target) return res.status(400).json({ error: 'path required' });
-    if (target.startsWith('~')) target = path.join(os.homedir(), target.slice(1));
-    target = path.resolve(target);
-    // Create directory if missing (user may pick a non-existent name).
-    fs.mkdirSync(target, { recursive: true });
-    // If .git already exists, noop.
-    if (fs.existsSync(path.join(target, '.git'))) {
-      return res.json({ ok: true, path: target, existing: true });
-    }
-    execSync(`git -C ${JSON.stringify(target)} init -b main`, { stdio: 'pipe' });
-    // Create an empty initial commit so the `main` branch actually exists —
-    // worktrees can't be created from a repo with zero commits.
-    try {
-      execSync(`git -C ${JSON.stringify(target)} commit --allow-empty -m "Initial commit"`, { stdio: 'pipe' });
-    } catch {}
-    res.json({ ok: true, path: target, existing: false });
-  } catch (err) {
-    const msg = err && err.stderr ? err.stderr.toString() : (err.message || String(err));
-    res.status(500).json({ error: msg });
-  }
-});
 
 app.get('/api/config', db.authMiddleware, (req, res) => {
   const { readJsonSafe } = require('./lib/config.cjs');
@@ -5547,16 +6547,32 @@ app.get('/api/chat/sessions', db.authMiddleware, async (req, res) => {
     const agentId = req.query.agentId;
     const result = await gatewayProxy.sessionsList(agentId);
     // Normalize: extract agentId from key pattern "agent:{agentId}:{channel}:{uuid}"
+    const roomKeys = new Set(db.getRoomSessionKeys());
+    const taskKeys = new Set(db.getTaskSessionKeys());
+    
     const sessions = (result.sessions || []).map(s => {
       const parts = (s.key || '').split(':');
+      const lastMsgOrTitle = s.lastMessage || s.derivedTitle || '';
+      
+      // Fallback for legacy task sessions created before DB tracking
+      const isLegacyTask = /^(\s*📋\s*)?\*\*Task/i.test(lastMsgOrTitle);
+      
       return {
         ...s,
         sessionKey: s.key,
         agentId: s.agentId || (parts[0] === 'agent' ? parts[1] : undefined),
-        lastMessage: s.lastMessage || s.derivedTitle || undefined,
+        lastMessage: lastMsgOrTitle || undefined,
+        isRoomTriggered: roomKeys.has(s.key),
+        isTaskTriggered: taskKeys.has(s.key) || isLegacyTask,
       };
     });
-    res.json({ sessions });
+    // By default, exclude room-triggered and task-triggered sessions from DMs list
+    const includeRoom = req.query.includeRoom === '1';
+    const filtered = includeRoom 
+      ? sessions 
+      : sessions.filter(s => !s.isRoomTriggered && !s.isTaskTriggered);
+      
+    res.json({ sessions: filtered });
   } catch (err) {
     console.error('[api/chat/sessions]', err);
     res.status(500).json({ error: err.message });
@@ -5775,6 +6791,99 @@ gatewayProxy.addListener((event) => {
     sweepPendingTasks().catch(err => console.warn('[startup-sweep]', err.message));
   }
 });
+
+// ── Phase 3: Auto-reply — post agent responses back to room ────────────────
+// When a room-triggered session completes (chat:done), fetch the agent's
+// last response and post it as a room message. This removes the dependency
+// on agents manually running `mission_room.sh`.
+const _roomAutoReplyInFlight = new Set();
+gatewayProxy.addListener((event) => {
+  if (event.type !== 'chat:done') return;
+  const sessionKey = event.payload?.sessionKey;
+  if (!sessionKey) return;
+
+  const roomInfo = db.getRoomForSession(sessionKey);
+  if (!roomInfo) return; // Not a room-triggered session
+
+  // Dedup guard — prevent concurrent auto-replies for the same session
+  if (_roomAutoReplyInFlight.has(sessionKey)) return;
+  _roomAutoReplyInFlight.add(sessionKey);
+
+  // Wait for JSONL to flush before fetching the final response
+  setTimeout(async () => {
+    try {
+      const historyResult = await gatewayProxy.chatHistory(sessionKey, 8000);
+      const messages = historyResult.messages || [];
+      // Find the last assistant message
+      const lastAssistant = [...messages].reverse().find(m =>
+        m.role === 'assistant' && (m.text || m.content)
+      );
+      if (!lastAssistant) return;
+
+      // Extract plain text from the assistant response
+      let responseText = '';
+      if (typeof lastAssistant.text === 'string') {
+        responseText = lastAssistant.text;
+      } else if (typeof lastAssistant.content === 'string') {
+        responseText = lastAssistant.content;
+      } else if (Array.isArray(lastAssistant.content)) {
+        responseText = lastAssistant.content
+          .filter(b => b.type === 'text')
+          .map(b => b.text || '')
+          .join('');
+      }
+      responseText = responseText.trim();
+
+      if (!responseText) return;
+      if (responseText === 'NO_REPLY') return;
+
+      // Dedup: check if the agent already posted to the room (via mission_room.sh)
+      // by checking the most recent messages
+      const recentRoomMsgs = db.listMissionMessages(roomInfo.roomId, { limit: 5 });
+      const alreadyPosted = recentRoomMsgs.some(m =>
+        m.authorType === 'agent' &&
+        m.authorId === roomInfo.agentId &&
+        // Check if message body matches (or is a prefix/suffix)
+        (m.body === responseText || responseText.includes(m.body) || m.body.includes(responseText))
+      );
+      if (alreadyPosted) {
+        console.log(`[room-auto-reply] Agent ${roomInfo.agentId} already posted to room ${roomInfo.roomId}, skipping`);
+        return;
+      }
+
+      // Post the agent's response to the room
+      const roomMsg = db.createMissionMessage({
+        roomId: roomInfo.roomId,
+        authorType: 'agent',
+        authorId: roomInfo.agentId,
+        authorName: getAgentDisplayName(roomInfo.agentId),
+        body: responseText,
+      });
+      emitRoomMessage(roomMsg);
+
+      // Inherit delegation depth: if this agent was itself forwarded-to via
+      // a delegation, its reply continues the chain at the recorded depth.
+      // Otherwise it's depth 0 (replying directly to a user mention).
+      const inheritKey = `${roomInfo.agentId}:${roomInfo.roomId}`;
+      const inheritedDepth = _delegationByAgentRoom.get(inheritKey) ?? 0;
+      _delegationDepth.set(roomMsg.id, inheritedDepth);
+      _delegationByAgentRoom.delete(inheritKey);
+
+      console.log(`[room-auto-reply] Agent ${roomInfo.agentId} replied to room ${roomInfo.roomId} depth=${inheritedDepth}`);
+
+      // Delegation: if the agent's reply mentions other agents in the room,
+      // forward the message to them. Max depth 3 prevents runaway chains.
+      try {
+        const room = db.getMissionRoom(roomInfo.roomId);
+        if (room) forwardAgentMentionChain(room, roomMsg, roomInfo.agentId);
+      } catch (e) { /* ignore */ }
+    } catch (err) {
+      console.warn(`[room-auto-reply] Failed for session ${sessionKey}:`, err.message);
+    } finally {
+      _roomAutoReplyInFlight.delete(sessionKey);
+    }
+  }, 4000); // 4s delay for JSONL flush
+});
 const feedWatcher = new LiveFeedWatcher();
 
 const terminal = require('./lib/terminal.cjs');
@@ -5928,6 +7037,7 @@ function syncBuiltinsForAgent(agentId) {
       parsers.getAgentFile,
       parsers.saveAgentFile,
     );
+    if (agentId === 'main') parsers.missionOrchestratorSkill.ensureSkillEnabledForMainAgent();
   } catch (err) {
     console.warn(`[builtins] syncBuiltinsForAgent(${agentId}):`, err.message);
   }
@@ -6072,6 +7182,11 @@ async function start() {
     parsers.aocConnectionsSkill.installSafe();
     parsers.aocConnectionsSkill.ensureSkillEnabledForAllAgents();
   } catch (e) { console.warn('[startup] aoc-connections skill init failed:', e.message); }
+  // mission-orchestrator built-in skill: install bundle + enable only for main.
+  try {
+    parsers.missionOrchestratorSkill.installSafe();
+    parsers.missionOrchestratorSkill.ensureSkillEnabledForMainAgent();
+  } catch (e) { console.warn('[startup] mission-orchestrator skill init failed:', e.message); }
   // After all skill bundles install, purge legacy flat copies of skill scripts
   // (they live inside the skill folder now). Idempotent.
   try { parsers.purgeLegacyFlatScripts(); }

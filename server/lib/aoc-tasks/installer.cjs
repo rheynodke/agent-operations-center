@@ -22,10 +22,11 @@ const {
   FETCH_ATTACHMENT_SCRIPT_CONTENT,
   SAVE_OUTPUT_SCRIPT_CONTENT,
   POST_COMMENT_SCRIPT_CONTENT,
+  PROJECT_MEMORY_SCRIPT_CONTENT,
 } = require('../scripts.cjs');
 
 const SKILL_SLUG    = 'aoc-tasks';
-const BUNDLE_VERSION = '1.0.0';
+const BUNDLE_VERSION = '1.3.0';
 
 function skillRoot() {
   return path.join(OPENCLAW_HOME, 'skills', SKILL_SLUG);
@@ -110,6 +111,37 @@ fetch_attachment.sh "<url>" ./inputs
 The script auto-resolves AOC-served URLs (adds the auth token) and
 auto-extracts \`.zip\` / converts \`.docx\` to plain text where possible.
 
+## Project Workspace (when the task belongs to a bound project)
+
+If the task brief includes a **📁 Project Workspace** section, the project
+has a dedicated directory on disk that is shared across every agent on the
+project. Treat it as the **primary working directory for this task**:
+
+1. **Read the task context first.** A JSON file at
+   \`<workspacePath>/.aoc/tasks/<taskId>/context.json\` summarizes the task,
+   project metadata, branch, and (when applicable) ADLC stage + role. Read it
+   at the start of every turn — it is rewritten on each dispatch.
+2. **Where to save deliverables:**
+   - Final, shareable outputs → \`<workspacePath>/outputs/\` (and within an
+     ADLC subfolder like \`01-discovery/\` when the project is \`kind=adlc\`).
+     These are committable.
+   - Per-task scratch files → \`<workspacePath>/.aoc/tasks/<taskId>/outputs/\`.
+     These are git-ignored.
+   - You can still use \`save_output.sh\` for the legacy per-agent outputs
+     folder — AOC's watcher will pick the file up regardless. But when a
+     project workspace exists, prefer writing into the project so other
+     agents on the project can see it.
+3. **Brownfield projects** (existing codebases): read the source under the
+   workspace as context, but do **not** modify user files unless the task
+   explicitly asks for it. Stay inside \`outputs/\` and \`.aoc/\` for any
+   files you create.
+4. **Greenfield projects**: scaffold whatever structure the task calls for
+   directly under the workspace path.
+
+The branch shown in the brief is the active git branch for this dispatch —
+respect it. Do not switch branches on your own; ask the operator (\`blocked\`
+status) if a different branch is needed.
+
 ## Closing a task
 
 When the work is verifiably complete and outputs are saved:
@@ -139,6 +171,49 @@ Use \`in_review\` instead of \`done\` if a human should sign off before close.
 | \`blocked\` | You need input/access — \`note\` must explain what |
 | \`done\` | Verifiably complete; outputs saved |
 
+## Project memory (decisions / questions / risks / glossary)
+
+Every dispatch's \`context.json\` includes a \`projectMemory\` snapshot when the
+project has memory entries. Read it directly, or use the helper:
+
+\`\`\`bash
+project_memory.sh show                              # human-readable summary
+project_memory.sh list decision                     # JSON: all decisions
+project_memory.sh list question open                # JSON: open questions only
+project_memory.sh add decision "Use SQLite v1" "Postgres adds ops cost we can't justify yet"
+project_memory.sh add question "Should free tier include API access?"
+project_memory.sh add risk "Users may not adopt new flow" "Onboarding feedback shows confusion" usability high
+project_memory.sh add glossary "Dispatch" "Sending a task to an agent for execution"
+project_memory.sh resolve <id> "Decided: yes, capped at 100 req/day"
+project_memory.sh archive <id>
+\`\`\`
+
+**When to write:**
+- **Decision** — after you (or human) make a non-obvious architectural / product choice. Saves re-litigation.
+- **Question** — when you encounter an ambiguity you can't resolve alone. Better than blocking the task if it's a project-level concern.
+- **Risk** — when you spot a likelihood-of-failure issue. Categories: \`value\` (will users want it?), \`usability\` (can they use it?), \`feasibility\` (can we build it?), \`viability\` (does it sustain the business?). Severity: \`low\`/\`medium\`/\`high\`.
+- **Glossary** — when a domain term shows up that future-you / other agents would mis-translate.
+
+Memory is project-scoped and persists across all sessions in the project.
+
+### Closing reflection (auto-triggered)
+
+When you set status to \`done\` or \`in_review\`, the dashboard sends you ONE
+follow-up turn asking you to reflect on memory worth logging. This is the
+natural moment to capture what you'd otherwise lose. **Treat it seriously**
+— briefly review the work, log entries via \`project_memory.sh add ...\`, and
+end the turn. If genuinely nothing notable, reply \`"no entries needed"\` and
+end. **Do not change task status during the reflection turn** (the task is
+already closed).
+
+Examples of good closing reflection output:
+\`\`\`
+project_memory.sh add decision "Use bcrypt rounds=12" "Rounds=14 added 200ms p99 in load test; rounds=12 acceptable trade"
+project_memory.sh add risk "SQLite WAL required in prod" "Without WAL, concurrent writers fail intermittently" feasibility medium
+project_memory.sh add glossary "session" "JWT pair (access+refresh) — distinct from gateway chat session"
+no other entries needed
+\`\`\`
+
 ## Token usage reporting (optional)
 
 When you finish a task, you can report token usage so the board can show
@@ -160,6 +235,7 @@ const BUNDLE = {
     { relPath: 'scripts/fetch_attachment.sh',   content: FETCH_ATTACHMENT_SCRIPT_CONTENT, protect: true, exec: true },
     { relPath: 'scripts/save_output.sh',        content: SAVE_OUTPUT_SCRIPT_CONTENT,     protect: true, exec: true },
     { relPath: 'scripts/post_comment.sh',       content: POST_COMMENT_SCRIPT_CONTENT,    protect: true, exec: true },
+    { relPath: 'scripts/project_memory.sh',     content: PROJECT_MEMORY_SCRIPT_CONTENT,  protect: true, exec: true },
   ],
 };
 

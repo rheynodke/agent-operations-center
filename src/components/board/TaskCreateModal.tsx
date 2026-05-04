@@ -5,9 +5,12 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Task, TaskStatus, TaskPriority, Agent } from "@/types"
+import { Task, TaskStatus, TaskPriority, TaskStage, TaskRole, Epic, ProjectKind, Agent } from "@/types"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { PriorityIndicator } from "./PriorityIndicator"
+import { ALL_STAGES, ALL_ROLES, STAGE_LABEL, STAGE_TONE, ROLE_FULL_LABEL } from "@/lib/projectLabels"
+import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 import { User, Paperclip, Upload, X } from "lucide-react"
 
 const STATUSES: { value: TaskStatus; label: string; dot: string; disabled?: boolean }[] = [
@@ -31,6 +34,9 @@ interface TaskCreateModalProps {
   task?: Task | null       // if set, editing mode
   agents: Agent[]
   defaultStatus?: TaskStatus
+  /** Project context — drives ADLC field visibility. */
+  projectId?: string
+  projectKind?: ProjectKind
   /** Returns the created task when creating (used to upload staged files). */
   onSave: (data: Partial<Task>) => Promise<Task | void>
   /** Upload files against a task id (called after create when pending files exist). */
@@ -38,7 +44,12 @@ interface TaskCreateModalProps {
   onClose: () => void
 }
 
-export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog", onSave, onUploadAttachments, onClose }: TaskCreateModalProps) {
+const NONE = "__none__"
+
+export function TaskCreateModal({
+  open, task, agents, defaultStatus = "backlog",
+  projectId, projectKind, onSave, onUploadAttachments, onClose,
+}: TaskCreateModalProps) {
   const [title, setTitle]         = useState("")
   const [description, setDescription] = useState("")
   const [status, setStatus]       = useState<TaskStatus>(defaultStatus)
@@ -51,6 +62,23 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
   const [saving, setSaving]       = useState(false)
   const [error, setError]         = useState("")
 
+  // ADLC fields (Phase B) — only surfaced when project.kind === 'adlc'.
+  const [stage, setStage] = useState<string>(NONE)
+  const [role, setRole]   = useState<string>(NONE)
+  const [epicId, setEpicId] = useState<string>(NONE)
+  const [epics, setEpics] = useState<Epic[]>([])
+  const isAdlc = projectKind === 'adlc'
+
+  // Load epics when modal opens for an ADLC project.
+  useEffect(() => {
+    if (!open || !isAdlc || !projectId) { setEpics([]); return }
+    let cancelled = false
+    api.listEpics(projectId)
+      .then(r => { if (!cancelled) setEpics(r.epics) })
+      .catch(() => { if (!cancelled) setEpics([]) })
+    return () => { cancelled = true }
+  }, [open, isAdlc, projectId])
+
   useEffect(() => {
     if (task) {
       setTitle(task.title)
@@ -60,13 +88,17 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
       setAssignTo(task.agentId || "")
       setTagsRaw((task.tags || []).join(", "))
       setRequestFrom(task.requestFrom || "-")
+      setStage(task.stage || NONE)
+      setRole(task.role || NONE)
+      setEpicId(task.epicId || NONE)
     } else {
       setTitle(""); setDescription(""); setStatus(defaultStatus)
       setPriority("medium"); setAssignTo(""); setTagsRaw(""); setRequestFrom("-")
+      setStage(NONE); setRole(NONE); setEpicId(NONE)
     }
     setPendingFiles([])
     setError("")
-  }, [task, open])
+  }, [task, open, defaultStatus])
 
   async function handleSave() {
     if (!title.trim()) { setError("Title is required"); return }
@@ -77,6 +109,12 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
         title: title.trim(), description: description.trim() || undefined,
         status, priority, agentId: assignTo || undefined, tags,
         requestFrom: requestFrom.trim() || '-',
+        // ADLC fields — only included when project is ADLC; null clears.
+        ...(isAdlc ? {
+          stage:  stage  === NONE ? undefined : (stage  as TaskStage),
+          role:   role   === NONE ? undefined : (role   as TaskRole),
+          epicId: epicId === NONE ? undefined : epicId,
+        } : {}),
         ...(task ? { assignTo: assignTo || undefined } : {}),
       })
       // After create: upload any staged attachments
@@ -110,7 +148,7 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{task ? "Edit Ticket" : "New Ticket"}</DialogTitle>
+          <DialogTitle>{task ? "Edit Task" : "New Task"}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-1">
@@ -137,7 +175,9 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
               <Label>Priority</Label>
               <Select value={priority} onValueChange={(v) => setPriority(v as TaskPriority)}>
                 <SelectTrigger className="h-8 gap-2">
-                  <PriorityIndicator priority={priority} showLabel />
+                  <div className="flex items-center">
+                    <PriorityIndicator priority={priority} showLabel />
+                  </div>
                 </SelectTrigger>
                 <SelectContent>
                   {PRIORITIES.map(p => (
@@ -207,6 +247,74 @@ export function TaskCreateModal({ open, task, agents, defaultStatus = "backlog",
               <Input value={requestFrom} onChange={(e) => setRequestFrom(e.target.value)} placeholder="-" />
             </div>
           </div>
+
+          {/* ADLC fields — only when project is ADLC kind */}
+          {isAdlc && (
+            <div className="space-y-3 pt-2 border-t border-border/40">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-semibold">ADLC</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Stage</Label>
+                  <Select value={stage} onValueChange={setStage}>
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue placeholder="No stage" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NONE} className="text-xs">— No stage —</SelectItem>
+                      {ALL_STAGES.map((s) => (
+                        <SelectItem key={s} value={s} className="text-xs">
+                          <span className={cn(
+                            "inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium",
+                            STAGE_TONE[s]
+                          )}>
+                            {STAGE_LABEL[s]}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Role</Label>
+                  <Select value={role} onValueChange={setRole}>
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue placeholder="No role" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NONE} className="text-xs">— No role —</SelectItem>
+                      {ALL_ROLES.map((r) => (
+                        <SelectItem key={r} value={r} className="text-xs">
+                          {ROLE_FULL_LABEL[r]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label>Epic (optional)</Label>
+                <Select value={epicId} onValueChange={setEpicId}>
+                  <SelectTrigger className="h-9 text-xs">
+                    <SelectValue placeholder="No epic" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE} className="text-xs">— No epic —</SelectItem>
+                    {epics.map((e) => (
+                      <SelectItem key={e.id} value={e.id} className="text-xs">
+                        {e.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {epics.length === 0 && (
+                  <p className="text-[10px] text-muted-foreground/60">
+                    No epics yet. Manage them from the project settings.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
           {!task && (
             <div className="space-y-1">
               <Label className="flex items-center gap-1.5">
