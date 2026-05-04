@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react"
 import { useSearchParams } from "react-router-dom"
 import { useChatStore, gatewayMessagesToGroups, stripUserMetadataEnvelope, type ChatMessageGroup } from "@/stores/useChatStore"
+import { useAutoScroll } from "@/hooks/useAutoScroll"
 import { useAgentStore, useRoomStore } from "@/stores"
 import { api } from "@/lib/api"
 import { chatApi, type ChatSession } from "@/lib/chat-api"
@@ -571,9 +572,7 @@ function ChatInput({
             onInput={handleInput}
             onPaste={handlePaste}
             placeholder={
-              agentRunning
-                ? `${agentName ?? "Agent"} is thinking…`
-                : disabled
+              disabled
                 ? "Gateway offline – cannot send messages"
                 : `Message ${agentName ?? "agent"}…`
             }
@@ -661,7 +660,6 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
     messages,
     appendMessage,
     updateLastAgentMessage,
-    agentRunning,
     setAgentRunning,
     sessions,
     gatewayConnected,
@@ -673,8 +671,8 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
   const agent = agents.find((a) => a.id === agentId)
 
   const msgs = messages[sessionKey] ?? []
-  const isRunning = agentRunning[sessionKey] ?? false
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const isRunning = useChatStore((s) => s.agentRunning[sessionKey] ?? false)
+  const scrollRef = useAutoScroll<HTMLDivElement>([msgs])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -728,23 +726,9 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
     prevRunning.current = isRunning
   }, [isRunning, reloadHistory])
 
-  // Scroll to bottom instantly on initial load, smooth for new messages
-  const initialScrollDone = useRef(false)
-  useEffect(() => {
-    if (!loading && !initialScrollDone.current) {
-      initialScrollDone.current = true
-      bottomRef.current?.scrollIntoView({ behavior: "instant", block: "nearest" })
-    }
-  }, [loading])
-  useEffect(() => {
-    if (!initialScrollDone.current) return
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
-  }, [msgs.length, msgs[msgs.length - 1]?.responseText, msgs[msgs.length - 1]?.toolCalls?.length])
-
   const handleSend = async (text: string, images?: string[]) => {
-    if (isRunning) return
-
-    // Mark outbound so the WS echo (gateway echoes every user message) can
+    // Check synchronous store state to prevent double-click race conditions
+    if (useChatStore.getState().agentRunning[sessionKey]) return
     // be suppressed — avoids the "double message" during sending.
     useChatStore.getState().markSent(sessionKey, text)
 
@@ -828,7 +812,7 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" ref={scrollRef}>
         <div className="px-3 py-6 md:px-6 md:py-8 space-y-8">
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground/40">
@@ -871,7 +855,6 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
               />
             ))
           )}
-          <div ref={bottomRef} />
         </div>
       </div>
 

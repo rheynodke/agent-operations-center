@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from "react"
 import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore, useProcessingStore, useRoomStore } from "@/stores"
-import { useChatStore, parseMediaAttachments, mediaPathToUrl, stripGatewayEnvelopes, isSystemInjectedUserMessage } from "@/stores/useChatStore"
+import { useChatStore, parseMediaAttachments, mediaPathToUrl, stripGatewayEnvelopes, stripUserMetadataEnvelope, isSystemInjectedUserMessage } from "@/stores/useChatStore"
 import { useProjectStore } from '@/stores/useProjectStore'
 import { api } from "@/lib/api"
 import type { WsMessage, LiveFeedEntry } from "@/types"
@@ -282,17 +282,23 @@ export function useWebSocket() {
         // These are the events the watcher broadcasts when session files change
         case "session:update": {
           // processing_start / processing_end drive the live "active" flags on
-          // Overview and Agent Detail. The processing store is keyed by either
-          // `sessionKey` (gateway sessions) or `file` path (claude-cli JSONL).
+          // Overview, Agent Detail, and Mission Room TypingIndicator.
+          // Key strategy:
+          //   - sessionKey (when set) is the authoritative key — format is
+          //     `agent:<id>:room:<roomId>` for room sessions, which is exactly
+          //     what isAgentProcessingInScope looks for.
+          //   - file key is the fallback for unlinked claude-cli sessions.
+          //   - We register BOTH so nothing is lost.
           const su = msg as unknown as { action?: string; sessionKey?: string; agent?: string; file?: string }
           const procStore = useProcessingStore.getState()
-          const procKey = su.sessionKey || su.file
-          if (procKey) {
-            if (su.action === 'processing_start') {
-              procStore.start(procKey, su.agent)
-            } else if (su.action === 'processing_end') {
-              procStore.stop(procKey)
-            }
+          if (su.action === 'processing_start') {
+            // Register sessionKey first (scope-aware room/task check depends on it)
+            if (su.sessionKey) procStore.start(su.sessionKey, su.agent)
+            // Also register file key as fallback (may differ from sessionKey)
+            if (su.file && su.file !== su.sessionKey) procStore.start(su.file, su.agent)
+          } else if (su.action === 'processing_end') {
+            if (su.sessionKey) procStore.stop(su.sessionKey)
+            if (su.file && su.file !== su.sessionKey) procStore.stop(su.file)
           }
           if (su.action === 'processing_end' && su.sessionKey) {
             // processing_end is the AUTHORITATIVE end-of-run signal. Finalize
@@ -316,13 +322,21 @@ export function useWebSocket() {
                 })
               } else {
                 // Lock file gone but JSONL final response not yet polled (~2s lag).
-                // Keep "analyzing" pill alive, force-clear after 5s if still nothing.
+                // IMPORTANT: only set phase='analyzing' (which shows "Composing final
+                // answer" pill) when NO tools are currently running. Between sub-runs,
+                // processing_end fires even when more tool rounds are coming — guard
+                // against that by keeping the current phase if tools are still active.
                 chatStore.updateLastAgentMessage(su.sessionKey, (m) => {
                   if (m.role !== 'agent') return m
+                  // Check BEFORE remapping so we see actual current running state.
+                  const stillHasRunning = (m.toolCalls ?? []).some(tc => tc.status === 'running')
                   const toolCalls = (m.toolCalls ?? []).map(tc =>
                     tc.status === 'running' ? { ...tc, status: 'done' as const } : tc
                   )
-                  return { ...m, phase: 'analyzing' as const, isStreaming: true, toolCalls }
+                  // If tools were running, this is a between-rounds processing_end —
+                  // keep current phase rather than jumping to 'analyzing'.
+                  const nextPhase = stillHasRunning ? (m.phase ?? 'analyzing') : ('analyzing' as const)
+                  return { ...m, phase: nextPhase, isStreaming: true, toolCalls }
                 })
                 setTimeout(() => {
                   const store = useChatStore.getState()
@@ -459,7 +473,15 @@ export function useWebSocket() {
 
         case "room:message": {
           const payload = msg.payload as { roomId?: string; message?: import("@/types").MissionMessage }
-          if (payload?.roomId && payload.message) useRoomStore.getState().appendMessage(payload.roomId, payload.message)
+          if (payload?.roomId && payload.message) {
+            useRoomStore.getState().appendMessage(payload.roomId, payload.message)
+            // When an agent message arrives, clear their processing indicator
+            // for this room — they've finished responding.
+            if (payload.message.authorType === 'agent' && payload.message.authorId) {
+              const procKey = `agent:${payload.message.authorId}:room:${payload.roomId}`
+              useProcessingStore.getState().stop(procKey)
+            }
+          }
           break
         }
 
@@ -483,7 +505,16 @@ export function useWebSocket() {
             // doesn't flicker off during long stretches without user-visible
             // output (e.g. tool execution).
             const { sessionKey } = (msg.payload ?? {}) as { sessionKey?: string }
-            if (sessionKey) chatStore.setAgentRunning(sessionKey, true)
+            if (sessionKey) {
+              chatStore.setAgentRunning(sessionKey, true)
+              // Also update processingStore so TypingIndicator + RightRail
+              // (which use isAgentProcessingInScope) light up for room sessions.
+              // sessionKey from gateway is already in `agent:<id>:room:<roomId>`
+              // format for room-triggered sessions — exactly what the scope
+              // check prefix-matches against.
+              const agentId = sessionKey.match(/^agent:([^:]+):/)?.[1]
+              useProcessingStore.getState().start(sessionKey, agentId)
+            }
             break
           } else if (msg.type === "chat:message") {
             const { sessionKey, role, text, thinking, done, toolName, toolInput, toolResult, toolCallId, replace } = (msg.payload ?? {}) as Record<string, unknown>
@@ -492,33 +523,39 @@ export function useWebSocket() {
               const isThinking = role === "thinking" || !!thinking
 
               // Ensure an agent placeholder exists so updateLastAgentMessage has something to mutate.
-              // This handles external sessions (Telegram, old sessions) where no placeholder was added.
+              // Look at the last few messages (not just lastMsg) because a user-echo or
+              // system message may have pushed the placeholder down by 1–2 positions.
               const currentMsgs = chatStore.messages[sk] ?? []
               const lastMsg = currentMsgs[currentMsgs.length - 1]
-              const hasAgentPlaceholder = lastMsg?.role === "agent" && lastMsg?.isStreaming
+              // Our UI paradigm strictly groups all sequential agent responses into a single bubble
+              // per turn (mirroring `gatewayMessagesToGroups` behavior). 
+              // If the very last message in the UI is an agent message, we ALWAYS merge this incoming 
+              // assistant text into it, preventing 'double bubbles' during multi-step internal loops.
+              const recentMsgs = currentMsgs.slice(-4)
+              const hasAgentPlaceholder = recentMsgs.some(m => m.role === "agent" && m.isStreaming)
 
-              // Dedup guard: if incoming assistant text matches (or is prefix/superset of) the
-              // last finalized agent message's text, this is a late-arriving echo (e.g. gateway
-              // fires both streaming `chat state=delta` AND the full `session.message` after
-              // done). Skip creating a new bubble to avoid duplicate rendering.
-              if (!hasAgentPlaceholder && role === "assistant" && !isThinking && (text as string)?.trim() && lastMsg?.role === "agent") {
-                // Compare stripped versions so envelope markers don't cause false-negatives
-                const prevText = stripGatewayEnvelopes(((lastMsg as { responseText?: string }).responseText ?? "")).trim()
-                const newText = stripGatewayEnvelopes(text as string).trim()
-                if (prevText && (prevText === newText || prevText.startsWith(newText) || newText.startsWith(prevText))) {
-                  // Merge into existing bubble — ensure it's marked done, skip append.
-                  chatStore.updateLastAgentMessage(sk, (m) => {
-                    if (m.role !== "agent") return m
-                    const merged = newText.length > prevText.length ? newText : prevText
-                    return { ...m, responseText: merged, responseDone: true, isStreaming: false, phase: "done" as const }
-                  })
-                  chatStore.setAgentRunning(sk, false)
-                  break
-                }
+              if (lastMsg?.role === "agent" && !isThinking) {
+                chatStore.updateLastAgentMessage(sk, (m) => {
+                  if (m.role !== "agent") return m
+                  
+                  const prevText = stripGatewayEnvelopes(m.responseText ?? "").trim()
+                  const newText = stripGatewayEnvelopes((text as string) ?? "").trim()
+                  
+                  // If gateway says replace=true (e.g. state=final delta sync), or if the new text
+                  // is longer (cumulative), use it. Otherwise, fallback to the existing text.
+                  const merged = shouldReplace || newText.length > prevText.length ? newText : prevText
+                  
+                  return { ...m, responseText: merged, responseDone: !!done, isStreaming: !done, phase: done ? "done" : m.phase }
+                })
+                if (done) chatStore.setAgentRunning(sk, false)
+                break
               }
 
               if (!hasAgentPlaceholder && (role === "assistant" || role === "thinking" || isThinking)) {
                 chatStore.setAgentRunning(sk, true)
+                // Update processingStore for room sessions so TypingIndicator lights up
+                const agentId = sk.match(/^agent:([^:]+):/)?.[1]
+                useProcessingStore.getState().start(sk, agentId)
                 chatStore.appendMessage(sk, {
                   id: `agent-ws-${Date.now()}`,
                   role: "agent",
@@ -539,7 +576,12 @@ export function useWebSocket() {
                 if (isSystemInjectedUserMessage(rawText)) {
                   // no-op — these belong to the LLM prompt, not the UI
                 } else {
-                  const { paths, caption } = parseMediaAttachments(rawText)
+                  // Gateway wraps user messages with metadata envelopes (e.g.
+                  // "Sender (untrusted metadata): ```json...```"). Strip those
+                  // BEFORE media extraction + dedup so the cleaned caption
+                  // matches what handleSend() stored via markSent().
+                  const strippedText = stripUserMetadataEnvelope(rawText)
+                  const { paths, caption } = parseMediaAttachments(strippedText)
                   if (caption || paths.length > 0) {
                     // Primary guard: suppress WS echo of messages we sent from this dashboard
                     // session. hasPendingSent is keyed by sessionKey+text, so it can't false-
@@ -554,7 +596,11 @@ export function useWebSocket() {
                       // Catches late echoes after the pending-set TTL expires.
                       const existing = chatStore.messages[sk] ?? []
                       const recentUserMsgs = existing.filter(m => m.role === "user").slice(-5)
-                      const alreadyHas = recentUserMsgs.some(m => m.userText === caption)
+                      const alreadyHas = recentUserMsgs.some(m => {
+                        if (!m.userText) return false
+                        const { caption: normExisting } = parseMediaAttachments(stripUserMetadataEnvelope(m.userText))
+                        return normExisting === caption
+                      })
                       if (!alreadyHas) {
                         chatStore.appendMessage(sk, {
                           id: `user-ws-${Date.now()}`,
@@ -619,10 +665,14 @@ export function useWebSocket() {
               const sk = sessionKey as string
               if (status === "start") {
                 chatStore.setAgentRunning(sk, true)
+                // Update processingStore so TypingIndicator + RightRail light up
+                const agentId = sk.match(/^agent:([^:]+):/)?.[1]
+                useProcessingStore.getState().start(sk, agentId)
                 // Ensure placeholder exists for tool events too
                 const curMsgs = chatStore.messages[sk] ?? []
-                const lastCur = curMsgs[curMsgs.length - 1]
-                if (!lastCur || (lastCur.role !== "agent" || !lastCur.isStreaming)) {
+                const recentMsgs = curMsgs.slice(-4)
+                const hasAgentPlaceholder = recentMsgs.some(m => m.role === "agent" && m.isStreaming)
+                if (!hasAgentPlaceholder) {
                   chatStore.appendMessage(sk, {
                     id: `agent-ws-tool-${Date.now()}`,
                     role: "agent",
@@ -682,9 +732,13 @@ export function useWebSocket() {
                 })
               } else {
                 // No response yet — keep "analyzing" phase while waiting for JSONL (2s poll)
-                // Force-clear after 6s as safety fallback
+                // Force-clear after 6s as safety fallback.
+                // Guard: only switch to 'analyzing' if no tools are currently running.
+                // chat:done can fire between sub-runs — don't show composing pill mid-run.
                 chatStore.updateLastAgentMessage(sk, (m) => {
                   if (m.role !== "agent") return m
+                  const hasRunning = (m.toolCalls ?? []).some(tc => tc.status === 'running')
+                  if (hasRunning) return m  // between-rounds — keep current phase
                   return { ...m, phase: "analyzing" as const, isStreaming: true }
                 })
                 setTimeout(() => {

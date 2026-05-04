@@ -201,10 +201,10 @@ class LiveFeedWatcher {
 
     const poll = () => {
       pollCount++;
-      // Refresh the sessionId -> sessionKey map every 10 polls (~20s)
-      if (pollCount % 10 === 0) {
-        this._sessionIdMap = this._buildSessionIdMap(agentsDir);
-      }
+      // Rebuild the sessionId -> sessionKey map every tick
+      // to ensure new sessions immediately route live events to the UI
+      this._sessionIdMap = this._buildSessionIdMap(agentsDir);
+      
       try {
         const agentDirs = fs.readdirSync(agentsDir).filter(d => {
           const p = path.join(agentsDir, d, 'sessions');

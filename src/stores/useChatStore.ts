@@ -66,7 +66,13 @@ interface ChatState {
 
 export const useChatStore = create<ChatState>((set, get) => ({
   gatewayConnected: false,
-  setGatewayConnected: (v) => set({ gatewayConnected: v }),
+  setGatewayConnected: (v) => set((s) => {
+    if (!v) {
+      const cleared = Object.keys(s.agentRunning).reduce((acc, k) => { acc[k] = false; return acc }, {} as Record<string, boolean>)
+      return { gatewayConnected: v, agentRunning: cleared }
+    }
+    return { gatewayConnected: v }
+  }),
 
   sessions: [],
   setSessions: (sessions) => set({ sessions }),
@@ -103,19 +109,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   pendingSentMessages: new Set(),
   markSent: (sessionKey, text) => set((s) => {
-    const key = `${sessionKey}::${text}`
+    // Normalize: collapse whitespace + strip spaces before punctuation so
+    // the key matches even after parseMediaAttachments cleans the echo text.
+    const norm = text.replace(/\s{2,}/g, " ").replace(/\s+([,.!?])/g, "$1").trim()
+    const key = `${sessionKey}::${norm}`
     const next = new Set(s.pendingSentMessages)
     next.add(key)
     return { pendingSentMessages: next }
   }),
   clearSent: (sessionKey, text) => set((s) => {
-    const key = `${sessionKey}::${text}`
+    const norm = text.replace(/\s{2,}/g, " ").replace(/\s+([,.!?])/g, "$1").trim()
+    const key = `${sessionKey}::${norm}`
     const next = new Set(s.pendingSentMessages)
     next.delete(key)
     return { pendingSentMessages: next }
   }),
   hasPendingSent: (sessionKey, text) => {
-    const key = `${sessionKey}::${text}`
+    const norm = text.replace(/\s{2,}/g, " ").replace(/\s+([,.!?])/g, "$1").trim()
+    const key = `${sessionKey}::${norm}`
     return get().pendingSentMessages.has(key)
   },
 }))

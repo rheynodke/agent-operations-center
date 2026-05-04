@@ -360,6 +360,17 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
       const meta = replyingToMessage ? { replyTo: replyingToMessage.id } : undefined
       const res = await api.postRoomMessage(room.id, text.trim(), mentions, meta)
       useRoomStore.getState().appendMessage(room.id, res.message)
+
+      // Optimistically set processing flag for each mentioned agent so
+      // TypingIndicator + RightRail show "Thinking..." immediately while
+      // the gateway processes the request. Cleared when room:message
+      // arrives from that agent via WebSocket.
+      const procStore = useProcessingStore.getState()
+      for (const agentId of mentions) {
+        const procKey = `agent:${agentId}:room:${room.id}`
+        procStore.start(procKey, agentId)
+      }
+
       setText("")
       setReplyingToMessage(null)
       localStorage.removeItem(`aoc.room.draft.${room.id}`)
