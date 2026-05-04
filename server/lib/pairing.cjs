@@ -2,34 +2,41 @@
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, readJsonSafe } = require('./config.cjs');
+const { OPENCLAW_HOME, getUserHome, readJsonSafe } = require('./config.cjs');
 
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
-const CREDENTIALS_DIR = path.join(OPENCLAW_HOME, 'credentials');
 
 const SUPPORTED_CHANNELS = ['telegram', 'whatsapp', 'discord'];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function resolvePairingPath(channel) {
-  return path.join(CREDENTIALS_DIR, `${channel}-pairing.json`);
+function homeFor(userId) {
+  return userId == null || Number(userId) === 1 ? OPENCLAW_HOME : getUserHome(userId);
+}
+function credentialsDir(userId) {
+  return path.join(homeFor(userId), 'credentials');
 }
 
-function resolveAllowFromPath(channel, accountId) {
+function resolvePairingPath(channel, userId) {
+  return path.join(credentialsDir(userId), `${channel}-pairing.json`);
+}
+
+function resolveAllowFromPath(channel, accountId, userId) {
+  const dir = credentialsDir(userId);
   const base = channel;
-  if (!accountId || accountId === 'default') return path.join(CREDENTIALS_DIR, `${base}-allowFrom.json`);
-  return path.join(CREDENTIALS_DIR, `${base}-${accountId}-allowFrom.json`);
+  if (!accountId || accountId === 'default') return path.join(dir, `${base}-allowFrom.json`);
+  return path.join(dir, `${base}-${accountId}-allowFrom.json`);
 }
 
 /**
  * List pending pairing requests for a channel (optionally filtered by accountId).
  * Reads the pairing store file directly for speed.
  */
-function listPairingRequests(channel, accountId) {
+function listPairingRequests(channel, accountId, userId) {
   if (!SUPPORTED_CHANNELS.includes(channel)) {
     throw new Error(`Unsupported pairing channel: ${channel}`);
   }
-  const filePath = resolvePairingPath(channel);
+  const filePath = resolvePairingPath(channel, userId);
   const data = readJsonSafe(filePath);
   if (!data || !Array.isArray(data.requests)) return [];
 
@@ -64,10 +71,10 @@ function listPairingRequests(channel, accountId) {
  * List pending pairing requests across ALL channels for a specific agent.
  * Returns { telegram: [...], whatsapp: [...], discord: [...] }
  */
-function listAllPairingRequests(agentId) {
+function listAllPairingRequests(agentId, userId) {
   const result = {};
   for (const channel of SUPPORTED_CHANNELS) {
-    result[channel] = listPairingRequests(channel, agentId || undefined);
+    result[channel] = listPairingRequests(channel, agentId || undefined, userId);
   }
   return result;
 }
@@ -77,7 +84,7 @@ function listAllPairingRequests(agentId) {
  * Uses the CLI to ensure proper file locking + notification to the user.
  * @returns Promise<{ ok: boolean, error?: string }>
  */
-function approvePairingCode(channel, code, accountId) {
+function approvePairingCode(channel, code, accountId, userId) {
   return new Promise((resolve, reject) => {
     if (!SUPPORTED_CHANNELS.includes(channel)) {
       return reject(new Error(`Unsupported pairing channel: ${channel}`));
@@ -97,9 +104,16 @@ function approvePairingCode(channel, code, accountId) {
     // the state dir directly. Passing AOC's value through to the subprocess
     // makes the CLI read/write `~/.openclaw/.openclaw/credentials/…` instead
     // of `~/.openclaw/credentials/…`, so approves silently land in a parallel
-    // tree and the actual pending request is never matched. Strip it.
+    // tree and the actual pending request is never matched.
+    //
+    // For non-admin tenants, point OPENCLAW_STATE_DIR at the user's home so
+    // the CLI reads/writes their per-user credentials. Drop OPENCLAW_HOME so
+    // the appended-".openclaw" issue never triggers.
     const subprocessEnv = { ...process.env };
     delete subprocessEnv.OPENCLAW_HOME;
+    if (userId != null && Number(userId) !== 1) {
+      subprocessEnv.OPENCLAW_STATE_DIR = getUserHome(userId);
+    }
 
     execFile(OPENCLAW_BIN, args, { timeout: 15000, env: subprocessEnv }, (err, stdout, stderr) => {
       // Strip ANSI escape codes so success-marker matching is robust.
@@ -145,14 +159,14 @@ function approvePairingCode(channel, code, accountId) {
  * accountId. Removes the matching entry from the pairing store JSON file.
  * @returns { ok: true, removed: 1 } | { ok: false, error: string }
  */
-function rejectPairingCode(channel, code, accountId) {
+function rejectPairingCode(channel, code, accountId, userId) {
   if (!SUPPORTED_CHANNELS.includes(channel)) {
     throw new Error(`Unsupported pairing channel: ${channel}`);
   }
   if (!code || typeof code !== 'string') {
     throw new Error('Pairing code is required');
   }
-  const filePath = resolvePairingPath(channel);
+  const filePath = resolvePairingPath(channel, userId);
   const data = readJsonSafe(filePath);
   if (!data || !Array.isArray(data.requests)) {
     return { ok: false, error: 'No pending pairing request found' };
@@ -188,8 +202,8 @@ function rejectPairingCode(channel, code, accountId) {
 
 // ── AllowFrom store management ───────────────────────────────────────────────
 
-function readAllowFromFile(channel, accountId) {
-  const filePath = resolveAllowFromPath(channel, accountId);
+function readAllowFromFile(channel, accountId, userId) {
+  const filePath = resolveAllowFromPath(channel, accountId, userId);
   const data = readJsonSafe(filePath);
   const entries = Array.isArray(data?.allowFrom) ? data.allowFrom.filter(e => typeof e === 'string' && e.trim()) : [];
   return { filePath, entries };
@@ -202,21 +216,21 @@ function writeAllowFromFile(filePath, entries) {
   fs.renameSync(tmp, filePath);
 }
 
-function listAllowFromEntries(channel, accountId) {
+function listAllowFromEntries(channel, accountId, userId) {
   if (!SUPPORTED_CHANNELS.includes(channel)) {
     throw new Error(`Unsupported pairing channel: ${channel}`);
   }
-  return readAllowFromFile(channel, accountId).entries;
+  return readAllowFromFile(channel, accountId, userId).entries;
 }
 
-function addAllowFromEntry(channel, accountId, entry) {
+function addAllowFromEntry(channel, accountId, entry, userId) {
   if (!SUPPORTED_CHANNELS.includes(channel)) {
     throw new Error(`Unsupported pairing channel: ${channel}`);
   }
   const trimmed = String(entry || '').trim();
   if (!trimmed) throw new Error('Entry is required');
 
-  const { filePath, entries } = readAllowFromFile(channel, accountId);
+  const { filePath, entries } = readAllowFromFile(channel, accountId, userId);
   if (entries.includes(trimmed)) {
     return { ok: true, added: 0, entries };
   }
@@ -225,14 +239,14 @@ function addAllowFromEntry(channel, accountId, entry) {
   return { ok: true, added: 1, entries: next };
 }
 
-function removeAllowFromEntry(channel, accountId, entry) {
+function removeAllowFromEntry(channel, accountId, entry, userId) {
   if (!SUPPORTED_CHANNELS.includes(channel)) {
     throw new Error(`Unsupported pairing channel: ${channel}`);
   }
   const trimmed = String(entry || '').trim();
   if (!trimmed) throw new Error('Entry is required');
 
-  const { filePath, entries } = readAllowFromFile(channel, accountId);
+  const { filePath, entries } = readAllowFromFile(channel, accountId, userId);
   const next = entries.filter(e => e !== trimmed);
   if (next.length === entries.length) {
     return { ok: false, error: `Entry not found: ${trimmed}` };

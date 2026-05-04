@@ -588,6 +588,10 @@ async function initDatabase() {
   try { db.run("ALTER TABLE users ADD COLUMN gateway_port INTEGER"); } catch (_) {}
   try { db.run("ALTER TABLE users ADD COLUMN gateway_pid INTEGER"); } catch (_) {}
   try { db.run("ALTER TABLE users ADD COLUMN gateway_state TEXT"); } catch (_) {}
+  // gateway_token persists the in-memory passphrase so AOC can re-attach to a
+  // running gateway after AOC restart without having to stop & re-spawn it.
+  // Lifetime: cleared on stopGateway. ROW-level only — not exposed via API.
+  try { db.run("ALTER TABLE users ADD COLUMN gateway_token TEXT"); } catch (_) {}
   try { db.run("ALTER TABLE users ADD COLUMN daily_token_quota INTEGER"); } catch (_) {}
   try { db.run("ALTER TABLE users ADD COLUMN daily_token_used INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
   try { db.run("ALTER TABLE users ADD COLUMN daily_token_reset_at INTEGER"); } catch (_) {}
@@ -2140,12 +2144,27 @@ function scopeByOwner(user, ownerCol, scope) {
  * @param {number} userId
  * @param {{port: number|null, pid: number|null, state: 'running'|'starting'|'error'|'stopped'|null}} data
  */
-function setGatewayState(userId, { port, pid, state }) {
+function setGatewayState(userId, { port, pid, state, token }) {
   if (!db) return;
-  db.run(
-    "UPDATE users SET gateway_port = ?, gateway_pid = ?, gateway_state = ? WHERE id = ?",
-    [port, pid, state, Number(userId)]
-  );
+  // Token is preserved unless explicitly cleared (state==='stopped' OR token===null).
+  // Pass `token: undefined` to leave it untouched.
+  if (token === undefined) {
+    db.run(
+      "UPDATE users SET gateway_port = ?, gateway_pid = ?, gateway_state = ? WHERE id = ?",
+      [port, pid, state, Number(userId)]
+    );
+  } else {
+    db.run(
+      "UPDATE users SET gateway_port = ?, gateway_pid = ?, gateway_state = ?, gateway_token = ? WHERE id = ?",
+      [port, pid, state, token, Number(userId)]
+    );
+  }
+}
+
+function getGatewayToken(userId) {
+  if (!db) return null;
+  const res = db.exec("SELECT gateway_token FROM users WHERE id = ?", [Number(userId)]);
+  return res[0]?.values?.[0]?.[0] || null;
 }
 
 /**
@@ -2622,5 +2641,5 @@ module.exports = {
   getAllPipelines, getPipeline, createPipeline, updatePipeline, deletePipeline,
   listPipelinesForUser,
   // Gateway state
-  setGatewayState, getGatewayState, listGatewayStates, clearAllGatewayStates,
+  setGatewayState, getGatewayState, getGatewayToken, listGatewayStates, clearAllGatewayStates,
 };

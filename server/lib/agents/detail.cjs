@@ -1,8 +1,29 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, getUserHome, readJsonSafe } = require('../config.cjs');
 const { parseGatewaySessions } = require('../sessions/gateway.cjs');
+
+// Multi-tenant home resolution: given an agentId, look up its owner and
+// return the appropriate per-user paths. Admin (owner=1 or null) → root.
+function _ownerOf(agentId) {
+  try {
+    const owner = require('../db.cjs').getAgentOwner(agentId);
+    return owner == null ? null : Number(owner);
+  } catch { return null; }
+}
+function homeFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
+}
+function agentsDirFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? AGENTS_DIR : path.join(getUserHome(o), 'agents');
+}
+function workspaceFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_WORKSPACE : path.join(getUserHome(o), 'workspace');
+}
 // getAllSessions merges gateway + claude-cli sessions and augments the gateway
 // session status='active' when its linked claude-cli jsonl is currently being
 // written. We use it (not parseGatewaySessions alone) so that an agent running
@@ -93,7 +114,7 @@ function parseToolsSections(content) {
 // ── Main functions ────────────────────────────────────────────────────────────
 
 function getAgentDetail(agentId) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) return null;
 
@@ -103,22 +124,23 @@ function getAgentDetail(agentId) {
 
   const defaultModel = config.agents?.defaults?.model?.primary || '';
 
-  const agentWorkspace = agentConfig.workspace || OPENCLAW_WORKSPACE;
-  const agentDir = path.join(AGENTS_DIR, agentId);
+  const tenantWorkspace = workspaceFor(agentId);
+  const agentWorkspace = agentConfig.workspace || tenantWorkspace;
+  const agentDir = path.join(agentsDirFor(agentId), agentId);
 
   const identityContent = readMdFile(path.join(agentWorkspace, 'IDENTITY.md'))
-    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'IDENTITY.md'));
+    || readMdFile(path.join(tenantWorkspace, 'IDENTITY.md'));
   const soulContent = readMdFile(path.join(agentWorkspace, 'SOUL.md'))
-    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'SOUL.md'));
+    || readMdFile(path.join(tenantWorkspace, 'SOUL.md'));
   const toolsContent = readMdFile(path.join(agentWorkspace, 'TOOLS.md'))
-    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'TOOLS.md'));
+    || readMdFile(path.join(tenantWorkspace, 'TOOLS.md'));
   const agentsContent = readMdFile(path.join(agentWorkspace, 'AGENTS.md'));
   const userContent = readMdFile(path.join(agentWorkspace, 'USER.md'))
-    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'USER.md'));
+    || readMdFile(path.join(tenantWorkspace, 'USER.md'));
   const heartbeatContent = readMdFile(path.join(agentWorkspace, 'HEARTBEAT.md'))
-    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'HEARTBEAT.md'));
+    || readMdFile(path.join(tenantWorkspace, 'HEARTBEAT.md'));
   const bootstrapContent = readMdFile(path.join(agentWorkspace, 'BOOTSTRAP.md'))
-    || readMdFile(path.join(OPENCLAW_WORKSPACE, 'BOOTSTRAP.md'));
+    || readMdFile(path.join(tenantWorkspace, 'BOOTSTRAP.md'));
   const memoryContent = readMdFile(path.join(agentWorkspace, 'MEMORY.md'));
 
   const identityFields = parseMdFields(identityContent);
@@ -195,7 +217,7 @@ function getAgentDetail(agentId) {
     workspace: {
       path: agentWorkspace,
       agentDir,
-      hasCustomWorkspace: agentWorkspace !== OPENCLAW_WORKSPACE,
+      hasCustomWorkspace: agentWorkspace !== tenantWorkspace,
       files: {
         identity: identityContent ? true : false,
         soul: soulContent ? true : false,
@@ -224,7 +246,7 @@ function getAgentDetail(agentId) {
 }
 
 function updateAgent(agentId, updates) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -233,7 +255,7 @@ function updateAgent(agentId, updates) {
   if (idx === -1) throw new Error(`Agent "${agentId}" not found`);
 
   const agent = agentList[idx];
-  const agentWorkspace = agent.workspace || OPENCLAW_WORKSPACE;
+  const agentWorkspace = agent.workspace || workspaceFor(agentId);
   const changed = [];
 
   // Capture old name before mutating, for file heading replacements
@@ -382,10 +404,10 @@ function updateAgent(agentId, updates) {
         const agentNow = configNow.agents.list[idx];
 
         // Old paths
-        const oldWorkspace = agentNow.workspace || path.join(OPENCLAW_HOME, 'workspaces', agentId);
-        const oldAgentDir  = agentNow.agentDir  || path.join(AGENTS_DIR, agentId);
-        const newWorkspace = path.join(OPENCLAW_HOME, 'workspaces', newId);
-        const newAgentDir  = path.join(AGENTS_DIR, newId);
+        const oldWorkspace = agentNow.workspace || path.join(homeFor(agentId), 'workspaces', agentId);
+        const oldAgentDir  = agentNow.agentDir  || path.join(agentsDirFor(agentId), agentId);
+        const newWorkspace = path.join(homeFor(agentId), 'workspaces', newId);
+        const newAgentDir  = path.join(agentsDirFor(agentId), newId);
 
         // Update agent entry
         agentNow.id        = newId;
@@ -451,7 +473,7 @@ function updateAgent(agentId, updates) {
  *    — used by agents provisioned outside the dashboard or in legacy configs
  */
 function getAgentChannels(agentId) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -541,7 +563,7 @@ function getAgentChannels(agentId) {
  * opts: { type: 'telegram'|'whatsapp', botToken?, dmPolicy?, streaming?, allowFrom? }
  */
 function addAgentChannel(agentId, opts) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -617,7 +639,7 @@ function addAgentChannel(agentId, opts) {
  * type: 'telegram' | 'whatsapp', accountId: string
  */
 function removeAgentChannel(agentId, channelType, accountId) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -657,7 +679,7 @@ function removeAgentChannel(agentId, channelType, accountId) {
  * Update an existing channel account settings (dmPolicy, streaming, botToken, allowFrom).
  */
 function updateAgentChannel(agentId, channelType, accountId, updates) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -708,7 +730,7 @@ function updateAgentChannel(agentId, channelType, accountId, updates) {
 }
 
 function deleteAgent(agentId) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('openclaw.json not found');
 
@@ -736,13 +758,13 @@ function deleteAgent(agentId) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 
   // Remove workspace directory
-  const workspacePath = path.join(OPENCLAW_HOME, 'workspaces', agentId);
+  const workspacePath = path.join(homeFor(agentId), 'workspaces', agentId);
   if (fs.existsSync(workspacePath)) {
     fs.rmSync(workspacePath, { recursive: true, force: true });
   }
 
   // Remove agent state directory
-  const agentStatePath = path.join(AGENTS_DIR, agentId);
+  const agentStatePath = path.join(agentsDirFor(agentId), agentId);
   if (fs.existsSync(agentStatePath)) {
     fs.rmSync(agentStatePath, { recursive: true, force: true });
   }

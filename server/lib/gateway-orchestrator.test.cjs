@@ -25,7 +25,7 @@ test('generateToken: 64-char hex string, unique per call', () => {
   assert.notEqual(a, b);
 });
 
-test('allocatePort: returns lowest-available port in 19000-19999 range', async () => {
+test('allocatePort: returns first DB-free 3-port slot in 19000-19999 range, advances when DB rows occupy slots', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
   orchestrator = freshOrchestrator(tmp);
   const db = require('./db.cjs');
@@ -35,13 +35,21 @@ test('allocatePort: returns lowest-available port in 19000-19999 range', async (
   raw.run("INSERT INTO users (username, password_hash, role) VALUES ('u2', 'x', 'user')");
   raw.run("INSERT INTO users (username, password_hash, role) VALUES ('u3', 'x', 'user')");
 
-  assert.equal(await orchestrator._test.allocatePort(), 19000);
+  // Each gateway needs 3 consecutive ports (WS / canvas / browser-control).
+  // Allocator strides by 3 AND probes the OS to skip in-use ports.
+  // First call: should land on a 3-slot starting at 19000+3k for some k.
+  const p1 = await orchestrator._test.allocatePort();
+  assert.ok(p1 >= 19000 && p1 < 19999);
+  assert.equal((p1 - 19000) % 3, 0, 'allocations align to 3-port boundaries');
 
-  db.setGatewayState(2, { port: 19000, pid: 1, state: 'running' });
-  assert.equal(await orchestrator._test.allocatePort(), 19001);
+  // Mark p1 used in DB; next call must return a different (later) slot.
+  db.setGatewayState(2, { port: p1, pid: 1, state: 'running' });
+  const p2 = await orchestrator._test.allocatePort();
+  assert.ok(p2 > p1, `expected later slot than ${p1}, got ${p2}`);
 
-  db.setGatewayState(3, { port: 19001, pid: 2, state: 'running' });
-  assert.equal(await orchestrator._test.allocatePort(), 19002);
+  db.setGatewayState(3, { port: p2, pid: 2, state: 'running' });
+  const p3 = await orchestrator._test.allocatePort();
+  assert.ok(p3 > p2);
 });
 
 test('allocatePort: throws when range is exhausted', async () => {
@@ -297,7 +305,7 @@ test('listGateways: returns all running entries from DB', async () => {
   assert.ok(list.find(x => x.userId === 3 && x.port === 19003));
 });
 
-test('cleanupOrphans: kills alive PIDs and clears DB state for all users', async () => {
+test('cleanupOrphans: re-attaches alive PIDs (does NOT kill running gateways)', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
   process.env.OPENCLAW_HOME = path.join(tmp, '.openclaw');
   process.env.OPENCLAW_BIN = path.join(__dirname, 'gateway-orchestrator.mock-binary.cjs');
@@ -319,12 +327,20 @@ test('cleanupOrphans: kills alive PIDs and clears DB state for all users', async
 
   await orchestrator.cleanupOrphans();
 
-  await new Promise(r => setTimeout(r, 500));
+  // New behavior: gateway is RE-ATTACHED (still alive), not killed.
+  await new Promise(r => setTimeout(r, 300));
   let alive = true; try { process.kill(r1.pid, 0); } catch { alive = false; }
-  assert.equal(alive, false);
+  assert.equal(alive, true, 'gateway PID should still be alive after cleanupOrphans (re-attach, not kill)');
+  // DB state preserved
+  const state = db.getGatewayState(2);
+  assert.equal(state.pid, r1.pid);
+  assert.equal(state.port, r1.port);
+  assert.equal(state.state, 'running');
+  // Token persisted across "restart"
+  assert.equal(orchestrator.getRunningToken(2), r1.token, 'token reattached from DB');
 
-  assert.deepEqual(db.getGatewayState(2), { port: null, pid: null, state: null });
-  assert.deepEqual(db.listGatewayStates(), []);
+  // Cleanup: now stop it explicitly so we don't leak the mock
+  await orchestrator.stopGateway(2);
 
   delete process.env.OPENCLAW_HOME;
   delete process.env.OPENCLAW_BIN;
@@ -358,7 +374,7 @@ test('getRunningToken: returns token after spawn, null after stop', async () => 
   delete process.env.OPENCLAW_BIN;
 });
 
-test('gracefulShutdown: SIGTERM all in-memory children, then return', async () => {
+test('gracefulShutdown: leaves per-user gateways running (clears in-memory map only)', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
   process.env.OPENCLAW_HOME = path.join(tmp, '.openclaw');
   process.env.OPENCLAW_BIN = path.join(__dirname, 'gateway-orchestrator.mock-binary.cjs');
@@ -379,11 +395,20 @@ test('gracefulShutdown: SIGTERM all in-memory children, then return', async () =
   const r2 = await orchestrator.spawnGateway(3);
 
   await orchestrator.gracefulShutdown();
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, 300));
+  // New behavior: gateways MUST keep running so per-tenant isolation survives
+  // an AOC pm2 restart. gracefulShutdown only clears the in-memory child map.
   for (const pid of [r1.pid, r2.pid]) {
     let alive = true; try { process.kill(pid, 0); } catch { alive = false; }
-    assert.equal(alive, false, `pid ${pid} still alive after gracefulShutdown`);
+    assert.equal(alive, true, `pid ${pid} should remain alive after gracefulShutdown (per-tenant isolation)`);
   }
+  // DB rows retained so cleanupOrphans on next AOC start can re-attach
+  const list = db.listGatewayStates();
+  assert.equal(list.length, 2, 'DB rows preserved across graceful shutdown');
+
+  // Test cleanup: explicitly stop both so the mocks don't leak across tests
+  await orchestrator.stopGateway(2);
+  await orchestrator.stopGateway(3);
 
   delete process.env.OPENCLAW_HOME;
   delete process.env.OPENCLAW_BIN;
@@ -416,7 +441,7 @@ test('spawnGateway: fails fast (< 5s) when mock exits immediately', async () => 
   delete process.env.MOCK_FAIL_MODE;
 });
 
-test('cleanupOrphans: kills alive child PID before clearing DB state (regression)', async () => {
+test('cleanupOrphans: alive PID is re-attached, NOT killed (per-tenant isolation)', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
   process.env.OPENCLAW_HOME = path.join(tmp, '.openclaw');
   process.env.OPENCLAW_BIN = path.join(__dirname, 'gateway-orchestrator.mock-binary.cjs');
@@ -446,20 +471,18 @@ test('cleanupOrphans: kills alive child PID before clearing DB state (regression
 
   await orchestrator.cleanupOrphans();
 
-  // Wait up to 1.5s for SIGTERM/SIGKILL to take effect
-  const deadline = Date.now() + 1500;
-  while (Date.now() < deadline) {
-    let stillAlive = true;
-    try { process.kill(pid, 0); } catch { stillAlive = false; }
-    if (!stillAlive) break;
-    await new Promise(r => setTimeout(r, 50));
-  }
-
+  // New behavior: gateway is RE-ATTACHED, not killed (per-tenant isolation
+  // across AOC pm2 restart). PID stays alive, DB state preserved.
+  await new Promise(r => setTimeout(r, 300));
   alive = true; try { process.kill(pid, 0); } catch { alive = false; }
-  assert.equal(alive, false, 'cleanupOrphans must kill alive child before clearing DB');
+  assert.equal(alive, true, 'cleanupOrphans must NOT kill running gateways');
 
   const row = db.getGatewayState(userId);
-  assert.ok(!row || row.pid == null, 'DB row must be cleared after kill');
+  assert.equal(row.pid, pid, 'DB row preserved');
+  assert.equal(row.state, 'running');
+
+  // Cleanup
+  await orchestrator.stopGateway(userId);
 
   delete process.env.OPENCLAW_HOME;
   delete process.env.OPENCLAW_BIN;

@@ -8,9 +8,10 @@
 'use strict';
 
 const { parseOwnerParam } = require('../helpers/access-control.cjs');
+const { gatewayForReq } = require('../helpers/gateway-context.cjs');
 
 module.exports = function projectsRouter(deps) {
-  const { db, parsers, projectGit, projectWs, vSave } = deps;
+  const { db, parsers, projectGit, projectWs, vSave, integrations } = deps;
   const router = require('express').Router();
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
@@ -726,7 +727,7 @@ module.exports = function projectsRouter(deps) {
     if (req.body?.agentId && !db.userOwnsAgent(req, req.body.agentId)) {
       return res.status(403).json({ error: 'You can only create cron jobs for agents you own' });
     }
-    const result = await parsers.cronCreateJob(req.body, gatewayProxy);
+    const result = await parsers.cronCreateJob(req.body, gatewayForReq(req));
     res.status(201).json(result);
   } catch (err) {
     console.error('[api/cron POST]', err.message);
@@ -738,7 +739,7 @@ module.exports = function projectsRouter(deps) {
   router.get('/cron/:id/runs', db.authMiddleware, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
-    const result = await parsers.cronGetRuns(req.params.id, limit, gatewayProxy);
+    const result = await parsers.cronGetRuns(req.params.id, limit, gatewayForReq(req));
     res.json(result);
   } catch (err) {
     console.error('[api/cron/:id/runs]', err.message);
@@ -751,7 +752,7 @@ module.exports = function projectsRouter(deps) {
   try {
     const gate = await checkCronAccess(req, req.params.id);
     if (gate) return res.status(403).json({ error: gate });
-    const result = await parsers.cronRunJob(req.params.id, gatewayProxy);
+    const result = await parsers.cronRunJob(req.params.id, gatewayForReq(req));
     res.json(result);
   } catch (err) {
     console.error('[api/cron/:id/run]', err.message);
@@ -766,7 +767,7 @@ module.exports = function projectsRouter(deps) {
     if (gate) return res.status(403).json({ error: gate });
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean') return res.status(400).json({ error: '`enabled` boolean required' });
-    const result = await parsers.cronToggleJob(req.params.id, enabled, gatewayProxy);
+    const result = await parsers.cronToggleJob(req.params.id, enabled, gatewayForReq(req));
     res.json(result);
   } catch (err) {
     console.error('[api/cron/:id/toggle]', err.message);
@@ -779,7 +780,7 @@ module.exports = function projectsRouter(deps) {
   try {
     const gate = await checkCronAccess(req, req.params.id);
     if (gate) return res.status(403).json({ error: gate });
-    const result = await parsers.cronUpdateJob(req.params.id, req.body, gatewayProxy);
+    const result = await parsers.cronUpdateJob(req.params.id, req.body, gatewayForReq(req));
     res.json(result);
   } catch (err) {
     console.error('[api/cron PATCH]', err.message);
@@ -792,7 +793,7 @@ module.exports = function projectsRouter(deps) {
   try {
     const gate = await checkCronAccess(req, req.params.id);
     if (gate) return res.status(403).json({ error: gate });
-    const result = await parsers.cronDeleteJob(req.params.id, gatewayProxy);
+    const result = await parsers.cronDeleteJob(req.params.id, gatewayForReq(req));
     res.json(result);
   } catch (err) {
     console.error('[api/cron DELETE]', err.message);
@@ -932,13 +933,14 @@ module.exports = function projectsRouter(deps) {
   router.post('/channels/:channel/:account/login/start', db.authMiddleware, async (req, res) => {
   const { account } = req.params;
 
-  if (!gatewayProxy.isConnected) {
+  const gw = gatewayForReq(req);
+  if (!gw.isConnected) {
     return res.status(503).json({ error: 'Gateway not connected. Start the gateway first.' });
   }
 
   try {
     // Params: { accountId?, force?, timeoutMs?, verbose? } — no channel field
-    const result = await gatewayProxy.webLoginStart(account);
+    const result = await gw.webLoginStart(account);
     const qrDataUrl = result?.qrDataUrl || null;
     const message = result?.message || null;
 
@@ -969,12 +971,13 @@ module.exports = function projectsRouter(deps) {
   router.post('/channels/:channel/:account/login/wait', db.authMiddleware, async (req, res) => {
   const { channel, account } = req.params;
 
-  if (!gatewayProxy.isConnected) {
+  const gw2 = gatewayForReq(req);
+  if (!gw2.isConnected) {
     return res.status(503).json({ error: 'Gateway not connected' });
   }
 
   try {
-    const result = await gatewayProxy.webLoginWait(account);
+    const result = await gw2.webLoginWait(account);
 
     // Mark the channel account as authenticated in openclaw.json
     try {

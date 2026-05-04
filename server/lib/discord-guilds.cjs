@@ -19,10 +19,23 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, readJsonSafe } = require('./config.cjs');
+const { OPENCLAW_HOME, getUserHome, readJsonSafe } = require('./config.cjs');
 
-function configPath() {
-  return path.join(OPENCLAW_HOME, 'openclaw.json');
+// ── Multi-tenant home resolution ─────────────────────────────────────────────
+
+function _ownerOf(agentId) {
+  try {
+    const owner = require('./db.cjs').getAgentOwner(agentId);
+    return owner == null ? null : Number(owner);
+  } catch { return null; }
+}
+function homeFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
+}
+
+function configPath(agentId) {
+  return path.join(agentId ? homeFor(agentId) : OPENCLAW_HOME, 'openclaw.json');
 }
 
 // AOC-owned sidecar — colocated with aoc.db so it travels with dashboard data.
@@ -60,14 +73,14 @@ function deleteLabel(accountId, guildId) {
   setLabel(accountId, guildId, '');
 }
 
-function readConfig() {
-  const cfg = readJsonSafe(configPath());
+function readConfig(agentId) {
+  const cfg = readJsonSafe(configPath(agentId));
   if (!cfg) throw new Error('openclaw.json not found or unreadable');
   return cfg;
 }
 
-function writeConfig(cfg) {
-  const target = configPath();
+function writeConfig(cfg, agentId) {
+  const target = configPath(agentId);
   const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, target);
@@ -136,7 +149,7 @@ function normalizeLabel(value) {
  */
 function listAgentDiscordGuilds(agentId, getAgentChannels) {
   const accountId = resolveAgentDiscordAccount(agentId, getAgentChannels);
-  const cfg = readConfig();
+  const cfg = readConfig(agentId);
   const account = cfg?.channels?.discord?.accounts?.[accountId];
   const guilds = account?.guilds || {};
   const labels = readLabels()[accountId] || {};
@@ -164,7 +177,7 @@ function upsertAgentDiscordGuild(agentId, guildId, opts, getAgentChannels) {
 
   // 1. Update functional fields in openclaw.json (skip if only label changed
   //    and entry already exists — but for simplicity always re-write).
-  const cfg = readConfig();
+  const cfg = readConfig(agentId);
   const account = ensureAccountNode(cfg, accountId);
   account.guilds = account.guilds || {};
 
@@ -184,7 +197,7 @@ function upsertAgentDiscordGuild(agentId, guildId, opts, getAgentChannels) {
     account.groupPolicy = 'allowlist';
   }
 
-  writeConfig(cfg);
+  writeConfig(cfg, agentId);
 
   // 2. Update label sidecar (AOC-only, doesn't trigger gateway reload).
   let label;
@@ -206,13 +219,13 @@ function upsertAgentDiscordGuild(agentId, guildId, opts, getAgentChannels) {
 function removeAgentDiscordGuild(agentId, guildId, getAgentChannels) {
   const accountId = resolveAgentDiscordAccount(agentId, getAgentChannels);
   const normalizedGuildId = normalizeGuildId(guildId);
-  const cfg = readConfig();
+  const cfg = readConfig(agentId);
   const account = cfg?.channels?.discord?.accounts?.[accountId];
   if (!account?.guilds || !(normalizedGuildId in account.guilds)) {
     return { ok: false, error: `Guild ${normalizedGuildId} not found` };
   }
   delete account.guilds[normalizedGuildId];
-  writeConfig(cfg);
+  writeConfig(cfg, agentId);
   deleteLabel(accountId, normalizedGuildId);
   return { ok: true, accountId, guildId: normalizedGuildId };
 }

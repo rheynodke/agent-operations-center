@@ -13,7 +13,24 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('./config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, getUserHome, readJsonSafe } = require('./config.cjs');
+
+// ── Multi-tenant home resolution ─────────────────────────────────────────────
+
+function _ownerOf(agentId) {
+  try {
+    const owner = require('./db.cjs').getAgentOwner(agentId);
+    return owner == null ? null : Number(owner);
+  } catch { return null; }
+}
+function homeFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
+}
+function workspaceFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_WORKSPACE : path.join(getUserHome(o), 'workspace');
+}
 
 const TEXT_EXTS = new Set([
   '.md', '.markdown', '.txt', '.log', '.csv', '.tsv',
@@ -48,11 +65,12 @@ const TEXT_MAX_BYTES   = 5 * 1024 * 1024;   // 5 MB inline text
 const BINARY_MAX_BYTES = 50 * 1024 * 1024;  // 50 MB max binary stream
 
 function getAgentWorkspaceRoot(agentId) {
-  const cfg = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json'));
+  const home = homeFor(agentId);
+  const cfg = readJsonSafe(path.join(home, 'openclaw.json'));
   if (!cfg) throw httpErr(500, 'openclaw.json missing');
   const agent = (cfg.agents?.list || []).find(a => a.id === agentId);
   if (!agent) throw httpErr(404, `Agent "${agentId}" not found`);
-  const ws = agent.workspace || cfg.agents?.defaults?.workspace || OPENCLAW_WORKSPACE;
+  const ws = agent.workspace || cfg.agents?.defaults?.workspace || workspaceFor(agentId);
   const expanded = ws.replace(/^~/, process.env.HOME || '~');
   return path.resolve(expanded);
 }

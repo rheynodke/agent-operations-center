@@ -363,10 +363,20 @@ function authMiddlewareWithQueryToken(req, res, next) {
 
 // ─── DM Pairing Approval ─────────────────────────────────────────────────────
 
+// Resolve the per-tenant home owner for an agent. Falls back to the
+// authenticated user when the agent has no DB-tracked owner (legacy admin).
+function _userIdForAgent(req, agentId) {
+  if (!agentId) return Number(req.user?.userId ?? req.user?.id) || null;
+  const owner = db.getAgentOwner(agentId);
+  if (owner != null) return Number(owner);
+  return Number(req.user?.userId ?? req.user?.id) || null;
+}
+
 // List pending pairing requests for a specific agent (across all channels)
   router.get('/agents/:id/pairing', db.authMiddleware, (req, res) => {
   try {
-    const result = parsers.listAllPairingRequests(req.params.id);
+    const userId = _userIdForAgent(req, req.params.id);
+    const result = parsers.listAllPairingRequests(req.params.id, userId);
     res.json(result);
   } catch (err) {
     console.error('[api/agents/pairing/list]', err);
@@ -377,7 +387,9 @@ function authMiddlewareWithQueryToken(req, res, next) {
 // List pending pairing requests for a specific channel (optionally filtered by account)
   router.get('/pairing/:channel', db.authMiddleware, (req, res) => {
   try {
-    const requests = parsers.listPairingRequests(req.params.channel, req.query.account || undefined);
+    const acc = req.query.account || undefined;
+    const userId = _userIdForAgent(req, acc);
+    const requests = parsers.listPairingRequests(req.params.channel, acc, userId);
     res.json({ channel: req.params.channel, requests });
   } catch (err) {
     console.error('[api/pairing/list]', err);
@@ -399,9 +411,10 @@ function authMiddlewareWithQueryToken(req, res, next) {
       return res.status(403).json({ error: 'You do not have permission to modify this agent' });
     }
 
-    const result = await parsers.approvePairingCode(req.params.channel, code, accountId || undefined);
+    const userId = _userIdForAgent(req, agentSlug);
+    const result = await parsers.approvePairingCode(req.params.channel, code, accountId || undefined, userId);
     if (result.ok) {
-      console.log(`[api/pairing] Approved ${req.params.channel} pairing code ${code}${accountId ? ` (account: ${accountId})` : ''}`);
+      console.log(`[api/pairing] Approved ${req.params.channel} pairing code ${code}${accountId ? ` (account: ${accountId})` : ''} uid=${userId}`);
     }
     res.json(result);
   } catch (err) {
@@ -422,7 +435,8 @@ function authMiddlewareWithQueryToken(req, res, next) {
       return res.status(403).json({ error: 'You do not have permission to modify this agent' });
     }
 
-    const result = parsers.rejectPairingCode(req.params.channel, code, accountId || undefined);
+    const userId = _userIdForAgent(req, agentSlug);
+    const result = parsers.rejectPairingCode(req.params.channel, code, accountId || undefined, userId);
     if (result.ok) {
       console.log(`[api/pairing] Rejected ${req.params.channel} pairing code ${code}${accountId ? ` (account: ${accountId})` : ''}`);
     }
@@ -456,11 +470,12 @@ function resolveAgentAllowFromBindings(agentId) {
 // GET /api/agents/:id/allowfrom — list allowFrom entries grouped by binding
   router.get('/agents/:id/allowfrom', db.authMiddleware, (req, res) => {
   try {
+    const userId = _userIdForAgent(req, req.params.id);
     const bindings = resolveAgentAllowFromBindings(req.params.id);
     const result = bindings.map(b => ({
       channel: b.channel,
       accountId: b.accountId,
-      entries: parsers.listAllowFromEntries(b.channel, b.accountId),
+      entries: parsers.listAllowFromEntries(b.channel, b.accountId, userId),
     }));
     res.json({ bindings: result });
   } catch (err) {
@@ -475,7 +490,8 @@ function resolveAgentAllowFromBindings(agentId) {
   try {
     const { channel, accountId, entry } = req.body;
     if (!channel || !entry) return res.status(400).json({ error: 'channel and entry are required' });
-    const result = parsers.addAllowFromEntry(channel, accountId || undefined, entry);
+    const userId = _userIdForAgent(req, req.params.id);
+    const result = parsers.addAllowFromEntry(channel, accountId || undefined, entry, userId);
     res.json(result);
   } catch (err) {
     console.error('[api/agents/allowfrom/add]', err);
@@ -490,7 +506,8 @@ function resolveAgentAllowFromBindings(agentId) {
   try {
     const { channel, accountId, entry } = req.body;
     if (!channel || !entry) return res.status(400).json({ error: 'channel and entry are required' });
-    const result = parsers.removeAllowFromEntry(channel, accountId || undefined, entry);
+    const userId = _userIdForAgent(req, req.params.id);
+    const result = parsers.removeAllowFromEntry(channel, accountId || undefined, entry, userId);
     res.json(result);
   } catch (err) {
     console.error('[api/agents/allowfrom/remove]', err);

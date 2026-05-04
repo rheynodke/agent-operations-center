@@ -2,13 +2,39 @@
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, getUserHome, readJsonSafe } = require('../config.cjs');
 
 function expandHome(p) {
   if (!p) return p;
   if (p === '~') return os.homedir();
   if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
   return p;
+}
+
+// ── Multi-tenant home resolution ─────────────────────────────────────────────
+
+function _ownerOf(agentId) {
+  try {
+    const owner = require('../db.cjs').getAgentOwner(agentId);
+    return owner == null ? null : Number(owner);
+  } catch { return null; }
+}
+function homeFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
+}
+function workspaceFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_WORKSPACE : path.join(getUserHome(o), 'workspace');
+}
+function agentsDirFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? AGENTS_DIR : path.join(getUserHome(o), 'agents');
+}
+/** Resolve openclaw.json path for a given userId (optional). Falls back to admin. */
+function configPathForUser(userId) {
+  if (userId == null || Number(userId) === 1) return path.join(OPENCLAW_HOME, 'openclaw.json');
+  return path.join(getUserHome(userId), 'openclaw.json');
 }
 
 // ── Frontmatter + dir scanning ───────────────────────────────────────────────
@@ -76,13 +102,14 @@ function scanSkillDir(dirPath) {
  * Get all skills visible to an agent, from all 6 source levels.
  */
 function getAgentSkills(agentId) {
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const home   = homeFor(agentId);
+  const config = readJsonSafe(path.join(home, 'openclaw.json')) || {};
 
   const agentList   = config.agents?.list || [];
   const agentConfig = agentList.find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentWorkspace   = expandHome(agentConfig.workspace || OPENCLAW_WORKSPACE);
+  const agentWorkspace   = expandHome(agentConfig.workspace || workspaceFor(agentId));
   const skillEntries     = config.skills?.entries || {};
   const extraDirs        = config.skills?.load?.extraDirs || [];
 
@@ -95,7 +122,7 @@ function getAgentSkills(agentId) {
     { id: 'workspace',     label: 'Workspace',     dir: path.join(agentWorkspace, 'skills') },
     { id: 'project-agent', label: 'Project Agent', dir: path.join(agentWorkspace, '.agents', 'skills') },
     { id: 'personal',      label: 'Personal',      dir: path.join(process.env.HOME || '~', '.agents', 'skills') },
-    { id: 'managed',       label: 'Managed',       dir: path.join(OPENCLAW_HOME, 'skills') },
+    { id: 'managed',       label: 'Managed',       dir: path.join(OPENCLAW_HOME, 'skills') }, // shared admin-managed dir, intentionally always OPENCLAW_HOME
     ...extraDirs.map((d, i) => ({
       id:    `extra-${i}`,
       label: `Extra (${path.basename(d)})`,
@@ -180,17 +207,18 @@ function saveSkillFile(agentId, skillName, content) {
  * scope: 'workspace' | 'agent' | 'global'
  */
 function createSkill(agentId, skillSlug, scope, content) {
-  const config      = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const home        = homeFor(agentId);
+  const config      = readJsonSafe(path.join(home, 'openclaw.json')) || {};
   const agentConfig = (config.agents?.list || []).find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentWorkspace = expandHome(agentConfig.workspace || OPENCLAW_WORKSPACE);
+  const agentWorkspace = expandHome(agentConfig.workspace || workspaceFor(agentId));
 
   let targetDir;
   switch (scope) {
     case 'workspace': targetDir = path.join(agentWorkspace, 'skills', skillSlug); break;
     case 'agent':     targetDir = path.join(agentWorkspace, '.agents', 'skills', skillSlug); break;
-    case 'global':    targetDir = path.join(OPENCLAW_HOME, 'skills', skillSlug); break;
+    case 'global':    targetDir = path.join(OPENCLAW_HOME, 'skills', skillSlug); break; // shared admin-managed dir
     default:          throw new Error(`Invalid scope: ${scope}`);
   }
 
@@ -208,7 +236,7 @@ function createSkill(agentId, skillSlug, scope, content) {
  * Controls ONLY the agents.list[].skills allowlist (SKILL.md context injection).
  */
 function toggleAgentSkill(agentId, skillName, enabled) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -249,9 +277,11 @@ function toggleAgentSkill(agentId, skillName, enabled) {
 /**
  * Get all skills across all scopes and agents, with per-agent assignment info.
  * Used by the global Skills Library page.
+ * @param {number|null} [userId] - optional user ID for per-tenant scoping (admin = 1)
  */
-function getAllSkills() {
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+function getAllSkills(userId) {
+  const cfgPath = configPathForUser(userId);
+  const config = readJsonSafe(cfgPath) || {};
   const agentList = config.agents?.list || [];
   const skillEntries = config.skills?.entries || {};
   const extraDirs = config.skills?.load?.extraDirs || [];
@@ -269,21 +299,27 @@ function getAllSkills() {
     sources.push({ id, label, dir: resolved });
   }
 
+  // Resolve the default workspace for the effective user
+  const effectiveUserId = userId ?? 1;
+  const effectiveWorkspace = Number(effectiveUserId) === 1
+    ? OPENCLAW_WORKSPACE
+    : path.join(getUserHome(effectiveUserId), 'workspace');
+
   // Scan each agent's workspace dirs
   for (const agent of agentList) {
-    const ws = expandHome(agent.workspace || OPENCLAW_WORKSPACE);
+    const ws = expandHome(agent.workspace || effectiveWorkspace);
     if (ws) {
       addSource('workspace', 'Workspace', path.join(ws, 'skills'));
       addSource('project-agent', 'Project Agent', path.join(ws, '.agents', 'skills'));
     }
   }
-  // Always include default workspace
-  if (OPENCLAW_WORKSPACE) {
-    addSource('workspace', 'Workspace', path.join(OPENCLAW_WORKSPACE, 'skills'));
-    addSource('project-agent', 'Project Agent', path.join(OPENCLAW_WORKSPACE, '.agents', 'skills'));
+  // Always include default workspace for effective user
+  if (effectiveWorkspace) {
+    addSource('workspace', 'Workspace', path.join(effectiveWorkspace, 'skills'));
+    addSource('project-agent', 'Project Agent', path.join(effectiveWorkspace, '.agents', 'skills'));
   }
   addSource('personal', 'Personal', path.join(process.env.HOME || '~', '.agents', 'skills'));
-  addSource('managed', 'Managed', path.join(OPENCLAW_HOME, 'skills'));
+  addSource('managed', 'Managed', path.join(OPENCLAW_HOME, 'skills')); // shared admin-managed dir
   for (const [i, d] of extraDirs.entries()) {
     addSource(`extra-${i}`, `Extra (${path.basename(d)})`, d);
   }
@@ -392,13 +428,19 @@ function saveSkillFileBySlug(slug, content) {
  * Create a new skill globally, using the first available agent's workspace
  * or the managed (openclaw home) dir for global scope.
  * scope: 'workspace' | 'agent' | 'global'
+ * @param {number|null} [userId] - optional user ID for per-tenant scoping (admin = 1)
  */
-function createGlobalSkill(skillSlug, scope, content) {
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+function createGlobalSkill(skillSlug, scope, content, userId) {
+  const cfgPath = configPathForUser(userId);
+  const config = readJsonSafe(cfgPath) || {};
   const agentList = config.agents?.list || [];
 
   // Use defaults.workspace or first agent's workspace for workspace/agent scope
-  const defaultWorkspace = expandHome(config.agents?.defaults?.workspace || OPENCLAW_WORKSPACE);
+  const effectiveUserId = userId ?? 1;
+  const effectiveWorkspace = Number(effectiveUserId) === 1
+    ? OPENCLAW_WORKSPACE
+    : path.join(getUserHome(effectiveUserId), 'workspace');
+  const defaultWorkspace = expandHome(config.agents?.defaults?.workspace || effectiveWorkspace);
   const firstAgentWorkspace = agentList[0]
     ? expandHome(agentList[0].workspace || defaultWorkspace)
     : defaultWorkspace;
@@ -407,7 +449,7 @@ function createGlobalSkill(skillSlug, scope, content) {
   switch (scope) {
     case 'workspace': targetDir = path.join(firstAgentWorkspace, 'skills', skillSlug); break;
     case 'agent':     targetDir = path.join(firstAgentWorkspace, '.agents', 'skills', skillSlug); break;
-    case 'global':    targetDir = path.join(OPENCLAW_HOME, 'skills', skillSlug); break;
+    case 'global':    targetDir = path.join(OPENCLAW_HOME, 'skills', skillSlug); break; // shared admin-managed dir
     default:          throw new Error(`Invalid scope: ${scope}`);
   }
 
@@ -437,7 +479,7 @@ function deleteAgentSkill(agentId, skillName) {
   fs.rmSync(skillDir, { recursive: true, force: true });
 
   // Also remove from agent's skills allowlist if present
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (config) {
     const agentList = config.agents?.list || [];
@@ -468,9 +510,10 @@ function deleteSkillBySlug(slug) {
 /**
  * Ensure every agent in openclaw.json has a `skills: []` field.
  * Safe to call on startup — only writes if something is missing.
+ * @param {number|null} [userId] - optional user ID for per-tenant scoping (admin = 1)
  */
-function ensureAgentSkillsFields() {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+function ensureAgentSkillsFields(userId) {
+  const configPath = configPathForUser(userId);
   const config = readJsonSafe(configPath);
   if (!config?.agents?.list) return;
 

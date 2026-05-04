@@ -44,18 +44,19 @@ function readAgentVibe(agent, config) {
  * Build enriched agent list with profile data, session stats, and channel info.
  *
  * @param {{ parsers: object, db: object, config: object }} deps
+ * @param {number} [userId] - if given, read from that user's home; admin (1)/null = root
  * @returns {object[]}
  */
-function getEnrichedAgents(deps) {
+function getEnrichedAgents(deps, userId) {
   const { parsers, db, config } = deps;
-  const agents = parsers.parseAgentRegistry();
+  const agents = parsers.parseAgentRegistry(userId);
 
   // SQLite profiles
   const profiles = db.getAllAgentProfiles();
   const profileMap = Object.fromEntries(profiles.map(p => [p.agent_id, p]));
 
   // Per-agent session stats (single pass over gateway sessions)
-  const allSessions = parsers.parseGatewaySessions();
+  const allSessions = parsers.parseGatewaySessions(userId);
   const statsMap = {};
   for (const s of allSessions) {
     const id = s.agent;
@@ -66,8 +67,11 @@ function getEnrichedAgents(deps) {
     statsMap[id].totalTokens += (s.tokensIn || 0) + (s.tokensOut || 0);
   }
 
-  // Channel type detection (single openclaw.json read)
-  const oclawPath = path.join(config.OPENCLAW_HOME, 'openclaw.json');
+  // Channel type detection — read this user's openclaw.json
+  const userHome = userId == null || Number(userId) === 1
+    ? config.OPENCLAW_HOME
+    : config.getUserHome(userId);
+  const oclawPath = path.join(userHome, 'openclaw.json');
   const oclaw = (() => { try { return JSON.parse(fs.readFileSync(oclawPath, 'utf8')); } catch { return {}; } })();
   const bindings = oclaw.bindings  || [];
   const chCfg    = oclaw.channels  || {};

@@ -274,7 +274,23 @@ class GatewayConnection {
     console.log(`[gateway-ws] Reconnecting in ${this.reconnectDelay / 1000}s...`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect();
+      // Refresh port + token from orchestrator before reconnecting. After a
+      // gateway restart the port may differ AND the in-memory token is rotated,
+      // so reusing the stale `this._token` would fail auth. Skip if the
+      // orchestrator hasn't tracked this user (likely AOC just restarted —
+      // we wait for a fresh spawn event from the orchestrator instead).
+      let port = this._port;
+      let token = this._token;
+      if (this.userId !== 1) {
+        try {
+          const orchestrator = require('./gateway-orchestrator.cjs');
+          const freshToken = orchestrator.getRunningToken(this.userId);
+          const freshState = orchestrator.getGatewayState(this.userId);
+          if (freshToken) token = freshToken;
+          if (freshState?.port) port = freshState.port;
+        } catch (_) { /* fall back to last-known credentials */ }
+      }
+      this.connect({ port, token });
     }, this.reconnectDelay);
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
   }
@@ -822,6 +838,34 @@ class GatewayPool {
 const gatewayPool = new GatewayPool();
 const gatewayProxy = gatewayPool.forUser(1);   // back-compat alias for 55 existing callers
 gatewayProxy.connect();
+
+// Auto-reconnect any in-pool connection on orchestrator `spawned` events. This
+// closes the long-standing UX gap where a gateway restart left AOC's WS pool
+// stale until the user logged out and back in.
+try {
+  const orchestrator = require('./gateway-orchestrator.cjs');
+  orchestrator.on('spawned', ({ userId, port, token }) => {
+    const conn = gatewayPool._connections.get(Number(userId));
+    if (!conn) return;   // pool doesn't track this user yet — first login will create it
+    if (conn.connected && conn._port === port) return;   // already on the right gateway
+    try { conn.disconnect?.(); } catch (_) {}
+    setTimeout(() => {
+      try { conn.connect({ port, token }); } catch (e) {
+        console.warn(`[gateway-ws] auto-reconnect failed for user ${userId}: ${e.message}`);
+      }
+    }, 200);
+  });
+  orchestrator.on('stopped', ({ userId }) => {
+    // Drop the pool entry so the next request triggers a fresh connect cycle
+    // (which will re-spawn via auth flow if needed).
+    const conn = gatewayPool._connections.get(Number(userId));
+    if (conn) {
+      try { conn.disconnect?.(); } catch (_) {}
+    }
+  });
+} catch (e) {
+  console.warn('[gateway-ws] orchestrator event subscription failed:', e.message);
+}
 
 module.exports = {
   gatewayPool,

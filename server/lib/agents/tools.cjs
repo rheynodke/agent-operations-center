@@ -1,7 +1,18 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, getUserHome, readJsonSafe } = require('../config.cjs');
+
+function _ownerOf(agentId) {
+  try {
+    const owner = require('../db.cjs').getAgentOwner(agentId);
+    return owner == null ? null : Number(owner);
+  } catch { return null; }
+}
+function homeFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
+}
 
 /**
  * OpenClaw built-in tools catalog.
@@ -64,7 +75,7 @@ const TOOL_PROFILES = {
  * Applies global tools.profile + tools.allow/deny, then per-agent overrides.
  */
 function getAgentTools(agentId) {
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const config = readJsonSafe(path.join(homeFor(agentId), 'openclaw.json')) || {};
 
   const agentConfig = (config.agents?.list || []).find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
@@ -128,7 +139,7 @@ function getAgentTools(agentId) {
  *     global profile could re-enable the tool if the allow list is removed.
  */
 function toggleAgentTool(agentId, toolName, enabled) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const configPath = path.join(homeFor(agentId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 

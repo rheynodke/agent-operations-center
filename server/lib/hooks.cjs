@@ -3,6 +3,8 @@ const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, AGENTS_DIR, readJsonSafe } = require('./config.cjs');
 
+// TODO: per-user webhooks (slice 1.5.f) — hooks config is currently shared admin-managed.
+// When per-user webhook tokens are needed, thread userId through getHooksConfig/saveHooksConfig.
 const CONFIG_PATH = path.join(OPENCLAW_HOME, 'openclaw.json');
 
 // ─── Read hooks config ────────────────────────────────────────────────────────

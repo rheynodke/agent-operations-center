@@ -23,10 +23,27 @@ function generateToken() {
 
 async function allocatePort() {
   const used = new Set(db.listGatewayStates().map(r => r.port).filter(p => p != null));
-  for (let p = PORT_RANGE_START; p <= PORT_RANGE_END; p++) {
-    if (!used.has(p)) return p;
+  // Each gateway opens 3 consecutive ports (WS / canvas / browser-control).
+  // Stride by 3 so allocations don't accidentally pick an in-use neighbour.
+  for (let p = PORT_RANGE_START; p <= PORT_RANGE_END - 2; p += 3) {
+    if (used.has(p) || used.has(p + 1) || used.has(p + 2)) continue;
+    // Also probe the actual OS port — DB may be stale after a crash, or
+    // another gateway from a prior AOC session may still hold the socket.
+    if (await _isPortFree(p) && await _isPortFree(p + 1) && await _isPortFree(p + 2)) {
+      return p;
+    }
   }
   throw new Error(`Gateway port pool exhausted (${PORT_RANGE_START}-${PORT_RANGE_END})`);
+}
+
+function _isPortFree(port) {
+  return new Promise((resolve) => {
+    const net = require('net');
+    const tester = net.createServer();
+    tester.once('error', () => resolve(false));
+    tester.once('listening', () => tester.close(() => resolve(true)));
+    tester.listen(port, '127.0.0.1');
+  });
 }
 
 /**
@@ -126,8 +143,16 @@ function ensureUserHome(userId, userHome) {
 
   const cfgPath = path.join(userHome, 'openclaw.json');
   if (!fs.existsSync(cfgPath)) {
+    // Inherit admin's agent defaults (model, tools, skills) so newly provisioned
+    // agents start with a working LLM out of the box.
+    let inheritedDefaults = {};
+    try {
+      const adminCfg = JSON.parse(fs.readFileSync(path.join(require('./config.cjs').OPENCLAW_BASE, 'openclaw.json'), 'utf8'));
+      inheritedDefaults = adminCfg?.agents?.defaults || {};
+    } catch (_) { /* admin config missing — leave defaults empty */ }
+
     const cfg = {
-      agents: {},
+      agents: { defaults: inheritedDefaults, list: [] },
       channels: {},
       gateway: {
         mode: 'local',
@@ -193,6 +218,22 @@ async function waitGatewayReady(port, token, timeoutMs) {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 async function spawnGateway(userId) {
+  // Resource cap: refuse to spawn if we've reached AOC_MAX_GATEWAYS. Counts
+  // concurrently-running per-user gateways (admin's external gateway is
+  // separate and not counted). Idempotent for a user that's already running.
+  const cap = Number(process.env.AOC_MAX_GATEWAYS || 50);
+  if (cap > 0 && !children.has(Number(userId))) {
+    const liveRows = (db.listGatewayStates() || []).filter((r) => r.state === 'running' && r.pid != null);
+    if (liveRows.length >= cap) {
+      const err = new Error(
+        `Gateway resource cap reached (${liveRows.length}/${cap}). Increase AOC_MAX_GATEWAYS or stop unused workspaces.`
+      );
+      err.status = 503;
+      err.code = 'GATEWAY_CAP_REACHED';
+      throw err;
+    }
+  }
+
   const port  = await allocatePort();
   const token = generateToken();
   const userHome = getUserHome(userId);
@@ -274,12 +315,152 @@ async function spawnGateway(userId) {
   child.removeListener('exit', earlyExitListener);
 
   children.set(userId, { child, port, token, startedAt: Date.now(), retryCount: 0 });
-  db.setGatewayState(userId, { port, pid: child.pid, state: 'running' });
+  // Persist token so AOC can re-attach after a restart without re-spawning.
+  db.setGatewayState(userId, { port, pid: child.pid, state: 'running', token });
   orchestratorEvents.emit('spawned', { userId: Number(userId), port, pid: child.pid, token });
 
   child.on('exit', (code, signal) => onChildExit(userId, code, signal));
 
   return { port, pid: child.pid, token };
+}
+
+/**
+ * Find every running openclaw-gateway process whose `OPENCLAW_STATE_DIR`
+ * env points at one of our per-user homes (i.e., AOC-managed). Optionally
+ * filter to a specific userId. Excludes any PID in `exceptPids`.
+ *
+ * Used to catch orphans that survive AOC server restarts (when our
+ * in-memory `children` Map is wiped but the gateway processes keep running)
+ * or hot-reload-induced double-spawns.
+ *
+ * @param {{ userId?: number, exceptPids?: Set<number> }} opts
+ * @returns {number[]} PIDs to kill
+ */
+/**
+ * Identify each `openclaw-gateway` process by the TCP port it listens on
+ * (lsof). macOS doesn't reliably expose env vars via `ps -E`, but the listen
+ * port is always observable.
+ *
+ * Returns a map { pid: port } for ports inside our managed range
+ * (PORT_RANGE_START..PORT_RANGE_END). Admin's external gateway on 18789 is
+ * filtered out automatically.
+ */
+function _gatewayPidsByPort() {
+  const cp = require('child_process');
+  let pids = [];
+  try {
+    const out = cp.execSync('pgrep -f openclaw-gateway', { encoding: 'utf8', timeout: 2000 }).trim();
+    pids = out.split('\n').filter(Boolean).map(Number).filter(Number.isFinite);
+  } catch { return { managed: {}, anyPort: new Set() }; }
+
+  const managed = {};        // pid → port (only for managed-range gateways)
+  const anyPort = new Set(); // pid (any openclaw-gateway holding any TCP listen socket — incl admin's 18789)
+  for (const pid of pids) {
+    try {
+      const lsof = cp.execSync(`lsof -p ${pid} -i tcp -P -n -a -sTCP:LISTEN 2>/dev/null`, { encoding: 'utf8', timeout: 2000 });
+      // Each LISTEN line looks like:
+      //   node    1762 user   15u  IPv4 0x... TCP 127.0.0.1:19000 (LISTEN)
+      let hasAny = false;
+      for (const line of lsof.split('\n')) {
+        const m = line.match(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/);
+        if (!m) continue;
+        hasAny = true;
+        const port = Number(m[1]);
+        if (port >= PORT_RANGE_START && port <= PORT_RANGE_END) {
+          // Each gateway opens browser-control on +2 / canvas on +1; the WS
+          // port is the lowest in the managed range — take that one.
+          if (!(pid in managed) || port < managed[pid]) managed[pid] = port;
+        }
+      }
+      if (hasAny) anyPort.add(pid);
+    } catch { /* lsof refused or process gone */ }
+  }
+  return { managed, anyPort };
+}
+
+function findAocManagedOrphanPids({ userId = null, exceptPids = new Set() } = {}) {
+  const cp = require('child_process');
+  // List ALL openclaw-gateway PIDs first — including zombies that no longer
+  // hold a listen socket (a partial-shutdown leak).
+  let allPids = [];
+  try {
+    const out = cp.execSync('pgrep -f openclaw-gateway', { encoding: 'utf8', timeout: 2000 }).trim();
+    allPids = out.split('\n').filter(Boolean).map(Number).filter(Number.isFinite);
+  } catch { return []; }
+  if (!allPids.length) return [];
+
+  const { managed: pidPort, anyPort } = _gatewayPidsByPort();
+
+  // Build a set of "expected" {pid, port} pairs from DB.
+  const expectedByUser = new Map();   // userId → { pid, port }
+  let expectedPort = null;
+  try {
+    for (const row of (db.listGatewayStates() || [])) {
+      if (row.pid != null && row.port != null) {
+        expectedByUser.set(Number(row.user_id ?? row.userId), { pid: Number(row.pid), port: Number(row.port) });
+      }
+    }
+    if (userId != null) {
+      const e = expectedByUser.get(Number(userId));
+      expectedPort = e ? e.port : null;
+    }
+  } catch { /* DB unavailable */ }
+
+  const matched = [];
+  for (const [pidStr, port] of Object.entries(pidPort)) {
+    const pid = Number(pidStr);
+    if (exceptPids.has(pid)) continue;
+
+    if (userId != null) {
+      // For a specific user: kill any gateway listening on their expected port
+      // AND any gateway listening on a managed-range port that ISN'T held by
+      // some other tracked user (catches duplicates after our own respawn).
+      if (expectedPort != null && port === expectedPort) {
+        // Don't kill the currently-tracked PID itself.
+        if (expectedByUser.get(Number(userId))?.pid === pid) continue;
+        matched.push(pid);
+        continue;
+      }
+      // Skip if some other tracked user owns this port.
+      const ownedByOther = Array.from(expectedByUser.values()).some(e => e.port === port && e.pid === pid);
+      if (ownedByOther) continue;
+      // We can't 100% prove it's the user's, but if no DB row claims this PID
+      // and the user has no current PID-tracked gateway, it's almost certainly
+      // a leak from a previous spawn cycle.
+      if (expectedByUser.get(Number(userId)) == null) {
+        matched.push(pid);
+      }
+    } else {
+      // No userId filter: kill any managed-range gateway not held by any tracked user.
+      const ownedByAny = Array.from(expectedByUser.values()).some(e => e.pid === pid && e.port === port);
+      if (!ownedByAny) matched.push(pid);
+    }
+  }
+
+  // Catch true zombie launchers: openclaw-gateway processes with NO listen
+  // socket AT ALL (not just managed range — admin's external gateway listens
+  // on 18789 and must NOT be killed) AND NO live openclaw-gateway children
+  // (i.e., the inner server has already died and only the launcher is left).
+  const trackedPids = new Set(Array.from(expectedByUser.values()).map((e) => e.pid));
+  for (const pid of allPids) {
+    if (exceptPids.has(pid)) continue;
+    if (matched.includes(pid)) continue;
+    if (trackedPids.has(pid)) continue;
+    if (anyPort.has(pid)) continue;   // Holds *some* listen port (managed OR admin's 18789) — leave alone
+    // Check if it has live openclaw-gateway children — if so, it's an active launcher.
+    let hasLiveChild = false;
+    try {
+      const childOut = cp.execSync(`pgrep -P ${pid}`, { encoding: 'utf8', timeout: 2000 }).trim();
+      const childPids = childOut.split('\n').filter(Boolean).map(Number);
+      for (const c of childPids) {
+        if (allPids.includes(c) || anyPort.has(c)) { hasLiveChild = true; break; }
+      }
+    } catch { /* no children */ }
+    if (hasLiveChild) continue;
+    matched.push(pid);
+  }
+
+  return matched;
 }
 
 async function stopGateway(userId, opts = {}) {
@@ -296,7 +477,28 @@ async function stopGateway(userId, opts = {}) {
     }
     try { process.kill(entry.child.pid, 'SIGKILL'); } catch (_) {}
   }
-  db.setGatewayState(userId, { port: null, pid: null, state: 'stopped' });
+
+  // Belt-and-suspenders: kill any AOC-managed gateway process whose state-dir
+  // is this user's home (handles orphans from prior AOC restarts where the
+  // child Map was wiped but the OS process kept running).
+  try {
+    const orphans = findAocManagedOrphanPids({ userId: Number(userId) });
+    for (const pid of orphans) {
+      try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+    }
+    if (orphans.length) {
+      await new Promise(r => setTimeout(r, 800));
+      for (const pid of orphans) {
+        try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch (_) {}
+      }
+      console.warn(`[gw:user-${userId}] killed ${orphans.length} orphan gateway PID(s): ${orphans.join(', ')}`);
+    }
+  } catch (e) {
+    console.warn(`[gw:user-${userId}] orphan sweep failed: ${e.message}`);
+  }
+
+  // Clear token along with port/pid — gateway is gone, no point keeping creds.
+  db.setGatewayState(userId, { port: null, pid: null, state: 'stopped', token: null });
   orchestratorEvents.emit('stopped', { userId: Number(userId) });
 }
 
@@ -347,45 +549,110 @@ function getGatewayState(userId) {
 }
 
 /**
- * Read the in-memory token for a running gateway. Returns null if the gateway
- * is not in the orchestrator's children map (never spawned, or AOC restarted).
+ * Read the token for a running gateway. Prefers the in-memory map (fastest)
+ * but falls back to the persisted DB column so AOC can re-attach after a
+ * restart without losing access to a still-running gateway.
  * @param {number|string} userId
  * @returns {string|null}
  */
 function getRunningToken(userId) {
   const entry = children.get(Number(userId));
-  return entry?.token ?? null;
+  if (entry?.token) return entry.token;
+  // Fallback: AOC restarted but the gateway process is still alive.
+  return db.getGatewayToken(Number(userId)) || null;
 }
 
 function listGateways() {
   return db.listGatewayStates();
 }
 
+/**
+ * Reconcile DB-tracked gateways with what's actually running on the machine
+ * after AOC starts up. Behavior is RE-ATTACH, not kill:
+ *
+ *   - DB row says PID=X is running:
+ *       * X alive → leave it alone, mark in-memory state with {port, token}
+ *         so subsequent calls can route to it. (No `child` handle; we lost that
+ *         when AOC restarted, but PID is enough for SIGTERM/RPC routing.)
+ *       * X dead → clear DB row (gateway crashed while AOC was down).
+ *   - Truly untracked openclaw-gateway leftovers (PID listening on a managed-
+ *     range port with no DB row, or zombie launchers with no children) → kill.
+ *
+ * This preserves user-gateway isolation across AOC restarts: pm2 restart of
+ * AOC does NOT disrupt running per-user OpenClaw processes.
+ */
 async function cleanupOrphans() {
   const rows = db.listGatewayStates();
-  for (const { pid } of rows) {
+  const reattached = [];
+  for (const { userId, port, pid, state } of rows) {
     if (pid == null) continue;
     let alive = true;
     try { process.kill(pid, 0); } catch { alive = false; }
     if (alive) {
-      try { process.kill(pid, 'SIGTERM'); } catch (_) {}
-      await new Promise(r => setTimeout(r, 200));
-      try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch (_) {}
+      // Re-attach: mark in-memory entry so stopGateway/restart can route to
+      // this PID. We can't recover the original ChildProcess handle (it died
+      // with AOC), so use a minimal stub. retryCount=0 means crash supervisor
+      // will not respawn unless this PID's exit signal reaches us — which it
+      // won't because it was detached. Acceptable: gateway is independent.
+      const token = db.getGatewayToken(userId);
+      children.set(userId, {
+        child: { pid, removeListener() {}, on() {} }, // stub for stopGateway compat
+        port: port ?? null,
+        token: token || null,
+        startedAt: Date.now(),
+        retryCount: 0,
+        reattached: true,
+      });
+      reattached.push({ userId, pid, port });
+    } else {
+      // Stale DB row — gateway died while AOC was down. Clear it.
+      db.setGatewayState(userId, { port: null, pid: null, state: 'stopped', token: null });
+    }
+    // Honor 'stopped'/'error' states explicitly — don't reattach if user had
+    // intentionally stopped the gateway before AOC went down.
+    if (alive && state && state !== 'running' && state !== 'starting') {
+      children.delete(userId);
     }
   }
-  db.clearAllGatewayStates();
-  for (const userId of Array.from(children.keys())) children.delete(userId);
+  if (reattached.length) {
+    console.log(`[orchestrator] cleanupOrphans: re-attached ${reattached.length} live gateway(s) ${reattached.map(r => `uid=${r.userId} pid=${r.pid} port=${r.port}`).join(', ')}`);
+  }
+
+  // Sweep truly orphan processes: openclaw-gateway listening on a managed-range
+  // port with no DB row claiming it, OR zombie launchers (no port + no children).
+  try {
+    const orphans = findAocManagedOrphanPids({});
+    for (const pid of orphans) {
+      try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+    }
+    if (orphans.length) {
+      await new Promise(r => setTimeout(r, 800));
+      for (const pid of orphans) {
+        try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch (_) {}
+      }
+      console.warn(`[orchestrator] cleanupOrphans: killed ${orphans.length} untracked gateway PID(s) [${orphans.join(', ')}]`);
+    }
+  } catch (e) {
+    console.warn(`[orchestrator] cleanupOrphans orphan sweep failed: ${e.message}`);
+  }
 }
 
+/**
+ * Shut down AOC cleanly WITHOUT terminating per-user gateways. Per-tenant
+ * isolation: a user's gateway should keep running across an AOC pm2 restart.
+ * On next AOC start, `cleanupOrphans()` re-attaches via PID + persisted token.
+ */
 async function gracefulShutdown() {
-  const userIds = Array.from(children.keys());
-  await Promise.all(userIds.map(uid => stopGateway(uid)));
+  console.log(`[orchestrator] gracefulShutdown: leaving ${children.size} per-user gateway(s) running for next AOC startup`);
+  // Drop in-memory child references so the supervisor stops listening for
+  // exit events on processes we no longer own. No SIGTERM sent.
+  children.clear();
 }
 
 module.exports = {
   spawnGateway, stopGateway, restartGateway,
   getGatewayState, listGateways, getRunningToken,
-  cleanupOrphans, gracefulShutdown,
+  cleanupOrphans, gracefulShutdown, findAocManagedOrphanPids,
   on:  (...a) => orchestratorEvents.on(...a),
   off: (...a) => orchestratorEvents.off(...a),
   // Test-only

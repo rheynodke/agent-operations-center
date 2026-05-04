@@ -13,6 +13,9 @@ const { execSync } = require('node:child_process');
 const db = require('../db.cjs');
 const cfg = require('../config.cjs');
 // Gateway is injected at wire-up time (avoid circular require at module load).
+// TODO: per-user gateway dispatch for pipelines (slice 1.5.g) — pipelines are
+// currently admin-only infrastructure. When per-user pipeline runs are needed,
+// thread the owning user's gatewayPool.forUser(userId) through createRun().
 let gatewayProxy = null;
 function setGatewayProxy(proxy) {
   gatewayProxy = proxy;

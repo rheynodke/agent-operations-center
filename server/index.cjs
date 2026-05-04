@@ -153,8 +153,8 @@ function readAgentVibe(agent) {
   return agentContext.readAgentVibe(agent, _helperConfig);
 }
 
-function getEnrichedAgents() {
-  return agentContext.getEnrichedAgents(_agentContextDeps);
+function getEnrichedAgents(userId) {
+  return agentContext.getEnrichedAgents(_agentContextDeps, userId);
 }
 
 function canAccessAgent(req, agentId) {
@@ -213,10 +213,11 @@ function forwardAgentMentionChain(room, agentMsg, sourceAgentId) {
 }
 
 
-// Agents
+// Agents — per-user
 app.get('/api/agents', db.authMiddleware, (req, res) => {
   try {
-    const allAgents = getEnrichedAgents();
+    const targetUid = accessControl.parseScopeUserId(req);
+    const allAgents = getEnrichedAgents(targetUid);
     const scope = accessControl.parseOwnerParam(req);
     const filtered = accessControl.filterAgentsByOwner(
       allAgents, req.user, scope, db.getAgentOwner
@@ -244,7 +245,7 @@ app.use('/api', require('./routes/browser-harness.cjs')({ db, parsers }));
 
 
 // ─── Skills + Sessions (extracted to routes/skills.cjs, Step 7c) ──────────
-app.use('/api', require('./routes/skills.cjs')({ db, parsers, broadcast, checkSkillInstallTarget, vSave, gatewayProxy, broadcastTasksUpdate }));
+app.use('/api', require('./routes/skills.cjs')({ db, parsers, broadcast, checkSkillInstallTarget, vSave, broadcastTasksUpdate }));
 
 
 // ─── Tasks + Attachments + Outputs + Comments (extracted to routes/tasks.cjs, Step 8a) ──
@@ -272,7 +273,7 @@ app.use('/api', require('./routes/composio.cjs')({ db, parsers, broadcast, compo
 app.use('/api', require('./routes/mcp-agents.cjs')({ db, parsers, mcpPool, composio }));
 
 // ─── Projects + Integrations + Epics + Dependencies + Memory (extracted to routes/projects.cjs, Step 7b) ──
-app.use('/api', require('./routes/projects.cjs')({ db, parsers, projectGit, projectWs, vSave }));
+app.use('/api', require('./routes/projects.cjs')({ db, parsers, projectGit, projectWs, vSave, integrations }));
 
 
 // ─── Config + File History + Hooks + Media (extracted to routes/config.cjs, Step 9b) ──
@@ -455,7 +456,7 @@ wss.on('connection', (ws) => {
   // Send current snapshot on connect — scoped to this user.
   try {
     const isAdmin = wsUser.role === 'admin';
-    const allAgents = getEnrichedAgents();
+    const allAgents = getEnrichedAgents(wsUser.userId);
     const agents = isAdmin
       ? allAgents
       : allAgents.filter((a) => {

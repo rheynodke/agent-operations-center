@@ -8,6 +8,7 @@
 'use strict';
 
 const { parseOwnerParam } = require('../helpers/access-control.cjs');
+const { gatewayForReq } = require('../helpers/gateway-context.cjs');
 
 function roleTemplateErrorStatus(err) {
   if (err.code === 'NOT_FOUND') return 404;
@@ -17,7 +18,7 @@ function roleTemplateErrorStatus(err) {
 }
 
 module.exports = function skillsRouter(deps) {
-  const { db, parsers, broadcast, checkSkillInstallTarget, vSave, gatewayProxy, broadcastTasksUpdate } = deps;
+  const { db, parsers, broadcast, checkSkillInstallTarget, vSave, broadcastTasksUpdate } = deps;
   const router = require('express').Router();
 
 // ─── ClawHub Skill Install ────────────────────────────────────────────────────
@@ -588,9 +589,10 @@ const SKILLSMP_KEY = 'skillsmp_api_key';
 /**
  * Collect all events for a session, including Claude CLI events when the session is
  * linked (or IS a claude-cli session). Returns events sorted oldest→newest by timestamp.
+ * `userId` (optional) scopes the gateway-events read to that tenant's filesystem.
  */
-function collectSessionEvents(sessionId, session) {
-  const gatewayEvents = parsers.parseGatewaySessionEvents(sessionId) || [];
+function collectSessionEvents(sessionId, session, userId) {
+  const gatewayEvents = parsers.parseGatewaySessionEvents(sessionId, undefined, userId) || [];
   let claudeCliEvents = [];
 
   // 1) Session has an explicit link → fetch by claude-cli UUID
@@ -641,11 +643,12 @@ function collectSessionEvents(sessionId, session) {
   try {
     const sessionKey = req.params.id;
     if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
-    if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
+    const gw = gatewayForReq(req);
+    if (!gw.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
 
     let abortResult = null;
     try {
-      abortResult = await gatewayProxy.chatAbort(sessionKey);
+      abortResult = await gw.chatAbort(sessionKey);
     } catch (rpcErr) {
       console.error('[api/sessions/abort] chat.abort RPC failed:', rpcErr.message);
       return res.status(502).json({ error: `Gateway abort failed: ${rpcErr.message}` });
@@ -677,10 +680,12 @@ function collectSessionEvents(sessionId, session) {
 
   router.get('/sessions/:id', db.authMiddleware, (req, res) => {
   try {
-    const sessions = parsers.getAllSessions();
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const sessions = parsers.getAllSessions(targetUid);
     let session = sessions.find(s => s.id === req.params.id);
 
-    let events = collectSessionEvents(req.params.id, session);
+    let events = collectSessionEvents(req.params.id, session, targetUid);
 
     // If the session isn't in the list yet (race condition during active writing:
     // sessions.json may not be flushed yet, or the file read got partial data),
@@ -715,9 +720,11 @@ function collectSessionEvents(sessionId, session) {
 // Session messages (for chat view)
   router.get('/sessions/:agentId/:sessionId/messages', db.authMiddleware, (req, res) => {
   try {
-    const sessions = parsers.getAllSessions();
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const sessions = parsers.getAllSessions(targetUid);
     const session = sessions.find(s => s.id === req.params.sessionId);
-    let events = collectSessionEvents(req.params.sessionId, session);
+    let events = collectSessionEvents(req.params.sessionId, session, targetUid);
     if (events.length === 0) {
       const numericId = req.params.sessionId.match(/\d+/)?.[0];
       events = numericId ? parsers.parseOpenCodeEvents(numericId) : [];

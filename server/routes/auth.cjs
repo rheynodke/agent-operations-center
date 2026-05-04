@@ -290,6 +290,24 @@ module.exports = function authRouter(deps) {
     res.json({ users: db.getAllUsers() });
   });
 
+  // Admin-only password reset for any user (recovery flow).
+  // Body: { password: string (min 6 chars) }
+  router.post('/users/:id/reset-password', db.authMiddleware, db.requireAdmin, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user id' });
+    const target = db.getUserById(id);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    const { password } = req.body || {};
+    if (typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    db.updateUser(id, { password });
+    console.log(`[users/reset-password] admin=${req.user.username} (id=${req.user.userId}) reset password for user="${target.username}" (id=${id})`);
+    // Note: JWT is stateless so previously-issued tokens stay valid until expiry.
+    // Acceptable for an admin-recovery flow; user should be told to log out & back in.
+    res.json({ ok: true });
+  });
+
   router.patch('/users/:id', db.authMiddleware, db.requireAdmin, (req, res) => {
     const id = parseInt(req.params.id, 10);
     const target = db.getUserById(id);
@@ -327,10 +345,25 @@ module.exports = function authRouter(deps) {
     const summary = { gateway: null, fs: null, db: null };
 
     // 1) Stop the user's gateway (best-effort) so no in-flight writes hit the home dir
-    //    while we wipe it. Orchestrator clears its in-memory state + DB row too.
+    //    while we wipe it. Orchestrator clears its in-memory state + DB row too,
+    //    and now also sweeps orphan PIDs (gateways from prior AOC sessions whose
+    //    OS process survived an AOC restart).
     try {
       await orchestrator.stopGateway(id);
-      summary.gateway = 'stopped';
+      // Extra safety pass: catch any orphan that survived the in-target sweep
+      // (e.g., a gateway from a previous session still bound to a port in our
+      // managed range with no DB row).
+      const stragglers = orchestrator.findAocManagedOrphanPids({ userId: id });
+      for (const pid of stragglers) {
+        try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+      }
+      if (stragglers.length) {
+        await new Promise((r) => setTimeout(r, 600));
+        for (const pid of stragglers) {
+          try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch (_) {}
+        }
+      }
+      summary.gateway = stragglers.length ? `stopped+killed ${stragglers.length} straggler(s)` : 'stopped';
     } catch (e) {
       summary.gateway = `stop-failed:${e.message}`;
     }

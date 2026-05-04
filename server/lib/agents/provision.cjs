@@ -456,6 +456,22 @@ function provisionAgent(opts, userId) {
   ensureDir(workspacePath);
   ensureDir(path.join(workspacePath, 'memory'));
 
+  // Seed auth-profiles.json — agents need provider API keys to call LLMs.
+  // Copy from admin's main agent (the canonical source) so every newly
+  // provisioned agent (admin's or non-admin's) inherits the platform's
+  // shared LLM credentials. Done idempotently.
+  try {
+    const srcAuth = path.join(AGENTS_DIR, 'main', 'agent', 'auth-profiles.json');
+    const dstAuth = path.join(agentStatePath, 'auth-profiles.json');
+    if (fs.existsSync(srcAuth) && !fs.existsSync(dstAuth)) {
+      ensureDir(agentStatePath);
+      fs.copyFileSync(srcAuth, dstAuth);
+      try { fs.chmodSync(dstAuth, 0o600); } catch (_) {}
+    }
+  } catch (e) {
+    console.warn(`[provision] auth-profiles seed failed: ${e.message}`);
+  }
+
   // IDENTITY.md
   writeFile(
     path.join(workspacePath, 'IDENTITY.md'),

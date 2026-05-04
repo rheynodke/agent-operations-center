@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react"
-import { Loader2, Trash2, Copy, Ban, Plus, UserCog, Link as LinkIcon, Check } from "lucide-react"
+import { Loader2, Trash2, Copy, Ban, Plus, UserCog, Link as LinkIcon, Check, KeyRound } from "lucide-react"
 import { api } from "@/lib/api"
 import { useAuthStore } from "@/stores"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
+import { PasswordResetDialog } from "@/components/ui/PasswordResetDialog"
 import type { Invitation, ManagedUser } from "@/types"
 
 type Confirm =
@@ -34,6 +35,9 @@ export function UserManagementPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [confirmLoading, setConfirmLoading] = useState(false)
+  const [pwReset, setPwReset] = useState<ManagedUser | null>(null)
+  const [pwResetLoading, setPwResetLoading] = useState(false)
+  const [toast, setToast] = useState<{ type: "ok" | "err"; msg: string } | null>(null)
 
   async function refresh() {
     setLoading(true)
@@ -223,9 +227,18 @@ export function UserManagementPage() {
                         </>
                       )}
                       {currentUser?.id !== u.id && (
-                        <button onClick={() => setConfirm({ kind: "delete-user", user: u })} className="text-destructive hover:bg-destructive/10 p-1.5 rounded-md" title="Delete">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <>
+                          <button
+                            onClick={() => setPwReset(u)}
+                            className="text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 p-1.5 rounded-md"
+                            title="Reset password"
+                          >
+                            <KeyRound className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => setConfirm({ kind: "delete-user", user: u })} className="text-destructive hover:bg-destructive/10 p-1.5 rounded-md" title="Delete">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
                       )}
                     </div>
                   </td>
@@ -371,6 +384,39 @@ export function UserManagementPage() {
           onConfirm={runConfirm}
           onCancel={() => { if (!confirmLoading) setConfirm(null) }}
         />
+      )}
+
+      {pwReset && (
+        <PasswordResetDialog
+          username={pwReset.username}
+          loading={pwResetLoading}
+          onCancel={() => { if (!pwResetLoading) setPwReset(null) }}
+          onSubmit={async (password) => {
+            setPwResetLoading(true)
+            try {
+              await api.resetUserPassword(pwReset.id, password)
+              setPwReset(null)
+              setToast({ type: "ok", msg: `Password updated for ${pwReset.username}. Tell them to sign out and back in.` })
+              setTimeout(() => setToast(null), 5000)
+            } catch (e) {
+              setToast({ type: "err", msg: `Reset failed: ${(e as Error).message}` })
+              setTimeout(() => setToast(null), 5000)
+            } finally {
+              setPwResetLoading(false)
+            }
+          }}
+        />
+      )}
+
+      {toast && (
+        <div className={
+          "fixed bottom-6 right-6 z-50 max-w-sm px-4 py-3 rounded-xl shadow-2xl border text-sm " +
+          (toast.type === "ok"
+            ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-200"
+            : "bg-red-500/15 border-red-500/40 text-red-200")
+        }>
+          {toast.msg}
+        </div>
       )}
     </div>
   )

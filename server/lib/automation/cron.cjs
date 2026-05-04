@@ -11,6 +11,9 @@ const path = require('path');
 const crypto = require('crypto');
 const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
 
+// TODO: per-user cron files (slice 1.5.g) — cron CRUD currently writes to the
+// admin cron file. When per-user cron is needed, thread userId through each
+// function and use getUserCronFile(userId) from config.cjs instead.
 const CRON_FILE = path.join(OPENCLAW_HOME, 'cron', 'jobs.json');
 
 // ─── File helpers ─────────────────────────────────────────────────────────────

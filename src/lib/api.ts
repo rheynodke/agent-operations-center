@@ -102,6 +102,11 @@ export const api = {
     }),
   deleteUser: (id: number) =>
     request<{ ok: boolean }>(`/users/${id}`, { method: "DELETE" }),
+  resetUserPassword: (id: number, password: string) =>
+    request<{ ok: boolean }>(`/users/${id}/reset-password`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
 
   // Overview
   getOverview: () => request(withScope("/overview")),

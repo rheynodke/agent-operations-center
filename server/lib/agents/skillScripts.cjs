@@ -1,7 +1,24 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, getUserHome, readJsonSafe } = require('../config.cjs');
+
+// ── Multi-tenant home resolution ─────────────────────────────────────────────
+
+function _ownerOf(agentId) {
+  try {
+    const owner = require('../db.cjs').getAgentOwner(agentId);
+    return owner == null ? null : Number(owner);
+  } catch { return null; }
+}
+function homeFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
+}
+function workspaceFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_WORKSPACE : path.join(getUserHome(o), 'workspace');
+}
 
 // ── Security constants ────────────────────────────────────────────────────────
 const ALLOWED_EXTENSIONS = ['.sh', '.py', '.js', '.ts', '.rb', '.php', '.lua', '.bash', '.zsh', '.fish'];
@@ -35,18 +52,19 @@ function validateFilename(filename) {
 }
 
 function getAgentSkillPath(agentId, skillName) {
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const home   = homeFor(agentId);
+  const config = readJsonSafe(path.join(home, 'openclaw.json')) || {};
   const agentConfig = (config.agents?.list || []).find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentWorkspace = agentConfig.workspace || OPENCLAW_WORKSPACE;
+  const agentWorkspace = agentConfig.workspace || workspaceFor(agentId);
 
   // Find the skill across all source levels (same as skills.cjs logic)
   const possibleDirs = [
     path.join(agentWorkspace, 'skills', skillName),
     path.join(agentWorkspace, '.agents', 'skills', skillName),
     path.join(process.env.HOME || '~', '.agents', 'skills', skillName),
-    path.join(OPENCLAW_HOME, 'skills', skillName),
+    path.join(OPENCLAW_HOME, 'skills', skillName), // shared admin-managed dir, always OPENCLAW_HOME
   ];
 
   for (const dir of possibleDirs) {

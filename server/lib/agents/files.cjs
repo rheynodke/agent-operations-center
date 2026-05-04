@@ -1,8 +1,23 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, getUserHome, readJsonSafe } = require('../config.cjs');
 const { readMdFile } = require('./detail.cjs');
+
+function _ownerOf(agentId) {
+  try {
+    const owner = require('../db.cjs').getAgentOwner(agentId);
+    return owner == null ? null : Number(owner);
+  } catch { return null; }
+}
+function homeFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
+}
+function workspaceFor(agentId) {
+  const o = _ownerOf(agentId);
+  return o == null || o === 1 ? OPENCLAW_WORKSPACE : path.join(getUserHome(o), 'workspace');
+}
 
 const ALLOWED_FILES = ['IDENTITY.md', 'SOUL.md', 'TOOLS.md', 'AGENTS.md', 'USER.md', 'HEARTBEAT.md', 'MEMORY.md'];
 
@@ -16,20 +31,21 @@ function getAgentFile(agentId, filename) {
   const normalizedFilename = normalizeFilename(filename);
   if (!ALLOWED_FILES.includes(normalizedFilename)) throw new Error(`File "${filename}" is not allowed`);
 
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json'));
+  const config = readJsonSafe(path.join(homeFor(agentId), 'openclaw.json'));
   if (!config) throw new Error('Cannot read openclaw.json');
 
   const agentConfig = (config.agents?.list || []).find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentWorkspace = agentConfig.workspace || OPENCLAW_WORKSPACE;
+  const agentWorkspace = agentConfig.workspace || workspaceFor(agentId);
 
   let filePath = path.join(agentWorkspace, normalizedFilename);
   let content  = readMdFile(filePath);
   let resolvedPath = filePath;
 
-  if (content === null && agentWorkspace !== OPENCLAW_WORKSPACE) {
-    filePath     = path.join(OPENCLAW_WORKSPACE, normalizedFilename);
+  const tenantWs = workspaceFor(agentId);
+  if (content === null && agentWorkspace !== tenantWs) {
+    filePath     = path.join(tenantWs, normalizedFilename);
     content      = readMdFile(filePath);
     resolvedPath = filePath;
   }
@@ -39,7 +55,7 @@ function getAgentFile(agentId, filename) {
     content: content || '',
     path: resolvedPath,
     exists: content !== null,
-    isGlobal: resolvedPath.startsWith(OPENCLAW_WORKSPACE) && agentWorkspace !== OPENCLAW_WORKSPACE,
+    isGlobal: resolvedPath.startsWith(tenantWs) && agentWorkspace !== tenantWs,
     agentWorkspace,
   };
 }
@@ -48,13 +64,13 @@ function saveAgentFile(agentId, filename, content) {
   const normalizedFilename = normalizeFilename(filename);
   if (!ALLOWED_FILES.includes(normalizedFilename)) throw new Error(`File "${filename}" is not allowed`);
 
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json'));
+  const config = readJsonSafe(path.join(homeFor(agentId), 'openclaw.json'));
   if (!config) throw new Error('Cannot read openclaw.json');
 
   const agentConfig = (config.agents?.list || []).find(a => a.id === agentId);
   if (!agentConfig) throw new Error(`Agent "${agentId}" not found`);
 
-  const agentWorkspace = agentConfig.workspace || OPENCLAW_WORKSPACE;
+  const agentWorkspace = agentConfig.workspace || workspaceFor(agentId);
   const filePath = path.join(agentWorkspace, normalizedFilename);
 
   fs.mkdirSync(agentWorkspace, { recursive: true });
