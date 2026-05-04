@@ -7,8 +7,10 @@
  */
 'use strict';
 
+const { gatewayForReq } = require('../helpers/gateway-context.cjs');
+
 module.exports = function chatRouter(deps) {
-  const { db, parsers, gatewayProxy, loadAllJSONLMessagesForTask } = deps;
+  const { db, parsers, loadAllJSONLMessagesForTask } = deps;
   const router = require('express').Router();
   const path = require('path');
 
@@ -16,17 +18,17 @@ module.exports = function chatRouter(deps) {
 
 // Get gateway connection status
   router.get('/chat/gateway/status', db.authMiddleware, (req, res) => {
-  res.json({ connected: gatewayProxy.isConnected });
+  res.json({ connected: gatewayForReq(req).isConnected });
 });
 
 // List chat sessions (from gateway)
   router.get('/chat/sessions', db.authMiddleware, async (req, res) => {
   try {
-    if (!gatewayProxy.isConnected) {
+    if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
     const agentId = req.query.agentId;
-    const result = await gatewayProxy.sessionsList(agentId);
+    const result = await gatewayForReq(req).sessionsList(agentId);
     // Normalize: extract agentId from key pattern "agent:{agentId}:{channel}:{uuid}"
     const roomKeys = new Set(db.getRoomSessionKeys());
     const taskKeys = new Set(db.getTaskSessionKeys());
@@ -63,7 +65,7 @@ module.exports = function chatRouter(deps) {
 // Create a new chat session
   router.post('/chat/sessions', db.authMiddleware, async (req, res) => {
   try {
-    if (!gatewayProxy.isConnected) {
+    if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
     const { agentId } = req.body;
@@ -71,7 +73,7 @@ module.exports = function chatRouter(deps) {
     if (!db.userOwnsAgent(req, agentId)) {
       return res.status(403).json({ error: 'You can only chat with agents you own' });
     }
-    const result = await gatewayProxy.sessionsCreate(agentId);
+    const result = await gatewayForReq(req).sessionsCreate(agentId);
     console.log('[api/chat/sessions/create] result:', JSON.stringify(result).slice(0, 500));
     res.json(result);
   } catch (err) {
@@ -83,7 +85,7 @@ module.exports = function chatRouter(deps) {
 // Get merged chat history for all sessions of a task
   router.get('/chat/history-multi', db.authMiddleware, async (req, res) => {
   try {
-    if (!gatewayProxy.isConnected) {
+    if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
     const sessionKeys = (req.query.keys || '').split(',').map(k => k.trim()).filter(Boolean);
@@ -92,13 +94,13 @@ module.exports = function chatRouter(deps) {
     const maxChars = parseInt(req.query.maxChars || '40000', 10);
     const results = await Promise.allSettled(
       sessionKeys.map(key =>
-        gatewayProxy.chatHistory(key, maxChars).then(r => ({ key, messages: r.messages || [] }))
+        gatewayForReq(req).chatHistory(key, maxChars).then(r => ({ key, messages: r.messages || [] }))
       )
     );
 
     // Subscribe to latest session for real-time updates
     const lastKey = sessionKeys[sessionKeys.length - 1];
-    gatewayProxy.sessionsMessagesSubscribe(lastKey).catch(() => {});
+    gatewayForReq(req).sessionsMessagesSubscribe(lastKey).catch(() => {});
 
     const sessions = results.map((r, i) => ({
       key: sessionKeys[i],
@@ -116,7 +118,7 @@ module.exports = function chatRouter(deps) {
 // Get chat history for a session
   router.get('/chat/history/:sessionKey', db.authMiddleware, async (req, res) => {
   try {
-    if (!gatewayProxy.isConnected) {
+    if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
     const { sessionKey } = req.params;
@@ -124,7 +126,7 @@ module.exports = function chatRouter(deps) {
     const maxChars = parseInt(req.query.maxChars || '80000', 10);
 
     // Also subscribe to real-time updates
-    gatewayProxy.sessionsMessagesSubscribe(sessionKey).catch(() => {});
+    gatewayForReq(req).sessionsMessagesSubscribe(sessionKey).catch(() => {});
 
     // If taskId provided, merge all JSONL dispatch files for this task.
     // Gateway creates a new JSONL file per chatSend round, so each "Continue"
@@ -161,7 +163,7 @@ module.exports = function chatRouter(deps) {
       }
     }
 
-    const result = await gatewayProxy.chatHistory(sessionKey, maxChars);
+    const result = await gatewayForReq(req).chatHistory(sessionKey, maxChars);
     res.json(result);
   } catch (err) {
     console.error('[api/chat/history]', err);
@@ -172,7 +174,7 @@ module.exports = function chatRouter(deps) {
 // Send a message to an agent
   router.post('/chat/send', db.authMiddleware, async (req, res) => {
   try {
-    if (!gatewayProxy.isConnected) {
+    if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
     const { sessionKey, text, agentId, images } = req.body;
@@ -209,8 +211,8 @@ module.exports = function chatRouter(deps) {
       });
     }
     // Ensure we're subscribed
-    await gatewayProxy.sessionsMessagesSubscribe(sessionKey);
-    const result = await gatewayProxy.chatSend(sessionKey, message, attachments);
+    await gatewayForReq(req).sessionsMessagesSubscribe(sessionKey);
+    const result = await gatewayForReq(req).chatSend(sessionKey, message, attachments);
     // agentId is accepted by the legacy wrapper call signature but the gateway
     // does not use it for chat.send — session routing is by sessionKey.
     void agentId;
@@ -224,12 +226,12 @@ module.exports = function chatRouter(deps) {
 // Abort an active agent run
   router.post('/chat/abort', db.authMiddleware, async (req, res) => {
   try {
-    if (!gatewayProxy.isConnected) {
+    if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
     const { sessionKey } = req.body;
     if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
-    const result = await gatewayProxy.chatAbort(sessionKey);
+    const result = await gatewayForReq(req).chatAbort(sessionKey);
     res.json(result || { ok: true });
   } catch (err) {
     console.error('[api/chat/abort]', err);
@@ -240,12 +242,12 @@ module.exports = function chatRouter(deps) {
 // Subscribe to a session's real-time events
   router.post('/chat/subscribe', db.authMiddleware, async (req, res) => {
   try {
-    if (!gatewayProxy.isConnected) {
+    if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
     const { sessionKey } = req.body;
     if (!sessionKey) return res.status(400).json({ error: 'sessionKey is required' });
-    await gatewayProxy.sessionsMessagesSubscribe(sessionKey);
+    await gatewayForReq(req).sessionsMessagesSubscribe(sessionKey);
     res.json({ ok: true, subscribed: sessionKey });
   } catch (err) {
     console.error('[api/chat/subscribe]', err);

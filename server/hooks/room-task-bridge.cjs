@@ -28,11 +28,16 @@ const MAX_DELEGATION_DEPTH = 3;
  * @param {object} room
  * @param {object} message
  * @param {string} agentId
- * @param {{ db, gatewayProxy, getEnrichedAgents, getAgentDisplayName }} deps
+ * @param {{ db, getEnrichedAgents, getAgentDisplayName, userId }} deps
  */
 async function forwardRoomMentionToAgent(room, message, agentId, deps) {
-  const { db, gatewayProxy } = deps;
-  if (!gatewayProxy.isConnected) return;
+  const { db, userId } = deps;
+  if (userId == null) throw new Error('forwardRoomMentionToAgent: deps.userId is required');
+
+  const { gatewayPool } = require('../lib/gateway-ws.cjs');
+  const gw = gatewayPool.forUser(userId);
+
+  if (!gw.isConnected) return;
 
   // Phase 2: Reuse existing session for this agent+room combo (context continuity)
   let sessionKey = db.getRoomAgentSession(room.id, agentId);
@@ -41,7 +46,7 @@ async function forwardRoomMentionToAgent(room, message, agentId, deps) {
     // Create a room-scoped session, isolated from DM 1:1 chat and other
     // rooms. Key shape: `agent:<agentId>:room:<roomId>`.
     const desiredKey = `agent:${agentId}:room:${room.id}`;
-    const sessionResult = await gatewayProxy.sessionsCreate(agentId, { key: desiredKey });
+    const sessionResult = await gw.sessionsCreate(agentId, { key: desiredKey });
     sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
     if (!sessionKey) throw new Error('Gateway did not return a session key');
     if (sessionKey !== desiredKey) {
@@ -220,7 +225,7 @@ async function forwardRoomMentionToAgent(room, message, agentId, deps) {
     '  • Reply with the literal token "NO_REPLY" only if no answer is warranted.',
   ].filter(Boolean).join('\n');
   try {
-    await gatewayProxy.chatSend(sessionKey, prompt);
+    await gw.chatSend(sessionKey, prompt);
   } catch (err) {
     console.warn(`[mission-rooms] mention forward failed room=${room.id} agent=${agentId}:`, err.message);
   }

@@ -342,3 +342,36 @@ test('getAgentRecentTasks: returns tasks for the agent, newest first, respects l
 test('getAgentRecentTasks: throws when agentId missing', () => {
   assert.throws(() => metrics.getAgentRecentTasks({}), /agentId is required/);
 });
+
+// ── per-user scoping (userId filter) ─────────────────────────────────────────
+
+test('getSummary({userId=1}): admin sees all tasks (no scoping applied)', () => {
+  const all = metrics.getSummary({ range: '30d' });
+  const asAdmin = metrics.getSummary({ range: '30d', userId: 1 });
+  assert.equal(asAdmin.kpis.completed.current, all.kpis.completed.current,
+    'admin scope must be a no-op');
+  assert.equal(asAdmin.kpis.cost.current, all.kpis.cost.current);
+});
+
+test('getSummary({userId=99}): scoped to projects.created_by=99', () => {
+  const sqlDb = db.getDb();
+  // Seed user 99, a project they own, and one done task with cost 1.5
+  sqlDb.run("INSERT OR IGNORE INTO users (id, username, password_hash, role) VALUES (99, 'u99', 'x', 'user')");
+  const now = new Date().toISOString();
+  sqlDb.run(
+    "INSERT OR IGNORE INTO projects (id, name, color, created_by, created_at, updated_at) VALUES ('p99', 'P99', '#fff', 99, ?, ?)",
+    [now, now]
+  );
+  sqlDb.run(
+    `INSERT OR REPLACE INTO tasks (id, title, status, priority, agent_id, tags, project_id, attachments, cost, completed_at, created_at, updated_at)
+     VALUES ('t99', 'T99', 'done', 'medium', 'a1', '[]', 'p99', '[]', 1.5, ?, ?, ?)`,
+    [new Date(Date.now() - 86400000).toISOString(), new Date(Date.now() - 2 * 86400000).toISOString(), now]
+  );
+
+  const r = metrics.getSummary({ range: '30d', userId: 99 });
+  assert.ok(r.kpis.cost.current >= 1.5, `expected >=1.5, got ${r.kpis.cost.current}`);
+
+  // User 100 sees nothing (no projects)
+  const r100 = metrics.getSummary({ range: '30d', userId: 100 });
+  assert.equal(r100.kpis.cost.current, 0, 'user 100 must not see user 99 cost');
+});

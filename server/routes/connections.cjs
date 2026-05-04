@@ -6,6 +6,8 @@
  */
 'use strict';
 
+const { parseOwnerParam } = require('../helpers/access-control.cjs');
+
 module.exports = function connectionsRouter(deps) {
   const { db, parsers, broadcast, mcpOauth, composio } = deps;
   const router = require('express').Router();
@@ -23,8 +25,23 @@ module.exports = function connectionsRouter(deps) {
   });
 });
 
-  router.get('/connections', db.authMiddleware, (_req, res) => {
-  res.json({ connections: db.getAllConnections() });
+  router.get('/connections', db.authMiddleware, (req, res) => {
+  const allConnections = db.getAllConnections();
+  // Connections are a shared resource — default is visible to all logged-in users.
+  // Only filter when caller explicitly passes ?owner= (opt-in).
+  const scope = req.query?.owner ? parseOwnerParam(req) : 'all';
+  const uid = req.user?.userId;
+  const isAdmin = req.user?.role === 'admin';
+
+  let connections = allConnections;
+  if (scope === 'me') {
+    connections = allConnections.filter(c => c.createdBy === uid);
+  } else if (typeof scope === 'number' && isAdmin) {
+    connections = allConnections.filter(c => c.createdBy === scope);
+  }
+  // scope === 'all' or non-admin requesting arbitrary id → return all
+
+  res.json({ connections });
 });
 
   router.get('/connections/assignments', db.authMiddleware, (_req, res) => {

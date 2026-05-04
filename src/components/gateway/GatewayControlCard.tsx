@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { useCanWrite } from "@/lib/permissions"
 import {
-  Wifi, WifiOff, RefreshCw, Square, Loader2,
+  Wifi, WifiOff, RefreshCw, Square, Loader2, Play,
   Server, Radio, Hash, AlertTriangle, CheckCircle2,
 } from "lucide-react"
 
@@ -19,7 +20,7 @@ interface GatewayStatus {
   bind: string
 }
 
-type ActionState = "idle" | "restarting" | "stopping"
+type ActionState = "idle" | "restarting" | "stopping" | "starting"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  COMPONENT                                                          */
@@ -29,6 +30,7 @@ export function GatewayControlCard() {
   const [status, setStatus] = useState<GatewayStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [action, setAction] = useState<ActionState>("idle")
+  const canWrite = useCanWrite()
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -56,12 +58,30 @@ export function GatewayControlCard() {
     setTimeout(() => setToast(null), 3500)
   }
 
+  async function handleStart() {
+    if (action !== "idle") return
+    setAction("starting")
+    try {
+      await api.startGateway()
+      showToast("Gateway starting…", true)
+      let tries = 0
+      const rapid = setInterval(async () => {
+        await fetchStatus(true)
+        if (++tries >= 10) clearInterval(rapid)
+      }, 1200)
+    } catch (err) {
+      showToast((err as Error).message, false)
+    } finally {
+      setTimeout(() => setAction("idle"), 4000)
+    }
+  }
+
   async function handleRestart() {
     if (action !== "idle") return
     setAction("restarting")
     try {
-      const res = await api.restartGateway()
-      showToast(res.message, true)
+      const res = await api.restartGatewaySelf()
+      showToast(res.message ?? "Gateway restarting…", true)
       // Poll more aggressively for 10 s to show it coming back up
       let tries = 0
       const rapid = setInterval(async () => {
@@ -77,10 +97,11 @@ export function GatewayControlCard() {
 
   async function handleStop() {
     if (action !== "idle") return
+    if (!confirm("This will stop your workspace. Active sessions will disconnect. Continue?")) return
     setAction("stopping")
     try {
-      const res = await api.stopGateway()
-      showToast(res.message, true)
+      const res = await api.stopGatewaySelf()
+      showToast(res.message ?? "Gateway stopped", true)
       await fetchStatus(true)
     } catch (err) {
       showToast((err as Error).message, false)
@@ -92,6 +113,7 @@ export function GatewayControlCard() {
   const isRunning = status?.running ?? false
   const isRestarting = action === "restarting"
   const isStopping = action === "stopping"
+  const isStarting = action === "starting"
   const busy = action !== "idle"
 
   return (
@@ -151,40 +173,59 @@ export function GatewayControlCard() {
               <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
             </button>
 
-            {/* Stop */}
-            {isRunning && (
-              <button
-                onClick={handleStop}
-                disabled={busy}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-500/20 bg-red-500/10 text-red-400 text-xs font-bold hover:bg-red-500/20 transition-colors disabled:opacity-40"
-                title="Stop gateway"
-              >
-                {isStopping
-                  ? <Loader2 className="w-3 h-3 animate-spin" />
-                  : <Square className="w-3 h-3" />
-                }
-                {isStopping ? "Stopping…" : "Stop"}
-              </button>
-            )}
+            {!canWrite ? (
+              <span className="text-xs text-muted-foreground italic">Read-only</span>
+            ) : (
+              <>
+                {/* Start (when not running) */}
+                {!isRunning && (
+                  <button
+                    onClick={handleStart}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/15 text-primary text-xs font-bold hover:bg-primary/25 transition-colors disabled:opacity-40"
+                    title="Start gateway"
+                  >
+                    {isStarting
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <Play className="w-3.5 h-3.5" />
+                    }
+                    {isStarting ? "Starting…" : "Start"}
+                  </button>
+                )}
 
-            {/* Restart */}
-            <button
-              onClick={handleRestart}
-              disabled={busy}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-colors disabled:opacity-40",
-                isRunning
-                  ? "border-amber-500/20 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
-                  : "border-primary/30 bg-primary/15 text-primary hover:bg-primary/25"
-              )}
-              title={isRunning ? "Restart gateway" : "Start gateway"}
-            >
-              {isRestarting
-                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                : <RefreshCw className="w-3.5 h-3.5" />
-              }
-              {isRestarting ? "Restarting…" : isRunning ? "Restart" : "Start"}
-            </button>
+                {/* Stop */}
+                {isRunning && (
+                  <button
+                    onClick={handleStop}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-500/20 bg-red-500/10 text-red-400 text-xs font-bold hover:bg-red-500/20 transition-colors disabled:opacity-40"
+                    title="Stop gateway"
+                  >
+                    {isStopping
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <Square className="w-3 h-3" />
+                    }
+                    {isStopping ? "Stopping…" : "Stop"}
+                  </button>
+                )}
+
+                {/* Restart */}
+                {isRunning && (
+                  <button
+                    onClick={handleRestart}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-400 text-xs font-bold hover:bg-amber-500/20 transition-colors disabled:opacity-40"
+                    title="Restart gateway"
+                  >
+                    {isRestarting
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <RefreshCw className="w-3.5 h-3.5" />
+                    }
+                    {isRestarting ? "Restarting…" : "Restart"}
+                  </button>
+                )}
+              </>
+            )}
           </div>
         </div>
 

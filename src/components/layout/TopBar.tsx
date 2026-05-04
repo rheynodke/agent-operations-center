@@ -2,6 +2,7 @@ import { Bell, Zap, LogOut, Sun, Moon, Menu } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useAlertStore, useAuthStore, useLiveFeedStore, useThemeStore, useWsStore } from "@/stores"
 import { cn } from "@/lib/utils"
+import { ViewAsSelector } from "@/components/ViewAsSelector"
 
 export function TopBar() {
   const allAlerts = useAlertStore((s) => s.alerts)
@@ -79,6 +80,9 @@ export function TopBar() {
             </span>
           )}
         </Button>
+
+        {/* View-as selector (admin only) */}
+        <ViewAsSelector />
 
         {/* User chip */}
         {user && (

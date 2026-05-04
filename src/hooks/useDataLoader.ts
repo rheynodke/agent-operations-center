@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react"
 import { useAuthStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useOverviewStore, useActivityStore, useRoutingStore } from "@/stores"
 import { useProjectStore } from '@/stores/useProjectStore'
+import { useViewAsStore } from '@/stores/useViewAsStore'
 import { api } from "@/lib/api"
 import type { ActivityEvent, DashboardOverview } from "@/types"
 
@@ -8,6 +9,8 @@ const POLL_INTERVAL = 30_000 // 30s fallback polling
 
 export function useDataLoader() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  // Reload all data whenever the effective scope changes (admin "View as <user>").
+  const viewingAsUserId = useViewAsStore((s) => s.viewingAsUserId)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function loadAll() {
@@ -87,6 +90,15 @@ export function useDataLoader() {
   useEffect(() => {
     if (!isAuthenticated) return
 
+    // Wipe stale per-user data so the prior scope's content doesn't flash
+    // briefly while loadAll() refetches with the new ?owner=<id> scope.
+    useAgentStore.getState().setAgents([])
+    useSessionStore.getState().setSessions([])
+    useTaskStore.getState().setTasks([])
+    useCronStore.getState().setJobs([])
+    useRoutingStore.getState().setRoutes([])
+    useActivityStore.getState().clearEvents()
+
     // Initial load
     loadAll()
     loadCron()
@@ -96,5 +108,5 @@ export function useDataLoader() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
     }
-  }, [isAuthenticated])
+  }, [isAuthenticated, viewingAsUserId])
 }

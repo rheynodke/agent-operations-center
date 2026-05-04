@@ -12,9 +12,14 @@
 const path = require('path');
 
 async function dispatchTaskToAgent(task, opts = {}, deps) {
-  const { db, gatewayProxy, outputsLib, projectWs, parsers, broadcastTasksUpdate } = deps;
+  const { db, outputsLib, projectWs, parsers, broadcastTasksUpdate, userId } = deps;
+  if (userId == null) throw new Error('dispatchTaskToAgent: deps.userId is required');
+
+  const { gatewayPool } = require('../lib/gateway-ws.cjs');
+  const gw = gatewayPool.forUser(userId);
+
   if (!task.agentId) throw new Error('Task has no assigned agent');
-  if (!gatewayProxy.isConnected) throw new Error('Gateway not connected');
+  if (!gw.isConnected) throw new Error('Gateway not connected');
 
   // Block dispatch if task has unmet blockers (skip with opts.force).
   if (!opts.force) {
@@ -40,7 +45,7 @@ async function dispatchTaskToAgent(task, opts = {}, deps) {
     // 4-segment session key convention (agent:<id>:<channel>:<uuid>) where
     // channel = "task" and the uuid slot = taskId.
     const desiredKey = `agent:${task.agentId}:task:${task.id}`;
-    const sessionResult = await gatewayProxy.sessionsCreate(task.agentId, { key: desiredKey });
+    const sessionResult = await gw.sessionsCreate(task.agentId, { key: desiredKey });
     sessionKey = sessionResult.key || sessionResult.session_key || sessionResult.id;
     if (!sessionKey) throw new Error('Gateway did not return a session key');
     if (sessionKey !== desiredKey) {
@@ -401,7 +406,7 @@ async function dispatchTaskToAgent(task, opts = {}, deps) {
     }
   }
 
-  await gatewayProxy.chatSend(sessionKey, message);
+  await gw.chatSend(sessionKey, message);
 
   // Update task — always use the same sessionId (no allSessionIds tracking).
   // For memory-reflection dispatches, keep the existing status (already

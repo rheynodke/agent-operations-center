@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { useAuthStore } from "@/stores"
+import { useCanWrite } from "@/lib/permissions"
 import { api } from "@/lib/api"
 import {
   Shield, Info, Wifi, BrainCircuit, Wrench, KeyRound,
@@ -74,9 +75,10 @@ function SaveBar({ status, saving, onSave }: {
   saving: boolean
   onSave: () => void
 }) {
+  const canWrite = useCanWrite()
   return (
     <div className="flex items-center gap-3 pt-3 mt-1">
-      <Button size="sm" onClick={onSave} disabled={saving} className="gap-1.5">
+      <Button size="sm" onClick={onSave} disabled={saving || !canWrite} className="gap-1.5">
         {saving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
         {saving ? "Saving…" : "Save Changes"}
       </Button>

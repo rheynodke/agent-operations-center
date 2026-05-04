@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const parsers = require('./lib/index.cjs'); // modular barrel — replaces parsers.cjs
-const { LiveFeedWatcher } = require('./lib/watchers.cjs');
+const { LiveFeedWatcher, WatcherPool } = require('./lib/watchers.cjs');
 const db = require('./lib/db.cjs');
 const { gatewayProxy } = require('./lib/gateway-ws.cjs');
 const aiLib = require('./lib/ai.cjs');
@@ -21,6 +21,7 @@ const pipelines = require('./lib/pipelines/index.cjs');
 const workflowRuns = require('./lib/pipelines/runs.cjs');
 const projectGit = require('./lib/projects/git-ops.cjs');
 const projectWs = require('./lib/projects/workspace-ops.cjs');
+const orchestrator = require('./lib/gateway-orchestrator.cjs');
 // Wire gateway into the runs module so agent steps can dispatch real sessions.
 try { workflowRuns.setGatewayProxy(require('./lib/gateway-ws.cjs').gatewayProxy); } catch (e) {
   console.warn('[runs] gateway wiring failed:', e.message);
@@ -55,8 +56,11 @@ const vSave = createVSave({ versioning, db });
 
 // Task dispatch wrapper (must be defined before router mounts that reference it)
 const taskDispatchHook = require('./hooks/task-dispatch.cjs');
-function dispatchTaskToAgent(task, opts = {}) {
-  const _deps = { db, gatewayProxy, outputsLib, projectWs, parsers, broadcastTasksUpdate };
+function dispatchTaskToAgent(task, opts = {}, userId) {
+  if (userId == null) {
+    return Promise.reject(new Error('dispatchTaskToAgent (server/index.cjs): userId required'));
+  }
+  const _deps = { db, outputsLib, projectWs, parsers, broadcastTasksUpdate, userId };
   return taskDispatchHook.dispatchTaskToAgent(task, opts, _deps);
 }
 
@@ -190,7 +194,9 @@ const _delegationByAgentRoom = roomTaskBridge.delegationByAgentRoom;
 
 // Bound deps for the bridge
 const _bridgeDeps = {
-  db, gatewayProxy, getEnrichedAgents, getAgentDisplayName,
+  db, getEnrichedAgents, getAgentDisplayName,
+  // TODO(slice 1.5.e): thread real userId from room message author
+  userId: 1,
   // forwardFn is set below after forwardRoomMentionToAgent is defined
   forwardFn: null,
 };
@@ -210,7 +216,12 @@ function forwardAgentMentionChain(room, agentMsg, sourceAgentId) {
 // Agents
 app.get('/api/agents', db.authMiddleware, (req, res) => {
   try {
-    res.json({ agents: getEnrichedAgents() });
+    const allAgents = getEnrichedAgents();
+    const scope = accessControl.parseOwnerParam(req);
+    const filtered = accessControl.filterAgentsByOwner(
+      allAgents, req.user, scope, db.getAgentOwner
+    );
+    res.json({ agents: filtered });
   } catch (err) {
     console.error('[api/agents]', err);
     res.status(500).json({ error: 'Failed to fetch agents' });
@@ -239,7 +250,7 @@ app.use('/api', require('./routes/skills.cjs')({ db, parsers, broadcast, checkSk
 // ─── Tasks + Attachments + Outputs + Comments (extracted to routes/tasks.cjs, Step 8a) ──
 app.use('/api', require('./routes/tasks.cjs')({
   db, parsers, broadcast, broadcastTasksUpdate,
-  outputsLib, gatewayProxy, vSave,
+  outputsLib, vSave,
   checkTaskAccess, dispatchTaskToAgent,
   emitTaskRoomSystemMessage, getAgentDisplayName,
   attachmentsLib, integrations, uploadAttachments, projectWs,
@@ -384,7 +395,29 @@ gatewayProxy.addListener((event) => {
     }
   }, 4000); // 4s delay for JSONL flush
 });
-const feedWatcher = new LiveFeedWatcher();
+const feedWatcher = new LiveFeedWatcher({ ownerUserId: 1 });
+const watcherPool = new WatcherPool();
+
+orchestrator.on('spawned', ({ userId }) => {
+  if (Number(userId) === 1) return;   // admin already covered by feedWatcher
+  try { watcherPool.ensureForUser(userId); }
+  catch (e) { console.warn(`[watchers] ensureForUser(${userId}) failed: ${e.message}`); }
+});
+orchestrator.on('stopped', ({ userId }) => {
+  if (Number(userId) === 1) return;
+  try { watcherPool.removeForUser(userId); }
+  catch (e) { console.warn(`[watchers] removeForUser(${userId}) failed: ${e.message}`); }
+});
+
+// On startup, ensure a watcher for every gateway already in DB as 'running'
+try {
+  for (const row of (db.listGatewayStates() || [])) {
+    const uid = row.userId;
+    if (row.state === 'running' && Number(uid) !== 1) {
+      try { watcherPool.ensureForUser(uid); } catch {}
+    }
+  }
+} catch (_) {}
 
 const terminal = require('./lib/terminal.cjs');
 
@@ -398,32 +431,55 @@ server.on('upgrade', (request, socket, head) => {
 
   if (url.pathname !== '/ws') { socket.destroy(); return; }
 
-  // Verify JWT token from query param
+  // Verify JWT token from query param + decode the user identity so the
+  // connection handler can scope the init snapshot per-tenant.
   const token = url.searchParams.get('token');
-  if (!token || !db.verifyToken(token)) {
+  const payload = token ? db.verifyToken(token) : null;
+  if (!payload) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
   }
 
   wss.handleUpgrade(request, socket, head, (ws) => {
+    // Attach decoded user to the socket so handlers can scope per-tenant.
+    ws._wsUser = { userId: Number(payload.userId), username: payload.username, role: payload.role };
     wss.emit('connection', ws, request);
   });
 });
 
 wss.on('connection', (ws) => {
-  console.log(`[ws] Client connected (${wss.clients.size} total)`);
+  const wsUser = ws._wsUser || { userId: 1, role: 'admin' };
+  console.log(`[ws] Client connected user=${wsUser.userId} role=${wsUser.role} (${wss.clients.size} total)`);
 
-  // Send current snapshot on connect (enriched — same as REST /api/agents)
+  // Send current snapshot on connect — scoped to this user.
   try {
-    const agents = getEnrichedAgents();
-    const sessions = parsers.getAllSessions();
+    const isAdmin = wsUser.role === 'admin';
+    const allAgents = getEnrichedAgents();
+    const agents = isAdmin
+      ? allAgents
+      : allAgents.filter((a) => {
+          const ownerId = a.id === 'main' ? 1 : db.getAgentOwner(a.id);
+          return ownerId === wsUser.userId;
+        });
+    const sessions = parsers.getAllSessions(wsUser.userId);
     ws.send(JSON.stringify({ type: 'init', payload: { agents, sessions }, timestamp: new Date().toISOString() }));
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.warn(`[ws] init snapshot failed for user=${wsUser.userId}: ${e.message}`);
+  }
 
-  const unsubscribe = feedWatcher.addListener((event) => {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
-  });
+  const wsBroadcastWatcher = (event) => {
+    if (ws.readyState !== ws.OPEN) return;
+    // Server-side filter: drop events not owned by this user (defense in depth;
+    // frontend also filters). Events without ownerUserId are treated as global.
+    const ownerUid = event && event.ownerUserId;
+    if (ownerUid != null && wsUser.role !== 'admin' && Number(ownerUid) !== wsUser.userId) {
+      return;
+    }
+    ws.send(JSON.stringify(event));
+  };
+  const unsubscribe = feedWatcher.addListener(wsBroadcastWatcher);
+  const unsubscribePool = watcherPool.addListener(wsBroadcastWatcher);
 
   // Forward gateway real-time chat events to this dashboard WS client
   const unsubGateway = gatewayProxy.addListener((event) => {
@@ -432,10 +488,11 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     unsubscribe();
+    unsubscribePool();
     unsubGateway();
     console.log(`[ws] Client disconnected (${wss.clients.size} total)`);
   });
-  ws.on('error', () => { unsubscribe(); unsubGateway(); });
+  ws.on('error', () => { unsubscribe(); unsubscribePool(); unsubGateway(); });
 
   // Heartbeat
   ws.isAlive = true;
@@ -601,7 +658,8 @@ async function sweepPendingTasks() {
     if (pending.length === 0) return;
     console.log(`[startup-sweep] Found ${pending.length} pending tasks, dispatching...`);
     for (const task of pending) {
-      await dispatchTaskToAgent(task).catch(err =>
+      // TODO(slice 1.5.e): thread real userId from cron job / pipeline owner
+      await dispatchTaskToAgent(task, {}, 1).catch(err =>
         console.warn(`[startup-sweep] task ${task.id}:`, err.message)
       );
     }
@@ -614,6 +672,14 @@ async function sweepPendingTasks() {
 // ─── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   await db.initDatabase();
+
+  try {
+    await orchestrator.cleanupOrphans();
+    console.log('[orchestrator] startup cleanup complete');
+  } catch (e) {
+    console.error('[orchestrator] cleanup failed:', e.message);
+    // Non-fatal — continue startup.
+  }
 
   // Seed built-in ADLC role templates on first run (idempotent)
   try {
@@ -721,5 +787,21 @@ start().catch(err => {
   process.exit(1);
 });
 
-process.on('SIGTERM', () => { feedWatcher.stop(); server.close(); process.exit(0); });
-process.on('SIGINT', () => { feedWatcher.stop(); server.close(); process.exit(0); });
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[server] ${signal} received — graceful shutdown`);
+  feedWatcher.stop();
+  watcherPool.stopAll();
+  server.close();
+  try {
+    await orchestrator.gracefulShutdown();
+    console.log('[server] all user gateways stopped');
+  } catch (e) {
+    console.error('[server] shutdown error:', e.message);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));

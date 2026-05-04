@@ -22,8 +22,12 @@ export function LoginScreen() {
     try {
       const res = await api.login(username.trim(), password)
       setAuth(res.token, res.user)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid credentials")
+    } catch (err: any) {
+      if (err?.code === "GATEWAY_SPAWN_FAILED" || err?.status === 503) {
+        setError("We couldn't start your workspace. Please try again — if it keeps failing, contact your admin.")
+      } else {
+        setError(err instanceof Error ? err.message : "Invalid credentials")
+      }
     } finally {
       setLoading(false)
     }
@@ -438,7 +442,7 @@ export function LoginScreen() {
                 {loading
                   ? <Loader2 className="w-4 h-4 animate-spin" />
                   : <ArrowRight className="w-4 h-4" />}
-                {loading ? "Authenticating…" : "Sign In"}
+                {loading ? "Signing in…" : "Sign In"}
               </button>
             </form>
 

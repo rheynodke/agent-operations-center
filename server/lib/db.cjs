@@ -583,7 +583,27 @@ async function initDatabase() {
   // Per-agent concurrency hint (NULL = unlimited)
   try { db.run('ALTER TABLE agent_profiles ADD COLUMN max_parallel_steps INTEGER DEFAULT NULL'); } catch (_) {}
 
+  // === Multi-tenant + Master Agent migrations (2026-05-04) ===
+  try { db.run("ALTER TABLE users ADD COLUMN master_agent_id TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN gateway_port INTEGER"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN gateway_pid INTEGER"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN gateway_state TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN daily_token_quota INTEGER"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN daily_token_used INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN daily_token_reset_at INTEGER"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN last_activity_at INTEGER"); } catch (_) {}
+  try { db.run("ALTER TABLE agent_profiles ADD COLUMN is_master INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_profiles_one_master_per_owner ON agent_profiles(provisioned_by) WHERE is_master = 1"); } catch (_) {}
+
   try { backfillProjectDefaultRooms(); } catch (err) { console.warn('[db] mission room backfill failed:', err.message); }
+
+  // === Multitenant ownership backfill (2026-05-04) ===
+  try {
+    const result = require('./migrations/2026-05-04-multitenant.cjs').run(db);
+    console.log('[db] multitenant backfill:', JSON.stringify(result));
+  } catch (e) {
+    console.error('[db] multitenant backfill failed:', e.message);
+  }
 
   // ── Persist JWT_SECRET so tokens survive server restarts ──────────────────
   if (!JWT_SECRET) {
@@ -1753,6 +1773,63 @@ function deleteUser(id) {
   persist();
 }
 
+/**
+ * Cascade-delete every DB row owned by a user, then the user row itself.
+ * Returns a counts summary so the caller can log/return what was wiped.
+ * Caller is responsible for stopping the user's gateway and removing their
+ * filesystem home — see /api/users/:id DELETE handler.
+ *
+ * @param {number} id
+ * @returns {{ counts: Record<string, number> }}
+ */
+function purgeUserData(id) {
+  if (!db) return { counts: {} };
+  const uid = Number(id);
+  const counts = {};
+  const wipe = (label, sql, params = [uid]) => {
+    try {
+      const before = scalarCount(sql.replace(/^DELETE FROM/i, 'SELECT COUNT(*) FROM').replace(/;$/, ''), params);
+      db.run(sql, params);
+      counts[label] = before;
+    } catch (e) {
+      counts[label] = `error:${e.message}`;
+    }
+  };
+
+  // Order matters: child rows first (FK-light schema, but keep the discipline).
+  wipe('tasks_by_owner',         'DELETE FROM tasks         WHERE created_by = ?');
+  wipe('tasks_by_project',       'DELETE FROM tasks         WHERE project_id IN (SELECT id FROM projects WHERE created_by = ?)');
+  wipe('project_memory',         'DELETE FROM project_memory WHERE created_by = ? OR project_id IN (SELECT id FROM projects WHERE created_by = ?)', [uid, uid]);
+  wipe('epics',                  'DELETE FROM epics         WHERE created_by = ? OR project_id IN (SELECT id FROM projects WHERE created_by = ?)', [uid, uid]);
+  wipe('mission_rooms',          'DELETE FROM mission_rooms WHERE created_by = ?');
+  wipe('pipelines',              'DELETE FROM pipelines     WHERE created_by = ?');
+  wipe('connections',            'DELETE FROM connections   WHERE created_by = ?');
+  wipe('projects',               'DELETE FROM projects      WHERE created_by = ?');
+  wipe('agent_profiles',         'DELETE FROM agent_profiles WHERE provisioned_by = ?');
+  // Gateway state lives in users.gateway_{port,pid,state} columns — drops with the user row below.
+  wipe('invitations',            'DELETE FROM invitations   WHERE created_by = ?');
+
+  // Finally, the user row.
+  try {
+    db.run('DELETE FROM users WHERE id = ?', [uid]);
+    counts.users = 1;
+  } catch (e) {
+    counts.users = `error:${e.message}`;
+  }
+
+  persist();
+  return { counts };
+}
+
+// Internal: COUNT helper used by purgeUserData (kept private — sql.js has no scalar API).
+function scalarCount(sql, params) {
+  try {
+    const res = db.exec(sql, params);
+    if (!res.length) return 0;
+    return Number(res[0].values?.[0]?.[0]) || 0;
+  } catch { return 0; }
+}
+
 function updateUser(id, { displayName, role, password, canUseClaudeTerminal } = {}) {
   if (!db) return null;
   const fields = ["updated_at = datetime('now')"];
@@ -2031,6 +2108,90 @@ function requireProjectOwnershipForTask(req, res, next) {
     return res.status(403).json({ error: 'You do not have permission to modify tasks in this project' });
   }
   next();
+}
+
+/**
+ * Return a SQL WHERE-fragment + bind values that scope a list query by ownership.
+ * Admin sees all by default; non-admins always scoped to their own id regardless
+ * of the requested scope.
+ *
+ * @param {object} user - { id, role } from req.user
+ * @param {string} ownerCol - column name, e.g. 'created_by' or 'provisioned_by'
+ * @param {'me'|'all'|number|null} scope - parsed from ?owner= query
+ * @returns {{where: string, params: any[]}}
+ */
+function scopeByOwner(user, ownerCol, scope) {
+  if (!user) return { where: '1 = 0', params: [] };
+  // JWT payload uses `userId`; some legacy code passes `id`. Accept both.
+  const uid = user.userId ?? user.id;
+  if (user.role === 'admin') {
+    if (scope === 'all' || scope == null) return { where: '', params: [] };
+    if (scope === 'me') return { where: `${ownerCol} = ?`, params: [uid] };
+    if (typeof scope === 'number') return { where: `${ownerCol} = ?`, params: [scope] };
+    return { where: '', params: [] };
+  }
+  return { where: `${ownerCol} = ?`, params: [uid] };
+}
+
+// ─── Gateway state ───────────────────────────────────────────────────────────
+
+/**
+ * Persist a user's gateway lifecycle data.
+ * @param {number} userId
+ * @param {{port: number|null, pid: number|null, state: 'running'|'starting'|'error'|'stopped'|null}} data
+ */
+function setGatewayState(userId, { port, pid, state }) {
+  if (!db) return;
+  db.run(
+    "UPDATE users SET gateway_port = ?, gateway_pid = ?, gateway_state = ? WHERE id = ?",
+    [port, pid, state, Number(userId)]
+  );
+}
+
+/**
+ * Read a user's gateway state.
+ * @param {number} userId
+ * @returns {{port: number|null, pid: number|null, state: string|null}}
+ */
+function getGatewayState(userId) {
+  if (!db) return { port: null, pid: null, state: null };
+  const res = db.exec(
+    "SELECT gateway_port, gateway_pid, gateway_state FROM users WHERE id = ?",
+    [Number(userId)]
+  );
+  const row = res[0]?.values?.[0];
+  if (!row) return { port: null, pid: null, state: null };
+  return {
+    port:  row[0] != null ? Number(row[0]) : null,
+    pid:   row[1] != null ? Number(row[1]) : null,
+    state: row[2] != null ? String(row[2]) : null,
+  };
+}
+
+/**
+ * List all users with a non-null gateway_pid.
+ * Used by orchestrator startup cleanup and admin overview.
+ * @returns {Array<{userId: number, port: number|null, pid: number, state: string|null}>}
+ */
+function listGatewayStates() {
+  if (!db) return [];
+  const res = db.exec(
+    "SELECT id, gateway_port, gateway_pid, gateway_state FROM users WHERE gateway_pid IS NOT NULL"
+  );
+  return (res[0]?.values || []).map(([id, port, pid, state]) => ({
+    userId: Number(id),
+    port:  port != null ? Number(port) : null,
+    pid:   Number(pid),
+    state: state != null ? String(state) : null,
+  }));
+}
+
+/**
+ * Clear gateway state for all users. Used by orchestrator at AOC startup.
+ */
+function clearAllGatewayStates() {
+  if (!db) return;
+  db.run("UPDATE users SET gateway_port = NULL, gateway_pid = NULL, gateway_state = NULL");
 }
 
 // ─── Agent Profiles ──────────────────────────────────────────────────────────
@@ -2412,6 +2573,7 @@ module.exports = {
   getConnectionOwner,
   getPipelineOwner,
   deleteUser,
+  purgeUserData,
   updateUser,
   // Invitations
   createInvitation, getAllInvitations, getInvitationByToken, getInvitationById,
@@ -2439,6 +2601,7 @@ module.exports = {
   getAllProjects, getProject, getProjectByPath, createProject, updateProject, deleteProject,
   setProjectWorkspace, bumpProjectFetchedAt,
   getProjectOwner, userOwnsProject, requireProjectOwnership, requireProjectOwnershipForTask,
+  scopeByOwner,
   // Mission rooms
   normalizeMissionRoom, normalizeMissionMessage,
   listMissionRooms, listMissionRoomsForUser, getMissionRoom, createMissionRoom, updateMissionRoomMembers,
@@ -2458,4 +2621,6 @@ module.exports = {
   // Pipelines
   getAllPipelines, getPipeline, createPipeline, updatePipeline, deletePipeline,
   listPipelinesForUser,
+  // Gateway state
+  setGatewayState, getGatewayState, listGatewayStates, clearAllGatewayStates,
 };

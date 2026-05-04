@@ -194,11 +194,40 @@ export function UserManagementPage() {
                   <td className="px-4 py-2 text-muted-foreground text-xs">{formatDate(u.created_at)}</td>
                   <td className="px-4 py-2 text-muted-foreground text-xs">{formatDate(u.last_login)}</td>
                   <td className="px-4 py-2 text-right">
-                    {currentUser?.id !== u.id && (
-                      <button onClick={() => setConfirm({ kind: "delete-user", user: u })} className="text-destructive hover:bg-destructive/10 p-1.5 rounded-md" title="Delete">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
+                    <div className="flex items-center justify-end gap-1.5">
+                      {u.id === 1 ? (
+                        <span className="text-xs text-muted-foreground" title="External gateway">External</span>
+                      ) : (
+                        <>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Restart workspace for ${u.username}?`)) return
+                              try { await api.adminRestartUserGateway(u.id) }
+                              catch (e) { alert(`Restart failed: ${(e as Error).message}`) }
+                            }}
+                            className="text-xs px-2 py-1 border border-border rounded hover:bg-card"
+                            title="Restart this user's gateway workspace"
+                          >
+                            Restart workspace
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Stop workspace for ${u.username}?`)) return
+                              try { await api.adminStopUserGateway(u.id) }
+                              catch (e) { alert(`Stop failed: ${(e as Error).message}`) }
+                            }}
+                            className="text-xs px-2 py-1 border border-border rounded hover:bg-card text-red-500"
+                          >
+                            Stop workspace
+                          </button>
+                        </>
+                      )}
+                      {currentUser?.id !== u.id && (
+                        <button onClick={() => setConfirm({ kind: "delete-user", user: u })} className="text-destructive hover:bg-destructive/10 p-1.5 rounded-md" title="Delete">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -19,6 +19,28 @@ interface AuthState {
   setLoading: (v: boolean) => void
 }
 
+/**
+ * Reset every per-user data store. Call on logout AND when a different user
+ * logs in, otherwise the previous user's data flashes on the dashboard until
+ * the next loadAll() finishes.
+ */
+function resetUserDataStores() {
+  try { useAgentStore.getState().setAgents([]) } catch {}
+  try { useSessionStore.getState().setSessions([]) } catch {}
+  try { useTaskStore.getState().setTasks([]) } catch {}
+  try { useCronStore.getState().setJobs([]) } catch {}
+  try { useRoutingStore.getState().setRoutes([]) } catch {}
+  try { useActivityStore.getState().clearEvents() } catch {}
+  try { useLiveFeedStore.getState().clearFeed() } catch {}
+  try { useGatewayLogStore.getState().clearEvents() } catch {}
+  try { useGatewayLogStore.getState().clearLogs() } catch {}
+  try { useOverviewStore.getState().setOverview(null as never) } catch {}
+  try { useProcessingStore.getState().reset?.() } catch {}
+  // Drop persisted snapshots so they don't restore on the next page load.
+  try { localStorage.removeItem("aoc-live-feed") } catch {}
+  try { localStorage.removeItem("aoc-gateway-logs") } catch {}
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
   token: localStorage.getItem("aoc_token"),
   user: (() => {
@@ -31,6 +53,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   needsSetup: null,
   loading: false,
   setAuth: (token, user) => {
+    // Always wipe stale per-user data on a new login (handles different-user
+    // logins and also cases where the previous session's persisted feed
+    // would otherwise hydrate from localStorage on the next page load).
+    resetUserDataStores()
     localStorage.setItem("aoc_token", token)
     localStorage.setItem("aoc_user", JSON.stringify(user))
     set({ token, user, isAuthenticated: true })
@@ -38,6 +64,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   clearAuth: () => {
     localStorage.removeItem("aoc_token")
     localStorage.removeItem("aoc_user")
+    resetUserDataStores()
     set({ token: null, user: null, isAuthenticated: false })
   },
   setNeedsSetup: (needsSetup) => set({ needsSetup }),

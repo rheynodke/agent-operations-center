@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from "react"
 import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore, useProcessingStore, useRoomStore } from "@/stores"
 import { useChatStore, parseMediaAttachments, mediaPathToUrl, stripGatewayEnvelopes, stripUserMetadataEnvelope, isSystemInjectedUserMessage } from "@/stores/useChatStore"
 import { useProjectStore } from '@/stores/useProjectStore'
+import { useViewAsStore } from '@/stores/useViewAsStore'
 import { api } from "@/lib/api"
 import type { WsMessage, LiveFeedEntry } from "@/types"
 
@@ -48,6 +49,26 @@ export function useWebSocket() {
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
       const msg: WsMessage = JSON.parse(event.data)
+
+      // Filter events by ownerUserId so users only see their own events.
+      // Events without ownerUserId are treated as unscoped (allowed through).
+      const ownerUid = (msg as unknown as { ownerUserId?: number }).ownerUserId
+      if (ownerUid != null) {
+        const me = useAuthStore.getState().user
+        const myId = me?.id
+        const myRole = me?.role
+        // Use viewingAsUserId from view-as store for admin impersonation scoping.
+        const effective = useViewAsStore.getState().viewingAsUserId ?? myId ?? null
+        const eventOwner = Number(ownerUid)
+
+        if (myRole === 'admin') {
+          // Admin: show events for the effective scope
+          if (effective != null && eventOwner !== effective) return
+        } else {
+          // Non-admin: only own events
+          if (eventOwner !== myId) return
+        }
+      }
 
       switch (msg.type) {
         case "init": {
@@ -592,15 +613,19 @@ export function useWebSocket() {
                       // Clear the pending flag so future identical messages aren't blocked.
                       chatStore.clearSent(sk, caption)
                     } else {
-                      // Fallback dedup: check last 5 user messages by text content only.
-                      // Catches late echoes after the pending-set TTL expires.
-                      const existing = chatStore.messages[sk] ?? []
-                      const recentUserMsgs = existing.filter(m => m.role === "user").slice(-5)
-                      const alreadyHas = recentUserMsgs.some(m => {
-                        if (!m.userText) return false
-                        const { caption: normExisting } = parseMediaAttachments(stripUserMetadataEnvelope(m.userText))
-                        return normExisting === caption
-                      })
+                      // Fallback dedup: always use a fresh getState() snapshot (not the
+                      // cached `chatStore`) so we can't miss optimistically-added messages
+                      // due to snapshot staleness. Also check a 10-second time window to
+                      // catch late echoes that arrive after markSent has been cleared.
+                      const freshMsgs = useChatStore.getState().messages[sk] ?? []
+                      const nowTs = Date.now()
+                      const alreadyHas = freshMsgs
+                        .filter(m => m.role === "user" && (nowTs - (m.timestamp ?? 0)) < 10_000)
+                        .some(m => {
+                          if (!m.userText) return false
+                          const { caption: normExisting } = parseMediaAttachments(stripUserMetadataEnvelope(m.userText))
+                          return normExisting === caption
+                        })
                       if (!alreadyHas) {
                         chatStore.appendMessage(sk, {
                           id: `user-ws-${Date.now()}`,

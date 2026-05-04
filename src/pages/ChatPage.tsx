@@ -9,6 +9,7 @@ import { ChatMessage } from "@/components/chat/ChatMessage"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { NewRoomDialog, RoomMain, RoomSidebar } from "@/components/mission-rooms/RoomComponents"
 import { cn } from "@/lib/utils"
+import { useCanWrite } from "@/lib/permissions"
 import {
   MessageSquarePlus,
   Send,
@@ -656,6 +657,7 @@ function ChatInput({
 // ─── Chat View ────────────────────────────────────────────────────────────────
 
 function ChatView({ sessionKey }: { sessionKey: string }) {
+  const canWrite = useCanWrite()
   const {
     messages,
     appendMessage,
@@ -863,7 +865,7 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
         <ChatInput
           onSend={handleSend}
           onAbort={handleAbort}
-          disabled={!gatewayConnected}
+          disabled={!gatewayConnected || !canWrite}
           agentRunning={isRunning}
           agentName={agent?.name}
         />

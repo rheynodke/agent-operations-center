@@ -4,6 +4,8 @@ dist/
 *.log
 .playwright-mcp/
 scripts/*
+!scripts/migrate-multitenant.cjs
+!scripts/migrate-multitenant.test.cjs
 docs/*
 skills/*
 .DS_Store

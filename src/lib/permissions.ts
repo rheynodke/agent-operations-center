@@ -1,5 +1,5 @@
 import { useAuthStore } from "@/stores"
-import type { Agent, Connection, Project } from "@/types"
+import type { Agent, Connection, Project, SkillInfo } from "@/types"
 
 /**
  * Role-based permission helpers. Mirror the server-side checks in
@@ -77,4 +77,67 @@ export function canEditProject(project: Pick<Project, "createdBy"> | null | unde
   if (user.role === "admin") return true
   if (project.createdBy == null) return true
   return project.createdBy === user.id
+}
+
+// ─── Shared Resource Permissions ─────────────────────────────────────────────
+
+/** Pure: any logged-in user can USE a shared connection. */
+export function canUseConnection(_conn: Connection | null | undefined, user: { id?: number; role?: string } | null): boolean {
+  return Boolean(user)
+}
+
+/** Pure: any logged-in user can USE a shared skill. */
+export function canUseSkill(_skill: SkillInfo | null | undefined, user: { id?: number; role?: string } | null): boolean {
+  return Boolean(user)
+}
+
+/** Pure: edit/delete only by owner or admin. Mirrors canEditConnection. */
+export function canEditSkill(skill: SkillInfo | null | undefined, user: { id?: number; role?: string } | null): boolean {
+  if (!user || !skill) return false
+  if (user.role === "admin") return true
+  // SkillInfo does not yet have a createdBy column — default-deny for non-admin.
+  const owner = (skill as unknown as { createdBy?: number | null }).createdBy
+  if (owner == null) return false
+  return owner === user.id
+}
+
+/** Hook: true if the current user can use a shared connection. */
+export function useCanUseConnection(conn: Connection | null | undefined): boolean {
+  const user = useAuthStore((s) => s.user)
+  return canUseConnection(conn, user)
+}
+
+/** Hook: true if the current user can use a shared skill. */
+export function useCanUseSkill(skill: SkillInfo | null | undefined): boolean {
+  const user = useAuthStore((s) => s.user)
+  return canUseSkill(skill, user)
+}
+
+/** Hook: true if the current user can edit/delete a skill. */
+export function useCanEditSkill(skill: SkillInfo | null | undefined): boolean {
+  const user = useAuthStore((s) => s.user)
+  return canEditSkill(skill, user)
+}
+
+// ─── View-as / Impersonation Hooks ───────────────────────────────────────────
+
+import { useViewAsStore } from "@/stores/useViewAsStore"
+
+/** The userId whose data should be displayed (impersonated for admin, self for non-admin). */
+export function useEffectiveScope(): number {
+  const userId = useAuthStore((s) => s.user?.id)
+  const viewing = useViewAsStore((s) => s.viewingAsUserId)
+  return viewing ?? userId ?? 0
+}
+
+/** True when admin is viewing as a different user (impersonating). */
+export function useIsImpersonating(): boolean {
+  const userId = useAuthStore((s) => s.user?.id)
+  const viewing = useViewAsStore((s) => s.viewingAsUserId)
+  return Boolean(userId != null && viewing != null && viewing !== userId)
+}
+
+/** True when the current view allows mutations (i.e., not impersonating). */
+export function useCanWrite(): boolean {
+  return !useIsImpersonating()
 }

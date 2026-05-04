@@ -1,7 +1,20 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, getUserHome, getUserAgentsDir, readJsonSafe } = require('../config.cjs');
+
+/** Resolve home/agentsDir/workspace for a userId. userId == null/1 → admin paths. */
+function _homeFor(userId) {
+  return userId == null || Number(userId) === 1 ? OPENCLAW_HOME : getUserHome(userId);
+}
+function _agentsDirFor(userId) {
+  return userId == null || Number(userId) === 1 ? AGENTS_DIR : getUserAgentsDir(userId);
+}
+function _workspaceFor(userId) {
+  return userId == null || Number(userId) === 1
+    ? OPENCLAW_WORKSPACE
+    : path.join(getUserHome(userId), 'workspace');
+}
 const { ensureUpdateTaskScript, ensureCheckTasksScript, ensureCheckConnectionsScript, ensureGwsCallScript, ensureAocConnectScript, ensureMcpCallScript, ensureFetchAttachmentScript, ensureSaveOutputScript, ensurePostCommentScript, injectHeartbeatTaskCheck, ensureSharedAdlcScripts, syncAgentBuiltins, stampBuiltinSharedMeta } = require('../scripts.cjs');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -288,7 +301,8 @@ function validateProvision(opts, agentList) {
 // ── Main provisioning function ────────────────────────────────────────────────
 
 function provisionAgent(opts, userId) {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+  const home = _homeFor(userId);
+  const configPath = path.join(home, 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -317,9 +331,9 @@ function provisionAgent(opts, userId) {
     scriptTemplates = [],
   } = opts;
 
-  // 2. Resolve paths
-  const workspacePath = path.join(OPENCLAW_HOME, 'workspaces', id);
-  const agentStatePath = path.join(AGENTS_DIR, id, 'agent');
+  // 2. Resolve paths (per-tenant)
+  const workspacePath = path.join(home, 'workspaces', id);
+  const agentStatePath = path.join(_agentsDirFor(userId), id, 'agent');
 
   // 3. Mutate openclaw.json ──────────────────────────────────────────────────
 
@@ -472,8 +486,8 @@ function provisionAgent(opts, userId) {
     `# MEMORY.md — ${name}'s Long-Term Memory\n\n_Nothing here yet. ${name} will fill this in over time._\n`
   );
 
-  // USER.md — copy from main workspace if available
-  const mainUserMd = readFileSafe(path.join(OPENCLAW_WORKSPACE, 'USER.md'));
+  // USER.md — copy from this user's main workspace if available
+  const mainUserMd = readFileSafe(path.join(_workspaceFor(userId), 'USER.md'));
   if (mainUserMd) {
     writeFile(path.join(workspacePath, 'USER.md'), mainUserMd);
   }

@@ -13,10 +13,14 @@ function normalizeStreaming(val) {
 }
 
 const path = require('path');
-const { OPENCLAW_HOME, readJsonSafe } = require('./config.cjs');
+const { OPENCLAW_HOME, getUserHome, readJsonSafe } = require('./config.cjs');
 
-function parseRoutes() {
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+function _homeFor(userId) {
+  return userId == null ? OPENCLAW_HOME : getUserHome(userId);
+}
+
+function parseRoutes(userId) {
+  const config = readJsonSafe(path.join(_homeFor(userId), 'openclaw.json')) || {};
   // agents is { defaults, list } — actual array is at agents.list
   const agentList = Array.isArray(config.agents) ? config.agents : (config.agents?.list || []);
   const bindings  = (config.bindings || []).filter(b => b.type === 'route');
@@ -71,8 +75,8 @@ function parseRoutes() {
  * Returns sanitized global channel configuration (no bot tokens).
  * Used by GET /api/channels for the Routing management page.
  */
-function getChannelsConfig() {
-  const config   = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+function getChannelsConfig(userId) {
+  const config   = readJsonSafe(path.join(_homeFor(userId), 'openclaw.json')) || {};
   const channels = config.channels || {};
 
   const telegram = channels.telegram

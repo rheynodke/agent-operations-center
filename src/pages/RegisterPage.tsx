@@ -1,4 +1,4 @@
-import { useEffect, useState, FormEvent } from "react"
+import { useEffect, useState, useRef, FormEvent } from "react"
 import { useSearchParams, useNavigate } from "react-router-dom"
 import { Loader2, CheckCircle2, XCircle } from "lucide-react"
 import { api } from "@/lib/api"
@@ -19,6 +19,22 @@ export function RegisterPage() {
   const [displayName, setDisplayName] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
+  const [spinnerText, setSpinnerText] = useState("Create account")
+  const spinnerTimers = useRef<number[]>([])
+
+  function startSpinnerProgression() {
+    setSpinnerText("Creating your account...")
+    spinnerTimers.current.push(
+      window.setTimeout(() => setSpinnerText("Setting up your workspace..."), 2000),
+      window.setTimeout(() => setSpinnerText("Setting up your workspace... (this may take up to 30 seconds)"), 10000),
+    )
+  }
+
+  function stopSpinnerProgression() {
+    spinnerTimers.current.forEach(clearTimeout)
+    spinnerTimers.current = []
+    setSpinnerText("Create account")
+  }
 
   useEffect(() => {
     if (!token) {
@@ -44,15 +60,21 @@ export function RegisterPage() {
     if (!username.trim() || !password) return
     setSubmitting(true)
     setError("")
+    startSpinnerProgression()
     try {
       const res = await api.registerWithInvite(token, username.trim(), password, displayName.trim() || undefined)
       setAuth(res.token, res.user)
       navigate("/", { replace: true })
-    } catch (err) {
-      const e = err as Error & { body?: { error?: string } }
-      setError(e.body?.error || e.message || "Registration failed")
+    } catch (err: any) {
+      if (err?.code === "GATEWAY_SPAWN_FAILED" || err?.status === 503) {
+        setError("Account creation succeeded but workspace setup failed. Please contact your admin to retry the workspace setup.")
+      } else {
+        const e = err as Error & { body?: { error?: string } }
+        setError(e.body?.error || e.message || "Registration failed")
+      }
     } finally {
       setSubmitting(false)
+      stopSpinnerProgression()
     }
   }
 
@@ -143,7 +165,7 @@ export function RegisterPage() {
               className="w-full rounded-md bg-primary text-primary-foreground py-2.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              Create account
+              {submitting ? spinnerText : "Create account"}
             </button>
 
             <p className="text-center text-xs text-muted-foreground">

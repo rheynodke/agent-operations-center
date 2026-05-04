@@ -6,6 +6,8 @@
  */
 'use strict';
 
+const { parseOwnerParam } = require('../helpers/access-control.cjs');
+
 module.exports = function roomsRouter(deps) {
   const {
     db, parsers, broadcast,
@@ -20,7 +22,29 @@ module.exports = function roomsRouter(deps) {
 
   router.get('/rooms', db.authMiddleware, (req, res) => {
   try {
-    res.json({ rooms: groupRoomsForClient(db.listMissionRoomsForUser(req)) });
+    // listMissionRoomsForUser already enforces baseline access (admin sees all,
+    // regular users see global rooms + rooms in their projects/agents).
+    // We then layer ?owner= scoping on top for per-user resources.
+    const base = db.listMissionRoomsForUser(req);
+    const scope = parseOwnerParam(req);
+    const isAdmin = req.user?.role === 'admin';
+    const uid = req.user?.userId;
+
+    const rooms = base.filter((room) => {
+      // Global rooms are always visible regardless of owner scope
+      if (room.kind === 'global') return true;
+      const ownerId = room.createdBy ?? null;
+      if (ownerId == null) return isAdmin; // legacy unowned non-global → admin only
+      if (isAdmin) {
+        if (scope === 'all') return true;
+        if (scope === 'me') return ownerId === uid;
+        if (typeof scope === 'number') return ownerId === scope;
+        return true;
+      }
+      return ownerId === uid;
+    });
+
+    res.json({ rooms: groupRoomsForClient(rooms) });
   } catch (err) {
     console.error('[api/rooms GET]', err);
     res.status(500).json({ error: 'Failed to fetch rooms' });
@@ -139,9 +163,10 @@ module.exports = function roomsRouter(deps) {
 });
 
 // Provision a new agent — creates config, workspace, channel bindings, and SQLite profile
-  router.post('/agents', db.authMiddleware, (req, res) => {
+  router.post('/agents', db.authMiddleware, async (req, res) => {
   try {
-    const result = parsers.provisionAgent(req.body, req.user?.userId);
+    const userId = Number(req.user?.userId ?? req.user?.id);
+    const result = parsers.provisionAgent(req.body, userId);
     // Save profile to SQLite (including ADLC role if template was used)
     db.upsertAgentProfile({
       agentId: result.agentId,
@@ -152,14 +177,25 @@ module.exports = function roomsRouter(deps) {
       description: req.body.description || null,
       tags: req.body.tags || [],
       notes: null,
-      provisionedBy: req.user?.userId || null,
+      provisionedBy: userId || null,
       role: req.body.adlcRole || null,
     });
     result.profileSaved = true;
-    console.log(`[api/agents/provision] Provisioned agent "${result.agentId}" with ${result.bindings.length} binding(s)`);
+    console.log(`[api/agents/provision] uid=${userId} agent="${result.agentId}" bindings=${result.bindings.length}`);
 
-    // Restart gateway so heartbeat config for the new agent takes effect
-    restartGateway(`agent provisioned: ${result.agentId}`);
+    // Restart the appropriate gateway so heartbeat config for the new agent takes effect.
+    //  - admin (uid=1): restart the external openclaw-gateway process
+    //  - other users: restart their orchestrator-managed per-user gateway
+    if (userId === 1) {
+      restartGateway(`agent provisioned: ${result.agentId}`);
+    } else {
+      const orchestrator = require('../lib/gateway-orchestrator.cjs');
+      try {
+        await orchestrator.restartGateway(userId);
+      } catch (e) {
+        console.warn(`[api/agents/provision] orchestrator.restartGateway(${userId}) failed: ${e.message}`);
+      }
+    }
     result.gatewayRestarted = true;
 
     res.status(201).json(result);

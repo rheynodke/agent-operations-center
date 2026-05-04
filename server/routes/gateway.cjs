@@ -8,6 +8,8 @@
 const path = require('path');
 const net = require('net');
 const { exec, spawn } = require('child_process');
+const orchestrator = require('../lib/gateway-orchestrator.cjs');
+const { parseScopeUserId } = require('../helpers/access-control.cjs');
 
 // ─── Gateway helpers (module-scoped state) ─────────────────────────────────────
 
@@ -91,20 +93,37 @@ module.exports = function gatewayRouter(deps) {
   // GET /gateway/status
   router.get('/gateway/status', db.authMiddleware, async (req, res) => {
     try {
-      const gwConfig = getGatewayConfig(parsers);
-      const port = gwConfig.port || 18789;
+      const userId = parseScopeUserId(req);
 
-      const [portOpen] = await Promise.all([checkGatewayPort(port)]);
-
-      findGatewayPid((pids) => {
-        res.json({
-          running: pids.length > 0 && portOpen,
-          pids,
-          port,
-          portOpen,
-          mode: gwConfig.mode || 'local',
-          bind: gwConfig.bind || 'loopback',
+      if (Number(userId) === 1) {
+        // Admin's external gateway — preserve legacy detection
+        const gwConfig = getGatewayConfig(parsers);
+        const port = gwConfig.port || 18789;
+        const portOpen = await checkGatewayPort(port);
+        return findGatewayPid((pids) => {
+          res.json({
+            running: pids.length > 0 && portOpen,
+            pids,
+            port,
+            portOpen,
+            mode:    gwConfig.mode || 'local',
+            bind:    gwConfig.bind || 'loopback',
+            managed: false,
+          });
         });
+      }
+
+      // Non-admin / impersonated managed gateway
+      const state = orchestrator.getGatewayState(userId) || {};
+      res.json({
+        running:  state.state === 'running',
+        pids:     state.pid != null ? [state.pid] : [],
+        port:     state.port ?? null,
+        portOpen: state.state === 'running',
+        mode:     'managed',
+        bind:     'loopback',
+        state:    state.state ?? 'stopped',
+        managed:  true,
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -154,43 +173,105 @@ module.exports = function gatewayRouter(deps) {
     }
   });
 
-  // POST /gateway/restart
-  router.post('/gateway/restart', db.authMiddleware, (req, res) => {
-    if (restartLock) {
-      return res.status(429).json({ error: 'Restart already in progress' });
+  // ─── Self-service per-user gateway controls ─────────────────────────────────
+  router.post('/gateway/start', db.authMiddleware, async (req, res) => {
+    const userId = Number(req.user.userId ?? req.user.id);
+    if (userId === 1) {
+      return res.status(400).json({ error: 'Admin gateway is external — use /api/gateway/restart instead' });
     }
-    console.log('[gateway] Restart requested by', req.user.username);
-    restartGateway(`requested by ${req.user.username}`);
-    findGatewayPid((pids) => {
-      res.json({ ok: true, killedPids: pids, message: 'Gateway restarting…' });
-    });
+    try {
+      const out = await orchestrator.spawnGateway(userId);
+      res.json({ ok: true, port: out.port, pid: out.pid });
+    } catch (err) {
+      console.error(`[gateway/start uid=${userId}]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
   });
 
-  // POST /gateway/stop
-  router.post('/gateway/stop', db.authMiddleware, (req, res) => {
-    findGatewayPid((pids) => {
-      if (pids.length === 0) return res.json({ ok: true, message: 'Gateway already stopped' });
-      
-      for (const pid of pids) {
-        try {
-          process.kill(pid, 'SIGTERM');
-        } catch (e) {
-          console.error(`[gateway] Failed to kill PID ${pid}:`, e.message);
+  router.post('/gateway/restart', db.authMiddleware, async (req, res) => {
+    const userId = Number(req.user.userId ?? req.user.id);
+    if (userId === 1) {
+      // Legacy admin restart preserved
+      if (restartLock) return res.status(429).json({ error: 'Restart already in progress' });
+      console.log('[gateway] Admin restart requested by', req.user.username);
+      restartGateway(`requested by ${req.user.username}`);
+      return findGatewayPid((pids) => res.json({ ok: true, killedPids: pids, message: 'Gateway restarting…' }));
+    }
+    try {
+      const out = await orchestrator.restartGateway(userId);
+      res.json({ ok: true, port: out.port, pid: out.pid });
+    } catch (err) {
+      console.error(`[gateway/restart uid=${userId}]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/gateway/stop', db.authMiddleware, async (req, res) => {
+    const userId = Number(req.user.userId ?? req.user.id);
+    if (userId === 1) {
+      return findGatewayPid((pids) => {
+        if (pids.length === 0) return res.json({ ok: true, message: 'Gateway already stopped' });
+        for (const pid of pids) {
+          try { process.kill(pid, 'SIGTERM'); } catch (e) {
+            console.error(`[gateway] Failed to kill PID ${pid}:`, e.message);
+          }
         }
-      }
-      
-      console.log(`[gateway] Stopped (PIDs: [${pids.join(', ')}]) by ${req.user.username}`);
-      res.json({ ok: true, killedPids: pids, message: 'Gateway stopped' });
-    });
+        console.log(`[gateway] Stopped (PIDs: [${pids.join(', ')}]) by ${req.user.username}`);
+        res.json({ ok: true, killedPids: pids, message: 'Gateway stopped' });
+      });
+    }
+    try {
+      await orchestrator.stopGateway(userId);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(`[gateway/stop uid=${userId}]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Admin cross-user controls ──────────────────────────────────────────────
+  router.post('/admin/users/:id/gateway/restart', db.authMiddleware, db.requireAdmin, async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    if (targetId === 1) {
+      return res.status(400).json({ error: 'Admin gateway is external — use /api/gateway/restart for self' });
+    }
+    try {
+      const out = await orchestrator.restartGateway(targetId);
+      res.json({ ok: true, port: out.port, pid: out.pid });
+    } catch (err) {
+      console.error(`[admin/users/${targetId}/restart]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/admin/users/:id/gateway/stop', db.authMiddleware, db.requireAdmin, async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    if (targetId === 1) {
+      return res.status(400).json({ error: 'Admin gateway is external — use /api/gateway/stop for self' });
+    }
+    try {
+      await orchestrator.stopGateway(targetId);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(`[admin/users/${targetId}/stop]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ─── Metrics dashboard ──────────────────────────────────────────────────────
   router.get('/metrics/summary', db.authMiddleware, (req, res) => {
     try {
-      const range = req.query.range || '30d';
+      const userId    = parseScopeUserId(req);
+      const range     = req.query.range || '30d';
       const projectId = req.query.projectId || null;
-      const agentId = req.query.agentId || null;
-      const data = metrics.getSummary({ range, projectId, agentId });
+      const agentId   = req.query.agentId || null;
+      const data = metrics.getSummary({ range, projectId, agentId, userId });
       res.json(data);
     } catch (err) {
       if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
@@ -201,10 +282,11 @@ module.exports = function gatewayRouter(deps) {
 
   router.get('/metrics/throughput', db.authMiddleware, (req, res) => {
     try {
-      const range = req.query.range || '30d';
+      const userId    = parseScopeUserId(req);
+      const range     = req.query.range || '30d';
       const projectId = req.query.projectId || null;
-      const agentId = req.query.agentId || null;
-      const data = metrics.getThroughput({ range, projectId, agentId });
+      const agentId   = req.query.agentId || null;
+      const data = metrics.getThroughput({ range, projectId, agentId, userId });
       res.json(data);
     } catch (err) {
       if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
@@ -215,9 +297,10 @@ module.exports = function gatewayRouter(deps) {
 
   router.get('/metrics/agents', db.authMiddleware, (req, res) => {
     try {
-      const range = req.query.range || '30d';
+      const userId    = parseScopeUserId(req);
+      const range     = req.query.range || '30d';
       const projectId = req.query.projectId || null;
-      const data = metrics.getAgentLeaderboard({ range, projectId });
+      const data = metrics.getAgentLeaderboard({ range, projectId, userId });
 
       let agentsById = {};
       try {
@@ -239,10 +322,11 @@ module.exports = function gatewayRouter(deps) {
 
   router.get('/metrics/lifecycle', db.authMiddleware, (req, res) => {
     try {
-      const range = req.query.range || '30d';
+      const userId    = parseScopeUserId(req);
+      const range     = req.query.range || '30d';
       const projectId = req.query.projectId || null;
-      const agentId = req.query.agentId || null;
-      const data = metrics.getLifecycleFunnel({ range, projectId, agentId });
+      const agentId   = req.query.agentId || null;
+      const data = metrics.getLifecycleFunnel({ range, projectId, agentId, userId });
       res.json(data);
     } catch (err) {
       if (/Invalid range/.test(err.message)) return res.status(400).json({ error: err.message });
@@ -253,10 +337,11 @@ module.exports = function gatewayRouter(deps) {
 
   router.get('/metrics/agents/:agentId/tasks', db.authMiddleware, (req, res) => {
     try {
+      const userId    = parseScopeUserId(req);
       const { agentId } = req.params;
       const projectId = req.query.projectId || null;
       const limit = req.query.limit != null ? Number(req.query.limit) : 20;
-      const tasks = metrics.getAgentRecentTasks({ agentId, projectId, limit });
+      const tasks = metrics.getAgentRecentTasks({ agentId, projectId, limit, userId });
 
       let agent = null;
       try {

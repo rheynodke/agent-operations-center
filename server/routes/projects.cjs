@@ -7,6 +7,8 @@
  */
 'use strict';
 
+const { parseOwnerParam } = require('../helpers/access-control.cjs');
+
 module.exports = function projectsRouter(deps) {
   const { db, parsers, projectGit, projectWs, vSave } = deps;
   const router = require('express').Router();
@@ -136,8 +138,26 @@ module.exports = function projectsRouter(deps) {
   }
 });
 
-  router.get('/projects', db.authMiddleware, (_req, res) => {
-  res.json({ projects: db.getAllProjects() });
+  router.get('/projects', db.authMiddleware, (req, res) => {
+  const allProjects = db.getAllProjects();
+  const scope = parseOwnerParam(req);
+  const isAdmin = req.user?.role === 'admin';
+  const uid = req.user?.userId;
+
+  const projects = allProjects.filter((project) => {
+    const ownerId = project.createdBy ?? null;
+    // unowned projects (ownerId == null) treated as shared — visible to all
+    if (ownerId == null) return true;
+    if (isAdmin) {
+      if (scope === 'all') return true;
+      if (scope === 'me') return ownerId === uid;
+      if (typeof scope === 'number') return ownerId === scope;
+      return true;
+    }
+    return ownerId === uid;
+  });
+
+  res.json({ projects });
 });
 
 // POST /api/projects
@@ -683,8 +703,19 @@ module.exports = function projectsRouter(deps) {
 // Cron — list
   router.get('/cron', db.authMiddleware, (req, res) => {
   try {
-    res.json({ jobs: parsers.parseCronJobs() });
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    let jobs = parsers.parseCronJobs(targetUid) || [];
+
+    // Defensive: per-user filesystem already scopes the read, but if any job
+    // references an agent owned by someone else (legacy data), strip it.
+    const isAdmin = req.user?.role === 'admin';
+    if (!isAdmin) {
+      jobs = jobs.filter((j) => !j.agentId || db.userOwnsAgent(req, j.agentId));
+    }
+    res.json({ jobs });
   } catch (err) {
+    console.error('[api/cron]', err.message);
     res.status(500).json({ error: 'Failed to fetch cron jobs' });
   }
 });
@@ -885,10 +916,11 @@ module.exports = function projectsRouter(deps) {
   catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-// Global channel configuration (sanitized — no tokens)
+// Per-user channel configuration (sanitized — no tokens)
   router.get('/channels', db.authMiddleware, (req, res) => {
   try {
-    res.json(parsers.getChannelsConfig());
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    res.json(parsers.getChannelsConfig(parseScopeUserId(req)));
   } catch (err) {
     console.error('[api/channels]', err);
     res.status(500).json({ error: 'Failed to fetch channel config' });
@@ -966,10 +998,19 @@ module.exports = function projectsRouter(deps) {
 
 });
 
-// Routes (channel bindings)
+// Routes (channel bindings) — per-user
   router.get('/routes', db.authMiddleware, (req, res) => {
   try {
-    const routes = typeof parsers.parseRoutes === 'function' ? parsers.parseRoutes() : [];
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    let routes = typeof parsers.parseRoutes === 'function' ? parsers.parseRoutes(targetUid) : [];
+
+    // Defensive: drop bindings whose agent isn't owned by this user.
+    const isAdmin = req.user?.role === 'admin';
+    if (!isAdmin) {
+      routes = routes.filter((r) => !r.agentId || db.userOwnsAgent(req, r.agentId));
+    }
+
     // Enrich with SQLite profile data (avatarPresetId, color)
     const enriched = routes.map(r => {
       const profile = db.getAgentProfile(r.agentId);
@@ -981,6 +1022,7 @@ module.exports = function projectsRouter(deps) {
     });
     res.json({ routes: enriched });
   } catch (err) {
+    console.error('[api/routes]', err);
     res.status(500).json({ error: 'Failed to fetch routes' });
   }
 });

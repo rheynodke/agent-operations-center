@@ -1,4 +1,5 @@
 import { useAuthStore } from "@/stores"
+import { useViewAsStore } from "@/stores/useViewAsStore"
 import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, AgentCapabilities, ProjectWorkspaceMode, ValidatePathResult, FetchBranchesResult, CreateProjectExtendedPayload, FsBrowseResult, MissionRoom, MissionMessage } from "@/types"
 
 export interface SkillFileNode {
@@ -12,6 +13,18 @@ export interface SkillFileNode {
 }
 
 const BASE = "/api"
+
+/**
+ * Append ?owner=<viewingAsUserId> to a URL when an admin is impersonating.
+ * Non-admin users get no scope param (server enforces self-only via auth).
+ */
+function withScope(url: string): string {
+  const me = useAuthStore.getState().user
+  const scope = useViewAsStore.getState().viewingAsUserId
+  if (!me || me.role !== 'admin') return url
+  if (scope == null || scope === me.id) return url
+  return url + (url.includes('?') ? '&' : '?') + `owner=${scope}`
+}
 
 async function request<T>(
   path: string,
@@ -91,11 +104,14 @@ export const api = {
     request<{ ok: boolean }>(`/users/${id}`, { method: "DELETE" }),
 
   // Overview
-  getOverview: () => request("/overview"),
-  getActivity: () => request("/activity"),
+  getOverview: () => request(withScope("/overview")),
+  getActivity: () => request(withScope("/activity")),
 
-  // Agents
-  getAgents: () => request("/agents"),
+  // Agents — explicit `opts.owner` wins; otherwise admin's view-as scope is threaded.
+  getAgents: (opts: { owner?: "me" | "all" | number } = {}) => {
+    const qs = opts.owner != null ? `?owner=${encodeURIComponent(String(opts.owner))}` : ""
+    return request(withScope(`/agents${qs}`))
+  },
   getAgent: (id: string) => request(`/agents/${id}`),
   getAgentDetail: (id: string) => request(`/agents/${id}/detail`),
   updateAgent: (id: string, updates: Record<string, unknown>) =>
@@ -309,7 +325,7 @@ export const api = {
   // Sessions
   getSessions: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : ""
-    return request(`/sessions${qs}`)
+    return request(withScope(`/sessions${qs}`))
   },
   getSession: (id: string) => request(`/sessions/${id}`),
   getSessionMessages: (agentId: string, sessionId: string) =>
@@ -410,29 +426,29 @@ export const api = {
     const params = new URLSearchParams({ range });
     if (projectId) params.set('projectId', projectId);
     if (agentId)   params.set('agentId',   agentId);
-    return request<import('@/types').MetricsSummary>(`/metrics/summary?${params.toString()}`);
+    return request<import('@/types').MetricsSummary>(withScope(`/metrics/summary?${params.toString()}`));
   },
   getMetricsThroughput: (range: import('@/types').MetricsRange = '30d', projectId?: string | null, agentId?: string | null) => {
     const params = new URLSearchParams({ range });
     if (projectId) params.set('projectId', projectId);
     if (agentId)   params.set('agentId',   agentId);
-    return request<import('@/types').MetricsThroughput>(`/metrics/throughput?${params.toString()}`);
+    return request<import('@/types').MetricsThroughput>(withScope(`/metrics/throughput?${params.toString()}`));
   },
   getMetricsAgents: (range: import('@/types').MetricsRange = '30d', projectId?: string | null) => {
     const params = new URLSearchParams({ range });
     if (projectId) params.set('projectId', projectId);
-    return request<import('@/types').MetricsAgents>(`/metrics/agents?${params.toString()}`);
+    return request<import('@/types').MetricsAgents>(withScope(`/metrics/agents?${params.toString()}`));
   },
   getMetricsLifecycle: (range: import('@/types').MetricsRange = '30d', projectId?: string | null, agentId?: string | null) => {
     const params = new URLSearchParams({ range });
     if (projectId) params.set('projectId', projectId);
     if (agentId)   params.set('agentId',   agentId);
-    return request<import('@/types').MetricsLifecycle>(`/metrics/lifecycle?${params.toString()}`);
+    return request<import('@/types').MetricsLifecycle>(withScope(`/metrics/lifecycle?${params.toString()}`));
   },
   getMetricsAgentTasks: (agentId: string, projectId?: string | null, limit = 20) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (projectId) params.set('projectId', projectId);
-    return request<import('@/types').MetricsAgentTasks>(`/metrics/agents/${encodeURIComponent(agentId)}/tasks?${params.toString()}`);
+    return request<import('@/types').MetricsAgentTasks>(withScope(`/metrics/agents/${encodeURIComponent(agentId)}/tasks?${params.toString()}`));
   },
 
   // Task comments — user ↔ agent discussion thread
@@ -650,7 +666,7 @@ export const api = {
     request<{ ok: boolean }>(`/projects/${projectId}/integrations/${id}/sync`, { method: 'POST' }),
 
   // Cron
-  getCronJobs: () => request("/cron"),
+  getCronJobs: () => request(withScope("/cron")),
   getCronDeliveryTargets: () => request("/cron/delivery-targets"),
   createCronJob: (opts: Record<string, unknown>) =>
     request("/cron", { method: "POST", body: JSON.stringify(opts) }),
@@ -703,8 +719,8 @@ export const api = {
   getHookSessions: (limit = 50) => request(`/hooks/sessions?limit=${limit}`),
 
   // Routes & Channels
-  getRoutes: () => request("/routes"),
-  getChannels: () => request("/channels"),
+  getRoutes: () => request(withScope("/routes")),
+  getChannels: () => request(withScope("/channels")),
 
   // ClawHub skill install
   clawHubTargets: () =>
@@ -959,11 +975,21 @@ export const api = {
 
   // Gateway management
   getGatewayStatus: () =>
-    request<{ running: boolean; pids: number[]; port: number; portOpen: boolean; mode: string; bind: string }>("/gateway/status"),
+    request<{ running: boolean; pids: number[]; port: number; portOpen: boolean; mode: string; bind: string }>(withScope("/gateway/status")),
   restartGateway: () =>
-    request<{ ok: boolean; killedPids: number[]; message: string }>("/gateway/restart", { method: "POST" }),
+    request<{ ok: boolean; killedPids?: number[]; port?: number; pid?: number; message?: string }>("/gateway/restart", { method: "POST" }),
   stopGateway: () =>
-    request<{ ok: boolean; killedPids: number[]; message: string }>("/gateway/stop", { method: "POST" }),
+    request<{ ok: boolean; killedPids?: number[]; message?: string }>("/gateway/stop", { method: "POST" }),
+  startGateway: () =>
+    request<{ ok: boolean; port?: number; pid?: number }>("/gateway/start", { method: "POST" }),
+  stopGatewaySelf: () =>
+    request<{ ok: boolean; killedPids?: number[]; message?: string }>("/gateway/stop", { method: "POST" }),
+  restartGatewaySelf: () =>
+    request<{ ok: boolean; port?: number; pid?: number; killedPids?: number[]; message?: string }>("/gateway/restart", { method: "POST" }),
+  adminRestartUserGateway: (userId: number) =>
+    request<{ ok: boolean; port?: number; pid?: number }>(`/admin/users/${userId}/gateway/restart`, { method: "POST" }),
+  adminStopUserGateway: (userId: number) =>
+    request<{ ok: boolean }>(`/admin/users/${userId}/gateway/stop`, { method: "POST" }),
 
   // OpenClaw config
   getConfig: () =>

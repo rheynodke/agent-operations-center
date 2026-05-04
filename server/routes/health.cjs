@@ -12,6 +12,7 @@
  */
 module.exports = function healthRouter(deps) {
   const { db, parsers } = deps;
+  const { parseScopeUserId } = require('../helpers/access-control.cjs');
   const router = require('express').Router();
 
   // GET /health
@@ -19,10 +20,11 @@ module.exports = function healthRouter(deps) {
     res.json({ ok: true, ts: Date.now(), user: req.user.username });
   });
 
-  // GET /overview — dashboard stats
+  // GET /overview — dashboard stats (per-user; admin can impersonate via ?owner=N)
   router.get('/overview', db.authMiddleware, (req, res) => {
     try {
-      const stats = parsers.getDashboardStats();
+      const userId = parseScopeUserId(req);
+      const stats = parsers.getDashboardStats(userId);
       res.json(stats);
     } catch (err) {
       console.error('[api/overview]', err);

@@ -1,22 +1,31 @@
 const chokidar = require('chokidar');
 const fs = require('fs');
 const path = require('path');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, getUserHome, readJsonSafe } = require('./config.cjs');
 const {
-  OPENCLAW_HOME,
-  OPENCLAW_WORKSPACE,
   parseSingleGatewayEntry,
   parseSingleClaudeCliEntry,
   buildAgentClaudeCliMap,
-} = require('./index.cjs');
-const { readJsonSafe } = require('./config.cjs');
+} = require('./sessions/index.cjs');
 const { processClaudeCliFile: forwardClaudeCliIntermediateToTelegram } =
   require('./claude-cli-telegram-forwarder.cjs');
 
 class LiveFeedWatcher {
-  constructor() {
+  constructor({ ownerUserId = 1 } = {}) {
+    this.ownerUserId = ownerUserId;
     this.listeners = new Set();
     this.watchers = [];
     this.tailPositions = new Map();
+  }
+
+  _home() {
+    return Number(this.ownerUserId) === 1 ? OPENCLAW_HOME : getUserHome(this.ownerUserId);
+  }
+
+  _workspace() {
+    return Number(this.ownerUserId) === 1
+      ? OPENCLAW_WORKSPACE
+      : path.join(getUserHome(this.ownerUserId), 'workspace');
   }
 
   addListener(fn) {
@@ -25,7 +34,7 @@ class LiveFeedWatcher {
   }
 
   broadcast(event) {
-    const payload = { ...event, timestamp: Date.now() };
+    const payload = { ...event, ownerUserId: this.ownerUserId, timestamp: Date.now() };
     for (const fn of this.listeners) {
       try { fn(payload); } catch {}
     }
@@ -33,17 +42,17 @@ class LiveFeedWatcher {
 
   start() {
     this._watchFile(
-      path.join(OPENCLAW_HOME, 'code-agent-sessions.json'),
+      path.join(this._home(), 'code-agent-sessions.json'),
       'session:update',
     );
 
     this._watchDir(
-      path.join(OPENCLAW_WORKSPACE, 'dev-progress'),
+      path.join(this._workspace(), 'dev-progress'),
       'progress:update',
     );
 
     this._watchFile(
-      path.join(OPENCLAW_HOME, 'cron', 'jobs.json'),
+      path.join(this._home(), 'cron', 'jobs.json'),
       'cron:update',
     );
 
@@ -54,13 +63,13 @@ class LiveFeedWatcher {
     );
 
     this._watchFile(
-      path.join(OPENCLAW_HOME, 'subagents', 'runs.json'),
+      path.join(this._home(), 'subagents', 'runs.json'),
       'subagent:update',
     );
 
     // Watch ALL gateway agent session JSONL files via polling
     // (chokidar/inotify fails on this VPS due to low max_user_instances)
-    const agentsDir = path.join(OPENCLAW_HOME, 'agents');
+    const agentsDir = path.join(this._home(), 'agents');
     if (fs.existsSync(agentsDir)) {
       this._startAgentPolling(agentsDir);
     }
@@ -86,12 +95,12 @@ class LiveFeedWatcher {
    */
   _watchAgentOutputs() {
     try {
-      const cfg = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+      const cfg = readJsonSafe(path.join(this._home(), 'openclaw.json')) || {};
       const agents = cfg.agents?.list || [];
       const expandHome = (p) => (p || '').replace(/^~/, process.env.HOME || process.env.USERPROFILE || '~');
 
       for (const agent of agents) {
-        const workspace = expandHome(agent.workspace || OPENCLAW_WORKSPACE);
+        const workspace = expandHome(agent.workspace || this._workspace());
         const outputsDir = path.join(workspace, 'outputs');
         try { fs.mkdirSync(outputsDir, { recursive: true }); } catch {}
 
@@ -141,9 +150,9 @@ class LiveFeedWatcher {
 
   _watchSkillsDirs() {
     const dirs = [
-      path.join(OPENCLAW_HOME, 'skills'),
-      path.join(OPENCLAW_WORKSPACE, '.agents', 'skills'),
-      path.join(OPENCLAW_WORKSPACE, 'skills'),
+      path.join(this._home(), 'skills'),
+      path.join(this._workspace(), '.agents', 'skills'),
+      path.join(this._workspace(), 'skills'),
     ];
     let debounceTimer = null;
     const emit = () => {
@@ -333,7 +342,7 @@ class LiveFeedWatcher {
       if (!fs.existsSync(info.projectDir)) continue;
 
       // Gateway sessions.json for this agent
-      const sessionsFile = path.join(OPENCLAW_HOME, 'agents', agentId, 'sessions', 'sessions.json');
+      const sessionsFile = path.join(this._home(), 'agents', agentId, 'sessions', 'sessions.json');
       const gwData = readJsonSafe(sessionsFile);
       const gwEntries = (gwData && typeof gwData === 'object')
         ? Object.entries(gwData).map(([key, meta]) => ({ key, sessionId: meta?.sessionId, updatedAt: meta?.updatedAt || 0 }))
@@ -697,4 +706,50 @@ class LiveFeedWatcher {
   }
 }
 
-module.exports = { LiveFeedWatcher };
+class WatcherPool {
+  constructor() {
+    this.watchers = new Map();    // userId → LiveFeedWatcher
+    this.listeners = new Set();
+  }
+
+  ensureForUser(userId) {
+    const uid = Number(userId);
+    if (this.watchers.has(uid)) return this.watchers.get(uid);
+    const w = new LiveFeedWatcher({ ownerUserId: uid });
+    w.addListener((event) => this._fanout(event));
+    w.start();
+    this.watchers.set(uid, w);
+    return w;
+  }
+
+  removeForUser(userId) {
+    const uid = Number(userId);
+    const w = this.watchers.get(uid);
+    if (!w) return;
+    try { w.stop(); } catch (_) {}
+    this.watchers.delete(uid);
+  }
+
+  addListener(fn) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  _fanout(event) {
+    for (const fn of this.listeners) {
+      try { fn(event); } catch {}
+    }
+  }
+
+  list() {
+    return Array.from(this.watchers.keys());
+  }
+
+  stopAll() {
+    for (const uid of Array.from(this.watchers.keys())) {
+      this.removeForUser(uid);
+    }
+  }
+}
+
+module.exports = { LiveFeedWatcher, WatcherPool };

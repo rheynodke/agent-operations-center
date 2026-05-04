@@ -11,6 +11,7 @@ import { useWebSocket } from "@/hooks/useWebSocket"
 import { useDataLoader } from "@/hooks/useDataLoader"
 import { api } from "@/lib/api"
 import { Loader2 } from "lucide-react"
+import { ImpersonationBanner } from "@/components/ImpersonationBanner"
 
 // Pages
 import { OverviewPage } from "@/pages/OverviewPage"
@@ -46,7 +47,9 @@ function DashboardShell() {
   const isChatPage = location.pathname === "/chat"
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background">
+      <ImpersonationBanner />
+      <div className="flex flex-1 min-h-0 overflow-hidden">
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
@@ -90,6 +93,7 @@ function DashboardShell() {
         </main>
         <LiveFeedPanel />
         <MobileFeedSheet />
+      </div>
       </div>
     </div>
   )

@@ -1,15 +1,18 @@
-import { useState, useMemo, useEffect, useRef, lazy, Suspense } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback, lazy, Suspense } from "react"
 const ReactMarkdown = lazy(() => import("react-markdown").then(m => ({ default: m.default })))
 import remarkGfm from "remark-gfm"
 import { Search, Bot, Plus, Filter, ChevronDown, ChevronUp } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useAgentStore, useSessionStore } from "@/stores"
+import { useCanWrite } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 import type { Agent } from "@/types"
 import { useNavigate } from "react-router-dom"
 import { ProvisionAgentWizard } from "@/components/agents/ProvisionAgentWizard"
 import { TemplateEntryModal } from "@/components/agents/TemplateEntryModal"
+import { OwnerFilter, type OwnerScope } from "@/components/admin/OwnerFilter"
+import { api } from "@/lib/api"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import type { AgentRoleTemplate } from "@/types"
 import { getTemplateColor, getTemplateLabel, getTemplateById } from "@/data/agentRoleTemplates"
@@ -368,9 +371,11 @@ export function AgentsPage() {
   const agents = useAgentStore((s) => s.agents)
   const setAgents = useAgentStore((s) => s.setAgents)
   const sessions = useSessionStore((s) => s.sessions) as unknown as RawSession[]
+  const canWrite = useCanWrite()
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [feedMinimized, setFeedMinimized] = useState(() => typeof window !== "undefined" && window.innerWidth < 640)
+  const [ownerScope, setOwnerScope] = useState<OwnerScope>("all")
   const [showEntryModal, setShowEntryModal] = useState(false)
   const [showWizard, setShowWizard] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<AgentRoleTemplate | undefined>(undefined)
@@ -382,6 +387,20 @@ export function AgentsPage() {
     const interval = setInterval(() => setTick((t) => t + 1), 5_000)
     return () => clearInterval(interval)
   }, [])
+
+  // Re-fetch agents when ownerScope changes
+  const fetchAgents = useCallback(async (scope: OwnerScope) => {
+    try {
+      const data = await api.getAgents({ owner: scope }) as any
+      setAgents(data.agents || [])
+    } catch {
+      // leave existing store data on error
+    }
+  }, [setAgents])
+
+  useEffect(() => {
+    fetchAgents(ownerScope)
+  }, [ownerScope, fetchAgents])
 
   // Build agent → active sessions map
   const agentProcessingMap = useMemo(() => {
@@ -499,12 +518,14 @@ export function AgentsPage() {
           <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface border border-border/40 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-surface-high transition-colors">
             <Filter className="w-3.5 h-3.5" /> Filter
           </button>
-          <button
-            onClick={() => setShowEntryModal(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/20 transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" /> Provision Agent
-          </button>
+          {canWrite && (
+            <button
+              onClick={() => setShowEntryModal(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/20 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> Provision Agent
+            </button>
+          )}
         </div>
       </div>
 
@@ -516,12 +537,14 @@ export function AgentsPage() {
         <span className="text-[11px] text-muted-foreground/60 shrink-0">
           {filtered.length}/{agents.length}
         </span>
-        <button
-          onClick={() => setShowEntryModal(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-semibold hover:bg-emerald-500/20 transition-colors shrink-0"
-        >
-          <Plus className="w-3 h-3" /> New
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => setShowEntryModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-semibold hover:bg-emerald-500/20 transition-colors shrink-0"
+          >
+            <Plus className="w-3 h-3" /> New
+          </button>
+        )}
       </div>
 
       {/* ── Search & Filters ── */}
@@ -553,7 +576,9 @@ export function AgentsPage() {
           ))}
         </div>
 
-        <div className="hidden sm:block ml-auto text-xs text-muted-foreground">
+        <OwnerFilter value={ownerScope} onChange={setOwnerScope} className="ml-auto" />
+
+        <div className="hidden sm:block text-xs text-muted-foreground">
           {filtered.length} of {agents.length} agents
         </div>
       </div>
@@ -659,11 +684,7 @@ export function AgentsPage() {
           onClose={async () => {
             setShowWizard(false)
             setSelectedTemplate(undefined)
-            try {
-              const { api } = await import("@/lib/api")
-              const data = await api.getAgents() as any
-              setAgents(data.agents || [])
-            } catch {}
+            await fetchAgents(ownerScope)
           }}
         />
       )}

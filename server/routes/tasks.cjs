@@ -7,22 +7,28 @@
  */
 'use strict';
 
+const { parseOwnerParam } = require('../helpers/access-control.cjs');
+const { gatewayForReq } = require('../helpers/gateway-context.cjs');
+
 module.exports = function tasksRouter(deps) {
   const {
     db, parsers, broadcast, broadcastTasksUpdate,
-    outputsLib, gatewayProxy, vSave,
+    outputsLib, vSave,
     checkTaskAccess, dispatchTaskToAgent,
     emitTaskRoomSystemMessage, getAgentDisplayName,
     attachmentsLib, integrations, uploadAttachments, projectWs,
   } = deps;
   const router = require('express').Router();
   const taskDispatchHook = require('../hooks/task-dispatch.cjs');
-  const _dispatchDeps = { db, gatewayProxy, outputsLib, projectWs, parsers, broadcastTasksUpdate };
+
+  function _buildDispatchDeps(req) {
+    return { db, outputsLib, projectWs, parsers, broadcastTasksUpdate, userId: req.user.userId };
+  }
 
   // Local wrappers — the DI `dispatchTaskToAgent` from index.cjs is the same function,
   // but we also need analyzeTaskForAgent which isn't in the DI bag.
   function analyzeTaskForAgent(task) {
-    return taskDispatchHook.analyzeTaskForAgent(task, _dispatchDeps);
+    return taskDispatchHook.analyzeTaskForAgent(task, { db, parsers });
   }
 
 // ─── Tasks (ticketing) ────────────────────────────────────────────────────────
@@ -31,7 +37,29 @@ module.exports = function tasksRouter(deps) {
   try {
     const { agentId, status, priority, tag, q, projectId } = req.query;
     const tasks = db.getAllTasks({ agentId, status, priority, tag, q, projectId });
-    res.json({ tasks });
+
+    // Scope by project ownership (per-user resource).
+    // admin without ?owner= sees all; non-admin sees only own projects' tasks.
+    const scope = parseOwnerParam(req);
+    const isAdmin = req.user?.role === 'admin';
+    const uid = req.user?.userId;
+
+    const filtered = tasks.filter((task) => {
+      const pid = task.projectId || 'general';
+      const proj = db.getProject(pid);
+      const ownerId = proj?.createdBy ?? null;
+      // 'general' project (ownerId == null) is shared — visible to all
+      if (ownerId == null) return true;
+      if (isAdmin) {
+        if (scope === 'all') return true;
+        if (scope === 'me') return ownerId === uid;
+        if (typeof scope === 'number') return ownerId === scope;
+        return true;
+      }
+      return ownerId === uid;
+    });
+
+    res.json({ tasks: filtered });
   } catch (err) {
     console.error('[api/tasks GET]', err);
     res.status(500).json({ error: 'Failed to fetch tasks' });
@@ -171,7 +199,7 @@ module.exports = function tasksRouter(deps) {
       (isMovingToTodo || isChangeRequest || isBlockerResolved) &&
       before.status !== status &&
       after.agentId &&
-      gatewayProxy.isConnected;
+      gatewayForReq(req).isConnected;
     if (shouldAutoDispatch) {
       const dispatchOpts = {};
       if (isChangeRequest) {
@@ -184,7 +212,7 @@ module.exports = function tasksRouter(deps) {
       if (Array.isArray(newAttachmentIds) && newAttachmentIds.length) {
         dispatchOpts.newAttachmentIds = newAttachmentIds;
       }
-      dispatchTaskToAgent(after, dispatchOpts).catch(err =>
+      dispatchTaskToAgent(after, dispatchOpts, req.user.userId).catch(err =>
         console.warn('[auto-dispatch]', after.id, err.message)
       );
     }
@@ -201,18 +229,19 @@ module.exports = function tasksRouter(deps) {
       after.sessionId &&
       after.projectId && after.projectId !== 'general' &&
       !after.memoryReviewedAt &&
-      gatewayProxy.isConnected
+      gatewayForReq(req).isConnected
     );
     if (shouldReflect) {
       // Delay slightly so the agent's closing turn fully settles before we
       // dispatch the reflection prompt — avoids interleaving with their
       // active generation.
+      const reflectUserId = req.user.userId;
       setTimeout(() => {
         const fresh = db.getTask(after.id);
         if (!fresh || fresh.memoryReviewedAt) return;
         // Mark first to prevent duplicate triggers if the user toggles status quickly.
         db.updateTask(after.id, { memoryReviewedAt: new Date().toISOString() });
-        dispatchTaskToAgent(fresh, { memoryReflection: true, force: true }).catch(err =>
+        dispatchTaskToAgent(fresh, { memoryReflection: true, force: true }, reflectUserId).catch(err =>
           console.warn('[memory-reflection]', after.id, err.message)
         );
       }, 1500);
@@ -626,8 +655,8 @@ function resolveCommentAuthorGate(req, comment) {
     // 4. Best-effort re-dispatch (continue). Reuses the existing task.sessionId
     //    so the agent receives the new comment as part of the continue context.
     //    Fails silently — user can manually re-dispatch from UI if needed.
-    if (gatewayProxy.isConnected && after.agentId) {
-      dispatchTaskToAgent(after).catch(err => console.warn('[request-change] re-dispatch failed:', err.message));
+    if (gatewayForReq(req).isConnected && after.agentId) {
+      dispatchTaskToAgent(after, {}, req.user.userId).catch(err => console.warn('[request-change] re-dispatch failed:', err.message));
     }
 
     broadcastTasksUpdate();
@@ -658,8 +687,8 @@ function resolveCommentAuthorGate(req, comment) {
 
     const gate = checkTaskAccess(req, task.id);
     if (gate) return res.status(403).json({ error: gate });
-    if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
-    const result = await dispatchTaskToAgent(task);
+    if (!gatewayForReq(req).isConnected) return res.status(503).json({ error: 'Gateway not connected' });
+    const result = await dispatchTaskToAgent(task, {}, req.user.userId);
     res.json({ ok: true, ...result });
   } catch (err) {
     if (err.code === 'TASK_BLOCKED') {
@@ -689,11 +718,11 @@ function resolveCommentAuthorGate(req, comment) {
     const gate = checkTaskAccess(req, task.id);
     if (gate) return res.status(403).json({ error: gate });
     if (!task.sessionId) return res.status(400).json({ error: 'Task has no active session to interrupt' });
-    if (!gatewayProxy.isConnected) return res.status(503).json({ error: 'Gateway not connected' });
+    if (!gatewayForReq(req).isConnected) return res.status(503).json({ error: 'Gateway not connected' });
 
     let abortResult = null;
     try {
-      abortResult = await gatewayProxy.chatAbort(task.sessionId);
+      abortResult = await gatewayForReq(req).chatAbort(task.sessionId);
     } catch (rpcErr) {
       // Gateway may not implement chat.abort on older versions — surface a clear error
       console.error('[api/tasks/interrupt] chat.abort RPC failed:', rpcErr.message);

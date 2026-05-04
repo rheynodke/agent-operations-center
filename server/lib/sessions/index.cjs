@@ -1,21 +1,36 @@
 'use strict';
-const opencode  = require('./opencode.cjs');
-const gateway   = require('./gateway.cjs');
-const claudeCli = require('./claude-cli.cjs');
+const opencode      = require('./opencode.cjs');
+const gateway       = require('./gateway.cjs');
+const claudeCli     = require('./claude-cli.cjs');
+const orchestrator  = require('../gateway-orchestrator.cjs');
+const db            = require('../db.cjs');
 
-function getAllSessions() {
-  const codeAgentSessions = opencode.parseCodeAgentSessions().map(s => ({
+function getAllSessions(userId) {
+  const uid = userId == null ? 1 : Number(userId);
+  const isAdmin = uid === 1;
+
+  const codeAgentSessions = opencode.parseCodeAgentSessions(uid).map(s => ({
     ...s,
     source: 'code-agent',
     type: 'opencode',
   }));
 
-  const gatewaySessions = gateway.parseGatewaySessions().map(s => ({
+  const gatewaySessions = gateway.parseGatewaySessions(uid).map(s => ({
     ...s,
     source: 'gateway',
   }));
 
-  const claudeCliSessions = claudeCli.parseClaudeCliSessions();
+  // Claude CLI sessions live at ~/.claude/projects/ — a host-wide single dir
+  // shared by every user/agent on the machine. For non-admin tenants, only
+  // include claude-cli entries that link to one of *their* gateway sessions
+  // (so admin's bare main-agent claude-cli rows never leak through).
+  let claudeCliSessions = claudeCli.parseClaudeCliSessions();
+  if (!isAdmin) {
+    const ownGatewayIds = new Set(gatewaySessions.map((s) => s.id));
+    claudeCliSessions = claudeCliSessions.filter(
+      (cc) => cc.linkedGatewaySessionId && ownGatewayIds.has(cc.linkedGatewaySessionId)
+    );
+  }
 
   // Index gateway sessions by sessionId for link augmentation.
   const gatewayById = new Map();
@@ -71,28 +86,59 @@ function getAllSessions() {
   return merged;
 }
 
-function getDashboardStats() {
-  const allSessions       = getAllSessions();
-  const codeAgentSessions = opencode.parseCodeAgentSessions();
-  const agents            = opencode.parseAgentRegistry();
-  const progress          = opencode.parseDevProgress();
-  const gatewaySessions   = gateway.parseGatewaySessions();
+function getDashboardStats(userId) {
+  const uid = userId == null ? 1 : Number(userId);
+
+  const codeAgentSessions = opencode.parseCodeAgentSessions(uid);
+  const agents            = opencode.parseAgentRegistry(uid);
+  const progress          = opencode.parseDevProgress(uid);
+  const gatewaySessions   = gateway.parseGatewaySessions(uid);
+
+  const allSessionsCount = codeAgentSessions.length + gatewaySessions.length;
 
   const activeSessions = [
     ...codeAgentSessions.filter(s => s.status === 'running' || s.status === 'started'),
     ...gatewaySessions.filter(s => s.status === 'active'),
   ];
   const completedSessions = codeAgentSessions.filter(s => s.status === 'completed');
-  const failedSessions     = codeAgentSessions.filter(s => s.status === 'failed' || s.status === 'killed');
+  const failedSessions    = codeAgentSessions.filter(s => s.status === 'failed' || s.status === 'killed');
 
-  const codeCost  = codeAgentSessions.reduce((sum, s) => sum + (parseFloat(s.cost) || 0), 0);
-  const gwCost    = gatewaySessions.reduce((sum, s) => sum + (parseFloat(s.cost) || 0), 0);
-  const totalCost = codeCost + gwCost;
+  // Cost from DB tasks (project-scoped via JOIN). Filesystem session costs
+  // remain admin-only — they are not user-scopable today.
+  const sqlDb = db.getDb();
+  let totalCost = 0;
+  if (sqlDb) {
+    try {
+      const res = sqlDb.exec(
+        `SELECT COALESCE(SUM(t.cost), 0) AS total
+         FROM tasks t
+         LEFT JOIN projects p ON p.id = t.project_id
+         WHERE t.cost IS NOT NULL
+           AND ((p.created_by = ?) OR (t.project_id IS NULL AND ? = 1))`,
+        [uid, uid]
+      );
+      if (res.length) totalCost = Number(res[0].values[0][0]) || 0;
+    } catch (_) { /* table missing in test envs — leave 0 */ }
+  }
+
+  // Gateway info: admin (uid=1) has external gateway; others use orchestrator state.
+  let gw;
+  if (uid === 1) {
+    gw = { status: 'running', port: 18789, mode: 'external' };
+  } else {
+    const state = orchestrator.getGatewayState(uid) || {};
+    gw = {
+      status: state.state === 'running' ? 'running' : 'stopped',
+      port:   state.port ?? null,
+      pid:    state.pid ?? null,
+      mode:   'managed',
+    };
+  }
 
   return {
-    gateway: { status: 'running', port: 18789 },
+    gateway: gw,
     sessions: {
-      total: allSessions.length,
+      total: allSessionsCount,
       active: activeSessions.length,
       completed: completedSessions.length,
       failed: failedSessions.length,

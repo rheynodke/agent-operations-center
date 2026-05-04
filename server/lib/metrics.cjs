@@ -55,7 +55,7 @@ function scalar(sql, params = [], fallback = 0) {
  */
 function projectFilter(projectId) {
   if (!projectId) return { clause: '', params: [] };
-  return { clause: ' AND project_id = ?', params: [projectId] };
+  return { clause: ' AND t.project_id = ?', params: [projectId] };
 }
 
 /**
@@ -64,53 +64,92 @@ function projectFilter(projectId) {
  */
 function agentFilter(agentId) {
   if (!agentId) return { clause: '', params: [] };
-  return { clause: ' AND agent_id = ?', params: [agentId] };
+  return { clause: ' AND t.agent_id = ?', params: [agentId] };
+}
+
+/**
+ * User-ownership filter via JOIN on projects.created_by.
+ * Returns { join, clause, params } so callers can append cleanly:
+ *   FROM tasks t${uf.join} WHERE ... ${uf.clause}
+ *
+ * Rules:
+ *   - userId == null              → no filter (all rows)
+ *   - userId === 1 (admin)        → all rows (back-compat: admin sees everything)
+ *   - userId === N (other user)   → tasks whose project's created_by = N,
+ *                                   OR free-floating tasks (project_id IS NULL)
+ *                                   if userId === 1 (the admin clause is dead-code
+ *                                   for non-admin since clause short-circuits).
+ *
+ * Implementation: when userId is non-null, emit
+ *   LEFT JOIN projects p ON p.id = t.project_id
+ *   AND ((p.created_by = ?) OR (t.project_id IS NULL AND ? = 1))
+ * That second OR keeps free-floating tasks visible to admin only.
+ */
+function userOwnerFilter(userId) {
+  if (userId == null) return { join: '', clause: '', params: [] };
+  if (Number(userId) === 1) {
+    // Admin sees all — but we still emit a no-op join so the SQL shape is consistent.
+    return { join: '', clause: '', params: [] };
+  }
+  return {
+    join:   ' LEFT JOIN projects p ON p.id = t.project_id',
+    clause: ' AND ((p.created_by = ?) OR (t.project_id IS NULL AND ? = 1))',
+    params: [Number(userId), Number(userId)],
+  };
 }
 
 /**
  * KPI summary + status distribution.
  * Returns numbers comparable to the previous same-length window for deltas.
  */
-function getSummary({ range = '30d', projectId = null, agentId = null } = {}) {
+function getSummary({ range = '30d', projectId = null, agentId = null, userId = null } = {}) {
   const r = resolveRange(range);
   const pf = projectFilter(projectId);
   const af = agentFilter(agentId);
-  const filterClause = pf.clause + af.clause;
-  const filterParams = [...pf.params, ...af.params];
+  const uf = userOwnerFilter(userId);
+
+  const filterClause = pf.clause + af.clause + uf.clause;
+  const filterParams = [...pf.params, ...af.params, ...uf.params];
 
   // Completed in range
   const completedCurrent = scalar(
-    `SELECT COUNT(*) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ?${filterClause}`,
+    `SELECT COUNT(*) FROM tasks t${uf.join}
+     WHERE t.status = 'done' AND t.completed_at >= ? AND t.completed_at < ?${filterClause}`,
     [r.since, r.until, ...filterParams]
   );
   const completedPrevious = scalar(
-    `SELECT COUNT(*) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ?${filterClause}`,
+    `SELECT COUNT(*) FROM tasks t${uf.join}
+     WHERE t.status = 'done' AND t.completed_at >= ? AND t.completed_at < ?${filterClause}`,
     [r.previousSince, r.previousUntil, ...filterParams]
   );
 
   // Cost sum in range (only for done tasks — cost is usually set on completion)
   const costCurrent = scalar(
-    `SELECT COALESCE(SUM(cost), 0) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ? AND cost IS NOT NULL${filterClause}`,
+    `SELECT COALESCE(SUM(t.cost), 0) FROM tasks t${uf.join}
+     WHERE t.status = 'done' AND t.completed_at >= ? AND t.completed_at < ? AND t.cost IS NOT NULL${filterClause}`,
     [r.since, r.until, ...filterParams]
   );
   const costPrevious = scalar(
-    `SELECT COALESCE(SUM(cost), 0) FROM tasks WHERE status = 'done' AND completed_at >= ? AND completed_at < ? AND cost IS NOT NULL${filterClause}`,
+    `SELECT COALESCE(SUM(t.cost), 0) FROM tasks t${uf.join}
+     WHERE t.status = 'done' AND t.completed_at >= ? AND t.completed_at < ? AND t.cost IS NOT NULL${filterClause}`,
     [r.previousSince, r.previousUntil, ...filterParams]
   );
 
   // Active agents: distinct agent_id with any task update in the window
   const activeCurrent = scalar(
-    `SELECT COUNT(DISTINCT agent_id) FROM tasks WHERE agent_id IS NOT NULL AND updated_at >= ? AND updated_at < ?${filterClause}`,
+    `SELECT COUNT(DISTINCT t.agent_id) FROM tasks t${uf.join}
+     WHERE t.agent_id IS NOT NULL AND t.updated_at >= ? AND t.updated_at < ?${filterClause}`,
     [r.since, r.until, ...filterParams]
   );
   const activePrevious = scalar(
-    `SELECT COUNT(DISTINCT agent_id) FROM tasks WHERE agent_id IS NOT NULL AND updated_at >= ? AND updated_at < ?${filterClause}`,
+    `SELECT COUNT(DISTINCT t.agent_id) FROM tasks t${uf.join}
+     WHERE t.agent_id IS NOT NULL AND t.updated_at >= ? AND t.updated_at < ?${filterClause}`,
     [r.previousSince, r.previousUntil, ...filterParams]
   );
 
   // Blocked: current snapshot (not a range metric)
   const blockedCurrent = scalar(
-    `SELECT COUNT(*) FROM tasks WHERE status = 'blocked'${filterClause}`,
+    `SELECT COUNT(*) FROM tasks t${uf.join} WHERE t.status = 'blocked'${filterClause}`,
     [...filterParams]
   );
   // Previous snapshot is a reconstruction: count tasks that entered 'blocked' before
@@ -121,7 +160,7 @@ function getSummary({ range = '30d', projectId = null, agentId = null } = {}) {
 
   // Status distribution — current snapshot
   const statusRows = query(
-    `SELECT status, COUNT(*) AS c FROM tasks WHERE 1=1${filterClause} GROUP BY status`,
+    `SELECT t.status, COUNT(*) AS c FROM tasks t${uf.join} WHERE 1=1${filterClause} GROUP BY t.status`,
     [...filterParams]
   );
   const statusDistribution = Object.fromEntries(VALID_STATUSES.map(s => [s, 0]));
@@ -149,22 +188,26 @@ function getSummary({ range = '30d', projectId = null, agentId = null } = {}) {
  * Throughput: completed tasks per calendar day (UTC), bucketed by project.
  * Fills missing dates with 0 so the chart has a continuous x-axis.
  */
-function getThroughput({ range = '30d', projectId = null, agentId = null } = {}) {
+function getThroughput({ range = '30d', projectId = null, agentId = null, userId = null } = {}) {
   const r = resolveRange(range);
   const pf = projectFilter(projectId);
   const af = agentFilter(agentId);
+  const uf = userOwnerFilter(userId);
+
+  const filterClause = pf.clause + af.clause + uf.clause;
+  const filterParams = [...pf.params, ...af.params, ...uf.params];
 
   // SQLite's date() returns YYYY-MM-DD from ISO 8601 timestamps
   const rows = query(
-    `SELECT date(completed_at) AS bucket_date,
-            COALESCE(project_id, 'general') AS project_id,
+    `SELECT date(t.completed_at) AS bucket_date,
+            COALESCE(t.project_id, 'general') AS project_id,
             COUNT(*) AS c
-       FROM tasks
-      WHERE status = 'done'
-        AND completed_at >= ? AND completed_at < ?${pf.clause}${af.clause}
+       FROM tasks t${uf.join}
+      WHERE t.status = 'done'
+        AND t.completed_at >= ? AND t.completed_at < ?${filterClause}
    GROUP BY bucket_date, project_id
    ORDER BY bucket_date ASC`,
-    [r.since, r.until, ...pf.params, ...af.params]
+    [r.since, r.until, ...filterParams]
   );
 
   // Build a dense date list
@@ -200,29 +243,33 @@ function getThroughput({ range = '30d', projectId = null, agentId = null } = {})
  * Per-agent performance table for the leaderboard.
  * Returns one row per agent that touched at least one task in the window.
  */
-function getAgentLeaderboard({ range = '30d', projectId = null } = {}) {
+function getAgentLeaderboard({ range = '30d', projectId = null, userId = null } = {}) {
   const r = resolveRange(range);
   const pf = projectFilter(projectId);
+  const uf = userOwnerFilter(userId);
+
+  const filterClause = pf.clause + uf.clause;
+  const filterParams = [...pf.params, ...uf.params];
 
   // Fetch done tasks in window with agent + duration + cost
   const doneRows = query(
-    `SELECT agent_id,
-            cost,
-            (julianday(completed_at) - julianday(created_at)) * 86400000.0 AS duration_ms
-       FROM tasks
-      WHERE status = 'done'
-        AND completed_at >= ? AND completed_at < ?
-        AND agent_id IS NOT NULL${pf.clause}`,
-    [r.since, r.until, ...pf.params]
+    `SELECT t.agent_id,
+            t.cost,
+            (julianday(t.completed_at) - julianday(t.created_at)) * 86400000.0 AS duration_ms
+       FROM tasks t${uf.join}
+      WHERE t.status = 'done'
+        AND t.completed_at >= ? AND t.completed_at < ?
+        AND t.agent_id IS NOT NULL${filterClause}`,
+    [r.since, r.until, ...filterParams]
   );
 
   // Blocked snapshot per agent (current, for success-rate denominator)
   const blockedRows = query(
-    `SELECT agent_id, COUNT(*) AS c
-       FROM tasks
-      WHERE status = 'blocked' AND agent_id IS NOT NULL${pf.clause}
-   GROUP BY agent_id`,
-    [...pf.params]
+    `SELECT t.agent_id, COUNT(*) AS c
+       FROM tasks t${uf.join}
+      WHERE t.status = 'blocked' AND t.agent_id IS NOT NULL${filterClause}
+   GROUP BY t.agent_id`,
+    [...filterParams]
   );
 
   // For change-request rate we need, per agent:
@@ -232,24 +279,24 @@ function getAgentLeaderboard({ range = '30d', projectId = null } = {}) {
   const reviewReached = query(
     `SELECT t.agent_id, COUNT(DISTINCT ta.task_id) AS c
        FROM task_activity ta
-       JOIN tasks t ON t.id = ta.task_id
+       JOIN tasks t ON t.id = ta.task_id${uf.join.replace('LEFT JOIN projects p ON p.id = t.project_id', 'LEFT JOIN projects p ON p.id = t.project_id')}
       WHERE ta.type = 'status_change' AND ta.to_value = 'in_review'
         AND ta.created_at >= ? AND ta.created_at < ?
-        AND t.agent_id IS NOT NULL${pf.clause.replace('project_id', 't.project_id')}
+        AND t.agent_id IS NOT NULL${pf.clause.replace('t.project_id', 't.project_id')}${uf.clause}
    GROUP BY t.agent_id`,
-    [r.since, r.until, ...pf.params]
+    [r.since, r.until, ...filterParams]
   );
   const reviewReturns = query(
     `SELECT t.agent_id, COUNT(*) AS c
        FROM task_activity ta
-       JOIN tasks t ON t.id = ta.task_id
+       JOIN tasks t ON t.id = ta.task_id${uf.join.replace('LEFT JOIN projects p ON p.id = t.project_id', 'LEFT JOIN projects p ON p.id = t.project_id')}
       WHERE ta.type = 'status_change'
         AND ta.from_value = 'in_review'
         AND ta.to_value IN ('in_progress', 'todo')
         AND ta.created_at >= ? AND ta.created_at < ?
-        AND t.agent_id IS NOT NULL${pf.clause.replace('project_id', 't.project_id')}
+        AND t.agent_id IS NOT NULL${pf.clause.replace('t.project_id', 't.project_id')}${uf.clause}
    GROUP BY t.agent_id`,
-    [r.since, r.until, ...pf.params]
+    [r.since, r.until, ...filterParams]
   );
 
   // Aggregate done metrics per agent
@@ -316,14 +363,16 @@ const FORWARD_PAIRS = [
  * For each status_change activity in the window, compute how long the task
  * spent in the `from_value` status before this transition. Then avg per pair.
  */
-function getLifecycleFunnel({ range = '30d', projectId = null, agentId = null } = {}) {
+function getLifecycleFunnel({ range = '30d', projectId = null, agentId = null, userId = null } = {}) {
   const r = resolveRange(range);
   const pf = projectFilter(projectId);
   const af = agentFilter(agentId);
+  const uf = userOwnerFilter(userId);
+
   // Both filters target columns on the joined `tasks` alias (`t`).
-  const joinedFilters = pf.clause.replace('project_id', 't.project_id')
-                      + af.clause.replace('agent_id',   't.agent_id');
-  const joinedParams = [...pf.params, ...af.params];
+  // For the lifecycle funnel, tasks is always aliased t in the JOIN, so use as-is.
+  const joinedFilters = pf.clause + af.clause + uf.clause;
+  const joinedParams = [...pf.params, ...af.params, ...uf.params];
 
   // Pull transitions inside the window, joined with the task's created_at as a
   // fallback for the 'backlog → ...' transition where there is no prior activity.
@@ -331,7 +380,7 @@ function getLifecycleFunnel({ range = '30d', projectId = null, agentId = null } 
     `SELECT ta.task_id, ta.from_value, ta.to_value, ta.created_at AS to_time,
             t.created_at AS task_created
        FROM task_activity ta
-       JOIN tasks t ON t.id = ta.task_id
+       JOIN tasks t ON t.id = ta.task_id${uf.join}
       WHERE ta.type = 'status_change'
         AND ta.created_at >= ? AND ta.created_at < ?${joinedFilters}
    ORDER BY ta.task_id, ta.created_at ASC`,
@@ -343,7 +392,7 @@ function getLifecycleFunnel({ range = '30d', projectId = null, agentId = null } 
   const priorActivities = query(
     `SELECT ta.task_id, ta.to_value, ta.created_at
        FROM task_activity ta
-       JOIN tasks t ON t.id = ta.task_id
+       JOIN tasks t ON t.id = ta.task_id${uf.join}
       WHERE ta.type = 'status_change'
         AND ta.created_at < ?${joinedFilters}
    ORDER BY ta.task_id, ta.created_at ASC`,
@@ -402,20 +451,24 @@ function getLifecycleFunnel({ range = '30d', projectId = null, agentId = null } 
  * Returns raw task rows so the UI can show title, status, priority, cost,
  * duration, and completed_at.
  */
-function getAgentRecentTasks({ agentId, projectId = null, limit = 20 } = {}) {
+function getAgentRecentTasks({ agentId, projectId = null, limit = 20, userId = null } = {}) {
   if (!agentId) throw new Error('agentId is required');
   const pf = projectFilter(projectId);
+  const uf = userOwnerFilter(userId);
   const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
 
+  const filterClause = pf.clause + uf.clause;
+  const filterParams = [...pf.params, ...uf.params];
+
   const rows = query(
-    `SELECT id, title, status, priority, cost, tags, project_id,
-            created_at, updated_at, completed_at,
-            (julianday(COALESCE(completed_at, updated_at)) - julianday(created_at)) * 86400000.0 AS duration_ms
-       FROM tasks
-      WHERE agent_id = ?${pf.clause}
-   ORDER BY updated_at DESC
+    `SELECT t.id, t.title, t.status, t.priority, t.cost, t.tags, t.project_id,
+            t.created_at, t.updated_at, t.completed_at,
+            (julianday(COALESCE(t.completed_at, t.updated_at)) - julianday(t.created_at)) * 86400000.0 AS duration_ms
+       FROM tasks t${uf.join}
+      WHERE t.agent_id = ?${filterClause}
+   ORDER BY t.updated_at DESC
       LIMIT ${safeLimit}`,
-    [agentId, ...pf.params]
+    [agentId, ...filterParams]
   );
 
   return rows.map(r => ({

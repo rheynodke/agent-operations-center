@@ -1,8 +1,15 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, AGENTS_DIR, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, AGENTS_DIR, getUserHome, getUserAgentsDir, readJsonSafe } = require('../config.cjs');
 const { parseAgentRegistry } = require('./opencode.cjs');
+
+function homeFor(userId) {
+  return userId == null ? OPENCLAW_HOME : getUserHome(userId);
+}
+function agentsDirFor(userId) {
+  return userId == null ? AGENTS_DIR : getUserAgentsDir(userId);
+}
 
 /**
  * Parse text-encoded tool call markers into structured tool calls and clean text.
@@ -105,22 +112,23 @@ function extractSender(text, role) {
   return null;
 }
 
-function parseGatewaySessions() {
-  if (!fs.existsSync(AGENTS_DIR)) return [];
+function parseGatewaySessions(userId) {
+  const agentsDir = agentsDirFor(userId);
+  if (!fs.existsSync(agentsDir)) return [];
 
   const allSessions = [];
-  const agents = parseAgentRegistry();
+  const agents = parseAgentRegistry(userId);
   const agentMap = {};
   for (const a of agents) agentMap[a.id] = a;
 
   try {
-    const agentDirs = fs.readdirSync(AGENTS_DIR).filter(d => {
-      return fs.statSync(path.join(AGENTS_DIR, d)).isDirectory();
+    const agentDirs = fs.readdirSync(agentsDir).filter(d => {
+      return fs.statSync(path.join(agentsDir, d)).isDirectory();
     });
 
     for (const agentId of agentDirs) {
-      const sessionsFile = path.join(AGENTS_DIR, agentId, 'sessions', 'sessions.json');
-      const sessionsDir  = path.join(AGENTS_DIR, agentId, 'sessions');
+      const sessionsFile = path.join(agentsDir, agentId, 'sessions', 'sessions.json');
+      const sessionsDir  = path.join(agentsDir, agentId, 'sessions');
       const config = readJsonSafe(sessionsFile);
       if (!config || typeof config !== 'object') continue;
 
@@ -245,17 +253,18 @@ function parseGatewaySessions() {
   return allSessions;
 }
 
-function parseGatewaySessionEvents(sessionId, limit = 500) {
-  if (!fs.existsSync(AGENTS_DIR)) return [];
+function parseGatewaySessionEvents(sessionId, limit = 500, userId) {
+  const agentsDir = agentsDirFor(userId);
+  if (!fs.existsSync(agentsDir)) return [];
 
   let jsonlFile = null;
   let foundAgentId = null;
   try {
-    const agentDirs = fs.readdirSync(AGENTS_DIR).filter(d => {
-      return fs.statSync(path.join(AGENTS_DIR, d)).isDirectory();
+    const agentDirs = fs.readdirSync(agentsDir).filter(d => {
+      return fs.statSync(path.join(agentsDir, d)).isDirectory();
     });
     for (const agentId of agentDirs) {
-      const candidate = path.join(AGENTS_DIR, agentId, 'sessions', `${sessionId}.jsonl`);
+      const candidate = path.join(agentsDir, agentId, 'sessions', `${sessionId}.jsonl`);
       if (fs.existsSync(candidate)) { jsonlFile = candidate; foundAgentId = agentId; break; }
     }
   } catch {}
@@ -264,7 +273,7 @@ function parseGatewaySessionEvents(sessionId, limit = 500) {
 
   let defaultModelStr = '';
   if (foundAgentId) {
-    const agents = parseAgentRegistry();
+    const agents = parseAgentRegistry(userId);
     const agentInfo = agents.find(a => a.id === foundAgentId);
     if (agentInfo) defaultModelStr = agentInfo.model || '';
   }

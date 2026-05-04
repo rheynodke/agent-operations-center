@@ -56,14 +56,31 @@ function applyMiddleware(app) {
   }));
 
   // ─── Rate Limiting ────────────────────────────────────────────────────────
-  const limiter = rateLimit({
+  // General API limiter — generous for the dashboard's polling workload (one
+  // user fires ~10 endpoints every 30s + WS reconnects + ad-hoc clicks). Bump
+  // the default cap so normal usage doesn't trip "Too many requests".
+  const apiLimiter = rateLimit({
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-    max: parseInt(process.env.RATE_LIMIT_MAX || '500', 10),
+    max: parseInt(process.env.RATE_LIMIT_MAX || '2000', 10),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests' },
+    skip: (req) => req.path.startsWith('/auth/'),  // login/register get their own bucket
   });
-  app.use('/api/', limiter);
+  app.use('/api/', apiLimiter);
+
+  // Auth limiter — separate, smaller bucket so abusive login attempts can be
+  // rate-limited without starving the dashboard. Failed-only counting prevents
+  // legit users from being locked out by their own session restores.
+  const authLimiter = rateLimit({
+    windowMs: parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS || '60000', 10),
+    max:      parseInt(process.env.RATE_LIMIT_AUTH_MAX       || '30',    10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    message: { error: 'Too many login attempts. Try again in a minute.' },
+  });
+  app.use('/api/auth/', authLimiter);
 
   // ─── Body Parsing ─────────────────────────────────────────────────────────
   app.use(express.json({ limit: '25mb' }));

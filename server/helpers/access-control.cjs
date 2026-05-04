@@ -14,7 +14,8 @@
  */
 function canAccessAgent(req, agentId, db) {
   if (!agentId) return false;
-  if (agentId === 'main') return true;
+  // 'main' is admin-private (owner = userId 1). Admin bypass already happens
+  // inside db.userOwnsAgent for both the admin and 'agent' roles.
   return db.userOwnsAgent(req, agentId);
 }
 
@@ -146,6 +147,67 @@ function checkSkillInstallTarget(req, target, agentId, db) {
   return null;
 }
 
+/**
+ * Parse req.query.owner into a normalized scope.
+ * - empty/missing: 'all' for admin, 'me' otherwise
+ * - 'me' / 'all' / numeric id: as given
+ * - garbage: fallback to 'all' for admin, 'me' otherwise
+ *
+ * @returns {'me'|'all'|number}
+ */
+function parseOwnerParam(req) {
+  const raw = req?.query?.owner;
+  const fallback = req?.user?.role === 'admin' ? 'all' : 'me';
+  if (raw == null || raw === '') return fallback;
+  const s = String(raw).trim();
+  if (s === 'me') return 'me';
+  if (s === 'all') return 'all';
+  const n = Number(s);
+  if (Number.isInteger(n) && n > 0) return n;
+  return fallback;
+}
+
+/**
+ * Pure filter for the GET /api/agents list.
+ *
+ * @param {object[]} allAgents   - raw enriched agent array
+ * @param {object}   user        - req.user (role, userId)
+ * @param {'me'|'all'|number} scope - from parseOwnerParam
+ * @param {function}  getOwnerFn - (agentId) => number|null
+ * @returns {object[]}
+ */
+function filterAgentsByOwner(allAgents, user, scope, getOwnerFn) {
+  const isAdmin = user?.role === 'admin';
+  return allAgents.filter((agent) => {
+    // 'main' is admin-private (owner = userId 1) — strict per-user, not a shared agent.
+    const ownerId = agent.id === 'main' ? 1 : getOwnerFn(agent.id);
+    if (isAdmin) {
+      if (scope === 'all') return true;
+      if (scope === 'me') return ownerId === user.userId;
+      if (typeof scope === 'number') return ownerId === scope;
+      return true;
+    }
+    return ownerId === user.userId;
+  });
+}
+
+/**
+ * Resolve the userId whose data should be returned for this request.
+ * Admin can impersonate via ?owner=<numeric id>; non-admin always self.
+ * Returns the authenticated user's id when no valid impersonation is present.
+ *
+ * @param {object} req
+ * @returns {number}
+ */
+function parseScopeUserId(req) {
+  const raw = req?.query?.owner;
+  if (raw != null && req?.user?.role === 'admin') {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return Number(req?.user?.userId ?? req?.user?.id);
+}
+
 module.exports = {
   canAccessAgent,
   validateAccessibleAgentIds,
@@ -155,4 +217,7 @@ module.exports = {
   checkTaskAccess,
   checkCronAccess,
   checkSkillInstallTarget,
+  parseOwnerParam,
+  filterAgentsByOwner,
+  parseScopeUserId,
 };

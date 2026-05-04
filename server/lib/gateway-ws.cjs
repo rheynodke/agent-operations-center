@@ -17,31 +17,47 @@ const crypto = require('crypto');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-function getGatewayConfig() {
-  const home = process.env.OPENCLAW_HOME || path.join(process.env.HOME, '.openclaw');
+/**
+ * Resolve a user's OPENCLAW_HOME. Admin (userId=1) → root OPENCLAW_HOME.
+ * Other users → <OPENCLAW_HOME>/users/<id>/.openclaw/.
+ */
+function _resolveUserHome(userId) {
+  const base = process.env.OPENCLAW_HOME || path.join(process.env.HOME, '.openclaw');
+  if (Number(userId) === 1 || userId == null) return base;
+  return path.join(base, 'users', String(userId), '.openclaw');
+}
 
-  let port = process.env.GATEWAY_PORT ? Number(process.env.GATEWAY_PORT) : 18789;
-  let token = process.env.GATEWAY_TOKEN || '';
+function getGatewayConfig(userId = 1) {
+  const home = _resolveUserHome(userId);
+  const isAdmin = Number(userId) === 1;
 
-  if (!token) {
+  // Admin reads from openclaw.json + env. Per-user gateways supply token via the
+  // orchestrator (in-memory, not on disk), so caller passes `port`/`token` directly.
+  let port  = isAdmin && process.env.GATEWAY_PORT  ? Number(process.env.GATEWAY_PORT) : null;
+  let token = isAdmin && process.env.GATEWAY_TOKEN ? process.env.GATEWAY_TOKEN       : '';
+
+  if (isAdmin && !token) {
     try {
       const raw = fs.readFileSync(path.join(home, 'openclaw.json'), 'utf-8');
       const cfg = JSON.parse(raw);
       token = cfg.gateway?.auth?.token || '';
-      if (!port || port === 18789) port = cfg.gateway?.port || 18789;
+      if (!port) port = cfg.gateway?.port || 18789;
     } catch {
       console.warn('[gateway-ws] Could not read openclaw.json — set GATEWAY_TOKEN in .env');
     }
   }
+  if (isAdmin && !port) port = 18789;
 
-  // Device identity (for Ed25519 signing)
+  // Device identity (Ed25519 keypair). For non-admin users, this is seeded by
+  // the orchestrator (inheritAdminDeviceScopes) at gateway provision time so
+  // AOC presents the same admin device against every per-user gateway.
   let deviceIdentity = null;
   try {
     const raw = fs.readFileSync(path.join(home, 'identity', 'device.json'), 'utf-8');
     deviceIdentity = JSON.parse(raw);
   } catch { /* no device identity */ }
 
-  // Device auth token + approved scopes (from pairing)
+  // Device auth token + approved scopes
   let deviceAuthToken = null;
   let deviceApprovedScopes = null;
   try {
@@ -52,8 +68,8 @@ function getGatewayConfig() {
   } catch { /* no device auth token */ }
 
   if (token) console.log(`[gateway-ws] Passphrase loaded (${token.slice(0, 8)}...), port: ${port}`);
-  if (deviceIdentity) console.log(`[gateway-ws] Device identity loaded: ${deviceIdentity.deviceId?.slice(0, 16)}...`);
-  if (deviceAuthToken) console.log(`[gateway-ws] Device token loaded (${deviceAuthToken.slice(0, 8)}...), approved scopes: [${(deviceApprovedScopes || []).join(',')}]`);
+  if (deviceIdentity) console.log(`[gateway-ws] Device identity loaded for user=${userId}: ${deviceIdentity.deviceId?.slice(0, 16)}...`);
+  if (deviceAuthToken) console.log(`[gateway-ws] Device token loaded for user=${userId} (${deviceAuthToken.slice(0, 8)}...), approved scopes: [${(deviceApprovedScopes || []).join(',')}]`);
 
   return { port, token, deviceIdentity, deviceAuthToken, deviceApprovedScopes };
 }
@@ -121,10 +137,21 @@ function parseToolCallMarkers(text) {
   return { cleanText: cleanText.trim(), toolCalls };
 }
 
-// ─── GatewayWsProxy ───────────────────────────────────────────────────────────
+// ─── Errors ───────────────────────────────────────────────────────────────────
 
-class GatewayWsProxy {
-  constructor() {
+class GatewayNotConnectedError extends Error {
+  constructor(userId) {
+    super(`gateway not connected for user ${userId}`);
+    this.name = 'GatewayNotConnectedError';
+    this.userId = userId;
+  }
+}
+
+// ─── GatewayConnection ───────────────────────────────────────────────────────────
+
+class GatewayConnection {
+  constructor(userId = 1) {
+    this.userId = Number(userId);
     this.ws = null;
     this.connected = false;
     this.connecting = false;
@@ -158,13 +185,32 @@ class GatewayWsProxy {
     }
   }
 
-  connect() {
+  connect(opts = {}) {
     if (this.connecting || this.connected) return;
 
-    const { port, token, deviceIdentity, deviceAuthToken, deviceApprovedScopes } = getGatewayConfig();
+    let { port, token, deviceIdentity, deviceAuthToken, deviceApprovedScopes } = opts;
+
+    // Auto-discover from this user's home for any missing field. Admin (user 1)
+    // back-compat: also sources port/token from openclaw.json + env.
+    // Non-admin: the orchestrator pre-seeded identity/device.json + device-auth.json
+    // via inheritAdminDeviceScopes — read them so AOC presents the same approved
+    // device against every per-user gateway and gets full operator.* scopes.
+    {
+      const cfg = getGatewayConfig(this.userId);
+      port                 = port                 || cfg.port;
+      token                = token                || cfg.token;
+      deviceIdentity       = deviceIdentity       || cfg.deviceIdentity;
+      deviceAuthToken      = deviceAuthToken      || cfg.deviceAuthToken;
+      deviceApprovedScopes = deviceApprovedScopes || cfg.deviceApprovedScopes;
+    }
+
+    if (!port) {
+      console.warn(`[gateway-ws] No port for user ${this.userId} — skipping gateway connection`);
+      return;
+    }
 
     if (!token && !deviceAuthToken) {
-      console.warn('[gateway-ws] No auth token — skipping gateway connection');
+      console.warn(`[gateway-ws] No auth token for user ${this.userId} — skipping gateway connection`);
       return;
     }
 
@@ -590,9 +636,12 @@ class GatewayWsProxy {
 
   /** Send an RPC request, returns Promise<payload> */
   sendReq(method, params = {}, timeoutMs = 30000) {
+    if (!this.connected) {
+      return Promise.reject(new GatewayNotConnectedError(this.userId));
+    }
     return new Promise((resolve, reject) => {
-      if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        return reject(new Error('Gateway not connected'));
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return reject(new GatewayNotConnectedError(this.userId));
       }
       const id = this._reqId();
       const timeoutHandle = setTimeout(() => {
@@ -727,9 +776,56 @@ class GatewayWsProxy {
   }
 }
 
+// ─── GatewayPool ─────────────────────────────────────────────────────────────
+
+class GatewayPool {
+  constructor() {
+    this._connections = new Map();   // userId → GatewayConnection
+  }
+
+  /**
+   * Get (or lazily create) the connection object for a user.
+   * The connection is registered immediately but NOT connected — caller must
+   * call `.connect({port, token})` before issuing RPCs.
+   */
+  forUser(userId) {
+    const key = Number(userId);
+    if (!this._connections.has(key)) {
+      this._connections.set(key, new GatewayConnection(key));
+    }
+    return this._connections.get(key);
+  }
+
+  has(userId) {
+    return this._connections.has(Number(userId));
+  }
+
+  disconnect(userId) {
+    const key = Number(userId);
+    const conn = this._connections.get(key);
+    if (!conn) return;
+    try { conn.disconnect?.(); } catch (_) {}
+    this._connections.delete(key);
+  }
+
+  list() {
+    return Array.from(this._connections.values()).map(c => ({
+      userId: c.userId,
+      port: c._port ?? null,
+      connected: c.connected === true,
+    }));
+  }
+}
+
 // ─── Singleton ────────────────────────────────────────────────────────────────
 
-const gatewayProxy = new GatewayWsProxy();
+const gatewayPool = new GatewayPool();
+const gatewayProxy = gatewayPool.forUser(1);   // back-compat alias for 55 existing callers
 gatewayProxy.connect();
 
-module.exports = { gatewayProxy };
+module.exports = {
+  gatewayPool,
+  gatewayProxy,
+  GatewayConnection,
+  GatewayNotConnectedError,
+};

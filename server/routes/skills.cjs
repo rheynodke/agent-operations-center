@@ -7,6 +7,8 @@
  */
 'use strict';
 
+const { parseOwnerParam } = require('../helpers/access-control.cjs');
+
 function roleTemplateErrorStatus(err) {
   if (err.code === 'NOT_FOUND') return 404;
   if (err.code === 'CONFLICT' || err.code === 'ALREADY_EXISTS') return 409;
@@ -328,6 +330,9 @@ const SKILLSMP_KEY = 'skillsmp_api_key';
   router.get('/skills', db.authMiddleware, (req, res) => {
   try {
     const result = parsers.getAllSkills();
+    // Skills are a shared filesystem resource — no ownership column exists yet.
+    // Scoping by ?owner= is a no-op for now; the full result is always returned.
+    // TODO: add ownership tracking to skills when the data model supports it.
     res.json(result);
   } catch (err) {
     console.error('[api/skills]', err);
@@ -555,12 +560,24 @@ const SKILLSMP_KEY = 'skillsmp_api_key';
 
   router.get('/sessions', db.authMiddleware, (req, res) => {
   try {
-    const all = parsers.getAllSessions();
+    // Read from the effective user's filesystem. parseScopeUserId enforces
+    // admin-only impersonation; non-admin always self.
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const all = parsers.getAllSessions(targetUid);
     const { type, status, agentId } = req.query;
     let sessions = all;
     if (type) sessions = sessions.filter(s => s.type === type);
     if (status) sessions = sessions.filter(s => s.status === status);
-    if (agentId) sessions = sessions.filter(s => s.agentId === agentId);
+    if (agentId) sessions = sessions.filter(s => s.agentId === agentId || s.agent === agentId);
+
+    // Multi-tenant: getAllSessions(targetUid) already reads only from the
+    // effective user's filesystem, so no further per-agent ownership filter is
+    // needed. Each per-user gateway auto-spawns its own 'main' agent — those
+    // sessions belong to that user (locally-scoped agent id) and must be
+    // visible to them, even though 'main' as a *registry* entry stays
+    // admin-private (see filterAgentsByOwner). The two scopes are different.
+
     res.json({ sessions, total: sessions.length });
   } catch (err) {
     console.error('[api/sessions]', err);

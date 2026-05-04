@@ -203,8 +203,12 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
 // Activity
   router.get('/activity', db.authMiddleware, (req, res) => {
   try {
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
     const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    const logs = typeof parsers.parseCommandLog === 'function' ? parsers.parseCommandLog(limit) : [];
+    const logs = typeof parsers.parseCommandLog === 'function'
+      ? parsers.parseCommandLog(limit, targetUid)
+      : [];
     res.json({ events: logs });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch activity' });

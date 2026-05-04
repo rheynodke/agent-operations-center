@@ -1,7 +1,17 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, getUserHome, getUserAgentsDir, readJsonSafe } = require('../config.cjs');
+
+function homeFor(userId) {
+  return userId == null ? OPENCLAW_HOME : getUserHome(userId);
+}
+function agentsDirFor(userId) {
+  return userId == null ? AGENTS_DIR : getUserAgentsDir(userId);
+}
+function workspaceFor(userId) {
+  return userId == null ? OPENCLAW_WORKSPACE : require('path').join(getUserHome(userId), 'workspace');
+}
 
 function formatDuration(ms) {
   if (ms < 1000) return `${ms}ms`;
@@ -12,8 +22,8 @@ function formatDuration(ms) {
   return `${mins}m ${remSecs}s`;
 }
 
-function parseCodeAgentSessions() {
-  const filePath = path.join(OPENCLAW_HOME, 'code-agent-sessions.json');
+function parseCodeAgentSessions(userId) {
+  const filePath = path.join(homeFor(userId), 'code-agent-sessions.json');
   const data = readJsonSafe(filePath);
   if (!data) return [];
 
@@ -48,8 +58,8 @@ function parseCodeAgentSessions() {
   });
 }
 
-function parseDevProgress() {
-  const dir = path.join(OPENCLAW_WORKSPACE, 'dev-progress');
+function parseDevProgress(userId) {
+  const dir = path.join(workspaceFor(userId), 'dev-progress');
   if (!fs.existsSync(dir)) return [];
 
   return fs.readdirSync(dir)
@@ -123,8 +133,8 @@ function parseOpenCodeResult(sessionId) {
   return fs.readFileSync(filePath, 'utf-8').trim();
 }
 
-function parseAgentRegistry() {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+function parseAgentRegistry(userId) {
+  const configPath = path.join(homeFor(userId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) return [];
 
@@ -133,7 +143,7 @@ function parseAgentRegistry() {
 
   let globalEmoji = '';
   let globalName = '';
-  const globalIdentityPath = path.join(OPENCLAW_WORKSPACE, 'IDENTITY.md');
+  const globalIdentityPath = path.join(workspaceFor(userId), 'IDENTITY.md');
   if (fs.existsSync(globalIdentityPath)) {
     try {
       const content = fs.readFileSync(globalIdentityPath, 'utf-8');
@@ -151,7 +161,7 @@ function parseAgentRegistry() {
 
     let emoji = a.identity?.emoji || '';
     if (!emoji) {
-      const agentIdentityPath = path.join(require('../config.cjs').AGENTS_DIR, a.id || '', 'IDENTITY.md');
+      const agentIdentityPath = path.join(agentsDirFor(userId), a.id || '', 'IDENTITY.md');
       if (fs.existsSync(agentIdentityPath)) {
         try {
           const content = fs.readFileSync(agentIdentityPath, 'utf-8');
@@ -177,8 +187,8 @@ function parseAgentRegistry() {
   });
 }
 
-function parseCronJobs() {
-  const filePath = path.join(OPENCLAW_HOME, 'cron', 'jobs.json');
+function parseCronJobs(userId) {
+  const filePath = path.join(homeFor(userId), 'cron', 'jobs.json');
   const data = readJsonSafe(filePath);
   if (!data) return [];
   const raw = Array.isArray(data) ? data : (data.jobs || []);
@@ -237,7 +247,7 @@ function parseCronJobs() {
       enabled:      isEnabled,
       runCount:     (() => {
         try {
-          const runsFile = path.join(OPENCLAW_HOME, 'cron', 'runs', `${job.id}.jsonl`);
+          const runsFile = path.join(homeFor(userId), 'cron', 'runs', `${job.id}.jsonl`);
           if (!fs.existsSync(runsFile)) return 0;
           return fs.readFileSync(runsFile, 'utf-8').trim().split('\n').filter(Boolean).length;
         } catch { return 0; }
@@ -253,8 +263,8 @@ function parseCronJobs() {
   });
 }
 
-function parseCommandLog(limit = 50) {
-  const filePath = path.join(OPENCLAW_HOME, 'logs', 'commands.log');
+function parseCommandLog(limit = 50, userId) {
+  const filePath = path.join(homeFor(userId), 'logs', 'commands.log');
   if (!fs.existsSync(filePath)) return [];
 
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -265,8 +275,8 @@ function parseCommandLog(limit = 50) {
   });
 }
 
-function parseSubagentRuns() {
-  const filePath = path.join(OPENCLAW_HOME, 'subagents', 'runs.json');
+function parseSubagentRuns(userId) {
+  const filePath = path.join(homeFor(userId), 'subagents', 'runs.json');
   const data = readJsonSafe(filePath);
   if (!data) return [];
   if (Array.isArray(data)) return data;

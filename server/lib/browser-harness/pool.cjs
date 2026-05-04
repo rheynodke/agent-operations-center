@@ -180,10 +180,12 @@ function stopIdleGc() {
   if (_gcTimer) { clearInterval(_gcTimer); _gcTimer = null; }
 }
 
-// Best-effort cleanup on process exit
+// Best-effort cleanup on process exit.
+// NOTE: Do NOT call process.exit() here — server/index.cjs owns the exit lifecycle
+// via its graceful shutdown handler. Calling exit here would bypass orchestrator.gracefulShutdown.
 process.once('exit', () => { try { stopAll(); } catch {} });
-process.once('SIGTERM', () => { try { stopAll(); } catch {}; process.exit(0); });
-process.once('SIGINT', () => { try { stopAll(); } catch {}; process.exit(0); });
+process.on('SIGTERM', () => { try { stopAll(); } catch {} });
+process.on('SIGINT',  () => { try { stopAll(); } catch {} });
 
 module.exports = {
   SLOTS,
