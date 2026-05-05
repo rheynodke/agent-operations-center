@@ -17,6 +17,7 @@ interface AuthState {
   clearAuth: () => void
   setNeedsSetup: (v: boolean) => void
   setLoading: (v: boolean) => void
+  setMasterStatus: (hasMaster: boolean, masterAgentId: string | null) => void
 }
 
 /**
@@ -46,7 +47,13 @@ export const useAuthStore = create<AuthState>((set) => ({
   user: (() => {
     try {
       const raw = localStorage.getItem("aoc_user")
-      return raw ? JSON.parse(raw) : null
+      if (!raw) return null
+      const parsed = JSON.parse(raw)
+      return {
+        hasMaster: false,
+        masterAgentId: null,
+        ...parsed,
+      } as AuthUser
     } catch { return null }
   })(),
   isAuthenticated: !!localStorage.getItem("aoc_token"),
@@ -69,6 +76,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
   setNeedsSetup: (needsSetup) => set({ needsSetup }),
   setLoading: (loading) => set({ loading }),
+  setMasterStatus: (hasMaster, masterAgentId) =>
+    set((state) => state.user ? { user: { ...state.user, hasMaster, masterAgentId } } : state),
 }))
 
 // Fields that should survive a WS overwrite (DB-sourced or stats enriched by REST)

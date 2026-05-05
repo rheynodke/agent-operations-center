@@ -71,7 +71,16 @@ module.exports = function roomsRouter(deps) {
       if (!projectId) return res.status(400).json({ error: 'projectId is required for project rooms' });
       if (!db.userOwnsProject(req, projectId)) return res.status(403).json({ error: 'You do not have access to this project' });
     }
-    const room = db.createMissionRoom({ kind, projectId, name, description, memberAgentIds: validateAccessibleAgentIds(req, ['main', ...memberAgentIds]), createdBy: req.user?.userId ?? null });
+    // Always include the requesting user's Master Agent (per-user, isolated).
+    // Admin's master is 'main'; other users have their own slug.
+    const userId = req.user?.userId ?? null;
+    const masterAgentId = userId != null ? (db.getUserMasterAgentId(userId) || 'main') : 'main';
+    const room = db.createMissionRoom({
+      kind, projectId, name, description,
+      memberAgentIds: validateAccessibleAgentIds(req, [masterAgentId, ...memberAgentIds]),
+      createdBy: userId,
+      masterAgentId,
+    });
     broadcast({ type: 'room:created', payload: { room } });
     res.status(201).json({ room });
   } catch (err) {
@@ -84,7 +93,14 @@ module.exports = function roomsRouter(deps) {
   try {
     const room = withRoomAccess(req, res, req.params.id);
     if (!room) return;
-    const updated = db.updateMissionRoomMembers(room.id, validateAccessibleAgentIds(req, ['main', ...(req.body?.memberAgentIds || [])]));
+    // Use the room owner's Master Agent (per-user, isolated). Admin's master is 'main'.
+    const ownerId = room.createdBy ?? req.user?.userId ?? null;
+    const masterAgentId = ownerId != null ? (db.getUserMasterAgentId(ownerId) || 'main') : 'main';
+    const updated = db.updateMissionRoomMembers(
+      room.id,
+      validateAccessibleAgentIds(req, [masterAgentId, ...(req.body?.memberAgentIds || [])]),
+      masterAgentId,
+    );
     broadcast({ type: 'room:created', payload: { room: updated } });
     res.json({ room: updated });
   } catch (err) {
@@ -166,6 +182,18 @@ module.exports = function roomsRouter(deps) {
   router.post('/agents', db.authMiddleware, async (req, res) => {
   try {
     const userId = Number(req.user?.userId ?? req.user?.id);
+
+    // Block sub-agent provisioning until the user has a Master Agent.
+    // The dedicated POST /api/onboarding/master endpoint sets isMaster=true and
+    // bypasses this check; regular /agents calls must come from a user with a Master.
+    // Admin uid=1 is auto-backfilled at server startup so this never blocks them.
+    if (!req.body?.isMaster && !db.getUserMasterAgentId(userId)) {
+      return res.status(409).json({
+        error: 'No Master Agent found. Please complete onboarding first.',
+        code: 'MASTER_REQUIRED',
+      });
+    }
+
     const result = parsers.provisionAgent(req.body, userId);
     // Save profile to SQLite (including ADLC role if template was used)
     db.upsertAgentProfile({
@@ -227,7 +255,9 @@ module.exports = function roomsRouter(deps) {
 
   router.get('/agents/:id', db.authMiddleware, (req, res) => {
   try {
-    const agents = parsers.parseAgentRegistry();
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const agents = parsers.parseAgentRegistry(targetUid);
     const agent = agents.find(a => a.id === req.params.id);
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
     res.json(agent);
@@ -239,14 +269,19 @@ module.exports = function roomsRouter(deps) {
 // Agent detail (full profile with workspace files, soul, tools, etc.)
   router.get('/agents/:id/detail', db.authMiddleware, (req, res) => {
   try {
-    const detail = parsers.getAgentDetail(req.params.id);
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const detail = parsers.getAgentDetail(req.params.id, targetUid);
     if (!detail) return res.status(404).json({ error: 'Agent not found' });
-    // Enrich with SQLite profile (avatar preset, color)
+    // Enrich with SQLite profile (avatar preset, color, role, master flag)
     const profile = db.getAgentProfile(req.params.id);
     if (profile) {
       detail.profile = {
         avatarPresetId: profile.avatar_preset_id || null,
         color: profile.color || null,
+        role: profile.role || null,
+        isMaster: profile.is_master === 1 || profile.is_master === true,
+        provisionedBy: profile.provisioned_by ?? null,
       };
     }
     res.json(detail);

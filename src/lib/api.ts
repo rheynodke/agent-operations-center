@@ -124,6 +124,28 @@ export const api = {
   getAgentSessions: (id: string) => request(`/agents/${id}/sessions`),
   provisionAgent: (opts: ProvisionAgentOpts) =>
     request<ProvisionResult>("/agents", { method: "POST", body: JSON.stringify(opts) }),
+  provisionMaster: (body: {
+    name: string
+    emoji?: string
+    color?: string
+    description?: string
+    avatarPresetId?: string
+    soulContent?: string
+    channels?: import("@/types").ChannelBinding[]
+    /** legacy single-binding shape — kept for back-compat. */
+    channelBinding?: { channel: string; accountId?: string; token?: string } | null
+    templateId?: string
+  }) =>
+    request<{
+      ok: true
+      agentId: string
+      agentName: string
+      isMaster: true
+      whatsappPairingRequired?: boolean
+    }>(
+      "/onboarding/master",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
   deleteAgent: (id: string) =>
     request<{ ok: boolean }>(`/agents/${id}`, { method: "DELETE" }),
   getAgentProfile: (id: string) =>

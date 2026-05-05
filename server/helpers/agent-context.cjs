@@ -101,6 +101,7 @@ function getEnrichedAgents(deps, userId) {
       hasAvatar:      !!profileMap[a.id]?.avatar_data,
       avatarPresetId: profileMap[a.id]?.avatar_preset_id || null,
       role:           profileMap[a.id]?.role || null,
+      isMaster:       profileMap[a.id]?.is_master === 1 || profileMap[a.id]?.is_master === true,
       provisionedBy:  profileMap[a.id]?.provisioned_by ?? null,
       vibe:           readAgentVibe(a, config) || null,
       sessionCount:   st.sessionCount  || 0,

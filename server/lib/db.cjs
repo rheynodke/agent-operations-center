@@ -788,10 +788,23 @@ function parseJsonObject(value) {
   }
 }
 
-function normalizeMissionMembers(memberAgentIds) {
+/**
+ * Normalize mission-room membership: dedupe + ensure the requesting user's
+ * Master Agent is always included.
+ *
+ * Each user has their own (isolated) master agent — admin's master is `main`,
+ * but other users have arbitrary slugs. Pass `masterAgentId` so the right
+ * master gets prepended. If omitted, falls back to `'main'` for back-compat
+ * with admin-scoped legacy code paths.
+ *
+ * @param {string[]} memberAgentIds
+ * @param {string|null} [masterAgentId] — the requesting user's master agent id
+ */
+function normalizeMissionMembers(memberAgentIds, masterAgentId = null) {
   const ids = Array.isArray(memberAgentIds) ? memberAgentIds : [];
+  const master = masterAgentId && String(masterAgentId).trim() ? String(masterAgentId).trim() : 'main';
   const out = [];
-  for (const raw of ['main', ...ids]) {
+  for (const raw of [master, ...ids]) {
     const id = String(raw || '').trim();
     if (id && !out.includes(id)) out.push(id);
   }
@@ -800,14 +813,19 @@ function normalizeMissionMembers(memberAgentIds) {
 
 function normalizeMissionRoom(row) {
   if (!row || !row.id) return null;
+  // Look up the owner's master agent so re-normalization on read doesn't
+  // prepend 'main' (which would silently leak admin's agent into other users'
+  // room membership).
+  const ownerId = row.created_by != null ? Number(row.created_by) : null;
+  const ownerMaster = ownerId != null ? getUserMasterAgentId(ownerId) : null;
   return {
     id: row.id,
     kind: row.kind || 'global',
     projectId: row.project_id || null,
     name: row.name,
     description: row.description || null,
-    memberAgentIds: normalizeMissionMembers(parseJsonArray(row.member_agent_ids)),
-    createdBy: row.created_by != null ? Number(row.created_by) : null,
+    memberAgentIds: normalizeMissionMembers(parseJsonArray(row.member_agent_ids), ownerMaster),
+    createdBy: ownerId,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -861,7 +879,10 @@ function ensureProjectDefaultRoom(projectId, createdBy = null, memberAgentIds = 
   if (existing) return existing;
   const project = getProject(projectId);
   if (!project) return null;
-  const ids = normalizeMissionMembers(memberAgentIds || getOwnedAgentIds(createdBy));
+  // Use the project owner's Master Agent (per-user, isolated) as the always-on
+  // member — admin's master is 'main', other users have their own slug.
+  const masterAgentId = createdBy != null ? getUserMasterAgentId(createdBy) : null;
+  const ids = normalizeMissionMembers(memberAgentIds || getOwnedAgentIds(createdBy), masterAgentId);
   const id = `room-project-${projectId}`;
   const now = new Date().toISOString();
   db.run(
@@ -899,30 +920,43 @@ function listMissionRoomsForUser(req) {
   const rooms = listMissionRooms();
   if (!req?.user) return [];
   if (req.user.role === 'admin' || req.user.role === 'agent') return rooms;
+  // Filter out the user's own master agent when checking ownership — its presence
+  // alone shouldn't grant access to a room (the master is auto-added everywhere).
+  // Falls back to 'main' for legacy rows from before per-user masters existed.
+  const userMasterId = getUserMasterAgentId(req.user.userId) || 'main';
   return rooms.filter((room) => {
     if (room.kind === 'global') return true;
     if (room.projectId && userOwnsProject(req, room.projectId)) return true;
-    return room.memberAgentIds.some((id) => id !== 'main' && userOwnsAgent(req, id));
+    return room.memberAgentIds.some((id) => id !== userMasterId && userOwnsAgent(req, id));
   });
 }
 
-function createMissionRoom({ kind = 'global', projectId = null, name, description = null, memberAgentIds = [], createdBy = null } = {}) {
+function createMissionRoom({ kind = 'global', projectId = null, name, description = null, memberAgentIds = [], createdBy = null, masterAgentId = null } = {}) {
   if (!db) throw new Error('DB not initialized');
   if (!name?.trim()) throw new Error('createMissionRoom: name is required');
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  // Resolve master from createdBy if not explicitly provided
+  const master = masterAgentId || (createdBy != null ? getUserMasterAgentId(createdBy) : null);
   db.run(
     'INSERT INTO mission_rooms (id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, kind, projectId || null, name.trim(), description || null, JSON.stringify(normalizeMissionMembers(memberAgentIds)), createdBy != null ? Number(createdBy) : null, now, now]
+    [id, kind, projectId || null, name.trim(), description || null, JSON.stringify(normalizeMissionMembers(memberAgentIds, master)), createdBy != null ? Number(createdBy) : null, now, now]
   );
   persist();
   return getMissionRoom(id);
 }
 
-function updateMissionRoomMembers(id, memberAgentIds = []) {
+function updateMissionRoomMembers(id, memberAgentIds = [], masterAgentId = null) {
   if (!db) throw new Error('DB not initialized');
   const now = new Date().toISOString();
-  db.run('UPDATE mission_rooms SET member_agent_ids = ?, updated_at = ? WHERE id = ?', [JSON.stringify(normalizeMissionMembers(memberAgentIds)), now, id]);
+  // If masterAgentId not provided, look it up from the room's created_by so we
+  // don't accidentally drop the owner's master from membership.
+  let master = masterAgentId;
+  if (!master) {
+    const room = getMissionRoom(id);
+    if (room?.createdBy != null) master = getUserMasterAgentId(room.createdBy);
+  }
+  db.run('UPDATE mission_rooms SET member_agent_ids = ?, updated_at = ? WHERE id = ?', [JSON.stringify(normalizeMissionMembers(memberAgentIds, master)), now, id]);
   persist();
   return getMissionRoom(id);
 }
@@ -1747,12 +1781,31 @@ function getUserByUsername(username) {
 
 function getUserById(id) {
   if (!db) return null;
-  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login FROM users WHERE id = ?', [id]);
+  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login, master_agent_id FROM users WHERE id = ?', [id]);
   if (result.length === 0 || result[0].values.length === 0) return null;
 
   const row = result[0].values[0];
   const cols = result[0].columns;
   return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+}
+
+function setUserMasterAgent(userId, agentId) {
+  if (!db) return;
+  db.run('UPDATE users SET master_agent_id = ? WHERE id = ?', [agentId, Number(userId)]);
+  persist();
+}
+
+function getUserMasterAgentId(userId) {
+  if (!db) return null;
+  const result = db.exec('SELECT master_agent_id FROM users WHERE id = ?', [Number(userId)]);
+  if (result.length === 0 || result[0].values.length === 0) return null;
+  return result[0].values[0][0] || null;
+}
+
+function markAgentProfileMaster(agentId) {
+  if (!db) return;
+  db.run('UPDATE agent_profiles SET is_master = 1 WHERE agent_id = ?', [agentId]);
+  persist();
 }
 
 function updateLastLogin(userId) {
@@ -2227,6 +2280,7 @@ function getAgentProfile(agentId) {
   // Add camelCase aliases for frontend consumption
   obj.avatarPresetId = obj.avatar_preset_id ?? null;
   obj.role = obj.role ?? null;
+  obj.isMaster = obj.is_master === 1 || obj.is_master === true;
   return obj;
 }
 
@@ -2291,6 +2345,8 @@ function getAllAgentProfiles() {
   return result[0].values.map(row => {
     const obj = Object.fromEntries(result[0].columns.map((c, i) => [c, row[i]]));
     try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
+    obj.avatarPresetId = obj.avatar_preset_id ?? null;
+    obj.isMaster = obj.is_master === 1 || obj.is_master === true;
     return obj;
   });
 }
@@ -2642,4 +2698,8 @@ module.exports = {
   listPipelinesForUser,
   // Gateway state
   setGatewayState, getGatewayState, getGatewayToken, listGatewayStates, clearAllGatewayStates,
+  // Master agent
+  setUserMasterAgent,
+  getUserMasterAgentId,
+  markAgentProfileMaster,
 };

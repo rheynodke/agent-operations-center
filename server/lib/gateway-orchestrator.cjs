@@ -144,15 +144,35 @@ function ensureUserHome(userId, userHome) {
   const cfgPath = path.join(userHome, 'openclaw.json');
   if (!fs.existsSync(cfgPath)) {
     // Inherit admin's agent defaults (model, tools, skills) so newly provisioned
-    // agents start with a working LLM out of the box.
+    // agents start with a working LLM out of the box. Also inherit the
+    // top-level `tools` profile and `approvals` config so per-user gateways
+    // share the same exec/fs/approval semantics admin uses (full exec, no
+    // approval prompts on safe ops — risky ops still surface via prompting
+    // inside the LLM, not via gateway approval gates).
     let inheritedDefaults = {};
+    let inheritedTools = {};
+    let inheritedApprovals = {};
     try {
       const adminCfg = JSON.parse(fs.readFileSync(path.join(require('./config.cjs').OPENCLAW_BASE, 'openclaw.json'), 'utf8'));
-      inheritedDefaults = adminCfg?.agents?.defaults || {};
+      inheritedDefaults = { ...(adminCfg?.agents?.defaults || {}) };
+      inheritedTools = adminCfg?.tools ? JSON.parse(JSON.stringify(adminCfg.tools)) : {};
+      inheritedApprovals = adminCfg?.approvals ? JSON.parse(JSON.stringify(adminCfg.approvals)) : {};
     } catch (_) { /* admin config missing — leave defaults empty */ }
+
+    // Rewrite admin-scoped paths to per-user paths so we don't leak admin's
+    // workspace contents (IDENTITY.md, SOUL.md, MEMORY.md, etc.) into the new
+    // user's gateway. Per-agent workspace fields are set explicitly during
+    // provisioning; this is the fallback for "default agent" sessions.
+    inheritedDefaults.workspace = path.join(userHome, 'workspace');
+
+    // Ensure the per-user workspace dir exists (the symlink to shared skills
+    // was already created above; we add the dir itself if missing).
+    fs.mkdirSync(inheritedDefaults.workspace, { recursive: true });
 
     const cfg = {
       agents: { defaults: inheritedDefaults, list: [] },
+      tools: inheritedTools,
+      approvals: inheritedApprovals,
       channels: {},
       gateway: {
         mode: 'local',

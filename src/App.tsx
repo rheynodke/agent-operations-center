@@ -33,10 +33,32 @@ import { ChatPage } from "@/pages/ChatPage"
 import { ConnectionsPage } from "@/pages/ConnectionsPage"
 import { RegisterPage } from "@/pages/RegisterPage"
 import { UserManagementPage } from "@/pages/UserManagementPage"
+import OnboardingPage from "@/pages/OnboardingPage"
+import { useMasterStatus } from "@/hooks/useMasterStatus"
 
 function AdminOnly({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user)
   if (user?.role !== "admin") return <Navigate to="/" replace />
+  return <>{children}</>
+}
+
+function MasterGate({ children }: { children: React.ReactNode }) {
+  const { hasMaster } = useMasterStatus()
+  const location = useLocation()
+  const allowed = location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/logout')
+  if (!hasMaster && !allowed) {
+    return <Navigate to="/onboarding" replace />
+  }
+  return <>{children}</>
+}
+
+// /onboarding is a first-time-user-only route. Anyone who already has a Master
+// Agent is bounced back to the dashboard so they can't re-run the wizard.
+function OnboardingGate({ children }: { children: React.ReactNode }) {
+  const { hasMaster } = useMasterStatus()
+  if (hasMaster) {
+    return <Navigate to="/" replace />
+  }
   return <>{children}</>
 }
 
@@ -157,7 +179,8 @@ function MainApp() {
         </>
       ) : /* 3. System is setup and user is authenticated */ (
         <>
-          <Route path="/*" element={<DashboardShell />} />
+          <Route path="/onboarding" element={<OnboardingGate><OnboardingPage /></OnboardingGate>} />
+          <Route path="/*" element={<MasterGate><DashboardShell /></MasterGate>} />
         </>
       )}
     </Routes>

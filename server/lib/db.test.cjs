@@ -193,3 +193,60 @@ test('clearAllGatewayStates: resets gateway columns to NULL for every user', asy
   delete process.env.AOC_DATA_DIR;
   delete require.cache[require.resolve('./db.cjs')];
 });
+
+test('setUserMasterAgent + getUserMasterAgentId roundtrip', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aocdb-ma1-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+  raw.run("INSERT INTO users (username, password_hash, role) VALUES ('alice', 'x', 'user')");
+  // id=1 for first user
+  assert.equal(db.getUserMasterAgentId(1), null);
+  db.setUserMasterAgent(1, 'alice-master');
+  assert.equal(db.getUserMasterAgentId(1), 'alice-master');
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+});
+
+test('getUserById exposes master_agent_id', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aocdb-ma2-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+  raw.run("INSERT INTO users (username, password_hash, role) VALUES ('bob', 'x', 'user')");
+  db.setUserMasterAgent(1, 'bob-master');
+  const fetched = db.getUserById(1);
+  assert.equal(fetched.master_agent_id, 'bob-master');
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+});
+
+test('markAgentProfileMaster sets is_master flag', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aocdb-ma3-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  db.upsertAgentProfile({ agentId: 'a1', displayName: 'A1', provisionedBy: null });
+  db.markAgentProfileMaster('a1');
+  const p = db.getAgentProfile('a1');
+  assert.equal(p.is_master, 1);
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+});

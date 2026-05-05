@@ -1730,15 +1730,16 @@ interface EditConfig {
 }
 
 const ADLC_ROLE_OPTIONS: Array<{ value: string; label: string; emoji: string }> = [
-  { value: "",             label: "— none / autonomous —",   emoji: "⚪" },
-  { value: "biz-analyst",  label: "Biz Analyst",              emoji: "📈" },
-  { value: "pm-analyst",   label: "PM Analyst",               emoji: "📊" },
-  { value: "ux-designer",  label: "UX Designer",              emoji: "🎨" },
-  { value: "em-architect", label: "EM Architect",             emoji: "🏗" },
-  { value: "swe",          label: "SWE",                      emoji: "💻" },
-  { value: "qa-engineer",  label: "QA Engineer",              emoji: "🧪" },
-  { value: "doc-writer",   label: "Doc Writer",               emoji: "📝" },
-  { value: "data-analyst", label: "Data Analyst",             emoji: "📊" },
+  { value: "",                   label: "— none / autonomous —",   emoji: "⚪" },
+  { value: "master-orchestrator", label: "Master Orchestrator",     emoji: "🧭" },
+  { value: "biz-analyst",        label: "Biz Analyst",              emoji: "📈" },
+  { value: "pm-analyst",         label: "PM Analyst",               emoji: "📊" },
+  { value: "ux-designer",        label: "UX Designer",              emoji: "🎨" },
+  { value: "em-architect",       label: "EM Architect",             emoji: "🏗" },
+  { value: "swe",                label: "SWE",                      emoji: "💻" },
+  { value: "qa-engineer",        label: "QA Engineer",              emoji: "🧪" },
+  { value: "doc-writer",         label: "Doc Writer",               emoji: "📝" },
+  { value: "data-analyst",       label: "Data Analyst",             emoji: "📊" },
 ]
 
 function EditConfigModal({
@@ -1957,21 +1958,30 @@ function EditConfigModal({
             <div className="flex items-center gap-2 mb-3">
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">ADLC Role</span>
               <div className="flex-1 h-px bg-foreground/5" />
-              <span className="text-[9px] text-muted-foreground bg-foreground/5 px-1.5 py-0.5 rounded">for Missions</span>
+              {detail.profile?.isMaster ? (
+                <span className="text-[9px] text-primary bg-primary/15 border border-primary/30 px-1.5 py-0.5 rounded font-semibold tracking-wide">
+                  🧭 Master Orchestrator
+                </span>
+              ) : (
+                <span className="text-[9px] text-muted-foreground bg-foreground/5 px-1.5 py-0.5 rounded">for Missions</span>
+              )}
             </div>
             <div>
               <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Role Identity</label>
               <select
-                value={cfg.adlcRole}
+                value={detail.profile?.isMaster ? "master-orchestrator" : cfg.adlcRole}
                 onChange={(e) => setCfg(c => ({ ...c, adlcRole: e.target.value }))}
-                className="w-full h-8 px-2 rounded-md border border-input bg-background text-sm"
+                disabled={detail.profile?.isMaster}
+                className="w-full h-8 px-2 rounded-md border border-input bg-background text-sm disabled:opacity-70 disabled:cursor-not-allowed"
               >
                 {ADLC_ROLE_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>{o.emoji} {o.label}</option>
                 ))}
               </select>
               <div className="mt-1.5 text-[10px] text-muted-foreground">
-                Assign so this agent can be picked by Missions playbooks that need this role.
+                {detail.profile?.isMaster
+                  ? "This is your Master Agent — role is locked. The Master orchestrates your team and routes user intent to the right specialist."
+                  : "Assign so this agent can be picked by Missions playbooks that need this role."}
               </div>
             </div>
           </section>

@@ -19,6 +19,7 @@ const mcpOauth = require('./lib/connections/mcp-oauth.cjs');
 const composio = require('./lib/connections/composio.cjs');
 const pipelines = require('./lib/pipelines/index.cjs');
 const workflowRuns = require('./lib/pipelines/runs.cjs');
+const aocMasterInstaller = require('./lib/aoc-master/installer.cjs');
 const projectGit = require('./lib/projects/git-ops.cjs');
 const projectWs = require('./lib/projects/workspace-ops.cjs');
 const orchestrator = require('./lib/gateway-orchestrator.cjs');
@@ -77,6 +78,11 @@ applyMiddleware(app);
 // ─── Routes: Auth + Users + Invitations (Step 2) ─────────────────────────────
 app.use('/api', require('./routes/auth.cjs')({ db }));
 
+// ─── Routes: Onboarding (Master Agent) — mounted late so it can pass
+// `restartGateway` into the factory (defined further below).
+let onboardingRouter;
+// Idempotent backfill runs in start() after initDatabase()
+
 // ─── Access-control wrappers (delegate to helpers/access-control.cjs) ─────────
 function checkTaskAccess(req, taskId) {
   return accessControl.checkTaskAccess(req, taskId, db);
@@ -97,6 +103,14 @@ app.use('/api', require('./routes/health.cjs')({ db, parsers }));
 const gatewayRouterMod = require('./routes/gateway.cjs');
 app.use('/api', gatewayRouterMod({ db, parsers, aiLib, metrics }));
 const { restartGateway } = gatewayRouterMod;
+
+// Mount onboarding router now that restartGateway is available
+onboardingRouter = require('./routes/onboarding.cjs')({ db, restartGateway });
+app.use('/api', onboardingRouter);
+
+// ─── Routes: Master Agent ─────────────────────────────────────────────────────
+const { gatewayPool } = require('./lib/gateway-ws.cjs');
+app.use('/api', require('./routes/master.cjs')({ db, gatewayPool }));
 
 // ─── Broadcast (delegated to bootstrap/websocket.cjs) ─────────────────────────
 function broadcast(event) {
@@ -674,6 +688,9 @@ async function sweepPendingTasks() {
 async function start() {
   await db.initDatabase();
 
+  // Idempotent backfill: assign admin user 1 a master_agent_id if their main agent exists
+  try { onboardingRouter.runMasterBackfill(); } catch (e) { console.warn('[onboarding] backfill error:', e.message); }
+
   try {
     await orchestrator.cleanupOrphans();
     console.log('[orchestrator] startup cleanup complete');
@@ -741,6 +758,10 @@ async function start() {
     parsers.missionOrchestratorSkill.installSafe();
     parsers.missionOrchestratorSkill.ensureSkillEnabledForMainAgent();
   } catch (e) { console.warn('[startup] mission-orchestrator skill init failed:', e.message); }
+  // aoc-master skill: install bundle (master agents are enrolled per-provision / per-onboarding).
+  try {
+    aocMasterInstaller.installSafe();
+  } catch (e) { console.warn('[startup] aoc-master skill init failed:', e.message); }
   // After all skill bundles install, purge legacy flat copies of skill scripts
   // (they live inside the skill folder now). Idempotent.
   try { parsers.purgeLegacyFlatScripts(); }

@@ -162,6 +162,7 @@ module.exports = function authRouter(deps) {
 
     console.log(`[auth] User "${username}" logged in (id=${user.id})`);
 
+    const masterAgentId = user.master_agent_id || null;
     res.json({
       token,
       user: {
@@ -170,6 +171,8 @@ module.exports = function authRouter(deps) {
         displayName: user.display_name,
         role: user.role,
         canUseClaudeTerminal: Boolean(user.can_use_claude_terminal),
+        hasMaster: Boolean(masterAgentId),
+        masterAgentId,
       },
     });
   });
@@ -208,6 +211,11 @@ module.exports = function authRouter(deps) {
       });
       db.incrementInvitationUse(inv.id);
 
+      // Note: per-user "General" project is auto-created in onboarding/master
+      // (after the master agent exists), NOT here — otherwise the project's
+      // default mission room falls back to admin's `main` because
+      // `getUserMasterAgentId(uid)` returns null at this point.
+
       // Provision the new user's gateway during registration. This is the
       // primary spawn point — login retains the call as a silent fallback for
       // post-AOC-restart recovery.
@@ -232,6 +240,8 @@ module.exports = function authRouter(deps) {
           username: user.username,
           displayName: user.display_name,
           role: user.role,
+          hasMaster: false,
+          masterAgentId: null,
         },
       });
     } catch (err) {
@@ -405,6 +415,7 @@ module.exports = function authRouter(deps) {
     const user = db.getUserById(req.user.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    const masterAgentId = user.master_agent_id || null;
     res.json({
       user: {
         id: user.id,
@@ -414,6 +425,8 @@ module.exports = function authRouter(deps) {
         canUseClaudeTerminal: Boolean(user.can_use_claude_terminal),
         createdAt: user.created_at,
         lastLogin: user.last_login,
+        hasMaster: Boolean(masterAgentId),
+        masterAgentId,
       },
     });
   });

@@ -79,6 +79,11 @@ export interface Agent {
   channels?: string[]
   // Ownership: user id that provisioned this agent (for role-based access)
   provisionedBy?: number | null
+  // True if this agent is the user's Master Agent (1 per user). Master role
+  // is set at onboarding; identity is auto-injected (SOUL.md/AGENTS.md/TOOLS.md
+  // get the orchestration playbook). The Edit Configuration modal locks the
+  // ADLC role dropdown to "Master Orchestrator" for these agents.
+  isMaster?: boolean
 }
 
 // ─── Agent Channel Management Types ─────────────────────────────────────────
@@ -759,6 +764,8 @@ export interface AuthUser {
   displayName: string
   role: string
   canUseClaudeTerminal?: boolean
+  hasMaster: boolean
+  masterAgentId: string | null
 }
 
 export interface AuthStatus {

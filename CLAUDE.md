@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Agent Operations Center (AOC) — a full-stack web dashboard for monitoring, managing, and controlling OpenClaw AI agents. It reads agent data from the OpenClaw filesystem (`~/.openclaw/`) and provides real-time visibility via WebSocket.
+Agent Operations Center (AOC) — a **multi-tenant** full-stack web dashboard for monitoring, managing, and controlling OpenClaw AI agents. Each user gets:
+
+- An isolated OpenClaw filesystem at `~/.openclaw/users/<id>/.openclaw/` (admin uses the root `~/.openclaw/`).
+- A dedicated, lazily-spawned OpenClaw gateway process running on its own port (admin → external `18789`, others → managed range `19000-19999`).
+- A **Master Agent** (one per user, created during onboarding) that orchestrates the user's team and routes intent to specialist sub-agents.
+- A per-user "General" project + auto-managed Mission Rooms.
+
+The backend reads agent state from each user's OpenClaw filesystem and provides real-time visibility via WebSocket. Cross-tenant isolation is enforced at the gateway, filesystem, and SQLite-row layers.
 
 ## Commands
 
@@ -14,328 +21,493 @@ npm run dev:client   # Vite dev server only (port 5173)
 npm run dev:server   # Express backend only with --watch (port 18800)
 npm run build        # TypeScript check + Vite production build
 npm start            # Production server (serves built frontend + API)
+npm test             # node --test on server/lib/*.test.cjs (unit tests for db, provision, gateway-orchestrator, etc.)
 npm run generate-token  # Generate a random 32-byte hex token (for DASHBOARD_TOKEN)
 ```
 
-No test runner is configured. No linter is configured.
+No linter is configured. Tests use Node's built-in `node:test` framework — see `server/lib/*.test.cjs` and `server/routes/*.test.cjs`.
 
 ## Environment
 
-Requires Node >= 20. Copy `.env.example` to `.env`. Key vars: `PORT` (default 18800), `OPENCLAW_HOME`, `OPENCLAW_WORKSPACE`, `DASHBOARD_TOKEN`.
+Requires Node >= 20. Copy `.env.example` to `.env`. Key vars:
+
+- `PORT` (default 18800) — AOC API port.
+- `OPENCLAW_HOME` — admin's OpenClaw home (defaults to `~/.openclaw`).
+- `OPENCLAW_BIN` — path to `openclaw` binary (default `/opt/homebrew/bin/openclaw`).
+- `DASHBOARD_TOKEN` — legacy; superseded by SQLite users + JWT.
+- `AOC_MAX_GATEWAYS` (default 50) — per-AOC cap on concurrently-running per-user gateways.
+- `GATEWAY_BACKOFF_MS` — comma-separated retry delays for orchestrator (default `5000,30000,300000`).
 
 ## Architecture
 
 **Two-process dev setup:** Vite dev server proxies `/api/*` and `/ws/*` to the Express backend (see `vite.config.ts`).
 
+### Multi-Tenant Foundation (load-bearing — read FIRST)
+
+The platform is **multi-tenant by default**. The cross-cutting invariants:
+
+1. **Per-user gateway processes.** Admin (uid=1) connects to an external systemd-managed `openclaw-gateway` on port 18789. Every other user gets a per-user gateway lazy-spawned by `server/lib/gateway-orchestrator.cjs`, running under `<userHome>` with `OPENCLAW_STATE_DIR=<userHome>` env. Gateway processes survive AOC restart (detached + token persisted in SQLite `users.gateway_token`); on AOC startup, `cleanupOrphans()` re-attaches alive PIDs rather than killing them.
+
+2. **Per-user filesystem.** `getUserHome(userId)` from `server/lib/config.cjs` returns:
+   - `OPENCLAW_BASE` (admin's `~/.openclaw`) when `userId === 1`
+   - `<OPENCLAW_BASE>/users/<userId>/.openclaw` otherwise
+   `ensureUserHome()` in the orchestrator creates this on first spawn, copies admin's `agents.defaults` (rewriting `workspace` to per-user path), and inherits the top-level `tools` and `approvals` config.
+
+3. **Symlinked shared resources.** `<userHome>/skills/` and `<userHome>/scripts/` are symlinks to admin's `~/.openclaw/skills/` and `~/.openclaw/scripts/`. Installing a built-in skill bundle once at admin's home propagates to every user.
+
+4. **Master Agent = "default agent" for the user.** Master's workspace is `<userHome>/workspace/` (the singular global dir, same layout as admin's `main` agent). Sub-agents nest under `<userHome>/workspaces/<sub-id>/`. This is what `agents.defaults.workspace` points at, so Master == default semantically.
+
+5. **GatewayPool keyed by userId.** `gatewayPool.forUser(userId)` returns a `GatewayConnection`. `gatewayProxy` is a back-compat alias for `gatewayPool.forUser(1)` (admin). Per-user connections do NOT auto-connect — caller must verify `conn.isConnected` and use `orchestrator.getRunningToken(userId)` + `conn.connect({port,token})` if stale. See `server/routes/master.cjs` for the lazy-connect pattern.
+
+6. **WS auto-reconnect on orchestrator events.** `orchestrator.on('spawned'|'stopped')` listeners in `gateway-ws.cjs` reconnect any in-pool connection automatically — so a user-triggered restart doesn't require AOC restart or user re-login.
+
+7. **Ownership scoping.** SQLite columns `agent_profiles.provisioned_by`, `connections.created_by`, `projects.created_by`, `mission_rooms.created_by`, `users.master_agent_id`, `agent_profiles.is_master`. `parseScopeUserId(req)` from `server/helpers/access-control.cjs` resolves the request's effective userId (admin can impersonate via `?owner=<id>`).
+
 ### Frontend (React 19 + TypeScript)
 
-- **Routing:** React Router v7 in `src/App.tsx`. Auth flow: Setup → Login → DashboardShell. Pages at `src/pages/`.
-- **State:** Zustand stores in `src/stores/index.ts` — one store per domain (agents, sessions, tasks, cron, routing, alerts, activity, live feed, auth, WebSocket status). Chat state lives in `src/stores/useChatStore.ts` separately. Theme (light/dark) lives in `src/stores/useThemeStore.ts`.
-- **Real-time:** `src/hooks/useWebSocket.ts` connects to `/ws`, dispatches typed events to Zustand stores. `src/hooks/useDataLoader.ts` handles initial REST data fetch.
-- **API clients:** `src/lib/api.ts` — all standard REST endpoints. `src/lib/chat-api.ts` — gateway/chat-specific endpoints (`/api/chat/*`). Both use auto-auth headers from `useAuthStore`.
-- **Styling:** Tailwind CSS v4 via `@tailwindcss/vite` plugin. shadcn/ui components in `src/components/ui/`. Path alias `@/` maps to `src/`. Theme tokens defined in `src/index.css` — light and dark mode CSS vars. Always use semantic tokens (`bg-card`, `border-border`, `text-foreground`, `bg-foreground/X`) not `bg-white/X` or hardcoded hex colors, so both modes work.
-- **Types:** All shared types in `src/types/index.ts`.
+- **Routing:** React Router v7 in `src/App.tsx`. Auth flow: Setup → Login → `<MasterGate>` → DashboardShell. Pages at `src/pages/`.
+  - `<MasterGate>` redirects users with no master to `/onboarding`.
+  - `<OnboardingGate>` (wrapped around `/onboarding`) bounces users who already have a master back to `/`.
+- **State:** Zustand stores in `src/stores/index.ts` — one store per domain (agents, sessions, tasks, cron, routing, alerts, activity, live feed, auth, WebSocket status). Chat state in `src/stores/useChatStore.ts`. Theme in `src/stores/useThemeStore.ts`. Auth user includes `hasMaster: boolean` and `masterAgentId: string | null`.
+- **Real-time:** `src/hooks/useWebSocket.ts` connects to `/ws`, dispatches typed events to Zustand stores. `src/hooks/useDataLoader.ts` handles initial REST data fetch. `src/hooks/useMasterStatus.ts` exposes `{ hasMaster, masterAgentId, refresh }`.
+- **API clients:** `src/lib/api.ts` — all standard REST endpoints. `src/lib/chat-api.ts` — gateway/chat-specific endpoints. Both use auto-auth headers from `useAuthStore`.
+- **Styling:** Tailwind CSS v4 via `@tailwindcss/vite` plugin. shadcn/ui components in `src/components/ui/`. Path alias `@/` maps to `src/`. **Always use semantic tokens** (`bg-card`, `border-border`, `text-foreground`, `bg-foreground/X`) — not raw colors — so light/dark mode work.
+- **Types:** All shared types in `src/types/index.ts`. `Agent` includes `isMaster?`, `provisionedBy?`. `AuthUser` includes `hasMaster`, `masterAgentId`.
 
 ### Backend (Node.js + Express 5, CommonJS)
 
 - **Entry:** `server/index.cjs` — Express app with JWT auth, Helmet, CORS, rate limiting.
 - **Barrel:** `server/lib/index.cjs` — **explicit** named export list; adding a new function to any sub-module requires also adding it here. Does NOT use spread (`...submodule`). Note: `server/lib/agents/index.cjs` is a local sub-barrel that *does* use spread to compose its own files.
-- **Sub-modules:** (see each file for its exact exports — the barrel rule above is the load-bearing invariant)
-  - `server/lib/agents/detail.cjs` — agent CRUD + channel binding management
-  - `server/lib/agents/files.cjs` — editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`. `injectSoulStandard()` idempotently appends the AOC research output standard block (guarded by `<!-- aoc:research-standard:start -->` marker)
-  - `server/lib/agents/skills.cjs` — per-agent + global skill CRUD and toggling
-  - `server/lib/agents/tools.cjs` — `BUILTIN_TOOLS` list + per-agent tool enable/disable
-  - `server/lib/agents/skillScripts.cjs` — scripts under `{skillDir}/scripts/`
-  - `server/lib/agents/provision.cjs` — writes new agent to `openclaw.json` + scaffolds workspace
-  - `server/lib/pairing.cjs` — DM pairing approval + allow-list for telegram/whatsapp/discord. Reads `~/.openclaw/credentials/{channel}-pairing.json` and `{channel}[-{accountId}]-allowFrom.json`. 1-hour pending TTL matches OpenClaw's `PAIRING_PENDING_TTL_MS`.
-  - `server/lib/sessions/index.cjs` — sessions sub-barrel (composes opencode + gateway via spread)
-  - `server/lib/sessions/opencode.cjs` — parses OpenCode JSONL session files from `~/.openclaw/`; `parseCronJobs()` reads `~/.openclaw/cron/jobs.json` and normalizes the schedule object to display string
-  - `server/lib/sessions/gateway.cjs` — parses gateway JSONL session files from `~/.openclaw/agents/{agentId}/sessions/`; handles text-encoded tool call markers (`<|tool_calls_section_begin|>`) and strips gateway-injected metadata from user messages
-  - `server/lib/models.cjs` — `getAvailableModels` reads model list from `openclaw.json`
-  - `server/lib/gateway-ws.cjs` — persistent WebSocket proxy to OpenClaw Gateway (port 18789); 3-layer auth hierarchy: device auth token > Ed25519 signing > passphrase fallback. Cron RPC methods: `cronList`, `cronRun`, `cronRuns`, `cronStatus` (gateway supports these; `cron.create/update/delete/toggle` do NOT exist — use file write instead)
-  - `server/lib/db.cjs` — SQLite via `sql.js` for user auth, agent profiles, avatars. `getAgentProfile` returns both snake_case columns and explicit camelCase aliases (e.g. `avatarPresetId` from `avatar_preset_id`) — always add aliases here when adding new columns.
-  - `server/lib/routing.cjs` — `parseRoutes` (enriches `openclaw.json` bindings with agent metadata for the Routing page), `getChannelsConfig` (sanitized global channel config without bot tokens)
-  - `server/lib/watchers.cjs` — chokidar file watchers; broadcasts `session:live-event` and `processing_end` WS events with `sessionKey`
-  - `server/lib/automation/cron.cjs` — cron CRUD (create/update/delete/toggle/run/runs); tries gateway RPC first, falls back to direct `~/.openclaw/cron/jobs.json` file write. `buildSchedule()` converts form opts to gateway schema (`{kind, everyMs}` etc). `buildJobFromOpts()` produces the full job object.
-  - `server/lib/scripts.cjs` — shared workspace scripts (`~/.openclaw/scripts/`) and agent-specific scripts (`{agentWorkspace}/scripts/`). Metadata stored in `.tools.json` per directory. `listAgentCustomTools()` returns `{shared, agent}` enriched with `enabled` from agent's TOOLS.md. `toggleAgentCustomTool()` injects/removes HTML-comment-delimited blocks in TOOLS.md. **Also exports the AOC built-in scripts plumbing**: `BUILTIN_SCRIPT_MANIFEST` (currently empty — all built-ins migrated into skill bundles), `LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS` (cleanup list), `stampBuiltinSharedMeta()`, `syncAgentBuiltins()`, `purgeLegacyFlatScripts()`, `isBuiltinShared()`. See **AOC Built-in Skills & Sync Engine** section below.
-  - `server/lib/browser-harness/odoo-bundle.cjs` + `odoo-installer.cjs` — bundled `browser-harness-odoo` skill (SKILL.md + 10 shell scripts under `scripts/`). `BUNDLE_VERSION` controls re-install. Files marked `protect: true, exec: true` get explicit `chmod 0755` after `fs.writeFileSync` (the `mode` option is ignored when the file already exists).
-  - `server/lib/aoc-tasks/installer.cjs` — bundled `aoc-tasks` skill (task board contract + 5 scripts: `update_task`, `check_tasks`, `fetch_attachment`, `save_output`, `post_comment`). `ensureSkillEnabledForAllAgents()` adds the slug to `agents.defaults.skills` plus each agent's per-agent allowlist.
-  - `server/lib/aoc-connections/installer.cjs` — bundled `aoc-connections` skill (connection layer contract + 4 scripts: `aoc-connect`, `check_connections`, `mcp-call`, `gws-call`). Same auto-enable pattern as `aoc-tasks`.
-  - `server/lib/workspace-browser.cjs` — read-only file manager for an agent's workspace. `tree(agentId, relPath)` lists directory contents (dirs first), `readFileMeta(agentId, relPath)` returns text inline (≤5MB) or binary streaming meta. Path traversal hardened via `path.resolve` + `startsWith` check + symlink refusal (`fs.lstat`). `httpErr(status, msg)` helper for route handlers.
-  - `server/lib/terminal.cjs` — Claude Code WS terminal. `CWD_TARGETS` allowlist + `agent-scripts:<id>` token resolves to `{agentWorkspace}/scripts/`. Token + `cwdToken` + `agentId` flow via WS claims so the same component is reused on the Skills page (`cwd=skills`/`scripts`) and the agent detail Custom Tools sub-tab (`cwd=agent-scripts agentId={id}`).
-  - `server/lib/versioning.cjs` — file version history in SQLite (max 50 per scope). Scope key conventions: `agent:{agentId}:{fileName}`, `skill:{agentId}:{skillName}`, `skill:global:{slug}`, `skill-script:{agentId}:{skill}:{file}`, `script:agent:{agentId}:{file}`, `script:global:{file}`. Deduplicates by SHA-256 checksum.
-  - `server/lib/integrations/index.cjs` — project integration engine; `init(db, broadcast)` wires up DB + WS broadcast, `syncIntegration(id)` pulls tickets from the adapter and upserts into tasks. Currently supports `google_sheets` adapter (`server/lib/integrations/google-sheets.cjs`). Credentials stored encrypted via `server/lib/integrations/base.cjs`.
-- **Config:** `server/lib/config.cjs` exports `OPENCLAW_HOME`, `OPENCLAW_WORKSPACE`, `AGENTS_DIR`, `readJsonSafe`.
-- **AI generation:** `server/lib/ai.cjs` — `generateStream()` (async generator, SSE via Claude CLI), `getOsContext()`, `FILE_CONTEXTS`.
-- **`server.js` (root)** — legacy file, NOT used. The active entry is `server/index.cjs`.
+- **Sub-modules:**
+  - `server/lib/agents/detail.cjs` — agent CRUD + channel binding management. `_ownerOf(agentId)` resolves owner via `db.getAgentOwner` for per-tenant path resolution (`homeFor`/`agentsDirFor`/`workspaceFor` all use it).
+  - `server/lib/agents/files.cjs` — editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`. `injectSoulStandard()` idempotently appends the AOC research output standard.
+  - `server/lib/agents/skills.cjs`, `tools.cjs`, `skillScripts.cjs` — per-agent skill + tool plumbing.
+  - `server/lib/agents/provision.cjs` — writes new agent to `openclaw.json` + scaffolds workspace. **Master-aware**: when `isMaster=true`, uses `<home>/workspace` (not nested), grants broad fs access (`tools.fs.workspaceOnly: false`), explicit skills allowlist (`MASTER_EXTRA_SKILLS + agents.defaults.skills`), injects orchestration sections into SOUL.md/AGENTS.md/TOOLS.md.
+  - `server/lib/aoc-master/installer.cjs` — bundled `aoc-master` skill (delegate.sh, team-status.sh, list-team-roles.sh + SKILL.md). Master-only auto-enable via `ensureSkillEnabledForUserMasters({ masterAgentIds })`.
+  - `server/lib/aoc-tasks/installer.cjs`, `aoc-connections/installer.cjs`, `browser-harness/odoo-installer.cjs` — other built-in skill bundles. See **AOC Built-in Skills & Sync Engine** below.
+  - `server/lib/pairing.cjs` — DM pairing approval + allow-list for telegram/whatsapp/discord.
+  - `server/lib/sessions/index.cjs`, `opencode.cjs`, `gateway.cjs` — session parsers (per-user via `homeFor(userId)`).
+  - `server/lib/models.cjs` — `getAvailableModels` reads model list from per-user `openclaw.json`.
+  - `server/lib/gateway-ws.cjs` — `GatewayPool` (keyed by userId) + persistent WebSocket connections to per-user gateways. 3-layer auth: device token > Ed25519 signing > passphrase. Auto-reconnect on orchestrator `spawned`/`stopped` events.
+  - `server/lib/gateway-orchestrator.cjs` — per-user gateway lifecycle: `spawnGateway(userId)`, `stopGateway(userId)`, `restartGateway(userId)`, `cleanupOrphans()` (re-attaches alive PIDs after AOC restart), `gracefulShutdown()` (leaves children running for next AOC startup), `allocatePort()` (3-port stride + OS probe), `findAocManagedOrphanPids()` (lsof port-based detection — macOS `ps -E` doesn't expose env).
+  - `server/lib/db.cjs` — SQLite via `sql.js`. Master flag helpers: `markAgentProfileMaster`, `setUserMasterAgent`, `getUserMasterAgentId`. Profile reads expose camelCase aliases (`avatarPresetId`, `isMaster`). `normalizeMissionMembers(ids, masterAgentId?)` — per-user master-aware membership normalizer; `normalizeMissionRoom(row)` reads owner's master via `created_by` → `getUserMasterAgentId`.
+  - `server/lib/routing.cjs` — `parseRoutes` (per-tenant), `getChannelsConfig` (sanitized).
+  - `server/lib/watchers.cjs` — chokidar file watchers; broadcasts `session:live-event` and `processing_end` WS events.
+  - `server/lib/automation/cron.cjs` — cron CRUD (per-tenant `~/.openclaw/users/<id>/.openclaw/cron/jobs.json`).
+  - `server/lib/scripts.cjs` — shared + agent-specific loose scripts. `syncAgentBuiltins(agentId)` + `LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS` for migration cleanup.
+  - `server/lib/workspace-browser.cjs` — read-only file manager rooted at agent workspace. Path-traversal hardened.
+  - `server/lib/terminal.cjs` — Claude Code WS terminal with `CWD_TARGETS` allowlist.
+  - `server/lib/versioning.cjs` — file version history in SQLite (max 50 per scope, SHA-256 dedupe).
+  - `server/lib/integrations/index.cjs` — project integration engine (currently `google_sheets` only).
+- **Routes:**
+  - `server/routes/auth.cjs` — login, register-invite (auto-spawns gateway), `/auth/me` (returns `hasMaster`, `masterAgentId`), invitation CRUD, password reset.
+  - `server/routes/onboarding.cjs` — `POST /api/onboarding/master` (atomic: provision + link + auto-create General project + restart gateway). `runMasterBackfill()` ensures admin has `master_agent_id='main'` at startup.
+  - `server/routes/master.cjs` — `GET /api/master/team` (excludes master), `POST /api/master/delegate` (calls user's gateway `sessions.create` + `chat.send`). Lazy-connects gateway pool if stale.
+  - `server/routes/rooms.cjs` — agent CRUD, mission rooms CRUD (master-aware membership).
+  - `server/routes/agents.cjs` — agent profile/skills/avatar/pairing.
+  - `server/routes/gateway.cjs`, `health.cjs`, `tasks.cjs`, `projects.cjs`, `skills.cjs`, `browser-harness.cjs`, `mcp-agents.cjs` — domain endpoints.
+- **Config:** `server/lib/config.cjs` exports `OPENCLAW_HOME`, `OPENCLAW_BASE`, `OPENCLAW_WORKSPACE`, `AGENTS_DIR`, `getUserHome(userId)`, `getUserAgentsDir(userId)`, `readJsonSafe`.
+- **AI generation:** `server/lib/ai.cjs` — `generateStream()` (SSE via Claude CLI subprocess), `getOsContext()`, `FILE_CONTEXTS`.
 
 ### Data Flow
 
-OpenClaw filesystem → chokidar watchers → Express parsers → REST API + WebSocket broadcasts → Zustand stores → React UI
+OpenClaw filesystem (per-user) → chokidar watchers → Express parsers (scoped via `parseScopeUserId(req)`) → REST API + WebSocket broadcasts → Zustand stores → React UI.
 
-The backend does NOT own agent data. It reads from OpenClaw's filesystem as the source of truth, and uses SQLite only for dashboard-specific data (user accounts, agent profiles/avatars, UI preferences, tasks, projects, integrations, file versions).
+The backend does NOT own agent data. Each user's OpenClaw filesystem (`<userHome>/`) is the source of truth. SQLite holds dashboard-only data: user accounts, agent profiles/avatars, master agent links, projects, mission rooms, tasks, integrations, file versions, gateway state.
 
-### Cron / Scheduled Tasks
-
-- Jobs persist at `~/.openclaw/cron/jobs.json` (gateway schema): `{id, name, agentId, schedule: {kind, everyMs|cronExpr|atMs}, sessionTarget, payload: {kind: "agentTurn"|"systemEvent", message}, delivery: {channel, accountId, to}, state}`
-- **Gateway is the scheduler.** It loads `jobs.json` at startup — newly written jobs only activate after gateway restart.
-- `parseCronJobs()` normalizes raw job objects: `schedule` object → display string (`"5m"`, `"0 9 * * 1-5"`), `sessionTarget` → `session`, `state.*` → `runCount/lastRun/nextRun`.
-- Run history at `~/.openclaw/cron/runs/{jobId}.jsonl` — JSONL, one entry per execution.
-- `CronPage` accepts optional `filterAgentId` prop; when set (from AgentDetailPage Schedules tab), hides agent filter pills and pre-fills new job form.
-
-### Custom Tools / Scripts — Skill-as-Unit Strategy
-
-**Core principle:** the unit of capability is a **Skill bundle**, not a loose script. Agents enable a skill; the skill's scripts come along automatically. Loose toggleable "custom tools" are a thin escape hatch, not the primary contract.
-
-**Three tiers (mental model):**
-1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled for every agent. Plumbing the user should never need to manage. Currently: `aoc-tasks`, `aoc-connections`, `browser-harness-odoo`. See **AOC Built-in Skills & Sync Engine** below.
-2. **User skills** — full CRUD via Skills page or per-agent. Resolved via the standard `Skill Resolution Order` (workspace → `~/.agents/` → `~/.openclaw/`). Scripts live at `{skillDir}/scripts/`.
-3. **Loose scripts** (`server/lib/scripts.cjs`) — only used for cron/orchestrator wiring or one-offs that don't yet warrant a skill bundle. Two scopes:
-   - **Shared** (`~/.openclaw/scripts/`) — managed in Skills & Tools > Custom Tools tab (full CRUD). Read-only preview in agent detail.
-   - **Agent-specific** (`{agentWorkspace}/scripts/`) — per-agent, full CRUD in agent detail Custom Tools sub-tab.
-
-When a loose script is "enabled" for an agent, `toggleAgentCustomTool()` appends a `<!-- custom-tool: name -->` ... `<!-- /custom-tool: name -->` block to the agent's `TOOLS.md` so the agent can read its exec hint and description. Metadata stored in `.tools.json` per directory (not as companion files).
-
-**Do not add new flat shared scripts for capabilities that belong in a skill** — package them as a skill bundle (SKILL.md + scripts/) and either install via the Skills marketplace or, if AOC-owned plumbing, add a new installer under `server/lib/{slug}/installer.cjs` and wire it into the sync engine.
-
-Allowed extensions for loose scripts: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`, `.lua`. Max 512KB.
-
-### AOC Built-in Skills & Sync Engine
-
-AOC ships three skill bundles that every agent must always have. They are NOT shown as toggleable items in the UI — they are infrastructure.
-
-**Bundles (each under `server/lib/{slug}/installer.cjs`):**
-- **`browser-harness-odoo`** — Odoo browser automation. SKILL.md + 10 shell scripts (`runbook-run`, `browser-harness-acquire`, etc.). Bundle version pins re-install — bumping `BUNDLE_VERSION` (currently `0.7.0`) forces overwrite of `protect: true` files. Files marked `exec: true` get explicit `fs.chmodSync(target, 0o755)` after write because `fs.writeFileSync(..., {mode})` is ignored when the file already exists.
-- **`aoc-tasks`** — task board contract: status values, when to comment vs `update_task.sh`, `save_output.sh` rules. Replaces what was previously the flat `update_task.sh` / `check_tasks.sh` shared scripts.
-- **`aoc-connections`** — connection layer contract: `aoc-connect`, `mcp-call`, `gws-call`, `check_connections`. Replaces what was previously the flat connection helper scripts.
-
-**Auto-enable mechanism (each installer):**
-1. Install/refresh the skill bundle to `~/.openclaw/skills/{slug}/`.
-2. Add the slug to `openclaw.json` → `agents.defaults.skills` so newly provisioned agents get it.
-3. Walk every existing agent and add the slug to its per-agent skills allowlist if not present.
-
-**Sync engine (`server/lib/scripts.cjs`):**
-- `syncAgentBuiltins(agentId)` — reconciliation pass per agent. Stamps built-in shared script meta (`stampBuiltinSharedMeta`), purges legacy flat scripts that have been migrated into skill bundles (iterates `LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS` and removes their `<!-- custom-tool: ... -->` blocks from TOOLS.md), and ensures the built-in skills are enabled.
-- `syncBuiltinsForAllAgents()` — applies the above to every agent in `openclaw.json`.
-- Wired into `server/index.cjs` at: startup, connection PUT, skill toggle/create/delete, browser-harness install. The reconciliation is **idempotent** — safe to call multiple times.
-
-**`BUILTIN_SCRIPT_MANIFEST`** in `scripts.cjs` is currently empty (all built-ins migrated to skills). The constant + `isBuiltinShared()` remain for future use if a flat shared script ever needs to be marked as plumbing.
-
-**`LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS`** — the cleanup list (15 entries: `update_task.sh`, `check_tasks.sh`, `aoc-connect.sh`, `mcp-call.sh`, `gws-call.sh`, `check_connections.sh`, plus all `runbook-*` and `browser-harness-*` scripts). Add to this array whenever migrating another flat script into a skill bundle.
-
-**When provisioning a new agent**, `provision.cjs` now calls `syncAgentBuiltins(agentId)` once at the end instead of toggling individual scripts (the old per-script toggle had a long-standing bug where `getFileFn` returned a raw string but `toggleAgentCustomTool` expected `{content}` — gone now).
-
-### Chat / Gateway Integration
-
-- Chat requires a running OpenClaw Gateway (default port 18789). All `/api/chat/*` routes return 503 if gateway is disconnected.
-- `chatApi.createSession()` → `POST /api/chat/sessions` → `gatewayProxy.sessionsCreate(agentId)` (RPC over WebSocket)
-- Real-time message streaming: gateway WS events → `server/lib/gateway-ws.cjs` → dashboard WS broadcast → `src/hooks/useWebSocket.ts` → `useChatStore`
-- JSONL poller in `watchers.cjs` serves as fallback for final responses when gateway lifecycle events arrive before the last message.
-- `useChatStore.ts` contains `gatewayMessagesToGroups()` for converting raw gateway history into `ChatMessageGroup[]` (handles thinking blocks, text-encoded tool call markers, structured tool_use blocks).
-
-### Channel Binding Architecture
-
-Channel bindings in `openclaw.json` use two patterns:
-1. **Explicit:** `config.bindings[].agentId === agentId` with `match.channel` + `match.accountId`
-2. **Convention:** Account key equals `agentId` (or `"default"` for the main agent) in `config.channels.telegram.accounts` / `config.channels.whatsapp.accounts`
-
-`getAgentChannels()` supports both patterns — always check both when discovering existing bindings.
-
-**Discord has two coexisting patterns:**
-- **Legacy shared pattern:** Config at `config.channels.discord` (enabled, token, dmPolicy, groupPolicy). Token stored as `{ source: 'env', provider: 'default', id: 'DISCORD_BOT_TOKEN' }`. Binding has no `accountId`: `{ type: 'route', agentId, match: { channel: 'discord' } }`.
-- **Per-account pattern (used by provisioning):** `config.channels.discord.accounts[agentId] = { token, dmPolicy, groupPolicy }`. Binding includes `accountId`: `{ type: 'route', agentId, match: { channel: 'discord', accountId: agentId } }`.
-- OpenClaw validates exact field names — use `groupPolicy` (not `guildPolicy`).
-- Removing a Discord binding does NOT delete `channels.discord` (it may be shared).
-- `getAgentChannels()` checks both patterns when discovering existing Discord bindings.
-
-### Channel Login & DM Pairing
-
-- **WhatsApp QR login** (`server/index.cjs` around L2563): `POST /api/channels/:channel/login/start` calls gateway RPC `web.login.start` → returns `{ qrDataUrl, message }`. If `qrDataUrl` is null the account is already linked. `POST /api/channels/:channel/login/wait` long-polls (up to 3 min) for scan completion.
-- **DM pairing approval**: users DM the bot, bot replies with a short-lived code, user enters it in AOC to authorize ongoing DMs.
-  - `GET /api/agents/:id/pairing` — pending requests across all channels for an agent.
-  - `GET /api/pairing/:channel?account=...` — pending requests for a channel (optionally per accountId).
-  - `POST /api/pairing/:channel/approve` `{ code, accountId? }` — approves and adds to allow-list.
-  - Pending requests live in `~/.openclaw/credentials/{channel}-pairing.json`; approvals write to `{channel}[-{accountId}]-allowFrom.json`.
-
-### Agent Detail Page Tab Structure
-
-`AgentDetailPage.tsx` uses a 5-tab body layout (`bodyTab` state): **Agent Files** | **Skills & Tools** | **Channels** | **Connections** | **Schedules**.
-
-- **Agent Files** has two modes (`filesMode` state: `'curated' | 'browse'`):
-  - *Curated* — the editable allowlist (IDENTITY/SOUL/TOOLS/AGENTS/USER/HEARTBEAT/MEMORY.md). Both view (read-only) and edit modes use `MonacoCodeEditor` for proper LSP-grade markdown rendering. No textarea/`<pre>` fallback.
-  - *Browse* — `WorkspaceBrowser` component (read-only file manager): tree view (left, w-64) + preview pane (right). Recursive expand/collapse with lazy-load per directory via `DirCache`. Image preview with click-to-fullscreen modal, text via Monaco, binary as download card. Toggle dotfiles via `showHidden`.
-- **Skills & Tools** has sub-tab state: `'skills'` | `'tools'` (built-in OpenClaw runtime tools — read-only) | `'custom-tools'`. The Custom Tools sub-tab shows `CustomToolsPanel` (agent-specific full CRUD + shared toggle/preview side-by-side) and embeds `SkillsTerminal` with `cwd="agent-scripts" agentId={id}` so the user can spawn a Claude Code terminal inside the agent's `scripts/` directory.
-- **Connections** — `AgentConnectionsTab`. Search + per-type filter chips + collapsible groups + `Assigned only` filter + `Manage` link to `/connections`. Multi-token AND search across name/type/detail/metadata values, with `<mark>` highlight on matches. Group collapse state persisted in `localStorage` (key `aoc.agent-detail.connectionsCollapsed`); auto-expanded while searching. Bulk **Select all / Deselect all** per group. Backed by `api.getAgentConnections` / `api.setAgentConnections`.
-- **Schedules** — embeds `<CronPage filterAgentId={id} />` which filters to the agent's jobs only.
-
-**Compact header mode** (`headerCompact` state, persisted in `localStorage` key `aoc.agent-detail.headerCompact`) — toggles a ~40px single-row header replacing the ~150px back-link + agent card. Targets vertical space at 1366×768. Channel chips in the header use a separate `headerChannels` state populated via `api.getAgentChannels` (the `detail.channel` field is singular and only reflects the primary binding).
-
-### Agent Rename
-
-When an agent's display name changes, `updateAgent` in `detail.cjs` computes a new slug ID (`slugify(newName)`). If it differs from the current ID (and the agent is not `"main"`), it performs an atomic rename:
-- `openclaw.json` agent entry key
-- `channels.telegram.accounts` / `channels.whatsapp.accounts` keys that match the old ID
-- All binding `agentId` references
-- Filesystem: `~/.openclaw/agents/{id}/` and the agent's workspace directory
-
-`updateAgent` returns `{ agentId, changed }` — `agentId` may differ from the request param on rename. The PATCH handler in `server/index.cjs` calls `db.renameAgentProfile(oldId, newId)` when a rename is detected, migrating the SQLite profile row. The frontend navigates to the new `/agents/{newId}` path on success.
-
-### Agent Provisioning
-
-`ProvisionAgentWizard.tsx` — 4-step modal (Identity → Personality → Channels → Review). On submit, calls `POST /api/agents/provision` which writes the agent entry to `openclaw.json` and scaffolds the workspace with `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` (and `USER.md` copied from main workspace if available). Then runs `syncAgentBuiltins(agentId)` once which installs the AOC built-in skills (`aoc-tasks`, `aoc-connections`, `browser-harness-odoo`) and injects the heartbeat task check into `HEARTBEAT.md`. **Do not** add per-script toggle calls here — built-ins now flow exclusively through the skill-sync engine.
-
-The `fsWorkspaceOnly` boolean (defaults true) maps to `tools.fs.workspaceOnly: false` in the agent's `openclaw.json` entry — controls whether the agent's FS tools are restricted to its workspace directory.
-
-Note: per-agent `env` fields are **not** supported in OpenClaw 2026.4.8+. AOC env vars (`AOC_TOKEN`, `AOC_URL`, `AOC_AGENT_ID`) are injected at runtime via the agent's `update_task.sh` script.
-
-### Skill Resolution Order
-
-Skills are resolved by searching these directories in order (first `SKILL.md` match wins):
-1. `{agentWorkspace}/skills/{name}/`
-2. `{agentWorkspace}/.agents/skills/{name}/`
-3. `~/.agents/skills/{name}/`
-4. `~/.openclaw/skills/{name}/`
-
-Skill scripts live at `{skillDir}/scripts/` and are managed via `skillScripts.cjs`.
-
-### AI Assist (Content Generation)
-
-`POST /api/ai/generate` — SSE streaming endpoint. Spawns a `claude` CLI subprocess via `server/lib/ai.cjs` (`generateStream()`). Uses `CLAUDE_BIN` env var (default `/opt/homebrew/bin/claude`).
-
-- `AiAssistPanel.tsx` (`src/components/ai/`) — floating panel rendered inline next to editable file areas. Calls `streamAiGenerate()` which reads SSE chunks and appends to output.
-- `server/lib/ai.cjs` — also exports `getOsContext()` (detects installed runtimes/shells on the host) used by `GET /api/ai/os-context`, and `FILE_CONTEXTS` map (per-filetype generation hints for `IDENTITY.md`, `SOUL.md`, `SKILL.md`, `script`, etc.).
-- SSE format: `data: {"text": "..."}` chunks, terminated by `data: {"done": true}` or `data: {"error": "..."}`.
-- Abort: client disconnect detected via `req.socket.on('close')` → `AbortController` signal passed to `generateStream`.
-
-### Skill & Script Templates
-
-`src/data/templates/` — ADLC-aligned template library for Skills and Scripts.
-
-- **Types:** `SkillTemplate` (has `agent`, `agentEmoji`, `slug`, full `SKILL.md` content) and `ScriptTemplate` (has `filename` with extension, `content`).
-- **Skill templates** organized per ADLC agent: `pm-analyst`, `ux-designer`, `em-architecture`, `qa-engineer`, `doc-writer`, `ai-ops`, `odoo-skills`, `superpowers`.
-- **Script templates:** `data-integration`, `notifications`, `cost-quality`, `task-management`.
-- Entry point: `src/data/templates/index.ts` exports `SKILL_TEMPLATES`, `SCRIPT_TEMPLATES`, `SUPERPOWERS_TEMPLATES`.
-- `src/data/adlcTemplates.ts` — **deprecated** re-export wrapper; use `src/data/templates/index.ts` directly.
-- `SkillTemplatePicker.tsx` (`src/components/skills/`) — modal picker UI consumed by `SkillsPage` and agent detail Skills tab.
-
-### Code Editors
-
-**`MonacoCodeEditor` (`src/components/ui/MonacoCodeEditor.tsx`)** — preferred everywhere. Lazy-loaded Monaco with bundled workers (CSP-safe, no CDN): `editorWorker`, `jsonWorker`, `tsWorker`. Auto-language detection from `filename` via `EXT_LANGUAGE` map (`.sh`/`.bash` → shell, `.py` → python, `.ts`/`.tsx` → typescript, etc.). Theme-aware (dark/light), `automaticLayout: true`. Props: `value`, `onChange`, `filename`, `language`, `height`, `readOnly`, `onSave`, `minimap`. Used in: agent files curated view + edit (both modes), skills detail script editor, agent custom tools editor, shared script preview, workspace browser file preview. **Single editor pattern** — adding a new editable code surface should use `MonacoCodeEditor`, not `<textarea>` or `<pre>`.
-
-**`SyntaxEditor` (`src/components/ui/SyntaxEditor.tsx`)** — legacy transparent-textarea-over-highlighted-pre pattern. Still present but no longer the default; prefer Monaco for new surfaces.
-
-### Workspace Browser API
-
-`server/lib/workspace-browser.cjs` exposes a read-only file manager rooted at the agent's workspace.
-
-- `GET /api/agents/:id/workspace/tree?path=` — directory tree listing (dirs first, then files alpha).
-- `GET /api/agents/:id/workspace/file?path=` — file content. Text files (≤5MB by extension) inline; binaries stream with `Content-Type` from `MIME_BY_EXT`. Auth uses `authMiddlewareWithQueryToken` wrapper which accepts `?token=` query param so `<img src>` and direct downloads work (browsers can't attach `Authorization` headers to image requests).
-- Frontend helpers in `src/lib/api.ts`: `getWorkspaceTree(id, relPath)`, `getWorkspaceFile(id, relPath)`, `getWorkspaceFileUrl(id, relPath, opts)`.
-- **Security:** path traversal blocked via `path.resolve` + `startsWith` check + reject `..` segments. Symlinks refused via `fs.lstat`. Allowlisted text/image extensions in `TEXT_EXTS`/`IMAGE_EXTS`.
-
-### Settings Page Tab Layout
-
-`src/pages/SettingsPage.tsx` `Tab` union: `'account' | 'engine' | 'channels' | ...openclaw.json sections`.
-
-- **Account** — user/profile/auth settings.
-- **Engine** — AOC's own built-in feature configuration (NOT `openclaw.json`). Currently hosts `AgentStandardsCard` (research output standard) and `BrowserHarnessCard` (re-install the `browser-harness-odoo` skill bundle). New AOC-owned engine config (built-in skill versions, sync triggers, etc.) belongs here, not in the openclaw.json tabs.
-- The sidebar has a visible group separator between user-section tabs (Account/Engine) and openclaw.json config tabs (Channels/Bindings/...).
-
-### Sidebar Component
-
-`src/components/layout/Sidebar.tsx` — uses `min-h-0 overflow-y-auto` on `<nav>` so menu content scrolls at short viewports (1366×768). Logo block has `shrink-0` and reduced bottom margin so collapsing/scrolling never truncates it.
-
-### Agent World (3D View)
-
-`AgentWorldPage` → `AgentWorldView` → `AgentWorld3D` (in `src/components/world/`). Built with React Three Fiber + `@react-three/drei`. Renders a top-down isometric office scene where each agent gets a desk; agent state (`processing` | `working` | `idle` | `offline`) drives animated character behavior. Theme-aware via `SCENE_THEME` (dark/light palettes for canvas bg, floor, lighting). `AgentWorld3D` accepts `agents`, `agentStates`, and `deskXPcts` props — the wrapper (`AgentWorldView`) derives these from Zustand stores.
-
-### Tasks & Project Board
-
-- Tasks stored in SQLite (`data/aoc.db`). `Task` has: `id`, `title`, `description`, `status` (`open`|`in_progress`|`review`|`done`|`cancelled`), `priority` (`urgent`|`high`|`medium`|`low`), `agentId`, `tags`, `cost`, `sessionId`, `projectId`.
-- **Dispatch model:** `POST /api/tasks/{id}/dispatch` sends the task to the assigned agent via gateway RPC, stores the resulting `sessionKey` on the task. `loadAllJSONLMessagesForTask()` in `server/index.cjs` reconstructs full multi-dispatch history by scanning all JSONL files that mention the `taskId`.
-- `AgentWorkSection.tsx` (`src/components/board/`) — renders the multi-turn agent conversation history for a task inside `TaskDetailModal`. Lazy-loads `react-markdown` + `remark-gfm`. Strips gateway-injected markers (`[[reply_to_current]]`, etc.).
-- `syncAgentTaskScript` (`POST /api/agents/{agentId}/sync-task-script`) — ensures `update_task.sh` is installed for an agent.
-
-### Projects & Integrations
-
-- Projects group tasks. `Project` has: `id`, `name`, `color`, `description`.
-- Project integrations sync external data sources into AOC tasks. Currently `google_sheets` type only.
-- `ProjectIntegration` fields: `id`, `projectId`, `type`, `config` (encrypted credentials + spreadsheetId + sheetName + column mappings), `enabled`, `syncIntervalMs`, `lastSyncAt`.
-- Integration test flow: `POST /api/projects/{id}/integrations/_new/test` validates credentials + returns sheet names. `POST .../headers` fetches column headers for a sheet. `POST .../sync` triggers immediate sync.
-- WS event `project:sync_start` broadcasts when a sync begins (payload: `{integrationId, projectId}`).
-
-### File Versioning
-
-`server/lib/versioning.cjs` — every file save goes through `saveVersion()` which snapshots content in SQLite. Max 50 versions per scope key. Deduplicates by SHA-256 (no snapshot if content unchanged). REST endpoints: `GET /api/versions?scope=...`, `GET /api/versions/{id}`, `POST /api/versions/{id}/restore`, `DELETE /api/versions/{id}`. Frontend: `api.listVersions(scope)`, `api.restoreVersion(id)`.
-
-### Skill Marketplace
-
-Two marketplace integrations for installing skills from external sources:
-
-- **ClawHub** (`/api/skills/clawhub/*`) — install skills from a URL (GitHub raw, direct link). Flow: `clawHubTargets()` → pick agent or global → `clawHubPreview(url)` → `clawHubInstall(url, target, agentId?)`. Supports passing pre-fetched buffer as base64 (`bufferB64`).
-- **SkillsMP** (`/api/skills/skillsmp/*`) — curated skill marketplace. Requires API key stored in settings (`/api/settings/skillsmp`). Flow: `skillsmpSearch(q)` → `skillsmpPreview(skill)` → `skillsmpInstall(skill, target, agentId?)`.
-
-### Inbound Webhooks / Hooks
-
-`/api/hooks/*` — inbound webhook configuration. `getHooksConfig()` returns current config. `saveHooksConfig(updates)` persists. `generateHookToken()` creates a new inbound token. `getHookSessions(limit)` returns recent webhook-triggered sessions.
-
-### Gateway Management
-
-`/api/gateway/*` — manage the OpenClaw Gateway process:
-- `GET /api/gateway/status` — returns `{ running, pids, port, portOpen, mode, bind }`.
-- `POST /api/gateway/restart` — kills existing gateway processes and restarts.
-- `POST /api/gateway/stop` — kills gateway processes without restart.
-
-### OpenClaw Config Management
-
-`/api/config` — read/write `openclaw.json` sections directly:
-- `GET /api/config` — returns sanitized full config + path.
-- `PATCH /api/config/{section}` — merges `value` into the specified top-level section.
-
-### SQLite DB Location
-
-In development, the SQLite database (`aoc.db`) is stored at `data/aoc.db` in the project root (not `~/.openclaw/`). This path is controlled by `server/lib/db.cjs`.
-
-### ADLC Role Templates
-
-`src/data/role-templates/` — 7 ADLC role templates (`pm-analyst`, `ux-designer`, `em-architect`, `swe`, `qa-engineer`, `doc-writer`, `biz-analyst`), each a TypeScript file exporting an `AgentRoleTemplate` object.
-
-- **Type:** `src/types/agentRoleTemplate.ts` — `AgentRoleTemplate` interface with `id`, `adlcAgentNumber`, `role`, `emoji`, `color`, `description`, `modelRecommendation`, `agentFiles` (identity/soul/tools/agents strings), `skillSlugs`, `skillContents` (slug → full SKILL.md), `scriptTemplates` (filename + content), `fsWorkspaceOnly: false`.
-- **Barrel:** `src/data/agentRoleTemplates.ts` — exports `ADLC_ROLE_TEMPLATES[]`, `getTemplateById()`, `getTemplateColor()`, `getTemplateLabel()`.
-- **Shell scripts in templates** use `\${...}` (escaped) for bash variables inside TypeScript template literals — `${...}` without escape causes esbuild parse errors.
-
-**Provisioning flow with a template:**
-1. `TemplateEntryModal` (split screen: ADLC Template vs Blank Agent) replaces direct wizard open on `AgentsPage`.
-2. `TemplatePickerGrid` — 7-card grid; selecting a template passes it to `ProvisionAgentWizard` as `template` prop.
-3. `ProvisionAgentWizard` pre-fills emoji/color/description/model from template (name + id left blank for user). On step 1→2 transition, auto-injects soul via `buildRoleSoul()` which substitutes the role name with the user's chosen agent name and prepends an identity line (`You are **{name}**, an ADLC autonomous agent with the role of **{role}**`).
-4. On provision, `handleProvision` adds `adlcRole`, `agentFiles`, `skillSlugs`, `skillContents`, `scriptTemplates` to the POST body.
-5. `server/lib/agents/provision.cjs` handles 4 blocks: override agent files (IDENTITY/SOUL/TOOLS/AGENTS.md) + create `outputs/` dir, install global skills to `~/.openclaw/skills/{slug}/SKILL.md` (idempotent), write agent scripts to `{workspace}/scripts/`, persist `adlcRole` in `openclaw.json`.
-6. `ensureSharedAdlcScripts()` in `scripts.cjs` idempotently writes shared scripts (`notify.sh`, `gdocs-export.sh`, `email-notif.sh`) to `~/.openclaw/scripts/`.
-7. SQLite `agent_profiles` has a `role` column (migration in `db.cjs`). `GET /api/agents` exposes `role` from profile. `AgentCard` uses `getTemplateColor()`/`getTemplateLabel()` for left border + role badge.
-
-**`notify.sh`** is channel-agnostic: queries `AOC_URL/api/agents/$AOC_AGENT_ID/channels` to auto-detect bound channel (priority: Telegram > WhatsApp > Discord), with `--channel` override flag.
-
-### Role-Based Access Control
-
-Two user roles: `admin` and `user` (plus internal `agent` role used by service tokens). Admin bypasses all ownership checks; regular users retain read access to everything but may only mutate resources they created.
-
-- **Ownership columns** — `agent_profiles.provisioned_by`, `connections.created_by` (both nullable `INTEGER` referencing `users.id`). Set on create; checked on mutate.
-- **Server enforcement** (`server/lib/db.cjs`):
-  - `requireAdmin` — 403 unless `req.user.role === 'admin'`.
-  - `requireAgentOwnership` / `requireConnectionOwnership` — admin + `agent` role bypass; otherwise checks ownership column. Apply as Express middleware on mutation routes.
-- **Client mirror** (`src/lib/permissions.ts`) — `useIsAdmin()`, `useCanEditAgent(agent)`, `useCanEditConnection(conn)` hooks and pure `canEditAgent/canEditConnection(resource, user)` variants for list maps. Keep these in sync with server checks when adding new ownership-scoped resources.
-- Admin-only routes are gated in `src/App.tsx` via `<AdminOnly>` wrapper (e.g., `/users`).
+## Authentication, Onboarding, & Master Agent
 
 ### Invitations & Registration
 
-Self-serve registration is invite-only. Admins generate invitations; new users redeem tokens at `/register`.
+Self-serve registration is invite-only. Admins generate invitation tokens; new users redeem at `/register?token=...`.
 
-- Table: `invitations (id, token, created_by, expires_at, default_role, note, use_count, revoked_at, created_at)` — see `server/lib/db.cjs`.
-- Management UI: `src/pages/UserManagementPage.tsx` (`/users`, admin-only) — users tab + invitations tab (create, copy link, revoke, delete).
+- Table: `invitations (id, token, created_by, expires_at, default_role, note, use_count, revoked_at, created_at)`.
+- Management UI: `src/pages/UserManagementPage.tsx` (`/users`, admin-only) — users tab + invitations tab.
 - Registration UI: `src/pages/RegisterPage.tsx` (`/register?token=...`) — public route.
-- Helpers: `createInvitation`, `getInvitationByToken`, `revokeInvitation`, `incrementInvitationUse`. New user's role comes from `invitations.default_role`.
-- Default admin bootstrap still works: if no users exist, the setup flow creates the first admin (no invitation required).
+- Default admin bootstrap: if no users exist, the setup flow creates the first admin (no invitation required).
+- On register, `server/routes/auth.cjs` calls `ensureUserGateway(user.id)` to spawn the per-user gateway. Login retains the call as silent fallback for post-AOC-restart recovery.
 
-### Managed Role Templates
+### Onboarding Wizard
 
-`role_templates` SQLite table (seeded from `server/data/role-templates-seed.json` on startup) — persists ADLC role presets server-side in addition to the compile-time TS templates in `src/data/role-templates/`. Origin column distinguishes `seed` vs user-created presets. Use this table (not the TS files) for anything that needs runtime mutation.
+`/onboarding` (gated by `<OnboardingGate>` — bounces users who already have a master). 4-step wizard at `src/pages/OnboardingPage.tsx`:
+
+1. **Mulai (Welcome)** — friendly intro, no template picker.
+2. **Identitas** — `<CompactAvatarPicker>` (16 presets); selecting a preset autofills name/persona/description (Bahasa Indonesia) IF the field is empty OR matches the previously-selected preset's value (so user customizations survive).
+3. **Channel** — Telegram / WhatsApp / Discord cards or skip. Each card expands an inline form using shared `ChannelBindingForms` components.
+4. **Review** — hero card uses the avatar **image** (not emoji) when a preset is selected. "Buat Agent" button.
+
+If WhatsApp/Telegram/Discord channel is selected, the wizard advances to a 5th **Hubungkan** step that polls `/api/agents/:id/pairing` every 3s and auto-approves the first matching pairing request. WhatsApp also calls `/api/channels/whatsapp/:agentId/login/start` to fetch the QR code with retry-with-backoff (gateway needs ~5-10s to come up after restart).
+
+`finish()` triggers a smooth zoom-in transition (700ms hero animation) then navigates to `/`.
+
+The wizard's PixelSnow background (`src/components/onboarding/PixelSnow.tsx`) is a Three.js shader inherited from reactbits.dev; color is read from the active theme's `--primary` CSS variable so it matches the obsidian cyberpunk theme.
+
+### Master Agent
+
+Each user has exactly **one** Master Agent. Backed by:
+- `users.master_agent_id` (TEXT, nullable; partial unique constraint to prevent duplicates per user).
+- `agent_profiles.is_master` (INTEGER 0/1; partial unique index `WHERE is_master=1` per `provisioned_by`).
+- Auto-injected workspace files (see below).
+
+**Auto-injection on `provisionAgent({ isMaster: true })`:**
+- Workspace path: `<userHome>/workspace/` (singular global, NOT `workspaces/<id>/`).
+- `tools.fs.workspaceOnly: false` (broad fs access — needed for skills outside workspace).
+- `skills` array: `['aoc-master', 'browser-harness-odoo', ...config.agents.defaults.skills]` (deduped). `MASTER_EXTRA_SKILLS` constant in provision.cjs holds the master-only slugs.
+- **SOUL.md** — Master Agent addendum appended after research-standard block.
+- **AGENTS.md** — `MASTER_AGENTS_ADDENDUM`: routing decision table + risk-aware operating style + memory habits.
+- **TOOLS.md** — built-in AOC skill table with key entry points + pointer to AGENTS.md orchestration section.
+
+**Onboarding endpoint** (`POST /api/onboarding/master`):
+1. 409 if user already has a master.
+2. Calls `provisionAgent({ ..., isMaster: true })`.
+3. Persists `agent_profiles` (with `avatar_preset_id`, `provisioned_by=userId`).
+4. `db.markAgentProfileMaster(agentId)` + `db.setUserMasterAgent(userId, agentId)`.
+5. `aocMasterInstaller.ensureSkillEnabledForUserMasters({ masterAgentIds: [agentId] })` (belt-and-suspenders).
+6. Auto-creates per-user "General" project (`db.createProject({ name: 'General', createdBy: userId })`), which in turn auto-creates a project default mission room with the master as the always-on member.
+7. `restartGateway(userId)` so the new agent + channel bindings load.
+
+**Risk-aware operating style** (lives in the prompting layer, NOT gateway approval gates):
+- `tools.exec.security: 'full'` and `approvals.exec.enabled: false` (inherited from admin via `ensureUserHome`).
+- AGENTS.md instructs three-tier behavior: safe ops just run; risky ops announce + 1 clarifying question; hard-stop ops refuse and surface to user.
+- Don't re-introduce gateway approval prompts thinking it's safer — it breaks the master's flow and contradicts the design.
+
+### `aoc-master` Skill (Delegation Primitives)
+
+Bundled at `~/.openclaw/skills/aoc-master/` (symlinked into per-user homes). Master-only — `ensureSkillEnabledForUserMasters` enrols only agents with `is_master=1`.
+
+- `team-status.sh` — list user's sub-agents (excludes master) with role + last activity. Hits `GET /api/master/team`.
+- `delegate.sh <agent_id> "<task>"` — opens or reuses session keyed `master-delegate-<master>-<target>` via `gateway.sessionsCreate` + posts task as first chat turn. Hits `POST /api/master/delegate`.
+- `list-team-roles.sh` — short `agent_id<TAB>role` list for quick lookup.
+
+Backend endpoints (`server/routes/master.cjs`):
+- `GET /api/master/team` — `db.getAllAgentProfiles().filter(p => p.provisioned_by === userId && p.agent_id !== masterId)`.
+- `POST /api/master/delegate {targetAgentId, task}` — verifies caller has master + target is owned by same user. Lazy-connects gateway pool. Returns `{ sessionKey, targetAgentId, masterAgentId }`. 400 self-delegate, 403 no-master, 404 cross-tenant target.
+
+### Master role identity in Agent Detail
+
+The Edit Configuration modal in `src/pages/AgentDetailPage.tsx` (`EditConfigModal`):
+- ADLC role dropdown options include `master-orchestrator` (🧭).
+- When `detail.profile?.isMaster` is true: dropdown is locked to `master-orchestrator`, a "🧭 Master Orchestrator" badge shows in the section header, and the helper text reads "This is your Master Agent — role is locked. The Master orchestrates your team and routes user intent to the right specialist."
+
+`/api/agents/:id/detail` includes `profile.isMaster`, `profile.role`, `profile.provisionedBy`, `profile.avatarPresetId`, `profile.color`.
+
+## Mission Rooms
+
+Per-user, master-scoped membership.
+
+### Schema
+
+Existing `mission_rooms` table (`id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at`). HQ Room columns (sub-project 3, planned but not yet built): `is_hq`, `is_system`, `owner_user_id` + partial unique index `WHERE is_hq=1`.
+
+### Master-Scoped Membership (sub-project 4.5 — DONE)
+
+Every mission room MUST include the requesting user's master agent — NOT the literal string `'main'`. Helpers in `server/lib/db.cjs`:
+
+- `normalizeMissionMembers(ids, masterAgentId?)` — dedupes + prepends master. Falls back to `'main'` when master id can't be resolved (legacy paths, admin).
+- `createMissionRoom({ ..., masterAgentId? })` — derives master from `createdBy` if not explicit.
+- `updateMissionRoomMembers(id, ids, masterAgentId?)` — looks up master from room's `created_by`.
+- `ensureProjectDefaultRoom(projectId, createdBy)` — calls `getUserMasterAgentId(createdBy)` for the always-on member.
+- `normalizeMissionRoom(row)` — reads owner's master via `created_by` so re-normalization on read doesn't re-prepend `'main'`.
+- `listMissionRoomsForUser(req)` — visibility filter excludes user's own master (its presence alone shouldn't grant access).
+
+Routes in `server/routes/rooms.cjs`:
+- `POST /api/rooms` — derives `masterAgentId` from `req.user.userId` and threads through.
+- `PATCH /api/rooms/:id/members` — derives master from room's `createdBy`.
+
+`canAccessRoom(req, room, db)` in `server/helpers/access-control.cjs` excludes per-user master id from ownership check.
+
+### Auto-Created on Onboarding
+
+Per-user "General" project is created in `POST /api/onboarding/master` (NOT register-invite — master must exist first so the project's default room can use it as the always-on member). Project's default mission room (id `room-project-<uuid>`) is auto-created via `ensureProjectDefaultRoom` and gets the master as initial member.
+
+### Pending — HQ Room (sub-project 3)
+
+A dedicated per-user "HQ" mission room (`is_hq=1`, `is_system=1`) auto-created on onboarding finish, with auto-membership sync on agent provision/delete and delegation broadcasts from `/api/master/delegate` posted as system messages. Plan at `docs/superpowers/plans/2026-05-05-tier3-subproject3-hq-room.md`. Not started.
+
+## Cron / Scheduled Tasks
+
+- Jobs persist per-user at `<userHome>/cron/jobs.json` (gateway schema): `{id, name, agentId, schedule, sessionTarget, payload, delivery, state}`.
+- **Gateway is the scheduler.** It loads `jobs.json` at startup — newly written jobs only activate after gateway restart.
+- `parseCronJobs(userId)` normalizes raw job objects into UI-friendly shapes.
+- Run history: `<userHome>/cron/runs/<jobId>.jsonl`.
+- `CronPage` accepts optional `filterAgentId` prop; when set (from AgentDetailPage Schedules tab), hides agent filter pills and pre-fills new job form.
+
+## Custom Tools / Scripts — Skill-as-Unit Strategy
+
+**Core principle:** the unit of capability is a **Skill bundle**, not a loose script. Agents enable a skill; the skill's scripts come along automatically. Loose toggleable "custom tools" are a thin escape hatch, not the primary contract.
+
+**Three tiers:**
+1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled. Currently: `aoc-tasks`, `aoc-connections`, `browser-harness-odoo`, and `aoc-master` (master-only). See **AOC Built-in Skills & Sync Engine** below.
+2. **User skills** — full CRUD via Skills page or per-agent. Resolved via the Skill Resolution Order. Scripts at `{skillDir}/scripts/`.
+3. **Loose scripts** (`server/lib/scripts.cjs`) — only for cron/orchestrator wiring or one-offs not yet warranting a skill bundle. Two scopes:
+   - **Shared** (`~/.openclaw/scripts/`, symlinked into per-user homes) — managed in Skills & Tools → Custom Tools.
+   - **Agent-specific** (`<agentWorkspace>/scripts/`) — per-agent.
+
+When a loose script is "enabled", `toggleAgentCustomTool()` appends a `<!-- custom-tool: name -->` ... `<!-- /custom-tool: name -->` block to the agent's `TOOLS.md`. Metadata stored in `.tools.json` per directory.
+
+**Don't add new flat shared scripts for capabilities that belong in a skill** — package them as a skill bundle (SKILL.md + scripts/) and either install via the Skills marketplace or, if AOC-owned plumbing, add a new installer under `server/lib/{slug}/installer.cjs` and wire it into the sync engine.
+
+Allowed extensions: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`, `.lua`. Max 512KB.
+
+## AOC Built-in Skills & Sync Engine
+
+AOC ships **four** skill bundles. They are infrastructure, not toggleable in the UI.
+
+| Slug | Master-only? | Purpose |
+|---|---|---|
+| `aoc-tasks` | No | Task board contract: `update_task`, `check_tasks`, `save_output`, `post_comment`, `fetch_attachment`. |
+| `aoc-connections` | No | Connection layer: `aoc-connect`, `mcp-call`, `gws-call`, `check_connections`. |
+| `browser-harness-odoo` | No (but defaults exclude it) | Odoo browser automation. SKILL.md + 10 shell scripts. |
+| `aoc-master` | **Yes** | Orchestration toolkit: `delegate.sh`, `team-status.sh`, `list-team-roles.sh`. Auto-enabled only for agents with `is_master=1`. |
+
+**Auto-enable mechanism (each installer):**
+1. Install/refresh the skill bundle to `~/.openclaw/skills/{slug}/`.
+2. (For non-master-only) Add slug to admin's `agents.defaults.skills`.
+3. (For non-master-only) Walk every existing admin agent and add to per-agent allowlist.
+4. (For master-only) `ensureSkillEnabledForUserMasters({ masterAgentIds })` adds to specific agent's allowlist only.
+
+**Per-user inheritance:** New users inherit `agents.defaults.skills` via `ensureUserHome` in the orchestrator. Sub-agents provisioned in user homes get this set as explicit `skills` array (NOT empty `[]` — OpenClaw treats `[]` as full override, no merge). Master gets `MASTER_EXTRA_SKILLS + defaults` deduped.
+
+**`syncAgentBuiltins(agentId)`** in `scripts.cjs` reconciles built-in shared scripts (currently `BUILTIN_SCRIPT_MANIFEST` is empty — all built-ins migrated to skills) and purges legacy flat scripts (`LEGACY_FLAT_SCRIPTS_MOVED_TO_SKILLS`). Wired into startup, connection PUT, skill toggle/create/delete, browser-harness install — idempotent.
+
+**Bundle versioning.** Each installer has `BUNDLE_VERSION`. Bumping it forces overwrite of `protect: true` files. Use this when a skill's contract changes and you need every user to pick up the new version. Files marked `exec: true` get explicit `fs.chmodSync(target, 0o755)` after write because `fs.writeFileSync(..., {mode})` is ignored when the file already exists.
+
+## Chat / Gateway Integration
+
+- Chat requires the user's gateway to be running. Per-user routes return 503 if the gateway pool entry is disconnected.
+- `chatApi.createSession()` → `POST /api/chat/sessions` → `gatewayPool.forUser(uid).sessionsCreate(agentId)`.
+- Real-time message streaming: gateway WS events → `gateway-ws.cjs` → dashboard WS broadcast → `useWebSocket.ts` → `useChatStore`.
+- JSONL poller in `watchers.cjs` is fallback for final responses when gateway lifecycle events arrive before the last message.
+- `useChatStore.ts` has `gatewayMessagesToGroups()` for converting raw gateway history into `ChatMessageGroup[]` (handles thinking blocks, text-encoded tool call markers, structured tool_use blocks).
+
+## Channel Binding Architecture
+
+Channel bindings in per-user `openclaw.json` use two patterns:
+1. **Explicit:** `config.bindings[].agentId === agentId` with `match.channel` + `match.accountId`.
+2. **Convention:** Account key equals `agentId` in `config.channels.telegram.accounts` / `config.channels.whatsapp.accounts`.
+
+`getAgentChannels()` supports both — always check both when discovering existing bindings.
+
+**Discord** has two coexisting patterns:
+- **Legacy shared:** `config.channels.discord` (enabled, token, dmPolicy, groupPolicy).
+- **Per-account:** `config.channels.discord.accounts[agentId] = { token, dmPolicy, groupPolicy }` + binding with `match.accountId`.
+- Use `groupPolicy` (not `guildPolicy`) — OpenClaw validates field names.
+
+## Channel Login & DM Pairing
+
+- **WhatsApp QR login:** `POST /api/channels/:channel/:account/login/start` calls gateway RPC `web.login.start` → returns `{ qrDataUrl, message }`. `null` qr means already linked. **Retry-with-backoff** is needed because gateway needs ~5-10s after restart for the WA web-login provider to come up — see `OnboardingPage.tsx` step 5.
+- **DM pairing:** users DM the bot, bot replies with a short-lived code, user enters it (or wizard auto-approves the first matching code).
+  - `GET /api/agents/:id/pairing` — pending requests across channels for an agent.
+  - `POST /api/pairing/:channel/approve` `{ code, accountId? }` — adds to allow-list.
+  - Pending: `<userHome>/credentials/{channel}-pairing.json`. Approvals: `{channel}[-{accountId}]-allowFrom.json`.
+
+## Agent Detail Page Tab Structure
+
+`AgentDetailPage.tsx` uses 5 body tabs: **Agent Files** | **Skills & Tools** | **Channels** | **Connections** | **Schedules**.
+
+- **Agent Files** — two modes (`filesMode`):
+  - *Curated*: editable allowlist (IDENTITY/SOUL/TOOLS/AGENTS/USER/HEARTBEAT/MEMORY.md). View + edit both use `MonacoCodeEditor`.
+  - *Browse*: `WorkspaceBrowser` (read-only file manager, tree + preview, lazy-load, `DirCache`).
+- **Skills & Tools** — sub-tabs `'skills' | 'tools' | 'custom-tools'`. Custom Tools sub-tab embeds `SkillsTerminal` with `cwd="agent-scripts"`.
+- **Connections** — `AgentConnectionsTab`. Search + per-type filter chips + collapsible groups + Bulk select. Backed by `api.getAgentConnections` / `api.setAgentConnections`.
+- **Schedules** — embeds `<CronPage filterAgentId={id} />`.
+
+**Edit Configuration modal** (`EditConfigModal`) — see Master Agent section above for the locked dropdown behavior. ADLC role options include `master-orchestrator`.
+
+**Compact header mode** (persisted in `localStorage` `aoc.agent-detail.headerCompact`) — toggle a ~40px single-row header.
+
+## Agent Rename
+
+When display name changes, `updateAgent` in `detail.cjs` computes a new slug (`slugify(newName)`). If different and not `"main"`, atomic rename across:
+- `openclaw.json` agent entry key.
+- `channels.telegram.accounts` / `channels.whatsapp.accounts` keys matching the old ID.
+- All binding `agentId` references.
+- Filesystem: `<userHome>/agents/{id}/` and the agent's workspace directory.
+
+`updateAgent` returns `{ agentId, changed }` — `agentId` may differ from request param. PATCH handler calls `db.renameAgentProfile(oldId, newId)`. Frontend navigates to new `/agents/{newId}`.
+
+## Agent Provisioning
+
+Two entry points:
+
+1. **Master onboarding** (`POST /api/onboarding/master`) — see Master Agent section.
+2. **Sub-agent provision** (`POST /api/agents`) — gated by 409 if user has no master. `ProvisionAgentWizard.tsx` 4-step modal; `handleProvision` calls `api.provisionAgent({ adlcRole, agentFiles, skillSlugs, skillContents, scriptTemplates })`.
+
+`provisionAgent({ id, name, isMaster?, adlcRole?, ... }, userId)`:
+1. Validate.
+2. Resolve paths per-tenant (master uses `<home>/workspace`, sub-agents use `<home>/workspaces/<id>`).
+3. Add to `openclaw.json` (do NOT write `isMaster` or `adlcRole` into the agent entry — OpenClaw rejects unknown keys; track those in SQLite only).
+4. Write workspace files (IDENTITY/SOUL/TOOLS/AGENTS/MEMORY.md). Master gets addendum content via `MASTER_AGENTS_ADDENDUM`. Skill from template overrides workspace files when `agentFiles` provided.
+5. Install global skills (template's `skillSlugs` + `skillContents`) to `~/.openclaw/skills/{slug}/SKILL.md`.
+6. Write per-agent script templates to `{workspace}/scripts/`.
+7. Run `syncAgentBuiltins(id)` to clean up legacy flat-script blocks in TOOLS.md.
+
+`fsWorkspaceOnly: false` in opts maps to `tools.fs.workspaceOnly: false`. Master agents and `adlcRole` agents get this automatically.
+
+Per-agent `env` fields are NOT supported in OpenClaw 2026.4.8+. AOC env vars (`AOC_TOKEN`, `AOC_URL`, `AOC_AGENT_ID`) are injected at runtime via the agent's `update_task.sh` script and `.aoc_agent_env` env file.
+
+## Skill Resolution Order
+
+Skills resolved by searching in order (first `SKILL.md` match wins):
+1. `<agentWorkspace>/skills/{name}/`
+2. `<agentWorkspace>/.agents/skills/{name}/`
+3. `~/.agents/skills/{name}/`
+4. `<userHome>/skills/{name}/` (which is symlinked to `~/.openclaw/skills/{name}/` for non-admin users)
+
+Skill scripts at `{skillDir}/scripts/`, managed via `skillScripts.cjs`.
+
+## AI Assist (Content Generation)
+
+`POST /api/ai/generate` — SSE streaming endpoint. Spawns a `claude` CLI subprocess via `server/lib/ai.cjs` (`generateStream()`). `CLAUDE_BIN` env var (default `/opt/homebrew/bin/claude`).
+
+- `AiAssistPanel.tsx` (`src/components/ai/`) — floating panel inline next to editable file areas. Calls `streamAiGenerate()`.
+- `getOsContext()` detects installed runtimes/shells; consumed by `GET /api/ai/os-context`.
+- `FILE_CONTEXTS` map per-filetype generation hints.
+- SSE format: `data: {"text": "..."}` chunks, terminated by `data: {"done": true}` or `data: {"error": "..."}`.
+- Abort: client disconnect detected via `req.socket.on('close')` → `AbortController`.
+
+## Skill & Script Templates
+
+`src/data/templates/` — ADLC-aligned template library.
+
+- **Types:** `SkillTemplate` (per ADLC agent), `ScriptTemplate` (filename + content).
+- Entry point: `src/data/templates/index.ts` exports `SKILL_TEMPLATES`, `SCRIPT_TEMPLATES`, `SUPERPOWERS_TEMPLATES`.
+- `SkillTemplatePicker.tsx` — modal picker UI consumed by SkillsPage and agent detail Skills tab.
+- `src/data/adlcTemplates.ts` — **deprecated** re-export wrapper; use `src/data/templates/index.ts` directly.
+
+## Code Editors
+
+**`MonacoCodeEditor`** (`src/components/ui/MonacoCodeEditor.tsx`) — preferred everywhere. Lazy-loaded Monaco with bundled workers (CSP-safe, no CDN). Auto-language from `filename`. Theme-aware. **Single editor pattern** — adding a new editable code surface should use `MonacoCodeEditor`, not `<textarea>` or `<pre>`.
+
+**`SyntaxEditor`** — legacy; prefer Monaco for new surfaces.
+
+## Workspace Browser API
+
+`server/lib/workspace-browser.cjs` — read-only file manager rooted at agent workspace.
+
+- `GET /api/agents/:id/workspace/tree?path=` — directory tree.
+- `GET /api/agents/:id/workspace/file?path=` — file content. Auth uses `authMiddlewareWithQueryToken` for `<img src>` and direct downloads.
+- Frontend: `getWorkspaceTree`, `getWorkspaceFile`, `getWorkspaceFileUrl` in `src/lib/api.ts`.
+- **Security:** path traversal blocked; symlinks refused via `fs.lstat`.
+
+## Settings Page Tab Layout
+
+`src/pages/SettingsPage.tsx` `Tab` union: `'account' | 'engine' | 'channels' | ...openclaw.json sections`.
+
+- **Account** — user profile + auth.
+- **Engine** — AOC's own built-in feature config (NOT `openclaw.json`). `AgentStandardsCard` (research output standard) + `BrowserHarnessCard` (re-install bundle).
+- Sidebar has visible group separator between user-section tabs and openclaw.json config tabs.
+
+## Sidebar Component
+
+`src/components/layout/Sidebar.tsx` — `min-h-0 overflow-y-auto` on `<nav>` so menu scrolls at short viewports. Logo block has `shrink-0`.
+
+## Agent World (3D View)
+
+`AgentWorldPage` → `AgentWorldView` → `AgentWorld3D` (`src/components/world/`). React Three Fiber + drei. Top-down isometric scene; agent state drives animated character behavior. Theme-aware via `SCENE_THEME`.
+
+## Tasks & Project Board
+
+- Tasks in SQLite (`data/aoc.db`). Fields: `id, title, description, status (open|in_progress|review|done|cancelled), priority (urgent|high|medium|low), agentId, tags, cost, sessionId, projectId`.
+- **Dispatch model:** `POST /api/tasks/{id}/dispatch` sends task to assigned agent via gateway RPC, stores `sessionKey`. `loadAllJSONLMessagesForTask()` reconstructs full multi-dispatch history.
+- `AgentWorkSection.tsx` renders multi-turn agent conversation history inside `TaskDetailModal`.
+- `syncAgentTaskScript` ensures `update_task.sh` is installed for the agent.
+
+## Projects & Integrations
+
+- Projects group tasks. Per-user `created_by` for ownership scoping.
+- Per-user "General" project auto-created on onboarding finish.
+- Project integrations sync external data into AOC tasks. Currently `google_sheets` only.
+- WS event `project:sync_start` broadcasts when a sync begins.
+
+## File Versioning
+
+`server/lib/versioning.cjs` — every file save → `saveVersion()`. Max 50 per scope, SHA-256 dedupe. REST: `GET /api/versions?scope=...`, `POST /api/versions/{id}/restore`, `DELETE /api/versions/{id}`.
+
+## Skill Marketplace
+
+- **ClawHub** — install skills from a URL (GitHub raw, direct link). Flow: `clawHubTargets()` → `clawHubPreview(url)` → `clawHubInstall(url, target, agentId?)`.
+- **SkillsMP** — curated marketplace. Requires API key. Flow: `skillsmpSearch(q)` → `skillsmpPreview(skill)` → `skillsmpInstall(skill, target, agentId?)`.
+
+## Inbound Webhooks / Hooks
+
+`/api/hooks/*` — inbound webhook configuration. `getHooksConfig`, `saveHooksConfig`, `generateHookToken`, `getHookSessions(limit)`.
+
+## Gateway Management
+
+`/api/gateway/*`:
+- `GET /api/gateway/status` — `{ running, pids, port, portOpen, mode, bind }` for the current user's gateway.
+- `POST /api/gateway/restart` — admin restarts external gateway; non-admin restarts their per-user gateway via orchestrator.
+- `POST /api/gateway/stop` — kills without restart.
+
+## OpenClaw Config Management
+
+`/api/config` — read/write `openclaw.json` sections (per-tenant):
+- `GET /api/config` — sanitized full config + path.
+- `PATCH /api/config/{section}` — merges value into top-level section.
+
+## SQLite DB Location
+
+In dev, the DB (`aoc.db`) is at `data/aoc.db` in project root. Path controlled by `server/lib/db.cjs`.
+
+## ADLC Role Templates
+
+`src/data/role-templates/` — TypeScript files exporting `AgentRoleTemplate` objects. 9 templates currently: `pm-discovery`, `pa-monitor`, `ux-designer`, `em-architect`, `swe`, `qa-engineer`, `doc-writer`, `biz-analyst`, `data-analyst`. The `master-orchestrator` template is planned (sub-project 5) but not yet authored — master persona is currently auto-injected via `provision.cjs` without a template.
+
+- **Type:** `AgentRoleTemplate` interface with `id, adlcAgentNumber, role, emoji, color, description, modelRecommendation, agentFiles, skillSlugs, skillContents, scriptTemplates, fsWorkspaceOnly: false`.
+- **Barrel:** `src/data/agentRoleTemplates.ts` — `ADLC_ROLE_TEMPLATES[]`, `getTemplateById()`, `getTemplateColor()`, `getTemplateLabel()`.
+- **Shell scripts in templates** must use `\${...}` (escaped) for bash variables inside TypeScript template literals.
+
+**Provisioning flow with a template:**
+1. `TemplateEntryModal` (split: ADLC Template vs Blank) on AgentsPage.
+2. `TemplatePickerGrid` — selecting passes template to `ProvisionAgentWizard` as `template` prop.
+3. Wizard pre-fills emoji/color/description/model from template. On step 1→2, auto-injects soul via `buildRoleSoul()`.
+4. On provision, `handleProvision` adds `adlcRole, agentFiles, skillSlugs, skillContents, scriptTemplates` to POST body.
+5. `provision.cjs` overrides agent files, installs global skills, writes per-agent scripts, persists role to SQLite (NOT openclaw.json).
+6. `ensureSharedAdlcScripts()` writes shared scripts (`notify.sh`, `gdocs-export.sh`, `email-notif.sh`) to `~/.openclaw/scripts/`.
+7. `agent_profiles.role` set; `AgentCard` uses `getTemplateColor()`/`getTemplateLabel()` for left border + role badge.
+
+**`notify.sh`** is channel-agnostic: queries `AOC_URL/api/agents/$AOC_AGENT_ID/channels` to auto-detect bound channel (priority: Telegram > WhatsApp > Discord), with `--channel` override.
+
+## Role-Based Access Control
+
+Two user roles: `admin` and `user` (plus internal `agent` role for service tokens). Admin bypasses ownership checks; users retain read access to most things but mutate only resources they created.
+
+- **Ownership columns:** `agent_profiles.provisioned_by`, `connections.created_by`, `projects.created_by`, `mission_rooms.created_by`, `users.master_agent_id`, `agent_profiles.is_master`. All nullable, set on create.
+- **Server enforcement** (`server/lib/db.cjs`):
+  - `requireAdmin` — 403 unless admin.
+  - `requireAgentOwnership` / `requireConnectionOwnership` — admin + agent role bypass; otherwise checks ownership column.
+  - `parseScopeUserId(req)` — admin can impersonate via `?owner=<id>`; non-admin always self.
+- **Client mirror** (`src/lib/permissions.ts`) — `useIsAdmin()`, `useCanEditAgent(agent)`, `useCanEditConnection(conn)` hooks. Keep in sync with server when adding new ownership-scoped resources.
+- Admin-only routes are gated in `src/App.tsx` via `<AdminOnly>` wrapper (e.g., `/users`, `/settings`).
+
+## Managed Role Templates
+
+`role_templates` SQLite table (seeded from `server/data/role-templates-seed.json` on startup) — persists ADLC role presets server-side in addition to the compile-time TS templates. Origin column distinguishes `seed` vs user-created presets. Use this table (not the TS files) for runtime mutation.
+
+## Sharp Edges / Gotchas (read before touching the affected area)
+
+These are the load-bearing constraints discovered during Tier 3 multi-tenant work. Future you will re-introduce them otherwise.
+
+- **OpenClaw gateway rejects unknown keys** in `agents.list[]` of `openclaw.json`. Confirmed rejected: `isMaster`, `adlcRole`. **Track all custom flags in SQLite** (`agent_profiles` columns), NEVER in openclaw.json.
+- **`<userHome>/skills/` is a symlink** to admin's `~/.openclaw/skills/`. Installing a bundle once at admin's home propagates to every user. Don't try to install per-user.
+- **GatewayPool does not auto-connect.** `gatewayPool.forUser(userId)` returns a connection object but you must verify `conn.isConnected` and use `orchestrator.getRunningToken(userId)` + `conn.connect({port,token})` if stale. See `server/routes/master.cjs` for the lazy-connect pattern.
+- **macOS `ps -E` doesn't expose env.** Orphan gateway detection uses `lsof -p <pid> -i tcp -P -n -a -sTCP:LISTEN` to map PIDs to listening ports — see `findAocManagedOrphanPids()` in the orchestrator.
+- **Cross-user `agent_id` collision in SQLite `agent_profiles`** — `agent_id` is globally unique. If two users provision an agent with the same name slug, the SQLite row gets overwritten (workspace + openclaw.json stay isolated per-user, but `provisioned_by` and `is_master` may end up wrong). Compound primary-key migration is on the long-term TODO list.
+- **Login response shape** for `/api/auth/login` and `/api/auth/register-invite` MUST include `hasMaster` and `masterAgentId`, otherwise `<MasterGate>` redirects users to `/onboarding` even if they have a master.
+- **Mission room membership is per-user master agent**, NOT literal `'main'`. The `normalizeMissionMembers(ids, masterAgentId?)` helper enforces this. Hardcoding `'main'` will leak admin's agent into other users' rooms. Falls back to `'main'` only when master can't be resolved.
+- **`agents.defaults` inheritance from admin must rewrite admin-scoped paths.** `ensureUserHome()` rewrites `agents.defaults.workspace` to `<userHome>/workspace`. Add the same rewrite if you ever introduce another path-shaped default.
+- **Master Agent uses the per-user GLOBAL workspace dir** (`<userHome>/workspace`), NOT a sub-folder. This matches admin's `main`. `provision.cjs` enforces via `isMaster ? path.join(home, 'workspace') : path.join(home, 'workspaces', id)`.
+- **Master Agent permissions: broad fs + no approval gates, risk-aware via prompting.** `tools.fs.workspaceOnly: false`, `approvals.exec.enabled: false`. Risk-awareness lives in the **prompting layer** (AGENTS.md → Master Agent Orchestration + SOUL.md addendum). Don't re-introduce gateway approval gates thinking it's safer.
+- **`agents.defaults.skills` is the source of truth for sub-agent skills.** OpenClaw treats any explicit `skills` array (including `[]`) as a full override — there is no merge with defaults. `provision.cjs` reads `config.agents.defaults.skills` at provision time and writes it verbatim into the new agent's entry. Master gets `MASTER_EXTRA_SKILLS` layered on top (deduped). When you add a new always-on built-in skill, update admin's `agents.defaults.skills` and `ensureUserHome` propagates it.
+- **`AGENTS.md` and `TOOLS.md` for the master must include the orchestration playbook + skill table.** SOUL.md gets the persona addendum; AGENTS.md gets routing decisions + risk-aware operating style + memory habits; TOOLS.md gets the AOC skills table with key entry points. All three are auto-generated when `isMaster=true` is passed to `provisionAgent`. Don't strip them.
+
+## Tier 3 Roadmap
+
+Multi-tenant + Master Agent platform. State tracker: `docs/superpowers/plans/TIER3-STATE.md`. Per sub-project plans:
+
+- **Sub-projects 1, 1.5, 2, 4, 4.5: ✅ DONE** (uncommitted, in working tree per user's no-auto-commit rule).
+- **Sub-project 5** (`master-orchestrator` ADLC template): ⏳ Planned. Plan: `docs/superpowers/plans/2026-05-05-tier3-subproject5-master-orchestrator-template.md`.
+- **Sub-project 3** (HQ Room): ⏳ Planned. Plan: `docs/superpowers/plans/2026-05-05-tier3-subproject3-hq-room.md`.
+
+When picking up Tier 3 work, **read `TIER3-STATE.md` first**, then the relevant sub-project plan. The plans assume zero context and are pre-shaped for the `superpowers:subagent-driven-development` workflow.

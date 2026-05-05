@@ -8,7 +8,8 @@ import { useAgentStore, useSessionStore } from "@/stores"
 import { useCanWrite } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 import type { Agent } from "@/types"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, Link } from "react-router-dom"
+import { useMasterStatus } from "@/hooks/useMasterStatus"
 import { ProvisionAgentWizard } from "@/components/agents/ProvisionAgentWizard"
 import { TemplateEntryModal } from "@/components/agents/TemplateEntryModal"
 import { OwnerFilter, type OwnerScope } from "@/components/admin/OwnerFilter"
@@ -372,6 +373,7 @@ export function AgentsPage() {
   const setAgents = useAgentStore((s) => s.setAgents)
   const sessions = useSessionStore((s) => s.sessions) as unknown as RawSession[]
   const canWrite = useCanWrite()
+  const { hasMaster } = useMasterStatus()
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [feedMinimized, setFeedMinimized] = useState(() => typeof window !== "undefined" && window.innerWidth < 640)
@@ -521,13 +523,27 @@ export function AgentsPage() {
           {canWrite && (
             <button
               onClick={() => setShowEntryModal(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/20 transition-colors"
+              disabled={!hasMaster}
+              title={hasMaster ? 'Provision a sub-agent' : 'Create your Master Agent first'}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/20 transition-colors",
+                !hasMaster && "opacity-50 cursor-not-allowed"
+              )}
             >
               <Plus className="w-3.5 h-3.5" /> Provision Agent
             </button>
           )}
         </div>
       </div>
+
+      {!hasMaster && (
+        <div className="mb-4 p-3 border border-amber-500/40 bg-amber-500/10 rounded-md text-sm flex items-center justify-between">
+          <span>You need a Master Agent before provisioning sub-agents.</span>
+          <Link to="/onboarding" className="px-3 py-1 bg-primary text-primary-foreground rounded-md">
+            Start onboarding
+          </Link>
+        </div>
+      )}
 
       {/* Mobile: compact single-row header */}
       <div className="flex sm:hidden items-center gap-2 mb-3 shrink-0">
@@ -540,7 +556,12 @@ export function AgentsPage() {
         {canWrite && (
           <button
             onClick={() => setShowEntryModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-semibold hover:bg-emerald-500/20 transition-colors shrink-0"
+            disabled={!hasMaster}
+            title={hasMaster ? 'Provision a sub-agent' : 'Create your Master Agent first'}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-semibold hover:bg-emerald-500/20 transition-colors shrink-0",
+              !hasMaster && "opacity-50 cursor-not-allowed"
+            )}
           >
             <Plus className="w-3 h-3" /> New
           </button>

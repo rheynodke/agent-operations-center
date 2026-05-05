@@ -96,7 +96,50 @@ function generateSoulMd({ name, theme, soulContent }) {
   return base.trimEnd() + RESEARCH_STANDARD_BLOCK + '\n';
 }
 
-function generateAgentsMd({ name }) {
+const MASTER_AGENTS_ADDENDUM = `
+
+---
+
+## Master Agent Orchestration
+
+You are the **Master Agent** for this workspace — the user's entry point and conductor for the team. Operational habits specific to this role:
+
+### Routing decisions
+
+| Situation | Action |
+|---|---|
+| Casual chat, quick fact, memory update | Handle yourself. |
+| Task matches a sub-agent's role (PM, SWE, QA, DocWriter, dst) | **Delegate.** |
+| Task spans multiple specialists | Decompose, delegate each part. |
+| User explicitly says "ask <agent>" | Always delegate to that agent. |
+| User asks something risky (delete data, send public messages, modify shared infra) | **Clarify first** — ask user to confirm scope/intent before acting. |
+
+### Tools you have (via the \`aoc-master\` skill)
+
+- \`team-status.sh\` — list user's sub-agents + their roles + last activity
+- \`delegate.sh <agent_id> "<task>"\` — open/reuse a session against a sub-agent and post the task
+- \`list-team-roles.sh\` — short list (agent_id\\trole) for quick lookup
+
+Run \`team-status.sh\` whenever you're not sure who to delegate to. After delegating, **acknowledge to the user**: "Saya delegate ke X karena Y. Update akan datang via Z."
+
+### Risk-aware operating style
+
+You have broad filesystem access (not workspace-only) and the user's gateway runs without exec approval gates. **That's a privilege, not a license.** Use the prompting-with-clarification approach:
+
+- **Safe ops (read, list, search, write within workspace):** just do it.
+- **Risky ops (delete, overwrite outside workspace, network calls that write, send messages on user's behalf):** announce + ask one clarifying question before acting. "Saya mau hapus folder X dengan ~100 file di dalamnya. Yakin lanjut?"
+- **Hard-stop ops (delete master agent's own files, drop user data, force-push, send public messages):** refuse and surface to user as "this needs your explicit go-ahead in plain text."
+
+The principle: **be careful, not blocked.** The user picked you to be helpful, not to wait for approval on every command. Clarify, then act.
+
+### Memory habits for the Master role
+
+- Keep a "team map" in MEMORY.md: \`agent_id: role + 1-line capability hint\`. Update when sub-agents are added/removed.
+- Track recurring user patterns. If user always asks PM agent for X, note it.
+- Log delegation failures. If a sub-agent rejected/struggled with a task, note why so next time you route differently.
+`;
+
+function generateAgentsMd({ name, isMaster = false }) {
   return `# AGENTS.md - ${name}'s Workspace
 
 This folder is home. Treat it that way.
@@ -249,26 +292,59 @@ Periodically (every few days), use a heartbeat to:
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.
-`;
+${isMaster ? MASTER_AGENTS_ADDENDUM : ''}`;
 }
 
-function generateToolsMd({ name }) {
-  return [
+function generateToolsMd({ name, isMaster = false }) {
+  const lines = [
     `# Tools`,
     '',
     `## Available to ${name}`,
     '',
-    '### Core',
-    '- exec (shell commands)',
-    '- read / write / edit (filesystem)',
-    '- web_search / web_fetch',
-    '- memory_search / memory_get',
+    '### Core (built-in OpenClaw runtime)',
+    '- **exec** — run shell commands. Full security profile (no approval gates); use the prompting-with-clarification rules in AGENTS.md before risky ops.',
+    '- **fs** — read / write / edit files. ' + (isMaster ? '**Broad access** (workspace-only OFF) — you can reach skills, scripts, and other agents\' workspaces under this user\'s home.' : 'Workspace-scoped by default.'),
+    '- **web** — `web_search` + `web_fetch` (URL fetch). Search provider follows the gateway config (`tools.web.search.provider` in `openclaw.json`). Always cite sources per the SOUL.md research standard.',
+    '- **memory** — `memory_search` / `memory_get` for retrieving prior session context.',
     '',
-    '### Sessions',
-    '- sessions_spawn / sessions_send / sessions_yield',
-    '- agents_list / sessions_list',
+    '### Sessions (gateway RPC)',
+    '- **sessions_spawn** — start a new chat session.',
+    '- **sessions_send** — post a message to an existing session.',
+    '- **sessions_yield** — hand control back to user.',
+    '- **agents_list** / **sessions_list** — discovery.',
     '',
-  ].join('\n');
+  ];
+
+  if (isMaster) {
+    lines.push(
+      '### Built-in AOC skills (auto-enabled for Master)',
+      '',
+      '| Skill | What it does | Key entry points |',
+      '|---|---|---|',
+      '| **aoc-master** | Orchestration — list team + delegate tasks. Read SKILL.md inside the skill. | `team-status.sh`, `delegate.sh <agent_id> "<task>"`, `list-team-roles.sh` |',
+      '| **aoc-tasks** | Task board contract — update task status, post comments, save outputs, fetch attachments. | `update_task.sh`, `check_tasks.sh`, `post_comment.sh`, `save_output.sh`, `fetch_attachment.sh` |',
+      '| **aoc-connections** | Connection layer — call MCP servers, gateway RPCs, list bound connections. | `aoc-connect`, `check_connections.sh`, `mcp-call.sh`, `gws-call.sh` |',
+      '| **browser-harness-odoo** | Headless-browser automation (Odoo focus). Use when a sub-agent isn\'t a better fit. | `browser-harness-acquire`, `runbook-run`, plus more under the skill\'s `scripts/` |',
+      '',
+      'Skills get added to your `skills` array in `openclaw.json` automatically. To call a script: read the skill\'s `SKILL.md` first for arg shape, then run via your shell tool. Output of a skill script is what you should pass back to the user (or to a delegate via `delegate.sh`).',
+      '',
+      '### Orchestration habits',
+      '',
+      'See **AGENTS.md → Master Agent Orchestration** for the routing decision table, risk-aware operating style, and team-map memory habits. That section is the load-bearing playbook for this role.',
+      '',
+    );
+  } else {
+    lines.push(
+      '### Skills',
+      '',
+      'Default built-in skills inherited from your user\'s gateway: **aoc-tasks** (task board) and **aoc-connections** (connection layer). Read each skill\'s `SKILL.md` for the contract.',
+      '',
+      'User can add or remove skills any time via the AOC dashboard\'s Skills tab.',
+      '',
+    );
+  }
+
+  return lines.join('\n');
 }
 
 // ── Provider/id hints ─────────────────────────────────────────────────────────
@@ -308,6 +384,15 @@ function provisionAgent(opts, userId) {
 
   const agentList = config.agents?.list || [];
   const defaultModel = config.agents?.defaults?.model?.primary || '';
+  // Source of truth for sub-agent skill set. Inherited from admin during
+  // ensureUserHome and may be tweaked per-user later. Always-on AOC skills
+  // (aoc-tasks, aoc-connections) live here.
+  const defaultSkills = Array.isArray(config.agents?.defaults?.skills)
+    ? config.agents.defaults.skills
+    : [];
+  // Master-only skills layered on top of the defaults. aoc-master is the
+  // orchestration toolkit; browser-harness-odoo extends master's testing reach.
+  const MASTER_EXTRA_SKILLS = ['aoc-master', 'browser-harness-odoo'];
 
   // 1. Validate
   validateProvision(opts, agentList);
@@ -329,10 +414,16 @@ function provisionAgent(opts, userId) {
     skillSlugs = [],
     skillContents = {},
     scriptTemplates = [],
+    isMaster = false,
   } = opts;
 
-  // 2. Resolve paths (per-tenant)
-  const workspacePath = path.join(home, 'workspaces', id);
+  // 2. Resolve paths (per-tenant).
+  // Master Agent uses the user's global workspace dir (`<home>/workspace`) — same
+  // layout admin uses for `main`. Sub-agents nest under `<home>/workspaces/<id>`.
+  // This keeps the master == "default agent" semantic consistent across users.
+  const workspacePath = isMaster
+    ? path.join(home, 'workspace')
+    : path.join(home, 'workspaces', id);
   const agentStatePath = path.join(_agentsDirFor(userId), id, 'agent');
 
   // 3. Mutate openclaw.json ──────────────────────────────────────────────────
@@ -353,15 +444,29 @@ function provisionAgent(opts, userId) {
       ...(theme ? { theme } : {}),
     },
     ...(model ? { model } : {}),
-    skills: [],
+    // OpenClaw treats an explicit `skills` array (even `[]`) as a full override
+    // of `agents.defaults.skills` — there is NO merge. So we must list every
+    // skill we want the agent to have, explicitly, here. We read the current
+    // user's `agents.defaults.skills` (inherited from admin during ensureUserHome)
+    // as the source of truth for the always-on AOC built-ins.
+    //   - Sub-agents: defaults verbatim.
+    //   - Master: defaults + master-only extras (aoc-master, browser-harness-odoo).
+    skills: isMaster
+      ? Array.from(new Set([...MASTER_EXTRA_SKILLS, ...defaultSkills]))
+      : [...defaultSkills],
     // Enable heartbeat for this agent (OpenClaw requires explicit config per agent)
     // Empty {} = use all defaults (every: 30m). Fields are optional overrides:
     // every, activeHours, model, session, target, to, accountId, prompt, ackMaxChars, lightContext
     heartbeat: {},
-    // Block 4: Persist ADLC role before config write
-    ...(adlcRole ? { adlcRole } : {}),
-    // fsWorkspaceOnly: false for ADLC agents (need broad filesystem access)
-    ...(fsWorkspaceOnly === false || adlcRole ? { tools: { fs: { workspaceOnly: false } } } : {}),
+    // NOTE: adlcRole and isMaster are tracked in SQLite (agent_profiles.role,
+    // agent_profiles.is_master + users.master_agent_id), NOT in openclaw.json
+    // — OpenClaw rejects unknown keys via schema validation.
+    // fsWorkspaceOnly: false for ADLC agents AND Master Agents — both need
+    // broad filesystem access so skills (browser-harness, scripts, etc.) and
+    // orchestration helpers (delegate.sh, team-status.sh) can reach beyond
+    // the agent's own workspace dir. Per-user isolation still holds — the
+    // user's gateway runs under <userHome>/, so "broad" is bounded to that.
+    ...(fsWorkspaceOnly === false || adlcRole || isMaster ? { tools: { fs: { workspaceOnly: false } } } : {}),
   };
 
   if (!config.agents) config.agents = {};
@@ -484,16 +589,31 @@ function provisionAgent(opts, userId) {
     generateSoulMd({ name, theme, soulContent })
   );
 
+  if (isMaster) {
+    const masterAddendum = [
+      '',
+      '---',
+      '',
+      '## Master Agent',
+      '',
+      'You are the **Master Agent** for this workspace. Your role is to orchestrate sub-agents,',
+      'route user intent to the right specialist, and keep the team aligned. When a request',
+      'arrives, you decide whether to handle it yourself or delegate to a sub-agent.',
+      '',
+    ].join('\n');
+    fs.appendFileSync(path.join(workspacePath, 'SOUL.md'), masterAddendum);
+  }
+
   // AGENTS.md
   writeFile(
     path.join(workspacePath, 'AGENTS.md'),
-    generateAgentsMd({ name })
+    generateAgentsMd({ name, isMaster })
   );
 
   // TOOLS.md
   writeFile(
     path.join(workspacePath, 'TOOLS.md'),
-    generateToolsMd({ name })
+    generateToolsMd({ name, isMaster })
   );
 
   // MEMORY.md — long-term memory file (always scaffold, empty initially)
@@ -640,6 +760,7 @@ function provisionAgent(opts, userId) {
     whatsappPairingRequired,
     filesCreated: ['IDENTITY.md', 'SOUL.md', 'AGENTS.md', 'TOOLS.md', 'MEMORY.md', ...(mainUserMd ? ['USER.md'] : [])],
     profileSaved: false, // Will be updated by caller after SQLite save
+    ...(isMaster ? { isMaster: true } : {}),
   };
 }
 

@@ -360,3 +360,20 @@
   from { transform: scaleX(1); }
   to   { transform: scaleX(0); }
 }
+
+/* PixelSnow — ensure the three.js canvas fills its host container */
+.pixelsnow-host > canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+/* Onboarding completion zoom hero */
+@keyframes aoc-zoom-hero {
+  0%   { transform: scale(0.8); opacity: 0; filter: blur(8px); }
+  40%  { transform: scale(1);   opacity: 1; filter: blur(0); }
+  100% { transform: scale(1.15); opacity: 0.9; filter: blur(0); }
+}

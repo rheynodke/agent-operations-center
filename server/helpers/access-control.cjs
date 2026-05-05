@@ -53,7 +53,10 @@ function canAccessRoom(req, room, db) {
   if (req.user?.role === 'admin' || req.user?.role === 'agent') return true;
   if (room.kind === 'global') return true;
   if (room.projectId && db.userOwnsProject(req, room.projectId)) return true;
-  return room.memberAgentIds?.some(id => id !== 'main' && db.userOwnsAgent(req, id));
+  // Filter out the user's own master — its presence alone shouldn't grant access
+  // (master is auto-added everywhere). Falls back to 'main' for legacy admin-era rows.
+  const userMasterId = db.getUserMasterAgentId?.(req.user?.userId) || 'main';
+  return room.memberAgentIds?.some(id => id !== userMasterId && db.userOwnsAgent(req, id));
 }
 
 /**
