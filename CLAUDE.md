@@ -25,6 +25,18 @@ npm test             # node --test on server/lib/*.test.cjs (unit tests for db, 
 npm run generate-token  # Generate a random 32-byte hex token (for DASHBOARD_TOKEN)
 ```
 
+**Gateway manager (no server needed):**
+```bash
+./scripts/gw.sh                    # List all user gateway statuses (reads SQLite + OS process table directly)
+./scripts/gw.sh status <userId>    # Detailed status for one user
+./scripts/gw.sh start  <uid|all>   # Start gateway(s) — spawns openclaw-gateway, persists port/pid to DB
+./scripts/gw.sh stop   <uid|all>   # Stop gateway(s) — SIGTERM → SIGKILL + clears DB state
+./scripts/gw.sh restart <uid|all>  # stop + start
+./scripts/gw.sh logs   <userId>    # Tail <userHome>/logs/gateway.log
+./scripts/gw.sh orphans            # Find gateway PIDs not tracked in SQLite
+```
+`gw.sh` is useful when AOC is down or the orchestrator is misbehaving. It allocates ports using the same 3-stride logic as the orchestrator and requires `sqlite3` CLI.
+
 No linter is configured. Tests use Node's built-in `node:test` framework — see `server/lib/*.test.cjs` and `server/routes/*.test.cjs`.
 
 ## Environment
@@ -197,7 +209,12 @@ Per-user, master-scoped membership.
 
 ### Schema
 
-Existing `mission_rooms` table (`id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at`). HQ Room columns (sub-project 3, planned but not yet built): `is_hq`, `is_system`, `owner_user_id` + partial unique index `WHERE is_hq=1`.
+Core `mission_rooms` table: `id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at`. Phase 1 HQ columns: `is_hq INTEGER DEFAULT 0`, `is_system INTEGER DEFAULT 0`, `owner_user_id INTEGER` + unique index `WHERE is_hq=1`. Phase 2 collab flag: `supports_collab INTEGER DEFAULT 0`.
+
+Phase 2 collaboration tables:
+- `room_artifacts (id, room_id, category, title, description, tags, created_by, created_at, updated_at, pinned, archived, latest_version_id)`
+- `room_artifact_versions (id, artifact_id, version_number, file_path, file_name, mime_type, size_bytes, sha256, created_by, created_at)` — unique on `(artifact_id, version_number)`
+- `room_collaboration_sessions (id, room_id, session_key, agent_id, started_by, started_at, ended_at)` — unique on `session_key`
 
 ### Master-Scoped Membership (sub-project 4.5 — DONE)
 
@@ -220,9 +237,25 @@ Routes in `server/routes/rooms.cjs`:
 
 Per-user "General" project is created in `POST /api/onboarding/master` (NOT register-invite — master must exist first so the project's default room can use it as the always-on member). Project's default mission room (id `room-project-<uuid>`) is auto-created via `ensureProjectDefaultRoom` and gets the master as initial member.
 
-### Pending — HQ Room (sub-project 3)
+### HQ Room (sub-project 3 — Phase 1 + Phase 2 DONE, uncommitted)
 
-A dedicated per-user "HQ" mission room (`is_hq=1`, `is_system=1`) auto-created on onboarding finish, with auto-membership sync on agent provision/delete and delegation broadcasts from `/api/master/delegate` posted as system messages. Plan at `docs/superpowers/plans/2026-05-05-tier3-subproject3-hq-room.md`. Not started.
+**Phase 1 — HQ Foundation:**
+- Per-user HQ room: `is_hq=1, is_system=1, owner_user_id=userId`. Auto-created in `POST /api/onboarding/master` and on AOC startup (backfill for all users with masters but no HQ).
+- `server/lib/hq-room.cjs` — `ensureHqRoom(db, userId, masterAgentId)`, `addAgentToHq`, `removeAgentFromHq`, `postHqSystemMessage`.
+- Auto-membership: new agent provision → `addAgentToHq`; agent delete → `removeAgentFromHq` (master deletion silenced).
+- Delegation broadcasts: `POST /api/master/delegate` → `postHqSystemMessage` with `kind: 'delegation'` meta.
+- Delete guard: `DELETE /api/rooms/:id` → 409 `ROOM_IS_SYSTEM` for any room with `is_system=1`.
+- List scoping: HQ rooms only visible to owner (`ownerUserId`) + admin.
+- Frontend: `🏠` prefix on HQ room cards, delete button hidden for system rooms, HQ sorted first.
+
+**Phase 2 — Collaboration Layers:**
+- `server/lib/room-artifacts.cjs` — `createArtifact`, `addArtifactVersion`, `listArtifacts`, `getArtifact`, `getArtifactContent`, `pinArtifact`, `archiveArtifact`, `deleteArtifact`. Files at `<OPENCLAW_HOME>/rooms/<roomId>/<artifactId>/<versionNumber>/<fileName>`. SHA-256 dedup.
+- `server/lib/room-context.cjs` — `getRoomContext`, `appendToContext`, `clearContext` (CONTEXT.md at `<OPENCLAW_HOME>/rooms/<roomId>/CONTEXT.md`, append-only API). `getAgentRoomState`, `setAgentRoomState` via `agent_profiles.meta.roomState[roomId]`.
+- REST endpoints in `server/routes/rooms.cjs`: 8 artifact routes (`/rooms/:id/artifacts/...`), 3 context routes (`/rooms/:id/context/...`), 2 agent-state routes (`/rooms/:id/agents/:agentId/state`).
+- `aoc-room` skill bundle at `~/.openclaw/skills/aoc-room/` — 6 scripts: `room-publish.sh`, `room-list.sh`, `room-context-read.sh`, `room-context-append.sh`, `room-state-get.sh`, `room-state-set.sh`. Installed at startup. Added to `agents.defaults.skills` — all agents inherit it.
+- `AOC_ROOM_ID` env injection: `POST /chat/sessions` with `roomId` body → injects `AOC_ROOM_ID` into gateway session env. Room-mention forwarding (`server/hooks/room-task-bridge.cjs`) also injects it.
+- **`room-task-bridge.cjs` session strategy:** Persistent-per-room sessions keyed `agent:<agentId>:room:<roomId>:v<N>`. First message in a session gets full context (project, roster, hints); subsequent messages get compact `authorName: message.body`. Sessions auto-reset after 30 min idle (version counter bumps so gateway sees a new session key). Delegation-depth tracking (`MAX_DELEGATION_DEPTH = 3`) prevents agent ↔ agent mention loops: root user post = depth 0; each re-forward increments depth; at limit the chain is silently dropped.
+- UI side panel (`src/components/mission-rooms/RoomSidePanel.tsx`): 3 tabs (Members/Artifacts/Context) for `kind='global'` rooms. Toggle via 🗂️ button in room header.
 
 ## Cron / Scheduled Tasks
 
@@ -237,7 +270,7 @@ A dedicated per-user "HQ" mission room (`is_hq=1`, `is_system=1`) auto-created o
 **Core principle:** the unit of capability is a **Skill bundle**, not a loose script. Agents enable a skill; the skill's scripts come along automatically. Loose toggleable "custom tools" are a thin escape hatch, not the primary contract.
 
 **Three tiers:**
-1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled. Currently: `aoc-tasks`, `aoc-connections`, `browser-harness-odoo`, and `aoc-master` (master-only). See **AOC Built-in Skills & Sync Engine** below.
+1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled. Currently: `aoc-tasks`, `aoc-connections`, `aoc-room`, `browser-harness-odoo`, and `aoc-master` (master-only). See **AOC Built-in Skills & Sync Engine** below.
 2. **User skills** — full CRUD via Skills page or per-agent. Resolved via the Skill Resolution Order. Scripts at `{skillDir}/scripts/`.
 3. **Loose scripts** (`server/lib/scripts.cjs`) — only for cron/orchestrator wiring or one-offs not yet warranting a skill bundle. Two scopes:
    - **Shared** (`~/.openclaw/scripts/`, symlinked into per-user homes) — managed in Skills & Tools → Custom Tools.
@@ -257,6 +290,7 @@ AOC ships **four** skill bundles. They are infrastructure, not toggleable in the
 |---|---|---|
 | `aoc-tasks` | No | Task board contract: `update_task`, `check_tasks`, `save_output`, `post_comment`, `fetch_attachment`. |
 | `aoc-connections` | No | Connection layer: `aoc-connect`, `mcp-call`, `gws-call`, `check_connections`. |
+| `aoc-room` | No | Room collaboration toolkit: `room-publish`, `room-list`, `room-context-read`, `room-context-append`, `room-state-get`, `room-state-set`. Reads `AOC_ROOM_ID` env (injected when session started from a room). |
 | `browser-harness-odoo` | No (but defaults exclude it) | Odoo browser automation. SKILL.md + 10 shell scripts. |
 | `aoc-master` | **Yes** | Orchestration toolkit: `delegate.sh`, `team-status.sh`, `list-team-roles.sh`. Auto-enabled only for agents with `is_master=1`. |
 
@@ -507,7 +541,7 @@ These are the load-bearing constraints discovered during Tier 3 multi-tenant wor
 Multi-tenant + Master Agent platform. State tracker: `docs/superpowers/plans/TIER3-STATE.md`. Per sub-project plans:
 
 - **Sub-projects 1, 1.5, 2, 4, 4.5: ✅ DONE** (uncommitted, in working tree per user's no-auto-commit rule).
+- **Sub-project 3** (Room Collaboration — HQ Room + artifacts/context/aoc-room skill): ✅ **DONE (uncommitted)**. Phase 1 (HQ foundation) + Phase 2 (collaboration layers) complete. Plan: `docs/superpowers/plans/2026-05-05-tier3-subproject3-hq-room.md`.
 - **Sub-project 5** (`master-orchestrator` ADLC template): ⏳ Planned. Plan: `docs/superpowers/plans/2026-05-05-tier3-subproject5-master-orchestrator-template.md`.
-- **Sub-project 3** (HQ Room): ⏳ Planned. Plan: `docs/superpowers/plans/2026-05-05-tier3-subproject3-hq-room.md`.
 
 When picking up Tier 3 work, **read `TIER3-STATE.md` first**, then the relevant sub-project plan. The plans assume zero context and are pre-shaped for the `superpowers:subagent-driven-development` workflow.

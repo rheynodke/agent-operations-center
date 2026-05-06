@@ -6,6 +6,7 @@ dist/
 scripts/*
 !scripts/migrate-multitenant.cjs
 !scripts/migrate-multitenant.test.cjs
+!scripts/gw.sh
 docs/*
 skills/*
 .DS_Store

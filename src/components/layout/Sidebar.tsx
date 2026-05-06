@@ -35,10 +35,9 @@ const navGroups = [
     label: "Workforce",
     items: [
       { to: "/agents", label: "Agents", icon: Bot },
-      { to: "/sessions", label: "Sessions", icon: Activity },
       { to: "/chat", label: "Chat", icon: MessageSquare },
       { to: "/projects", label: "Projects", icon: FolderGit2 },
-      { to: "/metrics", label: "Metrics", icon: BarChart3 },
+      { to: "/sessions", label: "Sessions", icon: Activity },
     ],
   },
   {

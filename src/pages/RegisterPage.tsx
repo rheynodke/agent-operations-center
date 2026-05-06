@@ -1,21 +1,44 @@
 import { useEffect, useState, useRef, FormEvent } from "react"
 import { useSearchParams, useNavigate } from "react-router-dom"
-import { Loader2, CheckCircle2, XCircle } from "lucide-react"
+import { Loader2, XCircle, Eye, EyeOff } from "lucide-react"
 import { api } from "@/lib/api"
 import { useAuthStore } from "@/stores"
 import { AgentLogo } from "@/components/AgentLogo"
+import PixelSnow from "@/components/onboarding/PixelSnow"
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton"
+
+function useThemePrimary(fallback = '#b197fc') {
+  const [color, setColor] = useState(fallback)
+  useEffect(() => {
+    const read = () => {
+      const v = getComputedStyle(document.documentElement)
+        .getPropertyValue('--primary')
+        .trim()
+      if (v) setColor(v)
+    }
+    read()
+    const observer = new MutationObserver(read)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] })
+    return () => observer.disconnect()
+  }, [])
+  return color
+}
 
 export function RegisterPage() {
   const [params] = useSearchParams()
   const token = params.get("token") || ""
   const navigate = useNavigate()
   const { setAuth } = useAuthStore()
+  const cosmicColor = useThemePrimary()
 
   const [validating, setValidating] = useState(true)
   const [validation, setValidation] = useState<{ valid: boolean; role?: string; expiresAt?: string; error?: string } | null>(null)
 
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [displayName, setDisplayName] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
@@ -58,6 +81,10 @@ export function RegisterPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (!username.trim() || !password) return
+    if (password !== confirmPassword) {
+      setError("Passwords do not match")
+      return
+    }
     setSubmitting(true)
     setError("")
     startSpinnerProgression()
@@ -79,8 +106,22 @@ export function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center px-4">
+      <div aria-hidden className="absolute inset-0 opacity-60 pointer-events-none">
+        <PixelSnow
+          color={cosmicColor}
+          variant="round"
+          speed={0.45}
+          density={0.42}
+          pixelResolution={420}
+          flakeSize={0.012}
+          minFlakeSize={1.0}
+          depthFade={11}
+          brightness={1.05}
+        />
+      </div>
+
+      <div className="w-full max-w-md relative z-10">
         <div className="flex flex-col items-center mb-6">
           <AgentLogo className="w-14 h-14 mb-3" />
           <h1 className="text-xl font-bold">Create your account</h1>
@@ -106,15 +147,6 @@ export function RegisterPage() {
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="rounded-xl border border-border bg-card p-6 space-y-4">
-            <div className="flex items-center gap-2 text-sm text-emerald-500 bg-emerald-500/10 rounded-md px-3 py-2">
-              <CheckCircle2 className="w-4 h-4" />
-              Valid invitation — role: <strong>{validation.role}</strong>
-              {validation.expiresAt && (
-                <span className="ml-auto text-xs text-muted-foreground">
-                  expires {new Date(validation.expiresAt).toLocaleDateString()}
-                </span>
-              )}
-            </div>
 
             <div>
               <label className="block text-xs font-semibold mb-1">Username</label>
@@ -141,16 +173,52 @@ export function RegisterPage() {
 
             <div>
               <label className="block text-xs font-semibold mb-1">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-                required
-                minLength={6}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                  minLength={6}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 pr-9 text-sm outline-none focus:border-primary"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-0 top-0 h-full px-2.5 text-muted-foreground hover:text-foreground transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
               <p className="text-[11px] text-muted-foreground mt-1">Minimum 6 characters.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Confirm password</label>
+              <div className="relative">
+                <input
+                  type={showConfirmPassword ? "text" : "password"}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                  minLength={6}
+                  className={`w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:border-primary transition-colors ${confirmPassword && password !== confirmPassword ? "border-destructive/60 focus:border-destructive" : "border-border"}`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  className="absolute right-0 top-0 h-full px-2.5 text-muted-foreground hover:text-foreground transition-colors"
+                  tabIndex={-1}
+                >
+                  {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {confirmPassword && password !== confirmPassword && (
+                <p className="text-[11px] text-destructive mt-1">Passwords do not match.</p>
+              )}
             </div>
 
             {error && (
@@ -161,12 +229,26 @@ export function RegisterPage() {
 
             <button
               type="submit"
-              disabled={submitting || !username.trim() || !password}
+              disabled={submitting || !username.trim() || !password || password !== confirmPassword}
               className="w-full rounded-md bg-primary text-primary-foreground py-2.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
               {submitting ? spinnerText : "Create account"}
             </button>
+
+            <div className="flex items-center gap-2 my-1">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[10px] text-muted-foreground/60 font-mono uppercase tracking-wider">or</span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+
+            <GoogleSignInButton
+              intent="register"
+              invitationToken={token}
+              onError={(msg) => setError(msg)}
+              disabled={submitting}
+              label="Daftar dengan Google"
+            />
 
             <p className="text-center text-xs text-muted-foreground">
               Already have an account?{" "}

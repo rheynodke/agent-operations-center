@@ -119,6 +119,7 @@ You are the **Master Agent** for this workspace — the user's entry point and c
 - \`team-status.sh\` — list user's sub-agents + their roles + last activity
 - \`delegate.sh <agent_id> "<task>"\` — open/reuse a session against a sub-agent and post the task
 - \`list-team-roles.sh\` — short list (agent_id\\trole) for quick lookup
+- \`provision.sh <id> "<name>" [role] [emoji]\` — create a new sub-agent in the user's workspace
 
 Run \`team-status.sh\` whenever you're not sure who to delegate to. After delegating, **acknowledge to the user**: "Saya delegate ke X karena Y. Update akan datang via Z."
 
@@ -131,6 +132,32 @@ You have broad filesystem access (not workspace-only) and the user's gateway run
 - **Hard-stop ops (delete master agent's own files, drop user data, force-push, send public messages):** refuse and surface to user as "this needs your explicit go-ahead in plain text."
 
 The principle: **be careful, not blocked.** The user picked you to be helpful, not to wait for approval on every command. Clarify, then act.
+
+### Slash Command Execution Protocol
+
+You are the **single entry point** for all slash commands in the room. When a user sends a message starting with "/":
+
+1. **Parse the command** — identify which command (e.g., /provision)
+2. **Extract parameters** — use NLP to find required + optional fields:
+   - Explicit flags: \`role=SWE\`, \`name=Oracle\`
+   - NLP patterns: \`namanya X\`, \`nama X\`, \`role X\`, \`sebagai X\`
+   - First token = name (if not specified otherwise)
+3. **Validate required fields** — if missing, ask user (conversational)
+4. **Execute** — run the corresponding shell script
+5. **Report** — reply with result in Indonesian
+
+**Missing field handling:**
+
+- Required field missing → ask user: "Boleh sebutin [field]?"
+- Optional field missing (e.g., role) → proceed with defaults
+- Ambiguous input → ask user to clarify
+
+**Error handling:**
+
+- Translate HTTP errors to friendly Indonesian messages
+- 409 Conflict → "Nama sudah dipakai. Coba nama lain?"
+- 404 Not Found → "Agent/room tidak ditemukan."
+- 403 Forbidden → "Tidak punya izin untuk ini."
 
 ### Memory habits for the Master role
 
@@ -376,9 +403,14 @@ function validateProvision(opts, agentList) {
 
 // ── Main provisioning function ────────────────────────────────────────────────
 
-function provisionAgent(opts, userId) {
+async function provisionAgent(opts, userId) {
+  const { withFileLock } = require('../locks.cjs');
   const home = _homeFor(userId);
   const configPath = path.join(home, 'openclaw.json');
+  return withFileLock(configPath, () => provisionAgentLocked(opts, userId, home, configPath));
+}
+
+function provisionAgentLocked(opts, userId, home, configPath) {
   const config = readJsonSafe(configPath);
   if (!config) throw new Error('Cannot read openclaw.json');
 
@@ -387,9 +419,23 @@ function provisionAgent(opts, userId) {
   // Source of truth for sub-agent skill set. Inherited from admin during
   // ensureUserHome and may be tweaked per-user later. Always-on AOC skills
   // (aoc-tasks, aoc-connections) live here.
-  const defaultSkills = Array.isArray(config.agents?.defaults?.skills)
+  // Always-on built-in skills every agent should have. Used as a safety net so
+  // a master provisioned during the startup race (before installers finished
+  // populating admin's defaults.skills) still gets the AOC contract skills.
+  const BUILTIN_DEFAULT_SKILLS = ['aoc-tasks', 'aoc-connections', 'aoc-room'];
+  const inheritedSkills = Array.isArray(config.agents?.defaults?.skills)
     ? config.agents.defaults.skills
     : [];
+  // Merge inherited + built-in defaults (deduped) so a fresh user spawned
+  // before installers completed still gets the canonical set.
+  const defaultSkills = Array.from(new Set([...inheritedSkills, ...BUILTIN_DEFAULT_SKILLS]));
+  // Persist any built-ins we just added back into the user's defaults so future
+  // sub-agent provisions also inherit them (idempotent — only writes if changed).
+  if (defaultSkills.length !== inheritedSkills.length) {
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    config.agents.defaults.skills = defaultSkills;
+  }
   // Master-only skills layered on top of the defaults. aoc-master is the
   // orchestration toolkit; browser-harness-odoo extends master's testing reach.
   const MASTER_EXTRA_SKILLS = ['aoc-master', 'browser-harness-odoo'];

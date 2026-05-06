@@ -20,7 +20,7 @@ export const chatApi = {
   getSessions: (agentId?: string) =>
     request<{ sessions?: ChatSession[] }>(`/chat/sessions${agentId ? `?agentId=${agentId}` : ""}`),
   createSession: (agentId: string, channel?: string) =>
-    request<{ sessionKey?: string; session?: ChatSession }>("/chat/sessions", {
+    request<{ ok?: boolean; key?: string; sessionId?: string; sessionKey?: string; session?: ChatSession }>("/chat/sessions", {
       method: "POST",
       body: JSON.stringify({ agentId, channel }),
     }),

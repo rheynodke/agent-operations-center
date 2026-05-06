@@ -6,7 +6,16 @@ module.exports = function masterRouter({ db, gatewayPool }) {
 
   // GET /api/master/team — list this user's sub-agents (excludes the master itself)
   router.get('/master/team', db.authMiddleware, (req, res) => {
-    const userId = Number(req.user?.userId ?? req.user?.id);
+    let userId = Number(req.user?.userId ?? req.user?.id);
+    // DASHBOARD_TOKEN auth sets userId=0 — resolve the calling agent's owner
+    // from X-Agent-Id header or ?agentId= query param.
+    if (!userId && req.user?.role === 'agent') {
+      const agentId = req.headers['x-agent-id'] || req.query.agentId;
+      if (agentId) {
+        const owner = db.getAgentOwner(agentId);
+        if (owner) userId = Number(owner);
+      }
+    }
     if (!userId) return res.status(401).json({ error: 'Unauthenticated' });
 
     const masterId = db.getUserMasterAgentId(userId);
@@ -105,6 +114,19 @@ module.exports = function masterRouter({ db, gatewayPool }) {
     }
 
     console.log(`[master/delegate] uid=${userId} ${masterId} → ${targetAgentId} session=${finalSessionKey}`);
+
+    // Broadcast delegation as system message into the user's HQ room.
+    try {
+      const hqRoom = require('../lib/hq-room.cjs');
+      const targetName = target?.display_name || target?.displayName || targetAgentId;
+      const taskSummary = String(task || '').trim().slice(0, 200) + (String(task || '').length > 200 ? '…' : '');
+      hqRoom.postHqSystemMessage(db, userId, `🧭 ${masterId} → ${targetName}: ${taskSummary}`, {
+        meta: { kind: 'delegation', sessionKey: finalSessionKey, masterId, targetAgentId },
+      });
+    } catch (e) {
+      console.warn(`[master/delegate] HQ broadcast failed (non-fatal): ${e.message}`);
+    }
+
     res.status(201).json({ sessionKey: finalSessionKey, targetAgentId, masterAgentId: masterId });
   });
 

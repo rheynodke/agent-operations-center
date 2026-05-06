@@ -95,6 +95,11 @@ async function initDatabase() {
     db.run(`ALTER TABLE agent_profiles ADD COLUMN role TEXT`);
   } catch (_) { /* column already exists */ }
 
+  // Migration: add meta column for per-room agent state (Task 13)
+  try {
+    db.run(`ALTER TABLE agent_profiles ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'`);
+  } catch (_) { /* column already exists */ }
+
   // Migration: per-user permission flag for the Skills terminal (Claude TUI).
   // Admins always have access; this grants a non-admin user the same.
   try {
@@ -596,8 +601,128 @@ async function initDatabase() {
   try { db.run("ALTER TABLE users ADD COLUMN daily_token_used INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
   try { db.run("ALTER TABLE users ADD COLUMN daily_token_reset_at INTEGER"); } catch (_) {}
   try { db.run("ALTER TABLE users ADD COLUMN last_activity_at INTEGER"); } catch (_) {}
+  // Google OAuth (sign-in / sign-up via Google Identity)
+  try { db.run("ALTER TABLE users ADD COLUMN google_sub TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN email TEXT"); } catch (_) {}
+  try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL"); } catch (_) {}
+  try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email)) WHERE email IS NOT NULL"); } catch (_) {}
+  // password_hash is required by old schema. For Google-only users we store
+  // a sentinel "google-oauth" placeholder that hashPassword will reject — they
+  // can only authenticate via the Google flow.
+  try { db.run("UPDATE users SET password_hash = 'google-oauth' WHERE password_hash IS NULL"); } catch (_) {}
   try { db.run("ALTER TABLE agent_profiles ADD COLUMN is_master INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
   try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_profiles_one_master_per_owner ON agent_profiles(provisioned_by) WHERE is_master = 1"); } catch (_) {}
+
+  // === HQ Room columns (sub-project 3, Phase 1) ===
+  try { db.run("ALTER TABLE mission_rooms ADD COLUMN is_hq INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.run("ALTER TABLE mission_rooms ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.run("ALTER TABLE mission_rooms ADD COLUMN owner_user_id INTEGER"); } catch (_) {}
+  try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_rooms_one_hq_per_owner ON mission_rooms(owner_user_id) WHERE is_hq = 1"); } catch (_) {}
+
+  // === Phase 2 Collaboration Schema (Task 11) ===
+  // Room artifacts: versioned outputs, research, decisions, assets per room
+  try {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS room_artifacts (
+        id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'outputs',
+        title TEXT NOT NULL,
+        description TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        latest_version_id TEXT,
+        FOREIGN KEY (room_id) REFERENCES mission_rooms(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (_) { /* table already exists */ }
+
+  try {
+    db.run(`CREATE INDEX IF NOT EXISTS idx_room_artifacts_room ON room_artifacts(room_id)`);
+  } catch (_) {}
+
+  try {
+    db.run(`CREATE INDEX IF NOT EXISTS idx_room_artifacts_category ON room_artifacts(room_id, category)`);
+  } catch (_) {}
+
+  // Room artifact versions: version history with SHA-256 deduplication
+  try {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS room_artifact_versions (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        version_number INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL DEFAULT 'text/plain',
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        sha256 TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (artifact_id) REFERENCES room_artifacts(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (_) { /* table already exists */ }
+
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_versions_unique ON room_artifact_versions(artifact_id, version_number)`);
+  } catch (_) {}
+
+  // Room sessions (Phase 2): comprehensive session tracking for room collaboration (artifact history, etc.)
+  // NOTE: There is an earlier room_sessions table (line ~307) with a different schema used for lightweight
+  // session→room mapping. This Phase 2 version is meant to replace/upgrade that table eventually.
+  // For now, we rename to room_collaboration_sessions to avoid schema collision.
+  try {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS room_collaboration_sessions (
+        id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        started_by TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        FOREIGN KEY (room_id) REFERENCES mission_rooms(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (_) { /* table already exists */ }
+
+  try {
+    db.run(`CREATE INDEX IF NOT EXISTS idx_room_collaboration_sessions_room ON room_collaboration_sessions(room_id)`);
+  } catch (_) {}
+
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_room_collaboration_sessions_session ON room_collaboration_sessions(session_key)`);
+  } catch (_) {}
+
+  // Mission rooms: supports_collab flag for Phase 2 collaboration features
+  try {
+    db.run("ALTER TABLE mission_rooms ADD COLUMN supports_collab INTEGER NOT NULL DEFAULT 0");
+  } catch (_) { /* column already exists */ }
+
+  // === port_reservations (2026-05-06) — atomic gateway port claim ===
+  // Each gateway needs a stride of 3 ports (WS / canvas / browser-control).
+  // Inserts of 3 rows happen inside a single sync block so concurrent
+  // spawnGateway calls cannot pick the same triple.
+  try {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS port_reservations (
+        port            INTEGER PRIMARY KEY,
+        user_id         INTEGER NOT NULL,
+        reservation_id  TEXT NOT NULL,
+        reserved_at     INTEGER NOT NULL,
+        pid             INTEGER,
+        state           TEXT NOT NULL
+      )
+    `);
+  } catch (_) {}
+  try { db.run(`CREATE INDEX IF NOT EXISTS idx_port_reservations_user ON port_reservations(user_id)`); } catch (_) {}
+  try { db.run(`CREATE INDEX IF NOT EXISTS idx_port_reservations_resv ON port_reservations(reservation_id)`); } catch (_) {}
+  try { db.run(`CREATE INDEX IF NOT EXISTS idx_port_reservations_state ON port_reservations(state)`); } catch (_) {}
 
   try { backfillProjectDefaultRooms(); } catch (err) { console.warn('[db] mission room backfill failed:', err.message); }
 
@@ -828,6 +953,9 @@ function normalizeMissionRoom(row) {
     createdBy: ownerId,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    isHq: row.is_hq === 1,
+    isSystem: row.is_system === 1,
+    ownerUserId: row.owner_user_id != null ? Number(row.owner_user_id) : null,
   };
 }
 
@@ -860,6 +988,16 @@ function getMissionRoom(id) {
   const row = stmt.getAsObject({ ':id': id });
   stmt.free();
   return row.id ? normalizeMissionRoom(row) : null;
+}
+
+function getHqRoomForUser(userId) {
+  if (!db) throw new Error('DB not initialized');
+  if (userId == null) return null;
+  const stmt = db.prepare('SELECT * FROM mission_rooms WHERE is_hq = 1 AND owner_user_id = ?');
+  const row = stmt.getAsObject([Number(userId)]);
+  stmt.free();
+  if (!row.id) return null;
+  return normalizeMissionRoom(row);
 }
 
 function getProjectDefaultRoom(projectId) {
@@ -920,12 +1058,16 @@ function listMissionRoomsForUser(req) {
   const rooms = listMissionRooms();
   if (!req?.user) return [];
   if (req.user.role === 'admin' || req.user.role === 'agent') return rooms;
+  const uid = req.user.userId;
   // Filter out the user's own master agent when checking ownership — its presence
   // alone shouldn't grant access to a room (the master is auto-added everywhere).
   // Falls back to 'main' for legacy rows from before per-user masters existed.
-  const userMasterId = getUserMasterAgentId(req.user.userId) || 'main';
+  const userMasterId = getUserMasterAgentId(uid) || 'main';
   return rooms.filter((room) => {
-    if (room.kind === 'global') return true;
+    // Global rooms: only own + admin (HQ handled in route layer)
+    if (room.kind === 'global') {
+      return room.createdBy != null ? room.createdBy === uid : false;
+    }
     if (room.projectId && userOwnsProject(req, room.projectId)) return true;
     return room.memberAgentIds.some((id) => id !== userMasterId && userOwnsAgent(req, id));
   });
@@ -987,6 +1129,13 @@ function createMissionMessage({ roomId, authorType, authorId, authorName, body, 
   );
   persist();
   return normalizeMissionMessage({ id, room_id: roomId, author_type: authorType || 'user', author_id: authorId || null, author_name: authorName || null, body: body.trim(), mentions_json: JSON.stringify(mentions || []), related_task_id: relatedTaskId || null, meta_json: JSON.stringify(meta || {}), created_at: now });
+}
+
+function deleteMissionRoom(id) {
+  if (!db) throw new Error('DB not initialized');
+  db.run('DELETE FROM mission_messages WHERE room_id = ?', [id]);
+  db.run('DELETE FROM mission_rooms WHERE id = ?', [id]);
+  persist();
 }
 
 // ─── Room Sessions (gateway session ↔ room tracking) ──────────────────────────
@@ -1789,6 +1938,59 @@ function getUserById(id) {
   return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
 }
 
+// ─── Google OAuth helpers ────────────────────────────────────────────────────
+function getUserByGoogleSub(sub) {
+  if (!db || !sub) return null;
+  const r = db.exec('SELECT * FROM users WHERE google_sub = ?', [String(sub)]);
+  if (!r.length || !r[0].values.length) return null;
+  const row = r[0].values[0]; const cols = r[0].columns;
+  return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+}
+
+function getUserByEmail(email) {
+  if (!db || !email) return null;
+  const r = db.exec('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', [String(email)]);
+  if (!r.length || !r[0].values.length) return null;
+  const row = r[0].values[0]; const cols = r[0].columns;
+  return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+}
+
+/** Link a Google identity (sub + email) to an existing user. Idempotent. */
+function linkGoogleIdentity(userId, { sub, email }) {
+  if (!db) throw new Error('Database not initialized');
+  db.run('UPDATE users SET google_sub = ?, email = ? WHERE id = ?', [
+    String(sub), email ? String(email).toLowerCase() : null, Number(userId),
+  ]);
+  persist();
+}
+
+/**
+ * Create a user via Google OAuth. password_hash is set to a sentinel that
+ * never matches verifyPassword — these users can only sign in via Google.
+ */
+function createGoogleUser({ username, displayName, email, googleSub, role = 'user' }) {
+  if (!db) throw new Error('Database not initialized');
+  if (!username || !googleSub) throw new Error('username and googleSub required');
+  const stmt = db.prepare(
+    'INSERT INTO users (username, display_name, password_hash, role, google_sub, email) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  stmt.run([
+    username,
+    displayName || username,
+    'google-oauth',           // sentinel — verifyPassword always fails
+    role,
+    String(googleSub),
+    email ? String(email).toLowerCase() : null,
+  ]);
+  stmt.free();
+  persist();
+
+  const r = db.exec('SELECT * FROM users WHERE google_sub = ?', [String(googleSub)]);
+  if (!r.length || !r[0].values.length) return null;
+  const row = r[0].values[0]; const cols = r[0].columns;
+  return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+}
+
 function setUserMasterAgent(userId, agentId) {
   if (!db) return;
   db.run('UPDATE users SET master_agent_id = ? WHERE id = ?', [agentId, Number(userId)]);
@@ -2248,12 +2450,12 @@ function getGatewayState(userId) {
 function listGatewayStates() {
   if (!db) return [];
   const res = db.exec(
-    "SELECT id, gateway_port, gateway_pid, gateway_state FROM users WHERE gateway_pid IS NOT NULL"
+    "SELECT id, gateway_port, gateway_pid, gateway_state FROM users WHERE gateway_state IS NOT NULL AND gateway_state != 'stopped' AND gateway_state != ''"
   );
   return (res[0]?.values || []).map(([id, port, pid, state]) => ({
     userId: Number(id),
     port:  port != null ? Number(port) : null,
-    pid:   Number(pid),
+    pid:   pid != null ? Number(pid) : null,
     state: state != null ? String(state) : null,
   }));
 }
@@ -2264,6 +2466,148 @@ function listGatewayStates() {
 function clearAllGatewayStates() {
   if (!db) return;
   db.run("UPDATE users SET gateway_port = NULL, gateway_pid = NULL, gateway_state = NULL");
+}
+
+// ─── port_reservations (atomic per-host port claim) ─────────────────────────
+// Operations run inside a single synchronous JS block — sql.js is sync, so
+// no other Express handler can interleave between scan and insert.
+//
+// Each call reserves a *triple* (p, p+1, p+2) — gateways need WS / canvas /
+// browser-control ports. The triple is contiguous and stride-3 aligned to the
+// allocator base.
+
+const _PORT_BASE_DEFAULT = 19000;
+const _PORT_END_DEFAULT  = 19999;
+
+function _portRowExists(port) {
+  const r = db.exec('SELECT 1 FROM port_reservations WHERE port = ? LIMIT 1', [port]);
+  return r.length > 0 && r[0].values.length > 0;
+}
+
+function _userGatewayPortInUse(port) {
+  const r = db.exec(
+    'SELECT 1 FROM users WHERE gateway_port = ? AND gateway_state IS NOT NULL LIMIT 1',
+    [port],
+  );
+  return r.length > 0 && r[0].values.length > 0;
+}
+
+/**
+ * Atomically reserve a free port-triple for a user.
+ * Returns { port, reservationId }. Throws on pool exhaustion.
+ *
+ * Caller MUST eventually call markReservationLive (on spawn success) or
+ * releaseReservation (on failure / shutdown) — otherwise the rows leak.
+ *
+ * @param {number} userId
+ * @param {{base?: number, end?: number, exclude?: number[]}} [opts]
+ */
+function reservePortTriple(userId, opts = {}) {
+  if (!db) throw new Error('db not initialized');
+  const base = opts.base || _PORT_BASE_DEFAULT;
+  const end  = opts.end  || _PORT_END_DEFAULT;
+  const exclude = new Set(opts.exclude || []);
+  const reservationId = require('crypto').randomUUID();
+  const now = Date.now();
+
+  // Stride-3 candidate scan. The whole loop runs synchronously without
+  // awaits, so concurrent JS handlers cannot interleave between probe + insert.
+  for (let p = base; p <= end - 2; p += 3) {
+    if (exclude.has(p) || exclude.has(p + 1) || exclude.has(p + 2)) continue;
+    if (_portRowExists(p) || _portRowExists(p + 1) || _portRowExists(p + 2)) continue;
+    if (_userGatewayPortInUse(p) || _userGatewayPortInUse(p + 1) || _userGatewayPortInUse(p + 2)) continue;
+
+    // All three free — claim the triple atomically.
+    try {
+      db.run(
+        `INSERT INTO port_reservations (port, user_id, reservation_id, reserved_at, pid, state)
+         VALUES (?, ?, ?, ?, NULL, 'reserving'),
+                (?, ?, ?, ?, NULL, 'reserving'),
+                (?, ?, ?, ?, NULL, 'reserving')`,
+        [
+          p,     userId, reservationId, now,
+          p + 1, userId, reservationId, now,
+          p + 2, userId, reservationId, now,
+        ],
+      );
+      persist();
+      return { port: p, reservationId };
+    } catch (e) {
+      // Concurrent insert collision — rare. Move on to next stride.
+      continue;
+    }
+  }
+  throw new Error('PORT_POOL_EXHAUSTED');
+}
+
+function markReservationSpawning(reservationId, pid) {
+  if (!db) return;
+  db.run(
+    "UPDATE port_reservations SET state = 'spawning', pid = ? WHERE reservation_id = ?",
+    [pid, reservationId],
+  );
+  persist();
+}
+
+function markReservationLive(reservationId) {
+  if (!db) return;
+  db.run(
+    "UPDATE port_reservations SET state = 'live' WHERE reservation_id = ?",
+    [reservationId],
+  );
+  persist();
+}
+
+function releaseReservation(reservationId) {
+  if (!db) return;
+  db.run('DELETE FROM port_reservations WHERE reservation_id = ?', [reservationId]);
+  persist();
+}
+
+function releaseReservationByUser(userId) {
+  if (!db) return;
+  db.run('DELETE FROM port_reservations WHERE user_id = ?', [userId]);
+  persist();
+}
+
+/** All reservations whose pid is no longer alive on this host. */
+function findDeadReservations() {
+  if (!db) return [];
+  const r = db.exec("SELECT port, user_id, reservation_id, pid, state FROM port_reservations WHERE pid IS NOT NULL");
+  if (!r.length) return [];
+  const out = [];
+  for (const row of r[0].values) {
+    const [port, user_id, reservation_id, pid, state] = row;
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch { alive = false; }
+    if (!alive) out.push({ port, userId: user_id, reservationId: reservation_id, pid, state });
+  }
+  return out;
+}
+
+/** Reservations that never finished spawning (state='reserving' or 'spawning' with pid null). */
+function findStaleReservations(olderThanMs = 5 * 60 * 1000) {
+  if (!db) return [];
+  const cutoff = Date.now() - olderThanMs;
+  const r = db.exec(
+    "SELECT port, user_id, reservation_id, pid, state FROM port_reservations " +
+    "WHERE state = 'reserving' AND reserved_at < ?",
+    [cutoff],
+  );
+  if (!r.length) return [];
+  return r[0].values.map(([port, user_id, reservation_id, pid, state]) => ({
+    port, userId: user_id, reservationId: reservation_id, pid, state,
+  }));
+}
+
+/** All currently-active port reservation rows (live + spawning). */
+function listReservations() {
+  if (!db) return [];
+  const r = db.exec("SELECT port, user_id, reservation_id, pid, state FROM port_reservations");
+  if (!r.length) return [];
+  return r[0].values.map(([port, user_id, reservation_id, pid, state]) => ({
+    port, userId: user_id, reservationId: reservation_id, pid, state,
+  }));
 }
 
 // ─── Agent Profiles ──────────────────────────────────────────────────────────
@@ -2628,8 +2972,12 @@ module.exports = {
   persist,
   hasAnyUsers,
   createUser,
+  createGoogleUser,
   getUserByUsername,
   getUserById,
+  getUserByGoogleSub,
+  getUserByEmail,
+  linkGoogleIdentity,
   updateLastLogin,
   getAllUsers,
   hashPassword,
@@ -2680,7 +3028,10 @@ module.exports = {
   // Mission rooms
   normalizeMissionRoom, normalizeMissionMessage,
   listMissionRooms, listMissionRoomsForUser, getMissionRoom, createMissionRoom, updateMissionRoomMembers,
+  deleteMissionRoom,
   getProjectDefaultRoom, ensureProjectDefaultRoom, backfillProjectDefaultRooms,
+  getHqRoomForUser,
+  getMissionRoomById: getMissionRoom,
   listMissionMessages, createMissionMessage,
   // Room sessions (room ↔ gateway session tracking)
   markSessionAsRoomTriggered, getRoomSessionKeys, getRoomAgentSession, getRoomForSession,
@@ -2698,6 +3049,9 @@ module.exports = {
   listPipelinesForUser,
   // Gateway state
   setGatewayState, getGatewayState, getGatewayToken, listGatewayStates, clearAllGatewayStates,
+  reservePortTriple, markReservationSpawning, markReservationLive,
+  releaseReservation, releaseReservationByUser,
+  findDeadReservations, findStaleReservations, listReservations,
   // Master agent
   setUserMasterAgent,
   getUserMasterAgentId,

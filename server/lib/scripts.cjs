@@ -532,7 +532,8 @@ const CHECK_TASKS_SCRIPT_CONTENT = `#!/usr/bin/env bash
 
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env"
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
 
 [ -z "\${AOC_AGENT_ID:-}" ] && exit 0   # no agent id configured, skip silently
 
@@ -626,23 +627,75 @@ function ensureAocEnvFile() {
     console.warn('[scripts] Failed to write .aoc_env:', err.message);
   }
 
-  // Write per-agent .aoc_agent_env in each agent's workspace
+  // Write .aoc_env for each non-admin user's gateway OPENCLAW_HOME.
+  // The per-user gateway is spawned with OPENCLAW_HOME=path.dirname(userHome)
+  // (e.g. ~/.openclaw/users/2/), so aoc-connect.sh sources that directory.
+  try {
+    const dbMod = require('./db.cjs');
+    const { getUserHome } = require('./config.cjs');
+    const users = (typeof dbMod.getAllUsers === 'function') ? dbMod.getAllUsers() : [];
+    let written = 0;
+    for (const user of users) {
+      if (Number(user.id) === 1) continue;
+      const gwHome = path.dirname(getUserHome(user.id)); // ~/.openclaw/users/<id>
+      if (!fs.existsSync(gwHome)) continue;
+      try {
+        fs.writeFileSync(path.join(gwHome, '.aoc_env'), content, { mode: 0o600, encoding: 'utf-8' });
+        written++;
+      } catch {}
+    }
+    if (written > 0) console.log(`[scripts] Updated .aoc_env for ${written} non-admin user(s)`);
+  } catch (_) { /* DB may not be ready yet */ }
+
+  // Write per-agent .aoc_agent_env in each agent's workspace.
+  // Merge two sources: openclaw.json (has workspace paths) + DB agent_profiles
+  // (catches agents provisioned via AOC UI, e.g. user2's sparky).
   try {
     const cfg = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
-    const agents = cfg.agents?.list || [];
-    for (const agent of agents) {
-      const workspace = agent.workspace || OPENCLAW_WORKSPACE;
+    const configAgents = cfg.agents?.list || [];
+
+    // Build a map: agentId → workspace from config
+    const agentMap = new Map();
+    for (const agent of configAgents) {
+      agentMap.set(agent.id, agent.workspace || OPENCLAW_WORKSPACE);
+    }
+
+    // Add DB-provisioned agents that aren't in openclaw.json (including non-admin users)
+    try {
+      const dbMod2 = require('./db.cjs');
+      const { getUserHome: getUH } = require('./config.cjs');
+      const profiles = (typeof dbMod2.getAllAgentProfiles === 'function') ? dbMod2.getAllAgentProfiles() : [];
+      for (const p of profiles) {
+        if (agentMap.has(p.agent_id)) continue;
+        const ownerId = p.provisioned_by || 1;
+        const ownerHome = getUH(ownerId);
+        // master uses <userHome>/workspace; sub-agents use <userHome>/workspaces/<id>
+        // Check sub-agent paths first so master's workspace/ doesn't shadow a sibling agent
+        const candidates = p.is_master
+          ? [path.join(ownerHome, 'workspace')]
+          : [
+              path.join(ownerHome, 'workspaces', p.agent_id),
+              path.join(ownerHome, 'agents', p.agent_id),
+              path.join(OPENCLAW_HOME_PATH, 'workspaces', p.agent_id),
+              path.join(OPENCLAW_HOME_PATH, 'agents', p.agent_id),
+            ];
+        const workspace = candidates.find(d => fs.existsSync(d)) || OPENCLAW_WORKSPACE;
+        agentMap.set(p.agent_id, workspace);
+      }
+    } catch (_) { /* DB may not be ready yet */ }
+
+    for (const [agentId, workspace] of agentMap) {
       const agentEnvPath = path.join(workspace, '.aoc_agent_env');
       const agentContent = [
         `# AOC agent identity — auto-generated`,
-        `export AOC_AGENT_ID="${agent.id}"`,
+        `export AOC_AGENT_ID="${agentId}"`,
         '',
       ].join('\n');
       try {
         fs.writeFileSync(agentEnvPath, agentContent, { mode: 0o600, encoding: 'utf-8' });
       } catch {}
     }
-    console.log(`[scripts] Updated .aoc_agent_env for ${agents.length} agents`);
+    console.log(`[scripts] Updated .aoc_agent_env for ${agentMap.size} agents`);
   } catch (err) {
     console.warn('[scripts] Failed to write agent env files:', err.message);
   }
@@ -658,7 +711,8 @@ const CHECK_CONNECTIONS_SCRIPT_CONTENT = `#!/usr/bin/env bash
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
 # Source agent identity (written to workspace by AOC server)
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env"
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
 
 [ -z "$AOC_TOKEN" ] && { echo "ERROR: AOC_TOKEN not configured"; exit 1; }
 [ -z "\${AOC_AGENT_ID:-}" ] && { echo "ERROR: AOC_AGENT_ID not configured — run from agent workspace"; exit 1; }
@@ -760,7 +814,8 @@ set -euo pipefail
 
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env"
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
 
 [ -z "\${AOC_TOKEN:-}" ] && { echo "ERROR: AOC_TOKEN not configured" >&2; exit 1; }
 [ $# -lt 2 ] && { echo "Usage: gws-call.sh <connection-id> <service> <method> [json-body]" >&2; exit 1; }
@@ -1007,7 +1062,8 @@ fi
 
 # Resolve workspace (prefer env from .aoc_agent_env, fallback to OPENCLAW_WORKSPACE)
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" 2>/dev/null || true
 WORKSPACE="\${AOC_WORKSPACE:-\${OPENCLAW_WORKSPACE:-$PWD}}"
 
 OUT_DIR="$WORKSPACE/outputs/$SAFE_TASK"
@@ -1078,7 +1134,8 @@ BODY_ARG="\${2:?message text (or '-' to read stdin) required}"
 
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" 2>/dev/null || true
 
 AOC_URL="\${AOC_URL:-http://localhost:\${PORT:-18800}}"
 if [ -z "\${AOC_TOKEN:-}" ]; then echo "post_comment: AOC_TOKEN not set" >&2; exit 2; fi
@@ -1143,7 +1200,8 @@ set -euo pipefail
 
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" 2>/dev/null || true
 
 AOC_URL="\${AOC_URL:-http://localhost:\${PORT:-18800}}"
 [ -z "\${AOC_TOKEN:-}" ] && { echo "project_memory: AOC_TOKEN not set" >&2; exit 2; }
@@ -1304,7 +1362,8 @@ set -euo pipefail
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
 # Source agent identity (written to workspace by AOC server)
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env"
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
 
 CONN_NAME="\${1:?Usage: aoc-connect.sh <connection-name> <action> [args...]}"
 ACTION="\${2:?Usage: aoc-connect.sh <connection-name> <action> [args...]}"
@@ -1817,7 +1876,8 @@ set -euo pipefail
 
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
-[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env"
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
 
 CONN_NAME="\${1:?Usage: mcp-call.sh <connection-name> <tool-name|--list-tools> [json-args]}"
 TOOL_NAME="\${2:?Usage: mcp-call.sh <connection-name> <tool-name|--list-tools> [json-args]}"

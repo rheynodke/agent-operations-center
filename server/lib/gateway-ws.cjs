@@ -183,6 +183,11 @@ class GatewayConnection {
     for (const fn of this.listeners) {
       try { fn(event); } catch { /* ignore */ }
     }
+    if (this._globalListeners) {
+      for (const fn of this._globalListeners) {
+        try { fn(event); } catch { /* ignore */ }
+      }
+    }
   }
 
   connect(opts = {}) {
@@ -266,6 +271,11 @@ class GatewayConnection {
 
     this.ws.on('error', (e) => {
       console.error('[gateway-ws] WebSocket error:', e.message);
+      // Connection failed (ECONNREFUSED, etc.) — reset state and retry.
+      this.connected = false;
+      this.connecting = false;
+      this.ws = null;
+      this._scheduleReconnect();
     });
   }
 
@@ -695,11 +705,15 @@ class GatewayConnection {
     return this.sendReq('sessions.list', params);
   }
 
-  /** sessions.create — { agentId?, key?, label?, model?, message? }
+  /** sessions.create — { agentId?, key?, label?, model?, message?, env? }
    *
    * Pass `opts.key` to control the session key — used by AOC to isolate
    * sessions by context (task / room) so unrelated chat history doesn't
    * bleed into agent work.
+   *
+   * Pass `opts.env` (plain object) to inject session-scoped env vars into
+   * the agent process. AOC uses this to set `AOC_ROOM_ID` for room-originated
+   * sessions so `aoc-room` skill scripts know their context.
    */
   sessionsCreate(agentId, opts = {}) {
     const params = {};
@@ -707,6 +721,9 @@ class GatewayConnection {
     if (opts.key) params.key = opts.key;
     if (opts.label) params.label = opts.label;
     if (opts.model) params.model = opts.model;
+    if (opts.env && typeof opts.env === 'object' && Object.keys(opts.env).length > 0) {
+      params.env = opts.env;
+    }
     return this.sendReq('sessions.create', params);
   }
 
@@ -797,6 +814,12 @@ class GatewayConnection {
 class GatewayPool {
   constructor() {
     this._connections = new Map();   // userId → GatewayConnection
+    this._globalListeners = new Set(); // fn → called for every event on every connection
+  }
+
+  addGlobalListener(fn) {
+    this._globalListeners.add(fn);
+    return () => this._globalListeners.delete(fn);
   }
 
   /**
@@ -807,7 +830,9 @@ class GatewayPool {
   forUser(userId) {
     const key = Number(userId);
     if (!this._connections.has(key)) {
-      this._connections.set(key, new GatewayConnection(key));
+      const conn = new GatewayConnection(key);
+      conn._globalListeners = this._globalListeners;
+      this._connections.set(key, conn);
     }
     return this._connections.get(key);
   }
@@ -845,8 +870,12 @@ gatewayProxy.connect();
 try {
   const orchestrator = require('./gateway-orchestrator.cjs');
   orchestrator.on('spawned', ({ userId, port, token }) => {
-    const conn = gatewayPool._connections.get(Number(userId));
-    if (!conn) return;   // pool doesn't track this user yet — first login will create it
+    const key = Number(userId);
+    // Lazily create a pool entry if none exists yet — this handles
+    // the startup case where cleanupOrphans fires before the user's
+    // first login causes gatewayPool.forUser() to be called.
+    let conn = gatewayPool._connections.get(key);
+    if (!conn) conn = gatewayPool.forUser(key);
     if (conn.connected && conn._port === port) return;   // already on the right gateway
     try { conn.disconnect?.(); } catch (_) {}
     setTimeout(() => {

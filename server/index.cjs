@@ -77,6 +77,7 @@ applyMiddleware(app);
 
 // ─── Routes: Auth + Users + Invitations (Step 2) ─────────────────────────────
 app.use('/api', require('./routes/auth.cjs')({ db }));
+app.use('/api', require('./routes/auth-oauth.cjs')({ db }));
 
 // ─── Routes: Onboarding (Master Agent) — mounted late so it can pass
 // `restartGateway` into the factory (defined further below).
@@ -105,7 +106,11 @@ app.use('/api', gatewayRouterMod({ db, parsers, aiLib, metrics }));
 const { restartGateway } = gatewayRouterMod;
 
 // Mount onboarding router now that restartGateway is available
-onboardingRouter = require('./routes/onboarding.cjs')({ db, restartGateway });
+// broadcast is defined further down; thunk so closure resolves at call time.
+onboardingRouter = require('./routes/onboarding.cjs')({
+  db, restartGateway,
+  broadcast: (event) => broadcast(event),
+});
 app.use('/api', onboardingRouter);
 
 // ─── Routes: Master Agent ─────────────────────────────────────────────────────
@@ -206,16 +211,15 @@ const roomTaskBridge = require('./hooks/room-task-bridge.cjs');
 const _delegationDepth = roomTaskBridge.delegationDepth;
 const _delegationByAgentRoom = roomTaskBridge.delegationByAgentRoom;
 
-// Bound deps for the bridge
+// Bound deps for the bridge (userId resolved per-room via room.createdBy)
 const _bridgeDeps = {
   db, getEnrichedAgents, getAgentDisplayName,
-  // TODO(slice 1.5.e): thread real userId from room message author
-  userId: 1,
-  // forwardFn is set below after forwardRoomMentionToAgent is defined
+  // userId is resolved dynamically from room.createdBy in room-task-bridge.cjs
   forwardFn: null,
 };
 
 async function forwardRoomMentionToAgent(room, message, agentId) {
+  console.log(`[index] forwardRoomMentionToAgent room=${room.id} agent=${agentId} room.createdBy=${room.createdBy}`);
   return roomTaskBridge.forwardRoomMentionToAgent(room, message, agentId, _bridgeDeps);
 }
 
@@ -284,7 +288,17 @@ app.use('/api', require('./routes/composio.cjs')({ db, parsers, broadcast, compo
 // (ADLC blueprint generator). No HTTP surface today.
 
 // ─── MCP + Agent-Connections + FS Browser (extracted to routes/mcp-agents.cjs, Step 9a) ──
-app.use('/api', require('./routes/mcp-agents.cjs')({ db, parsers, mcpPool, composio }));
+// Note: syncBuiltinsForAgent is hoistable (function declaration) but defined further
+// down — passed via thunk so the closure resolves at call time.
+app.use('/api', require('./routes/mcp-agents.cjs')({
+  db, parsers, mcpPool, composio,
+  syncBuiltinsForAgent: (agentId) => syncBuiltinsForAgent(agentId),
+  // restartGateway is the admin's external-gateway signaller; per-user gateways
+  // are bounced via orchestrator inside the route handler when ownerId !== 1.
+  restartGateway: typeof restartGateway === 'function'
+    ? (reason) => restartGateway(reason)
+    : null,
+}));
 
 // ─── Projects + Integrations + Epics + Dependencies + Memory (extracted to routes/projects.cjs, Step 7b) ──
 app.use('/api', require('./routes/projects.cjs')({ db, parsers, projectGit, projectWs, vSave, integrations }));
@@ -323,7 +337,7 @@ gatewayProxy.addListener((event) => {
 // last response and post it as a room message. This removes the dependency
 // on agents manually running `mission_room.sh`.
 const _roomAutoReplyInFlight = new Set();
-gatewayProxy.addListener((event) => {
+gatewayPool.addGlobalListener((event) => {
   if (event.type !== 'chat:done') return;
   const sessionKey = event.payload?.sessionKey;
   if (!sessionKey) return;
@@ -338,7 +352,10 @@ gatewayProxy.addListener((event) => {
   // Wait for JSONL to flush before fetching the final response
   setTimeout(async () => {
     try {
-      const historyResult = await gatewayProxy.chatHistory(sessionKey, 8000);
+      const room = db.getMissionRoom(roomInfo.roomId);
+      const roomOwnerId = room?.createdBy ?? 1;
+      const gw = gatewayPool.forUser(roomOwnerId);
+      const historyResult = await gw.chatHistory(sessionKey, 8000);
       const messages = historyResult.messages || [];
       // Find the last assistant message
       const lastAssistant = [...messages].reverse().find(m =>
@@ -517,65 +534,11 @@ wss.on('connection', (ws) => {
 // Note: heartbeat interval is managed inside wsBootstrap.init()
 
 // ─── Sync update_task.sh for all agents ──────────────────────────────────────
-async function syncTaskScriptForAllAgents() {
-  try {
-    parsers.ensureUpdateTaskScript();
-    const agents = parsers.parseAgentRegistry();
-    for (const agent of agents) {
-      try {
-        const tools = parsers.listAgentCustomTools(agent.id, parsers.getAgentFile);
-        const alreadyEnabled = [...(tools.agent || []), ...(tools.shared || [])].some(
-          t => t.name === 'update_task' && t.enabled
-        );
-        if (!alreadyEnabled) {
-          parsers.toggleAgentCustomTool(agent.id, 'update_task.sh', true, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
-          console.log(`[task-sync] Enabled update_task for agent: ${agent.id}`);
-        }
-      } catch (err) {
-        console.warn(`[task-sync] Failed for ${agent.id}:`, err.message);
-      }
-    }
-  } catch (err) {
-    console.warn('[task-sync] syncTaskScriptForAllAgents failed:', err.message);
-  }
-}
-
-function syncConnectionsScriptForAllAgents() {
-  try {
-    parsers.ensureCheckConnectionsScript();
-    parsers.ensureGwsCallScript();
-    parsers.ensureAocConnectScript();
-    parsers.ensureMcpCallScript();
-    parsers.ensureFetchAttachmentScript();
-    parsers.ensureSaveOutputScript();
-    parsers.ensurePostCommentScript();
-    const agents = parsers.parseAgentRegistry();
-    const allConns = db.getAllConnections();
-    for (const agent of agents) {
-      try {
-        const tools = parsers.listAgentCustomTools(agent.id, parsers.getAgentFile);
-        const enabledNames = new Set(
-          [...(tools.agent || []), ...(tools.shared || [])].filter(t => t.enabled).map(t => t.name)
-        );
-        // Always force-refresh these blocks so descriptions stay up to date
-        parsers.toggleAgentCustomTool(agent.id, 'check_connections.sh', false, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
-        parsers.toggleAgentCustomTool(agent.id, 'check_connections.sh', true, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
-        parsers.toggleAgentCustomTool(agent.id, 'aoc-connect.sh', false, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
-        parsers.toggleAgentCustomTool(agent.id, 'aoc-connect.sh', true, 'shared', parsers.getAgentFile, parsers.saveAgentFile);
-        // Sync connections context block in TOOLS.md
-        const assignedIds = db.getAgentConnectionIds(agent.id);
-        if (assignedIds.length > 0) {
-          const assigned = allConns.filter(c => assignedIds.includes(c.id));
-          parsers.syncAgentConnectionsContext(agent.id, assigned, parsers.getAgentFile, parsers.saveAgentFile);
-        }
-      } catch (err) {
-        console.warn(`[connections-sync] Failed for ${agent.id}:`, err.message);
-      }
-    }
-  } catch (err) {
-    console.warn('[connections-sync] syncConnectionsScriptForAllAgents failed:', err.message);
-  }
-}
+// Legacy: scripts now live in skill bundles (aoc-tasks, aoc-connections).
+// Injection is handled via SKILL.md when the skill is enabled.
+// Kept as no-ops for call-site compatibility.
+function syncTaskScriptForAllAgents() { /* moved to aoc-tasks skill */ }
+function syncConnectionsScriptForAllAgents() { /* moved to aoc-connections skill */ }
 
 // ─── AOC built-in scripts auto-injection ─────────────────────────────────────
 // Reconciles agent's TOOLS.md with the AOC built-in script manifest based on
@@ -691,6 +654,21 @@ async function start() {
   // Idempotent backfill: assign admin user 1 a master_agent_id if their main agent exists
   try { onboardingRouter.runMasterBackfill(); } catch (e) { console.warn('[onboarding] backfill error:', e.message); }
 
+  // Idempotent backfill: create HQ room for every user who has a master but no HQ yet
+  try {
+    const hqRoom = require('./lib/hq-room.cjs');
+    const users = db.getAllUsers();
+    for (const user of users) {
+      const masterId = db.getUserMasterAgentId(user.id);
+      if (!masterId) continue;
+      if (db.getHqRoomForUser(user.id)) continue;
+      hqRoom.ensureHqRoom(db, user.id, masterId);
+      console.log(`[startup] HQ room backfilled for user ${user.id} (master=${masterId})`);
+    }
+  } catch (e) {
+    console.warn('[startup] HQ backfill failed:', e.message);
+  }
+
   try {
     await orchestrator.cleanupOrphans();
     console.log('[orchestrator] startup cleanup complete');
@@ -744,15 +722,24 @@ async function start() {
   try { parsers.browserHarnessOdoo.installSafe(); }
   catch (e) { console.warn('[startup] browser-harness odoo init failed:', e.message); }
   // aoc-tasks built-in skill: install bundle + auto-enable for every agent.
+  // ensureSkillEnabledForAllAgents is now async (file-locked); fire-and-forget at startup.
   try {
     parsers.aocTasksSkill.installSafe();
-    parsers.aocTasksSkill.ensureSkillEnabledForAllAgents();
+    parsers.aocTasksSkill.ensureSkillEnabledForAllAgents()
+      .catch((e) => console.warn('[startup] aoc-tasks ensure failed:', e.message));
   } catch (e) { console.warn('[startup] aoc-tasks skill init failed:', e.message); }
   // aoc-connections built-in skill: install bundle + auto-enable for every agent.
   try {
     parsers.aocConnectionsSkill.installSafe();
-    parsers.aocConnectionsSkill.ensureSkillEnabledForAllAgents();
+    parsers.aocConnectionsSkill.ensureSkillEnabledForAllAgents()
+      .catch((e) => console.warn('[startup] aoc-connections ensure failed:', e.message));
   } catch (e) { console.warn('[startup] aoc-connections skill init failed:', e.message); }
+  // aoc-room built-in skill: install bundle + auto-enable for every agent.
+  try {
+    parsers.aocRoomSkill.installSafe();
+    parsers.aocRoomSkill.ensureSkillEnabledForAllAgents()
+      .catch((e) => console.warn('[startup] aoc-room ensure failed:', e.message));
+  } catch (e) { console.warn('[startup] aoc-room skill init failed:', e.message); }
   // mission-orchestrator built-in skill: install bundle + enable only for main.
   try {
     parsers.missionOrchestratorSkill.installSafe();
@@ -774,7 +761,33 @@ async function start() {
   const hasUsers = db.hasAnyUsers();
   console.log(`[auth] Database ready. ${hasUsers ? 'Users exist.' : 'No users — setup required.'}`);
 
-  server.listen(PORT, HOST, () => {
+  // ── EADDRINUSE retry logic for `node --watch` restarts ──────────────────
+  // When node --watch restarts the server, the old process may not have fully
+  // released port 18800 yet. Retry with backoff instead of crashing.
+  const MAX_LISTEN_RETRIES = 6;
+  const LISTEN_RETRY_BASE_MS = 500;
+  let listenAttempt = 0;
+
+  function tryListen() {
+    server.listen(PORT, HOST);
+  }
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE' && listenAttempt < MAX_LISTEN_RETRIES) {
+      listenAttempt++;
+      const delay = LISTEN_RETRY_BASE_MS * listenAttempt;
+      console.warn(`[server] Port ${PORT} busy, retrying in ${delay}ms (attempt ${listenAttempt}/${MAX_LISTEN_RETRIES})...`);
+      setTimeout(tryListen, delay);
+    } else {
+      console.error(`[server] Fatal server error:`, err);
+      process.exit(1);
+    }
+  });
+
+  server.on('listening', () => {
+    if (listenAttempt > 0) {
+      console.log(`[server] Port ${PORT} acquired after ${listenAttempt} retry(s)`);
+    }
     console.log(`
 ┌─────────────────────────────────────────┐
 │  🐙 OpenClaw AOC v2.0                  │
@@ -802,6 +815,8 @@ async function start() {
       console.log(`[startup] SOUL standards: ${injected} injected, ${already} already applied, ${errors} errors`);
     } catch (e) { console.warn('[startup] soul-standard injection failed:', e.message); }
   });
+
+  tryListen();
 }
 
 start().catch(err => {

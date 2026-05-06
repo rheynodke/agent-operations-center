@@ -86,7 +86,7 @@ function DashboardShell() {
             <Route path="/projects/:id" element={<ProjectDetailPage />} />
             {/* Legacy: /board → projects/general (keep links + bookmarks working). */}
             <Route path="/board" element={<Navigate to="/projects/general" replace />} />
-            <Route path="/metrics" element={<MetricsPage />} />
+            <Route path="/metrics" element={<Navigate to="/projects" replace />} />
             <Route path="/metrics/agents/:agentId" element={<AgentMetricsPage />} />
             <Route path="/cron" element={<CronPage />} />
             <Route path="/hooks" element={<HooksPage />} />

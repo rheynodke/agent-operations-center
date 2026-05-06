@@ -31,8 +31,22 @@ module.exports = function roomsRouter(deps) {
     const uid = req.user?.userId;
 
     const rooms = base.filter((room) => {
-      // Global rooms are always visible regardless of owner scope
-      if (room.kind === 'global') return true;
+      // HQ rooms are private to their owner.
+      if (room.kind === 'global' && room.isHq) {
+        return isAdmin || room.ownerUserId === uid;
+      }
+      // Other global rooms scoped by owner (cross-tenant isolation).
+      if (room.kind === 'global') {
+        const ownerId = room.createdBy ?? null;
+        if (ownerId == null) return isAdmin;
+        if (isAdmin) {
+          if (scope === 'all') return true;
+          if (scope === 'me') return ownerId === uid;
+          if (typeof scope === 'number') return ownerId === scope;
+          return true;
+        }
+        return ownerId === uid;
+      }
       const ownerId = room.createdBy ?? null;
       if (ownerId == null) return isAdmin; // legacy unowned non-global → admin only
       if (isAdmin) {
@@ -109,6 +123,26 @@ module.exports = function roomsRouter(deps) {
   }
 });
 
+  router.delete('/rooms/:id', db.authMiddleware, (req, res) => {
+  try {
+    const room = withRoomAccess(req, res, req.params.id);
+    if (!room) return;
+    // System rooms (HQ) cannot be deleted.
+    if (room.isSystem) {
+      return res.status(409).json({ error: 'System rooms cannot be deleted.', code: 'ROOM_IS_SYSTEM' });
+    }
+    // Only owner or admin can delete.
+    const isOwner = req.user?.role === 'admin' || Number(room.createdBy) === Number(req.user?.userId);
+    if (!isOwner) return res.status(403).json({ error: 'Only the room owner can delete it.' });
+    db.deleteMissionRoom(room.id);
+    broadcast({ type: 'room:deleted', payload: { roomId: room.id } });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/rooms/:id DELETE]', err);
+    res.status(500).json({ error: 'Failed to delete room' });
+  }
+});
+
   router.get('/projects/:id/room', db.authMiddleware, (req, res) => {
   try {
     if (!db.userOwnsProject(req, req.params.id)) return res.status(403).json({ error: 'You do not have access to this project' });
@@ -138,6 +172,78 @@ module.exports = function roomsRouter(deps) {
     if (!room) return;
     const body = String(req.body?.body || '').trim();
     if (!body) return res.status(400).json({ error: 'body is required' });
+
+    // ── Slash commands ────────────────────────────────────────────────────
+    if (body.startsWith('/')) {
+      const parts = body.split(' ');
+      const cmd = parts[0];
+      const args = parts.slice(1).join(' ').trim();
+
+      if (cmd === '/reset' || cmd === '/stop') {
+        const roomTaskBridge = require('../hooks/room-task-bridge.cjs');
+        const userId = Number(req.user?.userId ?? req.user?.id);
+        const shouldAbort = cmd === '/stop';
+        roomTaskBridge.resetAllRoomSessions(room.id, userId, shouldAbort);
+        const sysMsg = db.createMissionMessage({
+          roomId: room.id, authorType: 'system', authorId: 'system',
+          authorName: 'System', body: cmd === '/stop' ? '🛑 Execution forcefully stopped.' : '🔄 Session reset — next message will start a fresh conversation.',
+        });
+        emitRoomMessage(sysMsg);
+        
+        if (cmd === '/stop') {
+          broadcast({ type: 'room:stop', payload: { roomId: room.id } });
+        }
+        return res.status(201).json({ message: sysMsg });
+      }
+
+      if (cmd === '/status') {
+        const agents = roomAgents(room);
+        let md = `### 📋 Mission Room Status\n\n| Agent | Role | Status |\n| :--- | :--- | :--- |\n`;
+        for (const a of agents) {
+          md += `| ${a.emoji || '🤖'} **${a.name}** | ${a.role || 'Agent'} | Available |\n`;
+        }
+        const sysMsg = db.createMissionMessage({
+          roomId: room.id, authorType: 'system', authorId: 'system',
+          authorName: 'System', body: md,
+        });
+        emitRoomMessage(sysMsg);
+        return res.status(201).json({ message: sysMsg });
+      }
+
+      if (cmd === '/summary' || cmd === '/delegate') {
+        const ownerId = room.createdBy ?? req.user?.userId ?? null;
+        const masterAgentId = ownerId != null ? (db.getUserMasterAgentId(ownerId) || null) : null;
+        
+        if (!masterAgentId) {
+          return res.status(400).json({ error: 'Master Agent not found. Cannot process command.' });
+        }
+
+        const mentions = resolveMentions(req, room, body, req.body?.mentions || []);
+        const message = db.createMissionMessage({
+          roomId: room.id,
+          authorType: 'user',
+          authorId: String(req.user?.userId ?? ''),
+          authorName: req.user?.displayName || req.user?.username || 'User',
+          body,
+          mentions,
+          meta: req.body?.meta || {},
+        });
+        emitRoomMessage(message);
+        res.status(201).json({ message });
+        
+        // Forward to Master Agent with hidden system instruction
+        const sysInstruct = cmd === '/summary' 
+          ? `[SYSTEM INSTRUCTION: Generate a concise executive summary and list of actionable items based on the recent conversation in this room.]`
+          : `[SYSTEM INSTRUCTION: The user is requesting delegation for the following task: "${args}". Analyze the team roles and explicitly mention (@) the best suited agent with clear instructions.]`;
+        
+        const forwardedMessage = { ...message, body: `${sysInstruct}\n\n${body}` };
+        
+        forwardRoomMentionToAgent(room, forwardedMessage, masterAgentId).catch((err) => {
+          console.error(`[room-msg] command forward failed for room=${room.id}:`, err.message);
+        });
+        return;
+      }
+    }
     const mentions = resolveMentions(req, room, body, req.body?.mentions || []);
     const meta = req.body?.meta || {};
     const message = db.createMissionMessage({
@@ -151,7 +257,27 @@ module.exports = function roomsRouter(deps) {
     });
     emitRoomMessage(message);
     res.status(201).json({ message });
-    for (const agentId of mentions) forwardRoomMentionToAgent(room, message, agentId).catch(() => {});
+    if (mentions.length === 0) {
+      // No explicit @mention — auto-route to the room owner's master agent.
+      // The master is the default responder / orchestrator for room conversations.
+      const ownerId = room.createdBy ?? req.user?.userId ?? null;
+      const masterAgentId = ownerId != null ? (db.getUserMasterAgentId(ownerId) || null) : null;
+      if (masterAgentId && room.memberAgentIds?.includes(masterAgentId)) {
+        console.log(`[room-msg] no mention — auto-routing to master=${masterAgentId} room=${room.id}`);
+        forwardRoomMentionToAgent(room, message, masterAgentId).catch((err) => {
+          console.error(`[room-msg] master auto-forward failed room=${room.id} master=${masterAgentId}:`, err.message);
+        });
+      } else {
+        console.log(`[room-msg] no mentions and no master agent in room=${room.id}`);
+      }
+      return;
+    }
+    console.log(`[room-msg] forwarding mentions room=${room.id} agents=[${mentions.join(',')}] body="${body.slice(0, 60)}"`);
+    for (const agentId of mentions) {
+      forwardRoomMentionToAgent(room, message, agentId).catch((err) => {
+        console.error(`[room-msg] forward failed for room=${room.id} agent=${agentId}:`, err.message);
+      });
+    }
   } catch (err) {
     console.error('[api/rooms/:id/messages POST]', err);
     res.status(err.status || 500).json({ error: err.status ? err.message : 'Failed to post room message' });
@@ -178,6 +304,25 @@ module.exports = function roomsRouter(deps) {
   }
 });
 
+  // POST /rooms/:id/reset-session — reset agent session(s) for this room
+  router.post('/rooms/:id/reset-session', db.authMiddleware, (req, res) => {
+    try {
+      const room = withRoomAccess(req, res, req.params.id);
+      if (!room) return;
+      const roomTaskBridge = require('../hooks/room-task-bridge.cjs');
+      const agentId = req.body?.agentId;
+      if (agentId) {
+        roomTaskBridge.resetRoomSession(room.id, agentId);
+      } else {
+        roomTaskBridge.resetAllRoomSessions(room.id);
+      }
+      res.json({ ok: true, reset: agentId || 'all' });
+    } catch (err) {
+      console.error('[api/rooms/:id/reset-session POST]', err);
+      res.status(500).json({ error: 'Failed to reset session' });
+    }
+  });
+
 // Provision a new agent — creates config, workspace, channel bindings, and SQLite profile
   router.post('/agents', db.authMiddleware, async (req, res) => {
   try {
@@ -194,7 +339,7 @@ module.exports = function roomsRouter(deps) {
       });
     }
 
-    const result = parsers.provisionAgent(req.body, userId);
+    const result = await parsers.provisionAgent(req.body, userId);
     // Save profile to SQLite (including ADLC role if template was used)
     db.upsertAgentProfile({
       agentId: result.agentId,
@@ -210,6 +355,14 @@ module.exports = function roomsRouter(deps) {
     });
     result.profileSaved = true;
     console.log(`[api/agents/provision] uid=${userId} agent="${result.agentId}" bindings=${result.bindings.length}`);
+
+    // Add new sub-agent to the user's HQ room membership.
+    try {
+      const hqRoom = require('../lib/hq-room.cjs');
+      hqRoom.addAgentToHq(db, userId, result.agentId);
+    } catch (e) {
+      console.warn(`[api/agents/provision] HQ membership add failed (non-fatal): ${e.message}`);
+    }
 
     // Restart the appropriate gateway so heartbeat config for the new agent takes effect.
     //  - admin (uid=1): restart the external openclaw-gateway process
@@ -314,6 +467,15 @@ module.exports = function roomsRouter(deps) {
     parsers.deleteAgent(agentId);
     // Remove profile from SQLite
     db.deleteAgentProfile(agentId);
+    // Remove agent from HQ membership (throws if agentId is the master — expected).
+    try {
+      const hqRoom = require('../lib/hq-room.cjs');
+      hqRoom.removeAgentFromHq(db, req.user.userId, agentId);
+    } catch (e) {
+      if (!/master/i.test(e.message)) {
+        console.warn(`[api/agents/delete] HQ membership remove failed: ${e.message}`);
+      }
+    }
     console.log(`[api/agents] Deleted agent "${agentId}"`);
     res.json({ ok: true });
   } catch (err) {
@@ -321,6 +483,189 @@ module.exports = function roomsRouter(deps) {
     res.status(err.message?.includes('not found') ? 404 : 500).json({ error: err.message });
   }
 });
+
+// ─── Room Artifacts ───────────────────────────────────────────────────────────
+
+  router.post('/rooms/:id/artifacts', db.authMiddleware, (req, res) => {
+    try {
+      const { category, title, description, tags, content, fileName, mimeType } = req.body || {};
+      if (!category || !title || content == null || !fileName) {
+        return res.status(400).json({ error: 'category, title, content, and fileName are required' });
+      }
+      const result = parsers.createArtifact({
+        roomId: req.params.id,
+        category,
+        title,
+        description,
+        tags,
+        createdBy: req.user.username,
+        content,
+        fileName,
+        mimeType,
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts POST]', err);
+      const status = err.message?.includes('Invalid category') ? 400 : 500;
+      res.status(status).json({ error: err.message });
+    }
+  });
+
+  router.get('/rooms/:id/artifacts', db.authMiddleware, (req, res) => {
+    try {
+      const artifacts = parsers.listArtifacts({
+        roomId: req.params.id,
+        category: req.query.category,
+        archived: req.query.archived === 'true',
+      });
+      res.json({ artifacts });
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts GET]', err);
+      res.status(500).json({ error: 'Failed to list artifacts' });
+    }
+  });
+
+  router.get('/rooms/:id/artifacts/:artifactId', db.authMiddleware, (req, res) => {
+    try {
+      const result = parsers.getArtifact(req.params.artifactId);
+      if (!result) return res.status(404).json({ error: 'Artifact not found' });
+      res.json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts/:artifactId GET]', err);
+      res.status(500).json({ error: 'Failed to get artifact' });
+    }
+  });
+
+  router.get('/rooms/:id/artifacts/:artifactId/versions/:versionNumber/content', db.authMiddleware, (req, res) => {
+    try {
+      const result = parsers.getArtifactContent(req.params.artifactId, Number(req.params.versionNumber));
+      if (!result) return res.status(404).json({ error: 'Artifact version not found' });
+      res.json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts/:artifactId/versions/:versionNumber/content GET]', err);
+      res.status(500).json({ error: 'Failed to get artifact content' });
+    }
+  });
+
+  router.post('/rooms/:id/artifacts/:artifactId/versions', db.authMiddleware, (req, res) => {
+    try {
+      const { content, fileName, mimeType } = req.body || {};
+      if (content == null || !fileName) {
+        return res.status(400).json({ error: 'content and fileName are required' });
+      }
+      const result = parsers.addArtifactVersion({
+        artifactId: req.params.artifactId,
+        content,
+        fileName,
+        mimeType,
+        createdBy: req.user.username,
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts/:artifactId/versions POST]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.patch('/rooms/:id/artifacts/:artifactId/pin', db.authMiddleware, (req, res) => {
+    try {
+      const artifact = parsers.pinArtifact(req.params.artifactId, Boolean(req.body?.pinned));
+      res.json({ artifact });
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts/:artifactId/pin PATCH]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.patch('/rooms/:id/artifacts/:artifactId/archive', db.authMiddleware, (req, res) => {
+    try {
+      const artifact = parsers.archiveArtifact(req.params.artifactId, Boolean(req.body?.archived));
+      res.json({ artifact });
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts/:artifactId/archive PATCH]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.delete('/rooms/:id/artifacts/:artifactId', db.authMiddleware, (req, res) => {
+    try {
+      parsers.deleteArtifact(req.params.artifactId);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[api/rooms/:id/artifacts/:artifactId DELETE]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+// ─── Room Context ─────────────────────────────────────────────────────────────
+
+  router.get('/rooms/:id/context', db.authMiddleware, (req, res) => {
+    try {
+      const result = parsers.getRoomContext(req.params.id);
+      res.json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/context GET]', err);
+      res.status(500).json({ error: 'Failed to get room context' });
+    }
+  });
+
+  router.post('/rooms/:id/context/append', db.authMiddleware, (req, res) => {
+    try {
+      const body = req.body?.body;
+      if (!body) return res.status(400).json({ error: 'body is required' });
+      const authorId = req.body?.authorId || req.user.username;
+      const result = parsers.appendToContext(req.params.id, { authorId, body });
+      res.json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/context/append POST]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.delete('/rooms/:id/context', db.authMiddleware, (req, res) => {
+    try {
+      const isAdmin = req.user?.role === 'admin';
+      if (!isAdmin) {
+        // Check room ownership
+        const room = db.getMissionRoomById(req.params.id);
+        if (!room) return res.status(404).json({ error: 'Room not found' });
+        if (Number(room.createdBy) !== Number(req.user.userId)) {
+          return res.status(403).json({ error: 'Only the room owner or admin can clear context' });
+        }
+      }
+      parsers.clearContext(req.params.id);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[api/rooms/:id/context DELETE]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+// ─── Agent Room State ─────────────────────────────────────────────────────────
+
+  router.get('/rooms/:id/agents/:agentId/state', db.authMiddleware, (req, res) => {
+    try {
+      const result = parsers.getAgentRoomState(req.params.agentId, req.params.id);
+      res.json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/agents/:agentId/state GET]', err);
+      res.status(500).json({ error: 'Failed to get agent room state' });
+    }
+  });
+
+  router.put('/rooms/:id/agents/:agentId/state', db.authMiddleware, (req, res) => {
+    try {
+      const state = req.body?.state;
+      if (state == null || typeof state !== 'object' || Array.isArray(state)) {
+        return res.status(400).json({ error: 'state must be an object' });
+      }
+      const result = parsers.setAgentRoomState(req.params.agentId, req.params.id, state);
+      res.json(result);
+    } catch (err) {
+      console.error('[api/rooms/:id/agents/:agentId/state PUT]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
 // Inject research output standard into a single agent's SOUL.md (idempotent)
   router.post('/agents/:id/soul-standard', db.authMiddleware, db.requireAgentOwnership, (req, res) => {

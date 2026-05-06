@@ -23,7 +23,7 @@ function useThemePrimary(fallback = '#b197fc') {
   return color
 }
 
-export type OnboardingStep = 1 | 2 | 3 | 4 | 5
+export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6
 
 interface Props {
   step: OnboardingStep
@@ -35,7 +35,7 @@ interface Props {
   showStepper?: boolean
 }
 
-const STEP_LABELS: readonly string[] = ['Mulai', 'Identitas', 'Channel', 'Review', 'Hubungkan'] as const
+const STEP_LABELS: readonly string[] = ['Mulai', 'Identitas', 'Channel', 'Review', 'Hubungkan', 'Sapa'] as const
 
 export function OnboardingShell({
   step,

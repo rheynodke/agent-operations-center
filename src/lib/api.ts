@@ -1,6 +1,6 @@
 import { useAuthStore } from "@/stores"
 import { useViewAsStore } from "@/stores/useViewAsStore"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, AgentCapabilities, ProjectWorkspaceMode, ValidatePathResult, FetchBranchesResult, CreateProjectExtendedPayload, FsBrowseResult, MissionRoom, MissionMessage } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, AgentCapabilities, ProjectWorkspaceMode, ValidatePathResult, FetchBranchesResult, CreateProjectExtendedPayload, FsBrowseResult, MissionRoom, MissionMessage, Artifact, ArtifactVersion } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -168,6 +168,7 @@ export const api = {
     request<{ room: MissionRoom }>("/rooms", { method: "POST", body: JSON.stringify(data) }),
   patchRoomMembers: (id: string, memberAgentIds: string[]) =>
     request<{ room: MissionRoom }>(`/rooms/${encodeURIComponent(id)}/members`, { method: "PATCH", body: JSON.stringify({ memberAgentIds }) }),
+  deleteRoom: (id: string) => request<{ ok: boolean }>(`/rooms/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getProjectRoom: (projectId: string) =>
     request<{ room: MissionRoom }>(`/projects/${encodeURIComponent(projectId)}/room`),
   getRoomMessages: (id: string, opts: { before?: string; limit?: number } = {}) => {
@@ -1032,4 +1033,69 @@ export const api = {
 
   // Health
   health: () => request("/health"),
+
+  // Room Artifacts
+  listArtifacts: (roomId: string, params?: { category?: string; archived?: boolean }) => {
+    const qs = new URLSearchParams()
+    if (params?.category) qs.set("category", params.category)
+    if (params?.archived != null) qs.set("archived", String(params.archived))
+    const tail = qs.toString() ? `?${qs}` : ""
+    return request<{ artifacts: Artifact[] }>(`/rooms/${encodeURIComponent(roomId)}/artifacts${tail}`)
+  },
+
+  getArtifact: (roomId: string, artifactId: string) =>
+    request<{ artifact: Artifact; versions: ArtifactVersion[] }>(
+      `/rooms/${encodeURIComponent(roomId)}/artifacts/${encodeURIComponent(artifactId)}`
+    ),
+
+  createArtifact: (
+    roomId: string,
+    data: {
+      category: string
+      title: string
+      content: string
+      fileName: string
+      description?: string
+      tags?: string[]
+      mimeType?: string
+    }
+  ) =>
+    request<{ artifact: Artifact; version: ArtifactVersion }>(
+      `/rooms/${encodeURIComponent(roomId)}/artifacts`,
+      { method: "POST", body: JSON.stringify(data) }
+    ),
+
+  pinArtifact: (roomId: string, artifactId: string, pinned: boolean) =>
+    request<{ artifact: Artifact }>(
+      `/rooms/${encodeURIComponent(roomId)}/artifacts/${encodeURIComponent(artifactId)}/pin`,
+      { method: "PATCH", body: JSON.stringify({ pinned }) }
+    ),
+
+  archiveArtifact: (roomId: string, artifactId: string, archived: boolean) =>
+    request<{ artifact: Artifact }>(
+      `/rooms/${encodeURIComponent(roomId)}/artifacts/${encodeURIComponent(artifactId)}/archive`,
+      { method: "PATCH", body: JSON.stringify({ archived }) }
+    ),
+
+  deleteArtifact: (roomId: string, artifactId: string) =>
+    request<{ ok: boolean }>(
+      `/rooms/${encodeURIComponent(roomId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      { method: "DELETE" }
+    ),
+
+  // Room Context
+  getRoomContext: (roomId: string) =>
+    request<{ content: string; path: string }>(`/rooms/${encodeURIComponent(roomId)}/context`),
+
+  appendToContext: (roomId: string, body: string, authorId?: string) =>
+    request<{ content: string }>(
+      `/rooms/${encodeURIComponent(roomId)}/context/append`,
+      { method: "POST", body: JSON.stringify({ body, authorId }) }
+    ),
+
+  // Agent room state
+  getAgentRoomState: (roomId: string, agentId: string) =>
+    request<{ state: Record<string, unknown> }>(
+      `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/state`
+    ),
 }

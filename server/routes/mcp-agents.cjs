@@ -9,7 +9,7 @@
 'use strict';
 
 module.exports = function mcpAgentsRouter(deps) {
-  const { db, parsers, mcpPool, composio } = deps;
+  const { db, parsers, mcpPool, composio, syncBuiltinsForAgent, restartGateway } = deps;
   const router = require('express').Router();
 
 // ─── MCP tool invocation ─────────────────────────────────────────────────────
@@ -89,21 +89,25 @@ module.exports = function mcpAgentsRouter(deps) {
   res.json({ connectionIds: ids, connections });
 });
 
-  router.put('/agents/:id/connections', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+  router.put('/agents/:id/connections', db.authMiddleware, db.requireAgentOwnership, async (req, res) => {
   try {
     const { connectionIds } = req.body;
     if (!Array.isArray(connectionIds)) return res.status(400).json({ error: 'connectionIds must be an array' });
-    // Constraint: an agent can have at most one Composio connection assigned —
-    // each Composio connection holds a single user session, so multiple would
-    // collide. The UI surfaces this so the user can swap, not stack.
     const composioCount = connectionIds
       .map(cid => db.getConnection(cid))
       .filter(c => c && c.type === 'composio').length;
     if (composioCount > 1) {
       return res.status(400).json({ error: 'An agent can be assigned at most one Composio connection' });
     }
+
+    // Detect actual change so we only restart the gateway when the assignment
+    // truly differs (avoids gratuitous restarts on no-op writes from the UI).
+    const prevIds = new Set(db.getAgentConnectionIds(req.params.id) || []);
+    const nextIds = new Set(connectionIds);
+    const changed = prevIds.size !== nextIds.size
+      || [...nextIds].some(id => !prevIds.has(id));
+
     db.setAgentConnections(req.params.id, connectionIds);
-    // Sync connections context into agent's TOOLS.md so it knows about assigned connections during chat
     try {
       const allConns = db.getAllConnections();
       const assigned = allConns.filter(c => connectionIds.includes(c.id));
@@ -111,9 +115,37 @@ module.exports = function mcpAgentsRouter(deps) {
     } catch (e) {
       console.warn(`[connections] Failed to sync context for ${req.params.id}:`, e.message);
     }
-    // Reconcile built-in scripts (mcp-call/gws-call appear/disappear with connection types)
-    syncBuiltinsForAgent(req.params.id);
-    res.json({ ok: true, connectionIds });
+    if (typeof syncBuiltinsForAgent === 'function') syncBuiltinsForAgent(req.params.id);
+
+    // Auto-restart the OWNING USER's gateway so any in-flight session picks up
+    // the new connection list on its next thinking turn. Without this the agent
+    // keeps using the stale TOOLS.md it loaded at session start and stays
+    // confused about whether a freshly-assigned connection exists.
+    let gatewayRestarted = false;
+    if (changed) {
+      try {
+        const ownerId = db.getAgentOwner(req.params.id);
+        if (ownerId != null && Number(ownerId) !== 1) {
+          // Non-admin: bounce per-user gateway via orchestrator.
+          const orchestrator = require('../lib/gateway-orchestrator.cjs');
+          // Fire-and-forget — we don't want the HTTP response to block on the
+          // 5-10s gateway warm-up. UI's optimistic state already reflects the
+          // new assignment, and the next chat turn will hit a fresh gateway.
+          orchestrator.restartGateway(ownerId).catch((e) =>
+            console.warn(`[connections] async gateway restart for uid=${ownerId} failed: ${e.message}`)
+          );
+          gatewayRestarted = true;
+        } else if (typeof restartGateway === 'function') {
+          // Admin: external systemd-managed gateway — best-effort signal.
+          try { restartGateway(`connection assignment changed for ${req.params.id}`); gatewayRestarted = true; }
+          catch (_) {}
+        }
+      } catch (e) {
+        console.warn(`[connections] gateway restart trigger failed: ${e.message}`);
+      }
+    }
+
+    res.json({ ok: true, connectionIds, gatewayRestarted });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

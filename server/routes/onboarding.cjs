@@ -5,10 +5,27 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 module.exports = function onboardingRouter(deps) {
-  const { db, restartGateway } = deps || {};
+  const { db, restartGateway, broadcast } = deps || {};
   const router = express.Router();
   const provision = require('../lib/agents/provision.cjs');
   const config = require('../lib/config.cjs');
+  const { withUserLock } = require('../lib/locks.cjs');
+
+  // Emit an onboarding phase event over WS. The frontend's per-user filter
+  // (useWebSocket.ts ownerUid) routes it to the right session.
+  function emitPhase(userId, phase, extra = {}) {
+    if (typeof broadcast !== 'function') return;
+    try {
+      broadcast({
+        type: 'onboarding:phase',
+        ownerUserId: Number(userId),
+        payload: { userId: Number(userId), phase, ...extra },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn(`[onboarding] emitPhase(${phase}) failed: ${e.message}`);
+    }
+  }
 
   // Atomic: provision agent with isMaster=true, link to user.
   router.post('/onboarding/master', db.authMiddleware, async (req, res) => {
@@ -33,6 +50,16 @@ module.exports = function onboardingRouter(deps) {
       .replace(/^-+|-+$/g, '')
       .slice(0, 40) || `master-${userId}`;
 
+    // NOTE: we do NOT wrap this handler in withUserLock(userId) — the orchestrator's
+    // spawn/stop/restart take the same per-user lock internally, and our promise-chain
+    // mutex is non-reentrant. Wrapping here causes self-deadlock when restartGateway
+    // tries to re-acquire the lock. Atomicity for double-clicks is provided by the
+    // 409 check above + master_agent_id partial-unique constraint in SQLite.
+    return runOnboarding();
+
+    async function runOnboarding() {
+    emitPhase(userId, 'started', { name, slug });
+
     // Resolve channel bindings: prefer the new `channels` array
     // (ChannelBinding[] shape — `{type, botToken, ...}`).
     // Legacy `channelBinding` (`{channel, accountId, token}`) is mapped onto
@@ -49,9 +76,10 @@ module.exports = function onboardingRouter(deps) {
       }
     }
 
+    emitPhase(userId, 'provisioning');
     let result;
     try {
-      result = provision.provisionAgent({
+      result = await provision.provisionAgent({
         id: slug,
         name,
         emoji: emoji || '🧭',
@@ -64,6 +92,7 @@ module.exports = function onboardingRouter(deps) {
       }, userId);
     } catch (err) {
       console.error('[onboarding/master] provision failed', err);
+      emitPhase(userId, 'error', { detail: err.message });
       const code = err.message?.includes('already exists') ? 409 : 500;
       return res.status(code).json({ error: err.message });
     }
@@ -80,11 +109,12 @@ module.exports = function onboardingRouter(deps) {
       });
       db.markAgentProfileMaster(result.agentId);
       db.setUserMasterAgent(userId, result.agentId);
+      emitPhase(userId, 'profile_linked', { agentId: result.agentId });
       // Belt-and-suspenders: enrol the new master into aoc-master in openclaw.json
       // even if provisionAgent's allowlist write was skipped (e.g. legacy path).
       try {
         const aocMaster = require('../lib/aoc-master/installer.cjs');
-        aocMaster.ensureSkillEnabledForUserMasters({ masterAgentIds: [result.agentId] });
+        await aocMaster.ensureSkillEnabledForUserMasters({ masterAgentIds: [result.agentId] });
       } catch (e) {
         console.warn(`[onboarding/master] failed to enrol ${result.agentId} in aoc-master: ${e.message}`);
       }
@@ -109,6 +139,7 @@ module.exports = function onboardingRouter(deps) {
       }
     } catch (err) {
       console.error('[onboarding/master] DB link failed, rolling back', err);
+      emitPhase(userId, 'error', { detail: err.message });
       try { fs.rmSync(result.workspacePath, { recursive: true, force: true }); } catch {}
       return res.status(500).json({ error: 'Failed to link master agent: ' + err.message });
     }
@@ -116,6 +147,7 @@ module.exports = function onboardingRouter(deps) {
     // Restart the user's gateway so the new agent + channel bindings load.
     // Without this, RPCs like web.login.start fail with "web login provider is
     // not available" because the gateway didn't see the new whatsapp account.
+    emitPhase(userId, 'gateway_restarting');
     let gatewayRestarted = false;
     try {
       if (userId === 1) {
@@ -131,9 +163,18 @@ module.exports = function onboardingRouter(deps) {
     } catch (e) {
       console.warn(`[onboarding/master] gateway restart failed (non-fatal): ${e.message}`);
     }
+    emitPhase(userId, 'gateway_ready', { gatewayRestarted });
 
-    // NOTE(slice 1.5.f): create HQ Room here when sub-project 3 lands.
+    // Create the user's HQ mission room (auto-membership starts with master).
+    try {
+      const hqRoom = require('../lib/hq-room.cjs');
+      hqRoom.ensureHqRoom(db, userId, result.agentId);
+    } catch (e) {
+      console.warn(`[onboarding/master] HQ room creation failed (non-fatal): ${e.message}`);
+    }
+    emitPhase(userId, 'done', { agentId: result.agentId });
     res.status(201).json({ ...result, profileSaved: true, masterLinked: true, gatewayRestarted });
+    } // end runOnboarding
   });
 
   // One-shot backfill: ensure admin uid=1 has a master assigned if their
@@ -141,19 +182,30 @@ module.exports = function onboardingRouter(deps) {
   function runMasterBackfill() {
     try {
       const adminId = 1;
-      if (db.getUserMasterAgentId(adminId)) return;
-      const cfgPath = path.join(config.OPENCLAW_HOME, 'openclaw.json');
-      if (!fs.existsSync(cfgPath)) return;
-      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-      const list = cfg?.agents?.list || [];
-      const main = list.find(a => a.id === 'main') || list[0];
-      if (!main) return;
+      const existingMaster = db.getUserMasterAgentId(adminId);
+      if (!existingMaster) {
+        // First-time: wire master from openclaw.json
+        const cfgPath = path.join(config.OPENCLAW_HOME, 'openclaw.json');
+        if (!fs.existsSync(cfgPath)) return;
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+        const list = cfg?.agents?.list || [];
+        const main = list.find(a => a.id === 'main') || list[0];
+        if (!main) return;
+        try {
+          db.upsertAgentProfile({ agentId: main.id, displayName: main.name || main.id, provisionedBy: adminId });
+        } catch {}
+        db.markAgentProfileMaster(main.id);
+        db.setUserMasterAgent(adminId, main.id);
+        console.log(`[onboarding] backfilled master_agent_id=${main.id} for admin user 1`);
+      }
+      // Always ensure HQ room exists for admin (idempotent — no-op if already exists).
       try {
-        db.upsertAgentProfile({ agentId: main.id, displayName: main.name || main.id, provisionedBy: adminId });
-      } catch {}
-      db.markAgentProfileMaster(main.id);
-      db.setUserMasterAgent(adminId, main.id);
-      console.log(`[onboarding] backfilled master_agent_id=${main.id} for admin user 1`);
+        const masterId = existingMaster || db.getUserMasterAgentId(adminId) || 'main';
+        const hqRoom = require('../lib/hq-room.cjs');
+        hqRoom.ensureHqRoom(db, adminId, masterId);
+      } catch (e) {
+        console.warn('[onboarding] runMasterBackfill HQ room failed:', e.message);
+      }
     } catch (e) {
       console.warn('[onboarding] runMasterBackfill failed:', e.message);
     }

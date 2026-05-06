@@ -271,6 +271,10 @@ export interface MissionRoom {
   createdBy?: number | null
   createdAt: string
   updatedAt: string
+  // HQ / system fields (sub-project 3)
+  isHq?: boolean
+  isSystem?: boolean
+  ownerUserId?: number | null
 }
 
 export type MissionMessageAuthorType = "user" | "agent" | "system"
@@ -286,6 +290,36 @@ export interface MissionMessage {
   relatedTaskId?: string | null
   meta?: Record<string, unknown>
   createdAt: string
+}
+
+// ─── Room Collaboration Types ────────────────────────────────────────────────
+
+export interface Artifact {
+  id: string;
+  roomId: string;
+  category: 'briefs' | 'outputs' | 'research' | 'decisions' | 'assets';
+  title: string;
+  description?: string | null;
+  tags: string[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  pinned: boolean;
+  archived: boolean;
+  latestVersionId?: string | null;
+}
+
+export interface ArtifactVersion {
+  id: string;
+  artifactId: string;
+  versionNumber: number;
+  filePath: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdBy: string;
+  createdAt: string;
 }
 
 // ─── Task Board Types ────────────────────────────────────────────────────────

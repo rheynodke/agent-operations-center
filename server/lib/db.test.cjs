@@ -250,3 +250,191 @@ test('markAgentProfileMaster sets is_master flag', async () => {
   delete process.env.AOC_DATA_DIR;
   delete require.cache[require.resolve('./db.cjs')];
 });
+
+// ─── HQ Room column + index + getHqRoomForUser tests ──────────────────────────
+
+test('mission_rooms gains is_hq, is_system, owner_user_id columns', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-hq-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+  const cols = raw.exec("PRAGMA table_info(mission_rooms)")[0].values.map(r => r[1]);
+  assert.ok(cols.includes('is_hq'),         'missing is_hq column');
+  assert.ok(cols.includes('is_system'),     'missing is_system column');
+  assert.ok(cols.includes('owner_user_id'), 'missing owner_user_id column');
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+});
+
+test('partial unique index prevents two HQ rooms per user', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-hq2-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+  const now = new Date().toISOString();
+  raw.run("INSERT INTO mission_rooms (id, kind, name, member_agent_ids, created_at, updated_at, is_hq, owner_user_id) VALUES ('hq-1', 'global', 'HQ', '[]', ?, ?, 1, 42)", [now, now]);
+  let threw = false;
+  try {
+    raw.run("INSERT INTO mission_rooms (id, kind, name, member_agent_ids, created_at, updated_at, is_hq, owner_user_id) VALUES ('hq-2', 'global', 'HQ', '[]', ?, ?, 1, 42)", [now, now]);
+  } catch (_) { threw = true; }
+  assert.ok(threw, 'expected unique constraint violation');
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+});
+
+test('getHqRoomForUser returns null when no HQ exists', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-hq3-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const result = db.getHqRoomForUser(99);
+  assert.equal(result, null);
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+});
+
+test('getHqRoomForUser returns the HQ row after inserting one', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-hq4-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+  const now = new Date().toISOString();
+  raw.run("INSERT INTO mission_rooms (id, kind, name, member_agent_ids, created_at, updated_at, is_hq, is_system, owner_user_id) VALUES ('hq-a', 'global', 'HQ', '[]', ?, ?, 1, 1, 7)", [now, now]);
+  const result = db.getHqRoomForUser(7);
+  assert.ok(result, 'should return the HQ room');
+  assert.equal(result.id, 'hq-a');
+  assert.equal(result.kind, 'global');
+  assert.equal(result.name, 'HQ');
+  assert.equal(result.isHq, true, 'isHq should be true');
+  assert.equal(result.isSystem, true, 'isSystem should be true');
+  assert.equal(result.ownerUserId, 7, 'ownerUserId should be 7');
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+});
+
+// === Phase 2 Collaboration Schema Tests (Task 11) ===
+
+test('room_artifacts table has expected columns', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-collab-artifacts-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+
+  const result = raw.exec("PRAGMA table_info(room_artifacts)");
+  assert.ok(result.length > 0, 'room_artifacts table should exist');
+  const cols = result[0].values.map(r => r[1]);
+
+  const expectedCols = ['id', 'room_id', 'category', 'title', 'description', 'tags', 'created_by', 'created_at', 'updated_at', 'pinned', 'archived', 'latest_version_id'];
+  for (const col of expectedCols) {
+    assert.ok(cols.includes(col), `room_artifacts table missing column: ${col}`);
+  }
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+});
+
+test('room_artifact_versions table has expected columns', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-collab-versions-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+
+  const result = raw.exec("PRAGMA table_info(room_artifact_versions)");
+  assert.ok(result.length > 0, 'room_artifact_versions table should exist');
+  const cols = result[0].values.map(r => r[1]);
+
+  const expectedCols = ['id', 'artifact_id', 'version_number', 'file_path', 'file_name', 'mime_type', 'size_bytes', 'sha256', 'created_by', 'created_at'];
+  for (const col of expectedCols) {
+    assert.ok(cols.includes(col), `room_artifact_versions table missing column: ${col}`);
+  }
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+});
+
+test('room_collaboration_sessions table has expected columns', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-collab-sessions-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+
+  const result = raw.exec("PRAGMA table_info(room_collaboration_sessions)");
+  assert.ok(result.length > 0, 'room_collaboration_sessions table should exist');
+  const cols = result[0].values.map(r => r[1]);
+
+  const expectedCols = ['id', 'room_id', 'session_key', 'agent_id', 'started_by', 'started_at', 'ended_at'];
+  for (const col of expectedCols) {
+    assert.ok(cols.includes(col), `room_collaboration_sessions table missing column: ${col}`);
+  }
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+});
+
+test('mission_rooms has supports_collab column', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-collab-rooms-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+
+  const result = raw.exec("PRAGMA table_info(mission_rooms)");
+  assert.ok(result.length > 0, 'mission_rooms table should exist');
+  const cols = result[0].values.map(r => r[1]);
+
+  assert.ok(cols.includes('supports_collab'), 'mission_rooms table missing column: supports_collab');
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+});
+
+test('room_artifact_versions unique index prevents duplicate version numbers per artifact', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-collab-unique-'));
+  process.env.AOC_DATA_DIR = tmpDir;
+  delete require.cache[require.resolve('./db.cjs')];
+  const db = require('./db.cjs');
+  await db.initDatabase();
+  const raw = db.getDb();
+  const now = new Date().toISOString();
+
+  raw.run("INSERT INTO mission_rooms (id, kind, name, member_agent_ids, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+          ['room-test', 'global', 'Test Room', '[]', now, now]);
+
+  raw.run("INSERT INTO room_artifacts (id, room_id, category, title, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          ['artifact-1', 'room-test', 'outputs', 'My Output', 'agent-1', now, now]);
+
+  // First version insert — must succeed
+  raw.run("INSERT INTO room_artifact_versions (id, artifact_id, version_number, file_path, file_name, sha256, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          ['version-1', 'artifact-1', 1, '/path/to/file1.md', 'file1.md', 'abc123', 'agent-1', now]);
+
+  // Duplicate version_number on same artifact — must throw
+  let threw = false;
+  try {
+    raw.run("INSERT INTO room_artifact_versions (id, artifact_id, version_number, file_path, file_name, sha256, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ['version-2', 'artifact-1', 1, '/path/to/file2.md', 'file2.md', 'def456', 'agent-1', now]);
+  } catch (_) { threw = true; }
+
+  assert.ok(threw, 'expected unique constraint violation on duplicate artifact_id + version_number');
+
+  delete process.env.AOC_DATA_DIR;
+  delete require.cache[require.resolve('./db.cjs')];
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+});

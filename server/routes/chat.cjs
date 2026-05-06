@@ -68,12 +68,13 @@ module.exports = function chatRouter(deps) {
     if (!gatewayForReq(req).isConnected) {
       return res.status(503).json({ error: 'Not connected to Gateway' });
     }
-    const { agentId } = req.body;
+    const { agentId, roomId } = req.body;
     if (!agentId) return res.status(400).json({ error: 'agentId is required' });
     if (!db.userOwnsAgent(req, agentId)) {
       return res.status(403).json({ error: 'You can only chat with agents you own' });
     }
-    const result = await gatewayForReq(req).sessionsCreate(agentId);
+    const sessionOpts = {};
+    const result = await gatewayForReq(req).sessionsCreate(agentId, sessionOpts);
     console.log('[api/chat/sessions/create] result:', JSON.stringify(result).slice(0, 500));
     res.json(result);
   } catch (err) {

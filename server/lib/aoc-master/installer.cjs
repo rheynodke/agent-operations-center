@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
 
 const SKILL_SLUG = 'aoc-master';
-const BUNDLE_VERSION = '1.0.1';
+const BUNDLE_VERSION = '1.0.2';
 
 const SKILL_MD = `---
 name: aoc-master
@@ -29,6 +29,8 @@ You are the **Master Agent** for this workspace. Your job is to route user inten
 
 1. **\`team-status.sh\`** — list every sub-agent owned by this user, with their role, last activity, and a short capability hint.
 2. **\`delegate.sh <agent_id> "<task>"\`** — hand a task off to a specific sub-agent. The sub-agent gets the task as a fresh chat session and works on it independently.
+3. **\`list-team-roles.sh\`** — short list (agent_id\\trole) for quick lookup
+4. **\`provision.sh <id> "<name>" [role] [emoji]\`** — create a new sub-agent in the user's workspace. (e.g. \`provision.sh qa-bot "QA Bot" QA 🔎\`)
 
 ## When to delegate vs handle yourself
 
@@ -148,12 +150,70 @@ for a in json.load(sys.stdin).get("team", []):
 '
 `;
 
+const PROVISION_SH = `#!/usr/bin/env bash
+# aoc-master / provision.sh — provision a new agent
+set -euo pipefail
+
+# Source AOC credentials (agent env → global env fallback)
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
+[ -f "\${HOME}/.openclaw/.aoc_env" ] && source "\${HOME}/.openclaw/.aoc_env" 2>/dev/null || true
+
+: "\${AOC_URL:=http://localhost:18800}"
+: "\${AOC_TOKEN:?AOC_TOKEN env required}"
+
+if [ "\\$#" -lt 2 ]; then
+  echo "usage: provision.sh <id> \\"<name>\\" [role] [emoji]" >&2
+  echo "example: provision.sh web-dev \\"Web Developer\\" SWE 🧑‍💻" >&2
+  exit 1
+fi
+
+ID="\\$1"
+NAME="\\$2"
+ROLE="\${3:-}"
+EMOJI="\${4:-🤖}"
+
+HEADERS=(-H "Authorization: Bearer \${AOC_TOKEN}" -H "Content-Type: application/json")
+[ -n "\${AOC_AGENT_ID:-}" ] && HEADERS+=(-H "X-Agent-Id: \${AOC_AGENT_ID}")
+
+PAYLOAD=$(python3 -c '
+import json, sys
+print(json.dumps({
+    "id": sys.argv[1],
+    "name": sys.argv[2],
+    "adlcRole": sys.argv[3],
+    "emoji": sys.argv[4]
+}))
+' "\$ID" "\$NAME" "\$ROLE" "\$EMOJI")
+
+response=$(curl -sS -w '\\n%{http_code}' -X POST -d "\$PAYLOAD" "\${HEADERS[@]}" "\${AOC_URL}/api/agents")
+body=$(printf '%s\\n' "\$response" | sed '\\$d')
+status=$(printf '%s\\n' "\$response" | tail -n1)
+
+if [ "\$status" != "200" ] && [ "\$status" != "201" ]; then
+  echo "ERROR: HTTP \$status" >&2
+  echo "\$body" >&2
+  exit 1
+fi
+
+printf '%s\\n' "\$body" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+if data.get("ok"):
+    print(f"Success! Agent provisioned: {data.get(\\"agentId\\")} ({data.get(\\"agentName\\")})")
+    print("Run \`team-status.sh\` to verify.")
+else:
+    print(f"Error: {data}")
+'
+`;
+
 const BUNDLE = {
   files: [
     { rel: 'SKILL.md',                   content: SKILL_MD,            mode: 0o644 },
     { rel: 'scripts/team-status.sh',     content: TEAM_STATUS_SH,      mode: 0o755 },
     { rel: 'scripts/delegate.sh',        content: DELEGATE_SH,          mode: 0o755 },
     { rel: 'scripts/list-team-roles.sh', content: LIST_TEAM_ROLES_SH,  mode: 0o755 },
+    { rel: 'scripts/provision.sh',       content: PROVISION_SH,        mode: 0o755 },
   ],
 };
 
@@ -218,28 +278,31 @@ function installSafe() {
  * @param {{ masterAgentIds: string[] }} opts
  * @returns {{ changed: boolean }}
  */
-function ensureSkillEnabledForUserMasters({ masterAgentIds = [] } = {}) {
+async function ensureSkillEnabledForUserMasters({ masterAgentIds = [] } = {}) {
+  const { withFileLock } = require('../locks.cjs');
   const cfgPath = path.join(OPENCLAW_HOME, 'openclaw.json');
-  const cfg = readJsonSafe(cfgPath);
-  if (!cfg) return { changed: false, reason: 'no openclaw.json' };
-  if (!Array.isArray(cfg.agents?.list)) return { changed: false, reason: 'no agents.list' };
+  return withFileLock(cfgPath, async () => {
+    const cfg = readJsonSafe(cfgPath);
+    if (!cfg) return { changed: false, reason: 'no openclaw.json' };
+    if (!Array.isArray(cfg.agents?.list)) return { changed: false, reason: 'no agents.list' };
 
-  const masterSet = new Set(masterAgentIds);
-  let changed = false;
-  for (const agent of cfg.agents.list) {
-    if (!masterSet.has(agent.id)) continue;
-    if (!Array.isArray(agent.skills)) agent.skills = [];
-    if (!agent.skills.includes(SKILL_SLUG)) {
-      agent.skills.push(SKILL_SLUG);
-      changed = true;
+    const masterSet = new Set(masterAgentIds);
+    let changed = false;
+    for (const agent of cfg.agents.list) {
+      if (!masterSet.has(agent.id)) continue;
+      if (!Array.isArray(agent.skills)) agent.skills = [];
+      if (!agent.skills.includes(SKILL_SLUG)) {
+        agent.skills.push(SKILL_SLUG);
+        changed = true;
+      }
     }
-  }
 
-  if (changed) {
-    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
-    console.log(`[aoc-master] enrolled ${masterAgentIds.length} master agent(s) into ${SKILL_SLUG} skill`);
-  }
-  return { changed };
+    if (changed) {
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
+      console.log(`[aoc-master] enrolled ${masterAgentIds.length} master agent(s) into ${SKILL_SLUG} skill`);
+    }
+    return { changed };
+  });
 }
 
 module.exports = {

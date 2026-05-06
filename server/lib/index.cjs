@@ -13,6 +13,7 @@ const agents     = require('./agents/index.cjs');
 const { getAvailableModels } = require('./models.cjs');
 const cronLib    = require('./automation/cron.cjs');
 const scriptsLib = require('./scripts.cjs');
+const locksLib   = require('./locks.cjs');
 const hooksLib   = require('./hooks.cjs');
 const pairingLib = require('./pairing.cjs');
 const discordGuildsLib = require('./discord-guilds.cjs');
@@ -23,15 +24,19 @@ const browserHarnessOdoo = require('./browser-harness/odoo-installer.cjs');
 const aocTasksSkill       = require('./aoc-tasks/installer.cjs');
 const aocConnectionsSkill = require('./aoc-connections/installer.cjs');
 const missionOrchestratorSkill = require('./mission-orchestrator/installer.cjs');
+const aocRoomSkill        = require('./aoc-room/installer.cjs');
 const workspaceBrowser    = require('./workspace-browser.cjs');
 const roleTemplates = require('./role-templates.cjs');
 const skillCatalog  = require('./skill-catalog.cjs');
 const oauthG = require('./oauth/google.cjs');
 const googleConnections = require('./connections/google-workspace.cjs');
 const googleHealthCron = require('./cron/google-health.cjs');
+const roomArtifacts = require('./room-artifacts.cjs');
+const roomContext = require('./room-context.cjs');
 
 const { readJsonSafe, OPENCLAW_HOME } = config;
 const { parseRoutes, getChannelsConfig } = require('./routing.cjs');
+const db = require('./db.cjs');
 
 module.exports = {
   // ── config constants ───────────────────────────────────────────────────────
@@ -154,6 +159,10 @@ module.exports = {
   syncAgentConnectionsContext: scriptsLib.syncAgentConnectionsContext,
   stampBuiltinSharedMeta:   scriptsLib.stampBuiltinSharedMeta,
   syncAgentBuiltins:        scriptsLib.syncAgentBuiltins,
+  // Concurrency primitives
+  withKeyLock:              locksLib.withKeyLock,
+  withFileLock:             locksLib.withFileLock,
+  withUserLock:             locksLib.withUserLock,
   isBuiltinShared:          scriptsLib.isBuiltinShared,
   purgeLegacyFlatScripts:   scriptsLib.purgeLegacyFlatScripts,
 
@@ -185,6 +194,7 @@ module.exports = {
   aocTasksSkill,
   aocConnectionsSkill,
   missionOrchestratorSkill,
+  aocRoomSkill,
   workspaceBrowser,
 
   // ── role templates (Phase 1: read-only + seed) ────────────────────────────
@@ -238,4 +248,26 @@ module.exports = {
   // ── google workspace cron ──────────────────────────────────────────────────
   googleHealthCronStart:    googleHealthCron.start,
   googleHealthCronStop:     googleHealthCron.stop,
+
+  // ── db helpers (HQ room) ───────────────────────────────────────────────────
+  getHqRoomForUser:         db.getHqRoomForUser,
+  getMissionRoomById:       db.getMissionRoomById,
+  deleteMissionRoom:        db.deleteMissionRoom,
+
+  // ── room artifacts ─────────────────────────────────────────────────────────
+  createArtifact:           roomArtifacts.createArtifact,
+  addArtifactVersion:       roomArtifacts.addArtifactVersion,
+  listArtifacts:            roomArtifacts.listArtifacts,
+  getArtifact:              roomArtifacts.getArtifact,
+  getArtifactContent:       roomArtifacts.getArtifactContent,
+  pinArtifact:              roomArtifacts.pinArtifact,
+  archiveArtifact:          roomArtifacts.archiveArtifact,
+  deleteArtifact:           roomArtifacts.deleteArtifact,
+
+  // ── room context ───────────────────────────────────────────────────────────
+  getRoomContext:           roomContext.getRoomContext,
+  appendToContext:          roomContext.appendToContext,
+  clearContext:             roomContext.clearContext,
+  getAgentRoomState:        roomContext.getAgentRoomState,
+  setAgentRoomState:        roomContext.setAgentRoomState,
 };

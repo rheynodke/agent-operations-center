@@ -512,6 +512,21 @@ export function useWebSocket() {
           break
         }
 
+        case "room:stop": {
+          const payload = msg.payload as { roomId?: string }
+          if (payload?.roomId) {
+             const procStore = useProcessingStore.getState()
+             Object.keys(procStore.sessions).forEach(k => {
+                if (k.includes(`:room:${payload.roomId}`)) procStore.stop(k)
+             })
+             const chatStore = useChatStore.getState()
+             Object.keys(chatStore.agentRunning).forEach(k => {
+                if (k.includes(`:room:${payload.roomId}`)) chatStore.setAgentRunning(k, false)
+             })
+          }
+          break
+        }
+
         default: {
           // ── Gateway & Chat events (forwarded from gateway-ws.cjs) ──────────
           const chatStore = useChatStore.getState()
@@ -827,6 +842,19 @@ export function useWebSocket() {
                 direction: p.direction ?? "in",
               })
             }
+          } else if ((msg.type as string) === "onboarding:phase") {
+            // Backend-driven progress for the onboarding wizard's step 6.
+            // OwnerUserId filtering above already ensures we only see our own.
+            const p = (msg.payload ?? {}) as { phase?: string; detail?: string; agentId?: string }
+            if (p.phase) {
+              import('@/stores/useOnboardingProgressStore').then(({ useOnboardingProgressStore }) => {
+                useOnboardingProgressStore.getState().setPhase({
+                  phase: p.phase as never,
+                  detail: p.detail,
+                  agentId: p.agentId,
+                })
+              })
+            }
           } else {
             // Unknown event type — might be a new watcher event, schedule a reload
             console.debug("[WS] Unhandled event type:", msg.type)
@@ -891,8 +919,16 @@ export function useWebSocket() {
   const disconnect = useCallback(() => {
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
     if (reloadTimer.current) clearTimeout(reloadTimer.current)
-    wsRef.current?.close()
-    wsRef.current = null
+    if (wsRef.current) {
+      wsRef.current.onopen = null
+      wsRef.current.onclose = null
+      wsRef.current.onerror = null
+      wsRef.current.onmessage = null
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close()
+      }
+      wsRef.current = null
+    }
     setStatus("disconnected")
   }, [setStatus])
 

@@ -8,6 +8,8 @@ import type { Project, ProjectKind } from "@/types"
 import { cn } from "@/lib/utils"
 import { formatWorkspaceMode } from "@/lib/projectLabels"
 import { canEditProject } from "@/lib/permissions"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import MetricsPage from "./MetricsPage"
 import { useAuthStore } from "@/stores"
 
 const KIND_META: Record<ProjectKind, { label: string; icon: typeof Folder; tone: string }> = {
@@ -78,17 +80,30 @@ export default function ProjectsPage() {
         </button>
       </div>
 
-      {/* Grid of project cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {projects.map((p) => (
-          <ProjectCard key={p.id} project={p} />
-        ))}
-        {projects.length === 0 && (
-          <div className="col-span-full p-8 text-center text-muted-foreground text-sm">
-            No projects yet. Click <span className="text-foreground">New Project</span> to create one.
+      <Tabs defaultValue="list" className="flex-1 flex flex-col min-h-0">
+        <TabsList className="w-fit shrink-0 mb-2">
+          <TabsTrigger value="list">Project List</TabsTrigger>
+          <TabsTrigger value="metrics">Metrics</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="list" className="flex-1 min-h-0 overflow-y-auto outline-none mt-2">
+          {/* Grid of project cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {projects.map((p) => (
+              <ProjectCard key={p.id} project={p} />
+            ))}
+            {projects.length === 0 && (
+              <div className="col-span-full p-8 text-center text-muted-foreground text-sm">
+                No projects yet. Click <span className="text-foreground">New Project</span> to create one.
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </TabsContent>
+
+        <TabsContent value="metrics" className="flex-1 min-h-0 overflow-y-auto outline-none mt-2 -mx-4 -mb-4 px-4 pb-4">
+          <MetricsPage />
+        </TabsContent>
+      </Tabs>
 
       <ProjectCreateWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>

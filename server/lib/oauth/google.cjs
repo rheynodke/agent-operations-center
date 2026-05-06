@@ -159,6 +159,7 @@ async function exchangeCode({ clientId, clientSecret, code, codeVerifier, redire
     tokenType: data.token_type || 'Bearer',
     scope: data.scope || '',
     linkedEmail: decodeIdTokenEmail(data.id_token),
+    idToken: data.id_token || null,
   };
 }
 

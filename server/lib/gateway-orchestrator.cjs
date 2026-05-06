@@ -8,6 +8,7 @@ const { EventEmitter } = require('events');
 
 const db = require('./db.cjs');
 const { getUserHome, SHARED_SKILLS, SHARED_SCRIPTS, SHARED_PROVIDERS } = require('./config.cjs');
+const { withUserLock } = require('./locks.cjs');
 
 const orchestratorEvents = new EventEmitter();
 orchestratorEvents.setMaxListeners(50);
@@ -22,18 +23,54 @@ function generateToken() {
 }
 
 async function allocatePort() {
+  // Legacy non-atomic allocator. Kept as fallback only — prefer
+  // allocatePortAtomic which uses the SQLite reservation table to avoid
+  // the read-probe-write race when multiple users spawn in parallel.
   const used = new Set(db.listGatewayStates().map(r => r.port).filter(p => p != null));
-  // Each gateway opens 3 consecutive ports (WS / canvas / browser-control).
-  // Stride by 3 so allocations don't accidentally pick an in-use neighbour.
   for (let p = PORT_RANGE_START; p <= PORT_RANGE_END - 2; p += 3) {
     if (used.has(p) || used.has(p + 1) || used.has(p + 2)) continue;
-    // Also probe the actual OS port — DB may be stale after a crash, or
-    // another gateway from a prior AOC session may still hold the socket.
     if (await _isPortFree(p) && await _isPortFree(p + 1) && await _isPortFree(p + 2)) {
       return p;
     }
   }
   throw new Error(`Gateway port pool exhausted (${PORT_RANGE_START}-${PORT_RANGE_END})`);
+}
+
+/**
+ * Atomic port-triple allocator backed by SQLite port_reservations table.
+ * Returns { port, reservationId }. The caller MUST mark the reservation live
+ * (via db.markReservationLive) on success or release it on failure.
+ *
+ * The OS-level lsof probe is kept as a downstream safety net inside spawn.
+ */
+async function allocatePortAtomic(userId) {
+  // Exclude list grows with every OS-busy retry so we never try the same
+  // triple twice. Without this, retrying on a fresh reservation would keep
+  // re-picking the lowest free triple in the DB while the kernel reports busy.
+  const excludeTriples = [];
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const flatExclude = excludeTriples.flatMap((p) => [p, p + 1, p + 2]);
+    let port, reservationId;
+    try {
+      ({ port, reservationId } = db.reservePortTriple(userId, {
+        base: PORT_RANGE_START,
+        end:  PORT_RANGE_END,
+        exclude: flatExclude,
+      }));
+    } catch (e) {
+      if (e.message === 'PORT_POOL_EXHAUSTED') throw e;
+      throw e;
+    }
+    // Probe OS — kernel may still hold ports from a zombie gateway whose DB
+    // row was wiped. Skip the probe if anything looks busy and try again.
+    if (await _isPortFree(port) && await _isPortFree(port + 1) && await _isPortFree(port + 2)) {
+      return { port, reservationId };
+    }
+    db.releaseReservation(reservationId);
+    excludeTriples.push(port);
+    console.warn(`[orchestrator] port ${port}-${port+2} reserved but OS reports busy, retry ${attempt + 1}/8`);
+  }
+  throw new Error(`allocatePortAtomic: unable to reserve a free triple after 8 attempts`);
 }
 
 function _isPortFree(port) {
@@ -193,6 +230,32 @@ function ensureUserHome(userId, userHome) {
     fs.writeFileSync(cronPath, JSON.stringify({ jobs: [] }, null, 2));
   }
 
+  // Bootstrap .aoc_env at the gateway home (parent of userHome — the gateway
+  // sources `${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env` which resolves to the
+  // path.dirname(userHome)). Without this, scripts like check_connections.sh
+  // fail with "AOC_TOKEN not set" the very first time a freshly-provisioned
+  // agent tries to introspect connections, because `ensureAocEnvFile()` only
+  // runs at AOC startup (which is BEFORE the new user existed).
+  try {
+    const gwHome = path.dirname(userHome);
+    const envFile = path.join(gwHome, '.aoc_env');
+    if (!fs.existsSync(envFile)) {
+      const token = process.env.DASHBOARD_TOKEN || '';
+      const port  = process.env.PORT || '18800';
+      const aocUrl = `http://localhost:${port}`;
+      const content = [
+        '# AOC Dashboard connection config — auto-generated at user-home bootstrap',
+        `# Generated: ${new Date().toISOString()}`,
+        `export AOC_TOKEN="${token}"`,
+        `export AOC_URL="${aocUrl}"`,
+        '',
+      ].join('\n');
+      fs.writeFileSync(envFile, content, { mode: 0o600, encoding: 'utf-8' });
+    }
+  } catch (e) {
+    console.warn(`[orchestrator] bootstrap .aoc_env(${userId}) failed: ${e.message}`);
+  }
+
   // Inherit admin's AOC device-pairing so the user's gateway grants AOC the
   // operator.* scopes on first connect (no manual `openclaw devices approve`).
   // Admin (userId=1) is the source — their own home is OPENCLAW_BASE.
@@ -238,11 +301,24 @@ async function waitGatewayReady(port, token, timeoutMs) {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 async function spawnGateway(userId) {
+  // Per-user serialization: spawn/stop/restart for the SAME user run one at a
+  // time. Different users still spawn fully in parallel.
+  return withUserLock(userId, () => spawnGatewayLocked(userId));
+}
+
+async function spawnGatewayLocked(userId) {
+  // Idempotency post-acquire: if another waiter already brought the gateway
+  // up while we were queued, short-circuit.
+  if (children.has(Number(userId))) {
+    const cur = children.get(Number(userId));
+    return { port: cur.port, pid: cur.child.pid, token: cur.token };
+  }
+
   // Resource cap: refuse to spawn if we've reached AOC_MAX_GATEWAYS. Counts
   // concurrently-running per-user gateways (admin's external gateway is
-  // separate and not counted). Idempotent for a user that's already running.
+  // separate and not counted).
   const cap = Number(process.env.AOC_MAX_GATEWAYS || 50);
-  if (cap > 0 && !children.has(Number(userId))) {
+  if (cap > 0) {
     const liveRows = (db.listGatewayStates() || []).filter((r) => r.state === 'running' && r.pid != null);
     if (liveRows.length >= cap) {
       const err = new Error(
@@ -254,7 +330,7 @@ async function spawnGateway(userId) {
     }
   }
 
-  const port  = await allocatePort();
+  const { port, reservationId } = await allocatePortAtomic(userId);
   const token = generateToken();
   const userHome = getUserHome(userId);
   ensureUserHome(userId, userHome);
@@ -288,6 +364,10 @@ async function spawnGateway(userId) {
     env: childEnv,
   });
   child.unref();
+
+  // Mark reservation as 'spawning' with the child's pid — orphan detection
+  // can now skip this PID even before setGatewayState writes the row.
+  try { db.markReservationSpawning(reservationId, child.pid); } catch (_) {}
 
   // Track early exit so we can fail fast instead of waiting the full 30s timeout.
   let earlyExit = null;
@@ -326,6 +406,8 @@ async function spawnGateway(userId) {
     if (!earlyExit) {
       try { process.kill(child.pid, 'SIGTERM'); } catch (_) {}
     }
+    // Reservation rolls back so the port can be reused immediately.
+    try { db.releaseReservation(reservationId); } catch (_) {}
     const msg = `spawn failed for user ${userId}: ${e.message}` +
       (logTail ? `\n--- gateway.log tail ---\n${logTail}` : '');
     throw new GatewaySpawnError(msg, { cause: e });
@@ -334,7 +416,8 @@ async function spawnGateway(userId) {
   // Readiness confirmed — detach the early-exit listener and wire the supervisor.
   child.removeListener('exit', earlyExitListener);
 
-  children.set(userId, { child, port, token, startedAt: Date.now(), retryCount: 0 });
+  children.set(userId, { child, port, token, startedAt: Date.now(), retryCount: 0, reservationId });
+  try { db.markReservationLive(reservationId); } catch (_) {}
   // Persist token so AOC can re-attach after a restart without re-spawning.
   db.setGatewayState(userId, { port, pid: child.pid, state: 'running', token });
   orchestratorEvents.emit('spawned', { userId: Number(userId), port, pid: child.pid, token });
@@ -426,10 +509,21 @@ function findAocManagedOrphanPids({ userId = null, exceptPids = new Set() } = {}
     }
   } catch { /* DB unavailable */ }
 
+  // Treat any pid recorded in port_reservations as "owned" — covers the gap
+  // between spawn-time reservation and setGatewayState write, where a kill
+  // would otherwise race a freshly-spawning child.
+  const reservationPids = new Set();
+  try {
+    for (const r of (db.listReservations() || [])) {
+      if (r.pid != null) reservationPids.add(Number(r.pid));
+    }
+  } catch { /* DB unavailable */ }
+
   const matched = [];
   for (const [pidStr, port] of Object.entries(pidPort)) {
     const pid = Number(pidStr);
     if (exceptPids.has(pid)) continue;
+    if (reservationPids.has(pid)) continue;   // Active reservation — don't kill mid-spawn
 
     if (userId != null) {
       // For a specific user: kill any gateway listening on their expected port
@@ -466,6 +560,7 @@ function findAocManagedOrphanPids({ userId = null, exceptPids = new Set() } = {}
     if (exceptPids.has(pid)) continue;
     if (matched.includes(pid)) continue;
     if (trackedPids.has(pid)) continue;
+    if (reservationPids.has(pid)) continue;   // Mid-spawn — let it finish
     if (anyPort.has(pid)) continue;   // Holds *some* listen port (managed OR admin's 18789) — leave alone
     // Check if it has live openclaw-gateway children — if so, it's an active launcher.
     let hasLiveChild = false;
@@ -484,6 +579,10 @@ function findAocManagedOrphanPids({ userId = null, exceptPids = new Set() } = {}
 }
 
 async function stopGateway(userId, opts = {}) {
+  return withUserLock(userId, () => stopGatewayLocked(userId, opts));
+}
+
+async function stopGatewayLocked(userId, opts = {}) {
   const entry = children.get(userId);
   children.delete(userId);
   if (entry) {
@@ -519,10 +618,17 @@ async function stopGateway(userId, opts = {}) {
 
   // Clear token along with port/pid — gateway is gone, no point keeping creds.
   db.setGatewayState(userId, { port: null, pid: null, state: 'stopped', token: null });
+  // Free the port reservation so the next spawn for this user (or any user)
+  // can grab the freshly-vacated triple immediately.
+  try { db.releaseReservationByUser(Number(userId)); } catch (_) {}
   orchestratorEvents.emit('stopped', { userId: Number(userId) });
 }
 
 async function restartGateway(userId) {
+  // Compose under one lock acquisition: stopGateway/spawnGateway each take
+  // the lock individually, but withUserLock is reentrant by chain (a queued
+  // call simply waits until the previous call's release before proceeding),
+  // so this is safe under concurrent restartGateway calls — they serialize.
   await stopGateway(userId);
   return spawnGateway(userId);
 }
@@ -602,10 +708,35 @@ function listGateways() {
  * AOC does NOT disrupt running per-user OpenClaw processes.
  */
 async function cleanupOrphans() {
+  // Reconcile stale port reservations FIRST — anything with a dead pid or
+  // a 'reserving' state older than 5 min is fossil from a prior crash and
+  // must not block fresh allocations.
+  try {
+    const dead = db.findDeadReservations();
+    if (dead.length) {
+      const ids = new Set(dead.map((d) => d.reservationId));
+      for (const id of ids) db.releaseReservation(id);
+      console.log(`[orchestrator] cleanupOrphans: cleared ${ids.size} dead reservation(s)`);
+    }
+    const stale = db.findStaleReservations(5 * 60 * 1000);
+    if (stale.length) {
+      const ids = new Set(stale.map((d) => d.reservationId));
+      for (const id of ids) db.releaseReservation(id);
+      console.log(`[orchestrator] cleanupOrphans: cleared ${ids.size} stale reserving rows`);
+    }
+  } catch (e) {
+    console.warn(`[orchestrator] cleanupOrphans reservation sweep failed: ${e.message}`);
+  }
+
   const rows = db.listGatewayStates();
   const reattached = [];
+  const needsRestart = [];
+
   for (const { userId, port, pid, state } of rows) {
-    if (pid == null) continue;
+    if (pid == null) {
+      if (state === 'running' || state === 'starting') needsRestart.push(userId);
+      continue;
+    }
     let alive = true;
     try { process.kill(pid, 0); } catch { alive = false; }
     if (alive) {
@@ -624,9 +755,18 @@ async function cleanupOrphans() {
         reattached: true,
       });
       reattached.push({ userId, pid, port });
+
+      // Correct the DB state if it was left in a different state but the process is alive
+      if (state !== 'running') {
+        db.setGatewayState(userId, { port, pid, state: 'running', token });
+      }
     } else {
-      // Stale DB row — gateway died while AOC was down. Clear it.
-      db.setGatewayState(userId, { port: null, pid: null, state: 'stopped', token: null });
+      // Stale DB row — gateway died while AOC was down.
+      if (state === 'running' || state === 'starting') {
+        needsRestart.push(userId);
+      } else {
+        db.setGatewayState(userId, { port: null, pid: null, state: 'stopped', token: null });
+      }
     }
     // Honor 'stopped'/'error' states explicitly — don't reattach if user had
     // intentionally stopped the gateway before AOC went down.
@@ -634,8 +774,20 @@ async function cleanupOrphans() {
       children.delete(userId);
     }
   }
+
   if (reattached.length) {
     console.log(`[orchestrator] cleanupOrphans: re-attached ${reattached.length} live gateway(s) ${reattached.map(r => `uid=${r.userId} pid=${r.pid} port=${r.port}`).join(', ')}`);
+  }
+
+  if (needsRestart.length) {
+    console.log(`[orchestrator] cleanupOrphans: auto-restarting ${needsRestart.length} dead gateway(s) [${needsRestart.join(', ')}]...`);
+    for (const uid of needsRestart) {
+      // Clear the stale row first so spawnGateway doesn't think it's running.
+      // Use 'starting' instead of 'stopped' so if AOC is interrupted during spawn,
+      // the next boot will still try to auto-restart it.
+      db.setGatewayState(uid, { port: null, pid: null, state: 'starting', token: null });
+      spawnGateway(uid).catch(e => console.error(`[orchestrator] auto-restart failed for user ${uid}: ${e.message}`));
+    }
   }
 
   // Sweep truly orphan processes: openclaw-gateway listening on a managed-range

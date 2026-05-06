@@ -27,7 +27,7 @@ const {
 } = require('../scripts.cjs');
 
 const SKILL_SLUG    = 'aoc-connections';
-const BUNDLE_VERSION = '1.0.0';
+const BUNDLE_VERSION = '1.0.1';
 
 function skillRoot() {
   return path.join(OPENCLAW_HOME, 'skills', SKILL_SLUG);
@@ -232,45 +232,48 @@ function installSafe() {
   }
 }
 
-function ensureSkillEnabledForAllAgents() {
+async function ensureSkillEnabledForAllAgents() {
+  const { withFileLock } = require('../locks.cjs');
   const cfgPath = path.join(OPENCLAW_HOME, 'openclaw.json');
-  const cfg = readJsonSafe(cfgPath);
-  if (!cfg) return { changed: false, reason: 'no openclaw.json' };
+  return withFileLock(cfgPath, async () => {
+    const cfg = readJsonSafe(cfgPath);
+    if (!cfg) return { changed: false, reason: 'no openclaw.json' };
 
-  let changed = false;
+    let changed = false;
 
-  cfg.agents = cfg.agents || {};
-  cfg.agents.defaults = cfg.agents.defaults || {};
-  if (!Array.isArray(cfg.agents.defaults.skills)) {
-    cfg.agents.defaults.skills = [];
-    changed = true;
-  }
-  if (!cfg.agents.defaults.skills.includes(SKILL_SLUG)) {
-    cfg.agents.defaults.skills.push(SKILL_SLUG);
-    changed = true;
-  }
-
-  for (const agent of cfg.agents.list || []) {
-    if (!Array.isArray(agent.skills)) continue;
-    if (!agent.skills.includes(SKILL_SLUG)) {
-      agent.skills.push(SKILL_SLUG);
+    cfg.agents = cfg.agents || {};
+    cfg.agents.defaults = cfg.agents.defaults || {};
+    if (!Array.isArray(cfg.agents.defaults.skills)) {
+      cfg.agents.defaults.skills = [];
       changed = true;
     }
-  }
+    if (!cfg.agents.defaults.skills.includes(SKILL_SLUG)) {
+      cfg.agents.defaults.skills.push(SKILL_SLUG);
+      changed = true;
+    }
 
-  cfg.skills = cfg.skills || {};
-  cfg.skills.entries = cfg.skills.entries || {};
-  const entry = cfg.skills.entries[SKILL_SLUG];
-  if (entry && entry.enabled === false) {
-    delete cfg.skills.entries[SKILL_SLUG].enabled;
-    changed = true;
-  }
+    for (const agent of cfg.agents.list || []) {
+      if (!Array.isArray(agent.skills)) continue;
+      if (!agent.skills.includes(SKILL_SLUG)) {
+        agent.skills.push(SKILL_SLUG);
+        changed = true;
+      }
+    }
 
-  if (changed) {
-    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
-    console.log('[aoc-connections] enabled skill in openclaw.json');
-  }
-  return { changed };
+    cfg.skills = cfg.skills || {};
+    cfg.skills.entries = cfg.skills.entries || {};
+    const entry = cfg.skills.entries[SKILL_SLUG];
+    if (entry && entry.enabled === false) {
+      delete cfg.skills.entries[SKILL_SLUG].enabled;
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
+      console.log('[aoc-connections] enabled skill in openclaw.json');
+    }
+    return { changed };
+  });
 }
 
 module.exports = {

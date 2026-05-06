@@ -314,46 +314,48 @@ function installSafe() {
 /** Ensure aoc-tasks is in agents.defaults.skills (so brand-new agents inherit
  *  it) AND in every existing agent's explicit allowlist (if they have one).
  *  Idempotent. Writes openclaw.json only if a change is actually needed. */
-function ensureSkillEnabledForAllAgents() {
+async function ensureSkillEnabledForAllAgents() {
+  const { withFileLock } = require('../locks.cjs');
   const cfgPath = path.join(OPENCLAW_HOME, 'openclaw.json');
-  const cfg = readJsonSafe(cfgPath);
-  if (!cfg) return { changed: false, reason: 'no openclaw.json' };
+  return withFileLock(cfgPath, async () => {
+    const cfg = readJsonSafe(cfgPath);
+    if (!cfg) return { changed: false, reason: 'no openclaw.json' };
 
-  let changed = false;
+    let changed = false;
 
-  cfg.agents = cfg.agents || {};
-  cfg.agents.defaults = cfg.agents.defaults || {};
-  if (!Array.isArray(cfg.agents.defaults.skills)) {
-    cfg.agents.defaults.skills = [];
-    changed = true;
-  }
-  if (!cfg.agents.defaults.skills.includes(SKILL_SLUG)) {
-    cfg.agents.defaults.skills.push(SKILL_SLUG);
-    changed = true;
-  }
-
-  for (const agent of cfg.agents.list || []) {
-    if (!Array.isArray(agent.skills)) continue; // inherits defaults — fine
-    if (!agent.skills.includes(SKILL_SLUG)) {
-      agent.skills.push(SKILL_SLUG);
+    cfg.agents = cfg.agents || {};
+    cfg.agents.defaults = cfg.agents.defaults || {};
+    if (!Array.isArray(cfg.agents.defaults.skills)) {
+      cfg.agents.defaults.skills = [];
       changed = true;
     }
-  }
+    if (!cfg.agents.defaults.skills.includes(SKILL_SLUG)) {
+      cfg.agents.defaults.skills.push(SKILL_SLUG);
+      changed = true;
+    }
 
-  // Also ensure skills.entries[aoc-tasks].enabled is not explicitly false
-  cfg.skills = cfg.skills || {};
-  cfg.skills.entries = cfg.skills.entries || {};
-  const entry = cfg.skills.entries[SKILL_SLUG];
-  if (entry && entry.enabled === false) {
-    delete cfg.skills.entries[SKILL_SLUG].enabled;
-    changed = true;
-  }
+    for (const agent of cfg.agents.list || []) {
+      if (!Array.isArray(agent.skills)) continue; // inherits defaults — fine
+      if (!agent.skills.includes(SKILL_SLUG)) {
+        agent.skills.push(SKILL_SLUG);
+        changed = true;
+      }
+    }
 
-  if (changed) {
-    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
-    console.log('[aoc-tasks] enabled skill in openclaw.json (defaults + agent allowlists)');
-  }
-  return { changed };
+    cfg.skills = cfg.skills || {};
+    cfg.skills.entries = cfg.skills.entries || {};
+    const entry = cfg.skills.entries[SKILL_SLUG];
+    if (entry && entry.enabled === false) {
+      delete cfg.skills.entries[SKILL_SLUG].enabled;
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
+      console.log('[aoc-tasks] enabled skill in openclaw.json (defaults + agent allowlists)');
+    }
+    return { changed };
+  });
 }
 
 module.exports = {

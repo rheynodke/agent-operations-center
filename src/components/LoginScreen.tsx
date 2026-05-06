@@ -3,12 +3,15 @@ import { Loader2, Lock, User, ArrowRight, Zap, Activity, ShieldCheck } from "luc
 import { useAuthStore } from "@/stores"
 import { api } from "@/lib/api"
 import { AgentLogo } from "@/components/AgentLogo"
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton"
 
 const RIGHT_BG = "#09090f"   // single source of truth — must match the right panel bg
 
 export function LoginScreen() {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
+  // Google sign-in button is rendered in the same form section.
+  // Error state is shared with the password flow.
   const [error, setError]       = useState("")
   const [loading, setLoading]   = useState(false)
   const [focused, setFocused]   = useState<"user" | "pass" | null>(null)
@@ -445,6 +448,23 @@ export function LoginScreen() {
                 {loading ? "Signing in…" : "Sign In"}
               </button>
             </form>
+
+            {/* Divider */}
+            <div className="mt-5 flex items-center gap-2">
+              <div className="h-px flex-1" style={{ background: "rgba(255,255,255,0.08)" }} />
+              <span className="text-[10px] text-white/40 font-mono px-2 uppercase tracking-wider">or</span>
+              <div className="h-px flex-1" style={{ background: "rgba(255,255,255,0.08)" }} />
+            </div>
+
+            {/* Google sign-in */}
+            <div className="mt-3">
+              <GoogleSignInButton
+                intent="login"
+                onError={(msg) => setError(msg)}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-medium transition-colors disabled:opacity-50"
+                label="Sign in with Google"
+              />
+            </div>
 
             {/* Footer */}
             <div className="mt-7 flex items-center gap-2">
