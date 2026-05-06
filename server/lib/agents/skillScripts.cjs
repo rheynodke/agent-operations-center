@@ -6,6 +6,9 @@ const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, getUserHome, readJsonSafe
 // ── Multi-tenant home resolution ─────────────────────────────────────────────
 
 function _ownerOf(agentId) {
+  const { getOwnerContext } = require('./owner-context.cjs');
+  const ctx = getOwnerContext();
+  if (ctx != null) return ctx;
   try {
     const owner = require('../db.cjs').getAgentOwner(agentId);
     return owner == null ? null : Number(owner);

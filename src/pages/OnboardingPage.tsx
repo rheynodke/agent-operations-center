@@ -148,6 +148,25 @@ export default function OnboardingPage() {
   const [pairingLinked, setPairingLinked] = useState(false)
   const [pairingError, setPairingError] = useState<string | null>(null)
 
+  // Name uniqueness check (debounced)
+  const [nameCheck, setNameCheck] = useState<{ status: 'idle' | 'checking' | 'ok' | 'taken' | 'invalid'; reason?: string; slug?: string }>({ status: 'idle' })
+  useEffect(() => {
+    const trimmed = form.name.trim()
+    if (!trimmed) { setNameCheck({ status: 'idle' }); return }
+    setNameCheck({ status: 'checking' })
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.checkAgentName(trimmed)
+        if (r.available) setNameCheck({ status: 'ok', slug: r.slug })
+        else if (r.reason && /invalid|empty|slug/i.test(r.reason)) setNameCheck({ status: 'invalid', reason: r.reason, slug: r.slug })
+        else setNameCheck({ status: 'taken', reason: r.reason, slug: r.slug })
+      } catch {
+        setNameCheck({ status: 'idle' }) // soft-fail; server will reject on submit
+      }
+    }, 350)
+    return () => clearTimeout(t)
+  }, [form.name])
+
   // Step-6 state (greeting / proof-of-life chat)
   const [greetingState, setGreetingState] = useState<'idle' | 'sending' | 'waiting' | 'received' | 'error'>('idle')
   const [greetingResponse, setGreetingResponse] = useState<string>('')
@@ -523,7 +542,7 @@ export default function OnboardingPage() {
 
   // ── Step 2: Identity ────────────────────────────────────────────────────────
   if (step === 2) {
-    const canNext = form.name.trim().length > 0
+    const canNext = form.name.trim().length > 0 && (nameCheck.status === 'ok' || nameCheck.status === 'idle')
     return wrap(
       <OnboardingShell
         step={2}
@@ -586,6 +605,20 @@ export default function OnboardingPage() {
                 autoFocus
                 className="py-1.5 text-sm"
               />
+              {form.name.trim() && (
+                <p className={cn(
+                  'text-[10px] mt-1 flex items-center gap-1',
+                  nameCheck.status === 'ok' && 'text-emerald-500',
+                  nameCheck.status === 'taken' && 'text-rose-500',
+                  nameCheck.status === 'invalid' && 'text-amber-500',
+                  nameCheck.status === 'checking' && 'text-muted-foreground',
+                )}>
+                  {nameCheck.status === 'checking' && <><Loader2 className="h-3 w-3 animate-spin" /> Mengecek ketersediaan…</>}
+                  {nameCheck.status === 'ok' && <><Check className="h-3 w-3" /> Tersedia · ID: <span className="font-mono">{nameCheck.slug}</span></>}
+                  {nameCheck.status === 'taken' && <><X className="h-3 w-3" /> {nameCheck.reason || 'Nama sudah dipakai'}</>}
+                  {nameCheck.status === 'invalid' && <>{nameCheck.reason}</>}
+                </p>
+              )}
             </div>
             <div className="col-span-2">
               <FieldLabel>Emoji</FieldLabel>

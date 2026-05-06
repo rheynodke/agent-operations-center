@@ -27,26 +27,40 @@ module.exports = function connectionsRouter(deps) {
 
   router.get('/connections', db.authMiddleware, (req, res) => {
   const allConnections = db.getAllConnections();
-  // Connections are a shared resource — default is visible to all logged-in users.
-  // Only filter when caller explicitly passes ?owner= (opt-in).
-  const scope = req.query?.owner ? parseOwnerParam(req) : 'all';
+  // Owner-scoped by default for everyone (admin too) — cross-tenant monitoring
+  // is a future separate feature. Caller can opt into 'all' explicitly via
+  // ?owner=all but only admin's request honors it.
+  const explicit = req.query?.owner ? parseOwnerParam(req) : 'me';
   const uid = req.user?.userId;
   const isAdmin = req.user?.role === 'admin';
 
   let connections = allConnections;
-  if (scope === 'me') {
+  if (explicit === 'me') {
     connections = allConnections.filter(c => c.createdBy === uid);
-  } else if (typeof scope === 'number' && isAdmin) {
-    connections = allConnections.filter(c => c.createdBy === scope);
+  } else if (typeof explicit === 'number') {
+    connections = isAdmin
+      ? allConnections.filter(c => c.createdBy === explicit)
+      : allConnections.filter(c => c.createdBy === uid);
+  } else if (explicit === 'all' && !isAdmin) {
+    connections = allConnections.filter(c => c.createdBy === uid);
   }
-  // scope === 'all' or non-admin requesting arbitrary id → return all
+  // scope === 'all' AND admin → no filter
 
   res.json({ connections });
 });
 
-  router.get('/connections/assignments', db.authMiddleware, (_req, res) => {
-  res.json({ assignments: db.getAllAgentConnectionAssignments() });
-});
+  router.get('/connections/assignments', db.authMiddleware, (req, res) => {
+    // Scope to caller — admin-cross-tenant view will be a separate feature.
+    const ownerId = Number(req.user.userId);
+    const raw = db.getAllAgentConnectionAssignments({ ownerId });
+    // Flatten to legacy shape { connId: [agentId, ...] } for the frontend
+    // since callers within this user's scope can't have ambiguous slugs.
+    const assignments = {};
+    for (const [connId, entries] of Object.entries(raw)) {
+      assignments[connId] = entries.map(e => e.agentId);
+    }
+    res.json({ assignments });
+  });
 
   router.get('/connections/:id', db.authMiddleware, (req, res) => {
   const conn = db.getConnection(req.params.id);

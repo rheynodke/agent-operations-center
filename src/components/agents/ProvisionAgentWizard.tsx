@@ -94,12 +94,13 @@ function StepIndicator({ current }: { current: number }) {
 // ── Step 1: Identity ──────────────────────────────────────────────────────────
 
 function Step1Identity({
-  form, setForm, models, defaultModel
+  form, setForm, models, defaultModel, nameCheck
 }: {
   form: Partial<ProvisionAgentOpts>
   setForm: (f: Partial<ProvisionAgentOpts>) => void
   models: { id: string; name: string }[]
   defaultModel: string
+  nameCheck: { status: 'idle' | 'checking' | 'ok' | 'taken' | 'invalid'; reason?: string }
 }) {
   const [idManuallySet, setIdManuallySet] = useState(false)
 
@@ -145,6 +146,20 @@ function Step1Identity({
           </span>
         </div>
         <p className="text-[10px] text-muted-foreground/50 mt-1.5">Lowercase letters, numbers, hyphens. Cannot be changed later.</p>
+        {(form.name?.trim() || form.id?.trim()) && (
+          <p className={cn(
+            'text-[10px] mt-1.5 flex items-center gap-1',
+            nameCheck.status === 'ok' && 'text-emerald-500',
+            nameCheck.status === 'taken' && 'text-rose-500',
+            nameCheck.status === 'invalid' && 'text-amber-500',
+            nameCheck.status === 'checking' && 'text-muted-foreground',
+          )}>
+            {nameCheck.status === 'checking' && <><Loader2 className="h-3 w-3 animate-spin" /> Mengecek ketersediaan…</>}
+            {nameCheck.status === 'ok' && <><Check className="h-3 w-3" /> Nama dan ID tersedia</>}
+            {nameCheck.status === 'taken' && <><X className="h-3 w-3" /> {nameCheck.reason || 'Sudah dipakai'}</>}
+            {nameCheck.status === 'invalid' && <>{nameCheck.reason}</>}
+          </p>
+        )}
       </div>
 
       {/* Avatar / Mascot Picker */}
@@ -620,6 +635,26 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
   const [errors, setErrors] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState<{ agentId: string; whatsappPairingRequired: boolean } | null>(null)
+  const [nameCheck, setNameCheck] = useState<{ status: 'idle' | 'checking' | 'ok' | 'taken' | 'invalid'; reason?: string }>({ status: 'idle' })
+
+  // Debounced uniqueness check whenever name or id changes.
+  useEffect(() => {
+    const candidateId = form.id?.trim() || ""
+    const candidateName = form.name?.trim() || ""
+    if (!candidateId && !candidateName) { setNameCheck({ status: 'idle' }); return }
+    setNameCheck({ status: 'checking' })
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.checkAgentName(candidateName, candidateId)
+        if (r.available) setNameCheck({ status: 'ok' })
+        else if (r.reason && /invalid|empty|harus/i.test(r.reason)) setNameCheck({ status: 'invalid', reason: r.reason })
+        else setNameCheck({ status: 'taken', reason: r.reason })
+      } catch {
+        setNameCheck({ status: 'idle' })
+      }
+    }, 350)
+    return () => clearTimeout(t)
+  }, [form.name, form.id])
 
   // Load models from first agent detail (has availableModels)
   useEffect(() => {
@@ -660,6 +695,12 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
       if (!form.id?.trim()) errs.push("Agent ID is required")
       if (form.id && !/^[a-z0-9][a-z0-9-]{0,29}$/.test(form.id)) {
         errs.push("Agent ID must start with a letter/number and contain only lowercase letters, numbers, hyphens (max 30)")
+      }
+      if (nameCheck.status === 'taken' || nameCheck.status === 'invalid') {
+        errs.push(nameCheck.reason || 'Agent name/ID tidak tersedia')
+      }
+      if (nameCheck.status === 'checking') {
+        errs.push('Tunggu sebentar — sedang memverifikasi ketersediaan nama')
       }
     }
     if (step === 3) {
@@ -835,7 +876,7 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
 
         {/* Step content */}
         <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-4">
-          {step === 1 && <Step1Identity form={form} setForm={setForm} models={models} defaultModel={defaultModel} />}
+          {step === 1 && <Step1Identity form={form} setForm={setForm} models={models} defaultModel={defaultModel} nameCheck={nameCheck} />}
           {step === 2 && <Step2Personality form={form} setForm={setForm} models={models} defaultModel={defaultModel} template={template} />}
           {step === 3 && <Step3Channels form={form} setForm={setForm} />}
           {step === 4 && <Step4Review form={form} restartGateway={restartGateway} setRestartGateway={setRestartGateway} template={template} />}

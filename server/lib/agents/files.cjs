@@ -5,6 +5,9 @@ const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, getUserHome, readJsonSafe } = require
 const { readMdFile } = require('./detail.cjs');
 
 function _ownerOf(agentId) {
+  const { getOwnerContext } = require('./owner-context.cjs');
+  const ctx = getOwnerContext();
+  if (ctx != null) return ctx;
   try {
     const owner = require('../db.cjs').getAgentOwner(agentId);
     return owner == null ? null : Number(owner);

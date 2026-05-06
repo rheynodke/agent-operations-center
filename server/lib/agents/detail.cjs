@@ -3,25 +3,38 @@ const fs   = require('fs');
 const path = require('path');
 const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, AGENTS_DIR, getUserHome, readJsonSafe } = require('../config.cjs');
 const { parseGatewaySessions } = require('../sessions/gateway.cjs');
+const { withOwnerContext, getOwnerContext } = require('./owner-context.cjs');
+
+function _ctxOwner() { return getOwnerContext(); }
 
 // Multi-tenant home resolution: given an agentId, look up its owner and
 // return the appropriate per-user paths. Admin (owner=1 or null) → root.
-function _ownerOf(agentId) {
+//
+// Under composite-PK schema (agent_id + provisioned_by), the same slug may
+// exist under multiple owners. Pass `ownerHint` (typically req.user.userId,
+// already verified via requireAgentOwnership) to disambiguate. Without a
+// hint we use db.getAgentOwner(agentId) which returns null on ambiguity,
+// causing a safe fallback to admin paths (filesystem 404 rather than
+// cross-tenant leak).
+function _ownerOf(agentId, ownerHint) {
+  if (ownerHint != null) return Number(ownerHint);
+  const ctx = _ctxOwner();
+  if (ctx != null) return ctx;
   try {
     const owner = require('../db.cjs').getAgentOwner(agentId);
     return owner == null ? null : Number(owner);
   } catch { return null; }
 }
-function homeFor(agentId) {
-  const o = _ownerOf(agentId);
+function homeFor(agentId, ownerHint) {
+  const o = _ownerOf(agentId, ownerHint);
   return o == null || o === 1 ? OPENCLAW_HOME : getUserHome(o);
 }
-function agentsDirFor(agentId) {
-  const o = _ownerOf(agentId);
+function agentsDirFor(agentId, ownerHint) {
+  const o = _ownerOf(agentId, ownerHint);
   return o == null || o === 1 ? AGENTS_DIR : path.join(getUserHome(o), 'agents');
 }
-function workspaceFor(agentId) {
-  const o = _ownerOf(agentId);
+function workspaceFor(agentId, ownerHint) {
+  const o = _ownerOf(agentId, ownerHint);
   return o == null || o === 1 ? OPENCLAW_WORKSPACE : path.join(getUserHome(o), 'workspace');
 }
 // getAllSessions merges gateway + claude-cli sessions and augments the gateway
@@ -113,8 +126,8 @@ function parseToolsSections(content) {
 
 // ── Main functions ────────────────────────────────────────────────────────────
 
-function getAgentDetail(agentId) {
-  const configPath = path.join(homeFor(agentId), 'openclaw.json');
+function getAgentDetail(agentId, ownerHint) {
+  const configPath = path.join(homeFor(agentId, ownerHint), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) return null;
 
@@ -124,9 +137,9 @@ function getAgentDetail(agentId) {
 
   const defaultModel = config.agents?.defaults?.model?.primary || '';
 
-  const tenantWorkspace = workspaceFor(agentId);
+  const tenantWorkspace = workspaceFor(agentId, ownerHint);
   const agentWorkspace = agentConfig.workspace || tenantWorkspace;
-  const agentDir = path.join(agentsDirFor(agentId), agentId);
+  const agentDir = path.join(agentsDirFor(agentId, ownerHint), agentId);
 
   const identityContent = readMdFile(path.join(agentWorkspace, 'IDENTITY.md'))
     || readMdFile(path.join(tenantWorkspace, 'IDENTITY.md'));
@@ -772,4 +785,4 @@ function deleteAgent(agentId) {
   return { ok: true };
 }
 
-module.exports = { readMdFile, parseMdFields, parseSoulTraits, parseToolsSections, getAgentDetail, updateAgent, getAgentChannels, addAgentChannel, removeAgentChannel, updateAgentChannel, deleteAgent };
+module.exports = { readMdFile, parseMdFields, parseSoulTraits, parseToolsSections, getAgentDetail, updateAgent, getAgentChannels, addAgentChannel, removeAgentChannel, updateAgentChannel, deleteAgent, withOwnerContext };

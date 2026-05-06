@@ -613,6 +613,108 @@ async function initDatabase() {
   try { db.run("ALTER TABLE agent_profiles ADD COLUMN is_master INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
   try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_profiles_one_master_per_owner ON agent_profiles(provisioned_by) WHERE is_master = 1"); } catch (_) {}
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Multi-tenant agent_id migration (cross-tenant collision fix)
+  // Old schema: agent_profiles.agent_id was a global PRIMARY KEY → two users
+  // provisioning agents with the same slug would silently overwrite each
+  // other's profile. New schema: composite PK (agent_id, provisioned_by) so
+  // user A's "migi" and user B's "migi" coexist as distinct rows. Also adds
+  // owner_id to agent_connections so connection assignments don't bleed
+  // across tenants.
+  //
+  // SQLite cannot ALTER PRIMARY KEY in place — we rebuild the tables. The
+  // helper guards against re-running once migration is done.
+  // ───────────────────────────────────────────────────────────────────────────
+  (function migrateAgentProfilesCompositePk() {
+    try {
+      const info = db.exec("PRAGMA table_info('agent_profiles')");
+      if (!info.length) return;
+      const cols = info[0].values.map(r => ({ name: r[1], pk: r[5] }));
+      const pkCols = cols.filter(c => c.pk > 0).map(c => c.name);
+      // Already migrated if PK is composite (length > 1)
+      if (pkCols.length > 1) return;
+      // Rebuild table with composite PK
+      console.log('[db migration] agent_profiles → composite PK (agent_id, provisioned_by)');
+      db.run(`
+        CREATE TABLE agent_profiles_new (
+          agent_id TEXT NOT NULL,
+          display_name TEXT,
+          emoji TEXT,
+          avatar_data TEXT,
+          avatar_mime TEXT,
+          avatar_preset_id TEXT,
+          color TEXT,
+          description TEXT,
+          tags TEXT,
+          notes TEXT,
+          provisioned_at TEXT DEFAULT (datetime('now')),
+          provisioned_by INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT DEFAULT (datetime('now')),
+          is_master INTEGER NOT NULL DEFAULT 0,
+          role TEXT,
+          PRIMARY KEY (agent_id, provisioned_by)
+        )
+      `);
+      // Discover which optional columns the old table actually has
+      const colNames = cols.map(c => c.name);
+      const has = (n) => colNames.includes(n);
+      const select = [
+        'agent_id',
+        has('display_name')     ? 'display_name'     : "NULL AS display_name",
+        has('emoji')            ? 'emoji'            : "NULL AS emoji",
+        has('avatar_data')      ? 'avatar_data'      : "NULL AS avatar_data",
+        has('avatar_mime')      ? 'avatar_mime'      : "NULL AS avatar_mime",
+        has('avatar_preset_id') ? 'avatar_preset_id' : "NULL AS avatar_preset_id",
+        has('color')            ? 'color'            : "NULL AS color",
+        has('description')      ? 'description'      : "NULL AS description",
+        has('tags')             ? 'tags'             : "NULL AS tags",
+        has('notes')            ? 'notes'            : "NULL AS notes",
+        has('provisioned_at')   ? 'provisioned_at'   : "datetime('now') AS provisioned_at",
+        has('provisioned_by')   ? 'COALESCE(provisioned_by, 1) AS provisioned_by' : '1 AS provisioned_by',
+        has('updated_at')       ? 'updated_at'       : "datetime('now') AS updated_at",
+        has('is_master')        ? 'is_master'        : '0 AS is_master',
+        has('role')             ? 'role'             : "NULL AS role",
+      ].join(', ');
+      db.run(`INSERT INTO agent_profiles_new SELECT ${select} FROM agent_profiles`);
+      db.run('DROP TABLE agent_profiles');
+      db.run('ALTER TABLE agent_profiles_new RENAME TO agent_profiles');
+      // Re-create the master uniqueness index on the new table
+      db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_profiles_one_master_per_owner ON agent_profiles(provisioned_by) WHERE is_master = 1");
+      console.log('[db migration] agent_profiles migration complete');
+    } catch (err) {
+      console.error('[db migration] agent_profiles failed:', err.message);
+    }
+  })();
+
+  (function migrateAgentConnectionsOwner() {
+    try {
+      const info = db.exec("PRAGMA table_info('agent_connections')");
+      if (!info.length) return;
+      const colNames = info[0].values.map(r => r[1]);
+      if (colNames.includes('owner_id')) return; // already migrated
+      console.log('[db migration] agent_connections → adding owner_id');
+      db.run("ALTER TABLE agent_connections ADD COLUMN owner_id INTEGER");
+      // Backfill from agent_profiles. After the composite PK migration above
+      // a slug may have multiple owners; pick any (admin-leaning) — operators
+      // should re-assign ambiguous rows manually if any exist.
+      db.run(`
+        UPDATE agent_connections
+        SET owner_id = (
+          SELECT provisioned_by FROM agent_profiles
+          WHERE agent_profiles.agent_id = agent_connections.agent_id
+          ORDER BY (provisioned_by = 1) DESC, provisioned_by ASC LIMIT 1
+        )
+        WHERE owner_id IS NULL
+      `);
+      // Anything still null (no profile row) → admin
+      db.run("UPDATE agent_connections SET owner_id = 1 WHERE owner_id IS NULL");
+      db.run("CREATE INDEX IF NOT EXISTS idx_agent_connections_agent_owner ON agent_connections(agent_id, owner_id)");
+      console.log('[db migration] agent_connections migration complete');
+    } catch (err) {
+      console.error('[db migration] agent_connections failed:', err.message);
+    }
+  })();
+
   // === HQ Room columns (sub-project 3, Phase 1) ===
   try { db.run("ALTER TABLE mission_rooms ADD COLUMN is_hq INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
   try { db.run("ALTER TABLE mission_rooms ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
@@ -2004,9 +2106,10 @@ function getUserMasterAgentId(userId) {
   return result[0].values[0][0] || null;
 }
 
-function markAgentProfileMaster(agentId) {
+function markAgentProfileMaster(agentId, ownerId) {
   if (!db) return;
-  db.run('UPDATE agent_profiles SET is_master = 1 WHERE agent_id = ?', [agentId]);
+  if (ownerId == null) throw new Error('markAgentProfileMaster: ownerId is required');
+  db.run('UPDATE agent_profiles SET is_master = 1 WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerId)]);
   persist();
 }
 
@@ -2191,6 +2294,7 @@ function generateToken(user) {
     {
       userId: user.id,
       username: user.username,
+      displayName: user.display_name || user.displayName || user.username,
       role: user.role,
     },
     JWT_SECRET,
@@ -2228,6 +2332,13 @@ function authMiddleware(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
+  // Backfill displayName for tokens issued before it was embedded.
+  if (!payload.displayName && payload.userId) {
+    try {
+      const u = getUserById(payload.userId);
+      if (u) payload.displayName = u.display_name || u.username;
+    } catch { /* best-effort */ }
+  }
   req.user = payload;
   next();
 }
@@ -2244,11 +2355,20 @@ function requireAdmin(req, res, next) {
 // Agent ownership is tracked on agent_profiles.provisioned_by.
 // Admin always bypasses ownership checks.
 
-function getAgentOwner(agentId) {
+// Composite-PK aware. Pass `ownerHint` (typically req.user.userId) to disambiguate
+// when the slug exists under multiple users. Without a hint, returns the single
+// owner if only one exists, otherwise null (caller must specify whose agent).
+function getAgentOwner(agentId, ownerHint) {
   if (!db) return null;
+  if (ownerHint != null) {
+    const r = db.exec('SELECT provisioned_by FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerHint)]);
+    if (r.length && r[0].values.length) return r[0].values[0][0];
+    return null;
+  }
   const res = db.exec('SELECT provisioned_by FROM agent_profiles WHERE agent_id = ?', [agentId]);
   if (!res.length || !res[0].values.length) return null;
-  return res[0].values[0][0]; // may be null for legacy agents
+  if (res[0].values.length > 1) return null; // ambiguous — caller must scope
+  return res[0].values[0][0];
 }
 
 function getConnectionOwner(connId) {
@@ -2281,12 +2401,20 @@ function requirePipelineOwnership(req, res, next) {
   next();
 }
 
-/** True if `req.user` is admin, OR is the owner of the given agent. */
+/**
+ * True if `req.user` owns a profile row for this agent_id.
+ *
+ * Under composite-PK multi-tenancy: admin no longer auto-bypasses for ALL
+ * agents — admin can only act on agents where provisioned_by = admin's userId.
+ * Service tokens (role=agent) keep the bypass since they run inside a user
+ * gateway and operate on behalf of agents in that scope.
+ *
+ * Cross-tenant admin monitoring is intentionally a separate (future) feature.
+ */
 function userOwnsAgent(req, agentId) {
   if (!req?.user) return false;
-  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
-  const owner = getAgentOwner(agentId);
-  return owner != null && owner === req.user.userId;
+  if (req.user.role === 'agent') return true;
+  return getAgentProfile(agentId, req.user.userId) != null;
 }
 
 function userOwnsConnection(req, connId) {
@@ -2302,6 +2430,14 @@ function requireAgentOwnership(req, res, next) {
   if (!agentId) return res.status(400).json({ error: 'agentId missing from route' });
   if (!userOwnsAgent(req, agentId)) {
     return res.status(403).json({ error: 'You do not have permission to modify this agent' });
+  }
+  // Establish owner context so downstream parsers (which resolve filesystem
+  // paths via getAgentOwner) pick THIS user's home even when the slug is
+  // ambiguous across tenants. Service tokens skip this — they don't carry a
+  // userId and parsers rely on header/query agentId routing.
+  if (req.user.role !== 'agent' && req.user.userId) {
+    const { withOwnerContext } = require('./agents/detail.cjs');
+    return withOwnerContext(req.user.userId, () => next());
   }
   next();
 }
@@ -2612,25 +2748,49 @@ function listReservations() {
 
 // ─── Agent Profiles ──────────────────────────────────────────────────────────
 
-function getAgentProfile(agentId) {
+// Composite-key aware lookup. Pass `ownerId` to disambiguate when the same
+// slug exists under multiple users; without it, prefer admin (uid=1) then
+// the lowest provisioned_by — keeps legacy single-tenant call sites working.
+function getAgentProfile(agentId, ownerId) {
   if (!db) return null;
-  const result = db.exec('SELECT * FROM agent_profiles WHERE agent_id = ?', [agentId]);
+  const result = ownerId != null
+    ? db.exec('SELECT * FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerId)])
+    : db.exec(
+        `SELECT * FROM agent_profiles WHERE agent_id = ?
+         ORDER BY (provisioned_by = 1) DESC, provisioned_by ASC LIMIT 1`,
+        [agentId]
+      );
   if (!result.length || !result[0].values.length) return null;
   const row = result[0].values[0];
   const cols = result[0].columns;
   const obj = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
-  // Parse JSON tags
   try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
-  // Add camelCase aliases for frontend consumption
   obj.avatarPresetId = obj.avatar_preset_id ?? null;
   obj.role = obj.role ?? null;
   obj.isMaster = obj.is_master === 1 || obj.is_master === true;
   return obj;
 }
 
+// List every owner row that holds this agent_id. Used by ambiguity resolvers
+// (e.g. /api/master/team where caller knows their own ownerId).
+function getAgentProfilesByAgentId(agentId) {
+  if (!db) return [];
+  const result = db.exec('SELECT * FROM agent_profiles WHERE agent_id = ? ORDER BY provisioned_by ASC', [agentId]);
+  if (!result.length) return [];
+  return result[0].values.map(row => {
+    const obj = Object.fromEntries(result[0].columns.map((c, i) => [c, row[i]]));
+    try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
+    obj.avatarPresetId = obj.avatar_preset_id ?? null;
+    obj.isMaster = obj.is_master === 1 || obj.is_master === true;
+    return obj;
+  });
+}
+
 function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMime, avatarPresetId, color, description, tags, notes, provisionedBy, role }) {
   if (!db) throw new Error('Database not initialized');
-  const existing = getAgentProfile(agentId);
+  // provisioned_by is part of the composite PK now — required.
+  const owner = provisionedBy != null ? Number(provisionedBy) : 1;
+  const existing = getAgentProfile(agentId, owner);
   const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : (tags || '[]');
   if (existing) {
     db.run(
@@ -2646,12 +2806,12 @@ function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMim
         notes = COALESCE(?, notes),
         role = COALESCE(?, role),
         updated_at = datetime('now')
-      WHERE agent_id = ?`,
+      WHERE agent_id = ? AND provisioned_by = ?`,
       [displayName ?? null, emoji ?? null, avatarData ?? null, avatarMime ?? null,
        avatarPresetId ?? existing.avatar_preset_id ?? null,
        color ?? existing.color ?? null,
        description ?? null, tagsJson, notes ?? null,
-       role ?? null, agentId]
+       role ?? null, agentId, owner]
     );
   } else {
     db.run(
@@ -2660,31 +2820,36 @@ function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMim
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [agentId, displayName ?? null, emoji ?? null, avatarData ?? null, avatarMime ?? null,
        avatarPresetId ?? null, color ?? null, description ?? null, tagsJson, notes ?? null,
-       provisionedBy ?? null, role ?? null]
+       owner, role ?? null]
     );
   }
   persist();
-  return getAgentProfile(agentId);
+  return getAgentProfile(agentId, owner);
 }
 
-function renameAgentProfile(oldAgentId, newAgentId) {
+function renameAgentProfile(oldAgentId, newAgentId, ownerId) {
   if (!db) return;
-  const existing = getAgentProfile(oldAgentId);
+  if (ownerId == null) throw new Error('renameAgentProfile: ownerId is required');
+  const owner = Number(ownerId);
+  const existing = getAgentProfile(oldAgentId, owner);
   if (!existing) return;
-  // Check if new ID already has a profile (unlikely, but safe)
-  const alreadyExists = getAgentProfile(newAgentId);
-  if (alreadyExists) {
-    // Just delete old one — new ID already has a profile
-    db.run('DELETE FROM agent_profiles WHERE agent_id = ?', [oldAgentId]);
+  const conflict = getAgentProfile(newAgentId, owner);
+  if (conflict) {
+    db.run('DELETE FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [oldAgentId, owner]);
   } else {
-    db.run('UPDATE agent_profiles SET agent_id = ? WHERE agent_id = ?', [newAgentId, oldAgentId]);
+    db.run('UPDATE agent_profiles SET agent_id = ? WHERE agent_id = ? AND provisioned_by = ?', [newAgentId, oldAgentId, owner]);
   }
+  // Carry over connection assignments
+  db.run('UPDATE agent_connections SET agent_id = ? WHERE agent_id = ? AND owner_id = ?', [newAgentId, oldAgentId, owner]);
   persist();
 }
 
-function getAllAgentProfiles() {
+function getAllAgentProfiles(opts = {}) {
   if (!db) return [];
-  const result = db.exec('SELECT * FROM agent_profiles ORDER BY provisioned_at DESC');
+  const { ownerId } = opts || {};
+  const result = ownerId != null
+    ? db.exec('SELECT * FROM agent_profiles WHERE provisioned_by = ? ORDER BY provisioned_at DESC', [Number(ownerId)])
+    : db.exec('SELECT * FROM agent_profiles ORDER BY provisioned_at DESC');
   if (!result.length) return [];
   return result[0].values.map(row => {
     const obj = Object.fromEntries(result[0].columns.map((c, i) => [c, row[i]]));
@@ -2695,9 +2860,15 @@ function getAllAgentProfiles() {
   });
 }
 
-function deleteAgentProfile(agentId) {
+function deleteAgentProfile(agentId, ownerId) {
   if (!db) return;
-  db.run('DELETE FROM agent_profiles WHERE agent_id = ?', [agentId]);
+  if (ownerId == null) {
+    // Legacy guard: callers must scope. We refuse rather than silently nuking
+    // every owner's profile for this slug.
+    throw new Error('deleteAgentProfile: ownerId is required to avoid cross-tenant deletion');
+  }
+  db.run('DELETE FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerId)]);
+  db.run('DELETE FROM agent_connections WHERE agent_id = ? AND owner_id = ?', [agentId, Number(ownerId)]);
   persist();
 }
 
@@ -2811,26 +2982,32 @@ function deleteConnection(id) {
 
 // ─── Agent ↔ Connection assignments ─────────────────────────────────────────
 
-function getAgentConnectionIds(agentId) {
+function getAgentConnectionIds(agentId, ownerId) {
   if (!db) return [];
-  const res = db.exec('SELECT connection_id FROM agent_connections WHERE agent_id = ?', [agentId]);
+  if (ownerId == null) throw new Error('getAgentConnectionIds: ownerId is required');
+  const res = db.exec('SELECT connection_id FROM agent_connections WHERE agent_id = ? AND owner_id = ?', [agentId, Number(ownerId)]);
   if (!res.length) return [];
   return res[0].values.map(r => r[0]);
 }
 
+// Returns {agentId, ownerId} pairs — caller must filter by owner if displaying
+// to a specific user (cross-tenant agents share connection_id rarely, but the
+// schema allows it).
 function getConnectionAgentIds(connectionId) {
   if (!db) return [];
-  const res = db.exec('SELECT agent_id FROM agent_connections WHERE connection_id = ?', [connectionId]);
+  const res = db.exec('SELECT agent_id, owner_id FROM agent_connections WHERE connection_id = ?', [connectionId]);
   if (!res.length) return [];
-  return res[0].values.map(r => r[0]);
+  return res[0].values.map(r => ({ agentId: r[0], ownerId: r[1] }));
 }
 
-function setAgentConnections(agentId, connectionIds) {
+function setAgentConnections(agentId, connectionIds, ownerId) {
   if (!db) throw new Error('DB not initialized');
-  db.run('DELETE FROM agent_connections WHERE agent_id = ?', [agentId]);
+  if (ownerId == null) throw new Error('setAgentConnections: ownerId is required');
+  const owner = Number(ownerId);
+  db.run('DELETE FROM agent_connections WHERE agent_id = ? AND owner_id = ?', [agentId, owner]);
   const now = new Date().toISOString();
   for (const cid of connectionIds) {
-    db.run('INSERT INTO agent_connections (agent_id, connection_id, created_at) VALUES (?, ?, ?)', [agentId, cid, now]);
+    db.run('INSERT INTO agent_connections (agent_id, connection_id, owner_id, created_at) VALUES (?, ?, ?, ?)', [agentId, cid, owner, now]);
   }
   persist();
 }
@@ -2916,21 +3093,28 @@ function listPipelinesForUser(req) {
   return all.filter(p => p.createdBy == null || p.createdBy === req.user.userId);
 }
 
-function getAgentConnectionsRaw(agentId) {
+function getAgentConnectionsRaw(agentId, ownerId) {
   if (!db) return [];
-  const ids = getAgentConnectionIds(agentId);
+  if (ownerId == null) throw new Error('getAgentConnectionsRaw: ownerId is required');
+  const ids = getAgentConnectionIds(agentId, ownerId);
   if (ids.length === 0) return [];
   return ids.map(id => getConnectionRaw(id)).filter(c => c && c.enabled);
 }
 
-function getAllAgentConnectionAssignments() {
+// Map of connection_id → [{agentId, ownerId}, ...]. Callers MUST filter by
+// owner when displaying back to a specific user. Returning the owner inline
+// keeps that filter explicit at the call site.
+function getAllAgentConnectionAssignments(opts = {}) {
   if (!db) return {};
-  const res = db.exec('SELECT agent_id, connection_id FROM agent_connections');
+  const { ownerId } = opts || {};
+  const res = ownerId != null
+    ? db.exec('SELECT agent_id, connection_id, owner_id FROM agent_connections WHERE owner_id = ?', [Number(ownerId)])
+    : db.exec('SELECT agent_id, connection_id, owner_id FROM agent_connections');
   if (!res.length) return {};
   const map = {};
-  for (const [agentId, connId] of res[0].values) {
+  for (const [agentId, connId, ownerCol] of res[0].values) {
     if (!map[connId]) map[connId] = [];
-    map[connId].push(agentId);
+    map[connId].push({ agentId, ownerId: ownerCol });
   }
   return map;
 }
@@ -3004,6 +3188,7 @@ module.exports = {
   JWT_SECRET,
   // Agent profiles
   getAgentProfile,
+  getAgentProfilesByAgentId,
   upsertAgentProfile,
   renameAgentProfile,
   getAllAgentProfiles,

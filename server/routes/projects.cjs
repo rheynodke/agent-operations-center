@@ -141,7 +141,9 @@ module.exports = function projectsRouter(deps) {
 
   router.get('/projects', db.authMiddleware, (req, res) => {
   const allProjects = db.getAllProjects();
-  const scope = parseOwnerParam(req);
+  // Admin default = own projects only. Cross-tenant monitoring requires explicit ?owner=all|<id>.
+  const hasOwnerParam = req.query?.owner != null && req.query.owner !== '';
+  const scope = hasOwnerParam ? parseOwnerParam(req) : 'me';
   const isAdmin = req.user?.role === 'admin';
   const uid = req.user?.userId;
 
@@ -1014,9 +1016,12 @@ module.exports = function projectsRouter(deps) {
       routes = routes.filter((r) => !r.agentId || db.userOwnsAgent(req, r.agentId));
     }
 
-    // Enrich with SQLite profile data (avatarPresetId, color)
+    // Enrich with SQLite profile data (avatarPresetId, color). Scope to caller's
+    // tenant — composite-PK schema means the same slug may exist under multiple
+    // owners and we want THIS user's profile.
+    const callerId = Number(req.user?.userId);
     const enriched = routes.map(r => {
-      const profile = db.getAgentProfile(r.agentId);
+      const profile = r.agentId ? db.getAgentProfile(r.agentId, callerId) : null;
       return {
         ...r,
         avatarPresetId: profile?.avatarPresetId ?? profile?.avatar_preset_id ?? null,

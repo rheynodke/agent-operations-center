@@ -14,7 +14,7 @@ module.exports = function agentsRouter(deps) {
 // ─── Agent Workspace Browser (read-only file manager) ───────────────────────
 // List immediate children of a directory inside the agent's workspace.
 // Path-traversal guarded; symlinks refused. See server/lib/workspace-browser.cjs.
-  router.get('/agents/:id/workspace/tree', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/workspace/tree', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const rel = String(req.query.path || '');
     const result = parsers.workspaceBrowser.tree(req.params.id, rel);
@@ -84,12 +84,50 @@ function authMiddlewareWithQueryToken(req, res, next) {
   }
 });
 
+// ─── Agent Name Availability Check ──────────────────────────────────────────
+// Used by the onboarding wizard + provisioning modal to validate the chosen
+// agent name BEFORE we hit provisionAgent (which would fail late with a 409).
+// Scope: per-user openclaw.json agents.list (cross-tenant isolation already
+// keeps slugs apart in the filesystem).
+  router.get('/agent-availability', db.authMiddleware, (req, res) => {
+    try {
+      const rawName = String(req.query?.name || '').trim();
+      const rawId   = String(req.query?.id   || '').trim();
+      if (!rawName && !rawId) return res.json({ available: false, reason: 'name or id is required' });
+
+      const slug = rawId
+        ? rawId.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 30)
+        : rawName.toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-z0-9-]/g, '')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 30);
+      if (!slug) return res.json({ available: false, slug: '', reason: 'empty slug — use letters or numbers' });
+      if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(slug)) {
+        return res.json({ available: false, slug, reason: 'Agent ID harus huruf kecil/angka/strip, mulai dengan huruf atau angka' });
+      }
+
+      const userId = Number(req.user?.userId ?? req.user?.id);
+      const list = parsers.parseAgentRegistry(userId) || [];
+      const slugTaken = list.some(a => a.id === slug);
+      const nameTaken = rawName ? list.some(a => String(a.name || '').trim().toLowerCase() === rawName.toLowerCase()) : false;
+
+      if (slugTaken) return res.json({ available: false, slug, reason: `Agent ID "${slug}" sudah dipakai` });
+      if (nameTaken) return res.json({ available: false, slug, reason: `Nama "${rawName}" sudah dipakai oleh agent lain` });
+      return res.json({ available: true, slug });
+    } catch (err) {
+      console.error('[api/agents/check-name]', err);
+      res.status(500).json({ error: err.message || 'check-name failed' });
+    }
+  });
+
 // ─── Agent Profile (SQLite) ──────────────────────────────────────────────────
 
 // Get agent profile (dashboard-specific metadata)
-  router.get('/agents/:id/profile', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/profile', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
-    const profile = db.getAgentProfile(req.params.id);
+    const profile = db.getAgentProfile(req.params.id, Number(req.user.userId));
     res.json({ profile: profile || null });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch agent profile' });
@@ -125,7 +163,7 @@ function authMiddlewareWithQueryToken(req, res, next) {
     if (avatarData.length > 2_800_000) {
       return res.status(413).json({ error: 'Avatar image too large (max ~2MB)' });
     }
-    db.upsertAgentProfile({ agentId: req.params.id, avatarData, avatarMime: avatarMime || 'image/png' });
+    db.upsertAgentProfile({ agentId: req.params.id, avatarData, avatarMime: avatarMime || 'image/png', provisionedBy: req.user?.userId });
     console.log(`[api/agents/avatar] Avatar updated for agent "${req.params.id}"`);
     res.json({ ok: true, agentId: req.params.id });
   } catch (err) {
@@ -135,9 +173,9 @@ function authMiddlewareWithQueryToken(req, res, next) {
 });
 
 // Get agent avatar (serves as data URL)
-  router.get('/agents/:id/avatar', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/avatar', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
-    const profile = db.getAgentProfile(req.params.id);
+    const profile = db.getAgentProfile(req.params.id, Number(req.user.userId));
     if (!profile?.avatar_data) return res.status(404).json({ error: 'No avatar' });
     res.json({ avatarData: profile.avatar_data, avatarMime: profile.avatar_mime || 'image/png' });
   } catch (err) {
@@ -148,7 +186,7 @@ function authMiddlewareWithQueryToken(req, res, next) {
 
 
 // List all skills visible to an agent
-  router.get('/agents/:id/skills', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/skills', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const skills = parsers.getAgentSkills(req.params.id);
     res.json({ skills });
@@ -160,7 +198,7 @@ function authMiddlewareWithQueryToken(req, res, next) {
 });
 
 // Get a skill's SKILL.md content
-  router.get('/agents/:id/skills/:name/file', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/skills/:name/file', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.getSkillFile(req.params.id, req.params.name);
     res.json(result);
@@ -235,7 +273,7 @@ function authMiddlewareWithQueryToken(req, res, next) {
 });
 
 // Get built-in tools for a specific agent (with enabled/disabled state)
-  router.get('/agents/:id/tools', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/tools', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const tools = parsers.getAgentTools(req.params.id);
     res.json({ tools });
@@ -249,13 +287,14 @@ function authMiddlewareWithQueryToken(req, res, next) {
 // Composite capabilities — for workflow editor UI. Returns skills + enabled
 // built-in tools + assigned connections + custom scripts in one call so the
 // agent capability card can render without 4 round-trips.
-  router.get('/agents/:id/capabilities', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/capabilities', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const id = req.params.id;
-    const profile = db.getAgentProfile(id);
+    const ownerId = Number(req.user.userId);
+    const profile = db.getAgentProfile(id, ownerId);
     const skills = parsers.getAgentSkills(id) || [];
     const tools = (parsers.getAgentTools(id) || []).filter((t) => t.enabled !== false);
-    const connIds = db.getAgentConnectionIds(id);
+    const connIds = db.getAgentConnectionIds(id, ownerId);
     const connections = connIds.map((cid) => db.getConnection(cid)).filter(Boolean);
     let customTools = { agent: [], shared: [] };
     try { customTools = parsers.listAgentCustomTools(id); } catch {}
@@ -311,7 +350,7 @@ function authMiddlewareWithQueryToken(req, res, next) {
 // ─── Agent Channel Management ────────────────────────────────────────────────
 
 // Get all channel bindings for an agent
-  router.get('/agents/:id/channels', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/channels', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const result = parsers.getAgentChannels(req.params.id);
     res.json(result);
@@ -366,14 +405,17 @@ function authMiddlewareWithQueryToken(req, res, next) {
 // Resolve the per-tenant home owner for an agent. Falls back to the
 // authenticated user when the agent has no DB-tracked owner (legacy admin).
 function _userIdForAgent(req, agentId) {
-  if (!agentId) return Number(req.user?.userId ?? req.user?.id) || null;
-  const owner = db.getAgentOwner(agentId);
-  if (owner != null) return Number(owner);
-  return Number(req.user?.userId ?? req.user?.id) || null;
+  // Always prefer the authenticated user — under composite-PK multi-tenancy
+  // the same slug can exist under multiple owners. Auth identity wins.
+  const callerId = Number(req.user?.userId ?? req.user?.id) || null;
+  if (callerId) return callerId;
+  if (!agentId) return null;
+  const owner = db.getAgentOwner(agentId); // single-owner only; null if ambiguous
+  return owner != null ? Number(owner) : null;
 }
 
 // List pending pairing requests for a specific agent (across all channels)
-  router.get('/agents/:id/pairing', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/pairing', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const userId = _userIdForAgent(req, req.params.id);
     const result = parsers.listAllPairingRequests(req.params.id, userId);

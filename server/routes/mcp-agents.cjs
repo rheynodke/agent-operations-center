@@ -28,7 +28,13 @@ module.exports = function mcpAgentsRouter(deps) {
     // Agent assignment check (same pattern as /api/connections/:id/google-access-token)
     const agentId = req.user?.agentId || req.get('X-AOC-Agent-Id');
     if (agentId) {
-      const assigned = db.getAgentConnectionIds(agentId);
+      // Service tokens may not carry a user id — derive owner from the agent's
+      // single-tenant lookup (rejects ambiguous cross-tenant slugs by design).
+      const ownerHint = Number(req.user?.userId) || db.getAgentOwner(agentId);
+      if (ownerHint == null) {
+        return res.status(400).json({ error: 'Cannot resolve agent owner for assignment check — pass user context' });
+      }
+      const assigned = db.getAgentConnectionIds(agentId, ownerHint);
       if (!assigned.includes(match.id)) {
         return res.status(403).json({ error: 'Agent not assigned to this MCP connection' });
       }
@@ -83,8 +89,10 @@ module.exports = function mcpAgentsRouter(deps) {
 
 // ─── Agent ↔ Connection assignments ─────────────────────────────────────────
 
-  router.get('/agents/:id/connections', db.authMiddleware, (req, res) => {
-  const ids = db.getAgentConnectionIds(req.params.id);
+  router.get('/agents/:id/connections', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+  // requireAgentOwnership already verified caller owns this slug → use their userId as scope.
+  const ownerId = Number(req.user.userId);
+  const ids = db.getAgentConnectionIds(req.params.id, ownerId);
   const connections = ids.map(id => db.getConnection(id)).filter(Boolean);
   res.json({ connectionIds: ids, connections });
 });
@@ -100,14 +108,16 @@ module.exports = function mcpAgentsRouter(deps) {
       return res.status(400).json({ error: 'An agent can be assigned at most one Composio connection' });
     }
 
+    // requireAgentOwnership already proved caller owns this slug; scope by their userId.
+    const ownerId = Number(req.user.userId);
     // Detect actual change so we only restart the gateway when the assignment
     // truly differs (avoids gratuitous restarts on no-op writes from the UI).
-    const prevIds = new Set(db.getAgentConnectionIds(req.params.id) || []);
+    const prevIds = new Set(db.getAgentConnectionIds(req.params.id, ownerId) || []);
     const nextIds = new Set(connectionIds);
     const changed = prevIds.size !== nextIds.size
       || [...nextIds].some(id => !prevIds.has(id));
 
-    db.setAgentConnections(req.params.id, connectionIds);
+    db.setAgentConnections(req.params.id, connectionIds, ownerId);
     try {
       const allConns = db.getAllConnections();
       const assigned = allConns.filter(c => connectionIds.includes(c.id));
@@ -124,8 +134,7 @@ module.exports = function mcpAgentsRouter(deps) {
     let gatewayRestarted = false;
     if (changed) {
       try {
-        const ownerId = db.getAgentOwner(req.params.id);
-        if (ownerId != null && Number(ownerId) !== 1) {
+        if (Number(ownerId) !== 1) {
           // Non-admin: bounce per-user gateway via orchestrator.
           const orchestrator = require('../lib/gateway-orchestrator.cjs');
           // Fire-and-forget — we don't want the HTTP response to block on the
@@ -157,7 +166,11 @@ module.exports = function mcpAgentsRouter(deps) {
   try {
     const agentId = req.query.agentId;
     if (!agentId) return res.json({ connections: [], error: 'agentId query param required' });
-    const conns = db.getAgentConnectionsRaw(agentId);
+    // Scope assignment lookup by caller's userId (or the agent's resolvable
+    // single owner for service tokens that don't carry one).
+    const ownerHint = Number(req.user?.userId) || db.getAgentOwner(agentId);
+    if (ownerHint == null) return res.status(400).json({ connections: [], error: 'Cannot resolve agent owner' });
+    const conns = db.getAgentConnectionsRaw(agentId, ownerHint);
     const result = conns.map(c => {
       const meta = c.metadata || {};
       const out = { name: c.name, type: c.type };

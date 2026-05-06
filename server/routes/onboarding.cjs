@@ -107,7 +107,7 @@ module.exports = function onboardingRouter(deps) {
         avatarPresetId: avatarPresetId || null,
         provisionedBy: userId,
       });
-      db.markAgentProfileMaster(result.agentId);
+      db.markAgentProfileMaster(result.agentId, userId);
       db.setUserMasterAgent(userId, result.agentId);
       emitPhase(userId, 'profile_linked', { agentId: result.agentId });
       // Belt-and-suspenders: enrol the new master into aoc-master in openclaw.json
@@ -194,7 +194,7 @@ module.exports = function onboardingRouter(deps) {
         try {
           db.upsertAgentProfile({ agentId: main.id, displayName: main.name || main.id, provisionedBy: adminId });
         } catch {}
-        db.markAgentProfileMaster(main.id);
+        db.markAgentProfileMaster(main.id, adminId);
         db.setUserMasterAgent(adminId, main.id);
         console.log(`[onboarding] backfilled master_agent_id=${main.id} for admin user 1`);
       }

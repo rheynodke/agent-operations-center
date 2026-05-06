@@ -239,7 +239,9 @@ function _loadComposio(req, res) {
 
     const agentId = req.user?.agentId || req.get('X-AOC-Agent-Id');
     if (agentId) {
-      const assigned = db.getAgentConnectionIds(agentId);
+      const ownerHint = Number(req.user?.userId) || db.getAgentOwner(agentId);
+      if (ownerHint == null) return res.status(400).json({ error: 'Cannot resolve agent owner for assignment check' });
+      const assigned = db.getAgentConnectionIds(agentId, ownerHint);
       if (!assigned.includes(connId)) {
         return res.status(403).json({ error: 'Agent not assigned to this connection' });
       }

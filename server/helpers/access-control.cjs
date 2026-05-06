@@ -183,12 +183,15 @@ function filterAgentsByOwner(allAgents, user, scope, getOwnerFn) {
   const isAdmin = user?.role === 'admin';
   return allAgents.filter((agent) => {
     // 'main' is admin-private (owner = userId 1) — strict per-user, not a shared agent.
-    const ownerId = agent.id === 'main' ? 1 : getOwnerFn(agent.id);
+    // Pass user.userId as the owner hint so cross-tenant slug collisions resolve
+    // to THIS user's agent_profiles row (composite-PK schema).
+    const ownerId = agent.id === 'main' ? 1 : getOwnerFn(agent.id, user?.userId);
     if (isAdmin) {
+      // Admin defaults to own scope — cross-tenant monitoring will be a separate feature.
       if (scope === 'all') return true;
-      if (scope === 'me') return ownerId === user.userId;
       if (typeof scope === 'number') return ownerId === scope;
-      return true;
+      // 'me' or anything else → strict own scope
+      return ownerId === user.userId;
     }
     return ownerId === user.userId;
   });

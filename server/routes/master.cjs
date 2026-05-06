@@ -21,8 +21,8 @@ module.exports = function masterRouter({ db, gatewayPool }) {
     const masterId = db.getUserMasterAgentId(userId);
     if (!masterId) return res.status(403).json({ error: 'No Master Agent for this user' });
 
-    const profiles = db.getAllAgentProfiles().filter(p =>
-      Number(p.provisioned_by) === userId && p.agent_id !== masterId
+    const profiles = db.getAllAgentProfiles({ ownerId: userId }).filter(p =>
+      p.agent_id !== masterId
     );
 
     const team = profiles.map(p => ({
@@ -55,8 +55,8 @@ module.exports = function masterRouter({ db, gatewayPool }) {
       return res.status(400).json({ error: 'Cannot delegate to yourself' });
     }
 
-    const target = db.getAgentProfile(targetAgentId);
-    if (!target || Number(target.provisioned_by) !== userId) {
+    const target = db.getAgentProfile(targetAgentId, userId);
+    if (!target) {
       return res.status(404).json({ error: 'Target agent not found in your team' });
     }
 

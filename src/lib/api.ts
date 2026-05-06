@@ -118,6 +118,12 @@ export const api = {
     return request(withScope(`/agents${qs}`))
   },
   getAgent: (id: string) => request(`/agents/${id}`),
+  checkAgentName: (name: string, id?: string) => {
+    const params = new URLSearchParams()
+    if (name) params.set("name", name)
+    if (id) params.set("id", id)
+    return request<{ available: boolean; slug?: string; reason?: string }>(`/agent-availability?${params.toString()}`)
+  },
   getAgentDetail: (id: string) => request(`/agents/${id}/detail`),
   updateAgent: (id: string, updates: Record<string, unknown>) =>
     request(`/agents/${id}`, { method: "PATCH", body: JSON.stringify(updates) }),

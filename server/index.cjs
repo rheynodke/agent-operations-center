@@ -133,6 +133,11 @@ function emitRoomMessage(message) {
 function getAgentDisplayName(agentId) {
   if (!agentId) return null;
   try {
+    // SQLite profile is the cross-tenant source of truth for display names.
+    // Admin's enriched registry only contains admin agents.
+    const profile = db.getAgentProfile(agentId);
+    if (profile?.displayName) return profile.displayName;
+    if (profile?.display_name) return profile.display_name;
     const agent = getEnrichedAgents().find(a => a.id === agentId);
     return agent?.name || agent?.displayName || agentId;
   } catch (_) {
@@ -236,9 +241,11 @@ app.get('/api/agents', db.authMiddleware, (req, res) => {
   try {
     const targetUid = accessControl.parseScopeUserId(req);
     const allAgents = getEnrichedAgents(targetUid);
-    const scope = accessControl.parseOwnerParam(req);
+    // Owner-scoped by default for everyone (admin too) — explicit ?owner=all|<id>
+    // is required for cross-tenant viewing.
+    const explicit = req.query?.owner ? accessControl.parseOwnerParam(req) : 'me';
     const filtered = accessControl.filterAgentsByOwner(
-      allAgents, req.user, scope, db.getAgentOwner
+      allAgents, req.user, explicit, db.getAgentOwner
     );
     res.json({ agents: filtered });
   } catch (err) {
@@ -546,8 +553,13 @@ function syncConnectionsScriptForAllAgents() { /* moved to aoc-connections skill
 // all aoc-builtin-source scripts. See server/lib/scripts.cjs:BUILTIN_SCRIPT_MANIFEST.
 function syncBuiltinsForAgent(agentId) {
   try {
+    // Resolve agent's single owner (composite-PK aware). For ambiguous cross-tenant
+    // slugs we'd need an explicit ownerHint; called from server-internal flows where
+    // a unique owner is implied (provision/connection-change for a specific user).
+    const ownerId = db.getAgentOwner(agentId);
+    if (ownerId == null) return; // ambiguous or missing — caller should pass owner
     const allConns = db.getAllConnections();
-    const assignedIds = db.getAgentConnectionIds(agentId);
+    const assignedIds = db.getAgentConnectionIds(agentId, ownerId);
     const connections = allConns.filter(c => assignedIds.includes(c.id));
 
     let skills = [];

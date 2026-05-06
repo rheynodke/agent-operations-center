@@ -26,14 +26,21 @@ module.exports = function roomsRouter(deps) {
     // regular users see global rooms + rooms in their projects/agents).
     // We then layer ?owner= scoping on top for per-user resources.
     const base = db.listMissionRoomsForUser(req);
-    const scope = parseOwnerParam(req);
+    // Admin default = own rooms only. Cross-tenant monitoring requires explicit ?owner=all|<id>.
+    const hasOwnerParam = req.query?.owner != null && req.query.owner !== '';
+    const scope = hasOwnerParam ? parseOwnerParam(req) : 'me';
     const isAdmin = req.user?.role === 'admin';
     const uid = req.user?.userId;
 
     const rooms = base.filter((room) => {
-      // HQ rooms are private to their owner.
+      // HQ rooms are private to their owner. Admin can monitor cross-tenant
+      // only with explicit ?owner=all|<id>; default 'me' restricts to own HQ.
       if (room.kind === 'global' && room.isHq) {
-        return isAdmin || room.ownerUserId === uid;
+        if (room.ownerUserId === uid) return true;
+        if (!isAdmin) return false;
+        if (scope === 'all') return true;
+        if (typeof scope === 'number') return room.ownerUserId === scope;
+        return false;
       }
       // Other global rooms scoped by owner (cross-tenant isolation).
       if (room.kind === 'global') {
@@ -201,6 +208,42 @@ module.exports = function roomsRouter(deps) {
         let md = `### 📋 Mission Room Status\n\n| Agent | Role | Status |\n| :--- | :--- | :--- |\n`;
         for (const a of agents) {
           md += `| ${a.emoji || '🤖'} **${a.name}** | ${a.role || 'Agent'} | Available |\n`;
+        }
+        const sysMsg = db.createMissionMessage({
+          roomId: room.id, authorType: 'system', authorId: 'system',
+          authorName: 'System', body: md,
+        });
+        emitRoomMessage(sysMsg);
+        return res.status(201).json({ message: sysMsg });
+      }
+
+      if (cmd === '/connections') {
+        // List each room agent + the connections they're assigned to.
+        // Owner-scoped (room.createdBy) so we read the right tenant slice
+        // of agent_connections under the composite-PK schema.
+        const ownerId = room.createdBy ?? req.user?.userId ?? null;
+        const agents = roomAgents(room);
+        const allConns = db.getAllConnections();
+        const connById = Object.fromEntries(allConns.map(c => [c.id, c]));
+
+        let md = `### 🔌 Agent Connections\n\n`;
+        if (!agents.length) {
+          md += `_No agents in this room yet._`;
+        } else {
+          for (const a of agents) {
+            const ids = ownerId != null ? db.getAgentConnectionIds(a.id, ownerId) : [];
+            const rows = ids.map(cid => connById[cid]).filter(Boolean);
+            md += `**${a.emoji || '🤖'} ${a.name}** _(${a.role || 'Agent'})_\n`;
+            if (!rows.length) {
+              md += `  - _no connections assigned_\n\n`;
+            } else {
+              for (const c of rows) {
+                const status = c.enabled ? '🟢' : '⚪️';
+                md += `  - ${status} \`${c.name}\` — ${c.type}\n`;
+              }
+              md += `\n`;
+            }
+          }
         }
         const sysMsg = db.createMissionMessage({
           roomId: room.id, authorType: 'system', authorId: 'system',
@@ -420,14 +463,14 @@ module.exports = function roomsRouter(deps) {
 });
 
 // Agent detail (full profile with workspace files, soul, tools, etc.)
-  router.get('/agents/:id/detail', db.authMiddleware, (req, res) => {
+  router.get('/agents/:id/detail', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
-    const { parseScopeUserId } = require('../helpers/access-control.cjs');
-    const targetUid = parseScopeUserId(req);
+    // requireAgentOwnership already verified the caller owns this slug → scope by userId.
+    const targetUid = Number(req.user.userId);
     const detail = parsers.getAgentDetail(req.params.id, targetUid);
     if (!detail) return res.status(404).json({ error: 'Agent not found' });
     // Enrich with SQLite profile (avatar preset, color, role, master flag)
-    const profile = db.getAgentProfile(req.params.id);
+    const profile = db.getAgentProfile(req.params.id, targetUid);
     if (profile) {
       detail.profile = {
         avatarPresetId: profile.avatar_preset_id || null,
@@ -450,7 +493,7 @@ module.exports = function roomsRouter(deps) {
     const result = parsers.updateAgent(req.params.id, req.body);
     // If agent was renamed, migrate the SQLite profile to the new ID
     if (result.agentId && result.agentId !== req.params.id) {
-      db.renameAgentProfile(req.params.id, result.agentId);
+      db.renameAgentProfile(req.params.id, result.agentId, Number(req.user.userId));
       console.log(`[api/agents] Migrated profile "${req.params.id}" → "${result.agentId}"`);
     }
     console.log(`[api/agents] Updated agent "${req.params.id}":`, result.changed);
@@ -465,8 +508,8 @@ module.exports = function roomsRouter(deps) {
   try {
     const agentId = req.params.id;
     parsers.deleteAgent(agentId);
-    // Remove profile from SQLite
-    db.deleteAgentProfile(agentId);
+    // Remove profile from SQLite (scoped to caller's tenant)
+    db.deleteAgentProfile(agentId, Number(req.user.userId));
     // Remove agent from HQ membership (throws if agentId is the master — expected).
     try {
       const hqRoom = require('../lib/hq-room.cjs');

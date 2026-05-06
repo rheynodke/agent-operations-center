@@ -270,7 +270,11 @@ function MessageBubble({ message, repliedMessage, agentsById, onReply }: { messa
   const roleText = isAgent ? "AGENT" : (message.body.startsWith("/") ? "COMMAND" : "USER")
   const roleClass = isAgent ? "bg-indigo-500/10 text-indigo-500" : (roleText === "COMMAND" ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground")
 
-  const authorLabel = message.authorName || (isAgent ? agent?.name : "You")
+  // Prefer live agent name (renames/profile updates) over snapshot authorName,
+  // and fall back to authorName only if the agent isn't in the local map.
+  const authorLabel = isAgent
+    ? (agent?.name || message.authorName || agent?.id || "Agent")
+    : (message.authorName || "You")
   const initial = authorLabel ? authorLabel.charAt(0).toUpperCase() : "U"
 
   const isUser = !isAgent && !isSystem
@@ -317,7 +321,9 @@ function MessageBubble({ message, repliedMessage, agentsById, onReply }: { messa
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/60 shrink-0"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg>
               <div className="flex flex-col leading-tight min-w-0">
                 <span className="font-semibold text-foreground/80 truncate">
-                  Replying to {repliedMessage.authorName || (repliedMessage.authorType === 'agent' ? agentsById.get(repliedMessage.authorId)?.name : 'You')}
+                  Replying to {repliedMessage.authorType === 'agent'
+                    ? (agentsById.get(repliedMessage.authorId)?.name || repliedMessage.authorName || repliedMessage.authorId)
+                    : (repliedMessage.authorName || 'You')}
                 </span>
                 <span className="truncate max-w-[200px] text-muted-foreground opacity-80">{repliedMessage.body}</span>
               </div>
@@ -347,6 +353,7 @@ function MessageBubble({ message, repliedMessage, agentsById, onReply }: { messa
 
 const COMMANDS = [
   { id: "status", name: "/status", description: "View team roles and availability" },
+  { id: "connections", name: "/connections", description: "List each agent's assigned connections" },
   { id: "summary", name: "/summary", description: "Summarize the room's chat history" },
   { id: "delegate", name: "/delegate", description: "Let Master Agent assign a task" },
   { id: "reset", name: "/reset", description: "Clear agent session contexts" },

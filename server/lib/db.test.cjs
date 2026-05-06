@@ -242,9 +242,9 @@ test('markAgentProfileMaster sets is_master flag', async () => {
   delete require.cache[require.resolve('./db.cjs')];
   const db = require('./db.cjs');
   await db.initDatabase();
-  db.upsertAgentProfile({ agentId: 'a1', displayName: 'A1', provisionedBy: null });
-  db.markAgentProfileMaster('a1');
-  const p = db.getAgentProfile('a1');
+  db.upsertAgentProfile({ agentId: 'a1', displayName: 'A1', provisionedBy: 1 });
+  db.markAgentProfileMaster('a1', 1);
+  const p = db.getAgentProfile('a1', 1);
   assert.equal(p.is_master, 1);
 
   delete process.env.AOC_DATA_DIR;

@@ -223,7 +223,8 @@ async function dispatchTaskToAgent(task, opts = {}, deps) {
   // Build available connections context for the agent (NO inline credentials, filtered by assignment)
   let connectionsContext = '';
   try {
-    const agentConnIds = db.getAgentConnectionIds(task.agentId);
+    const taskOwner = task.createdBy ?? task.created_by ?? db.getAgentOwner(task.agentId);
+    const agentConnIds = taskOwner != null ? db.getAgentConnectionIds(task.agentId, taskOwner) : [];
     const allConns = db.getAllConnections().filter(c => c.enabled);
     const conns = allConns.filter(c => agentConnIds.includes(c.id));
     if (conns.length > 0) {
@@ -477,7 +478,8 @@ async function analyzeTaskForAgent(task, deps) {
     `Available tools: ${agentTools.length > 0 ? agentTools.join(', ') : '(standard)'}`,
     ...(() => {
       try {
-        const agentConnIds = db.getAgentConnectionIds(task.agentId);
+        const taskOwner = task.createdBy ?? task.created_by ?? db.getAgentOwner(task.agentId);
+    const agentConnIds = taskOwner != null ? db.getAgentConnectionIds(task.agentId, taskOwner) : [];
         const allConns = db.getAllConnections().filter(c => c.enabled);
         const conns = allConns.filter(c => agentConnIds.includes(c.id));
         if (conns.length === 0) return ['', '## Available Connections', '(none registered)'];
