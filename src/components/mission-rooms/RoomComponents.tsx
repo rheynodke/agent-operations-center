@@ -387,7 +387,16 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
   const [commandQuery, setCommandQuery] = useState<{ query: string; index: number } | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [skillCommands, setSkillCommands] = useState<SlashCommand[]>([])
+  const [showAllCommandChips, setShowAllCommandChips] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const popoverItemsRef = useRef<HTMLButtonElement[]>([])
+
+  // Keep the highlighted dropdown item visible when ArrowDown / ArrowUp moves
+  // selection past the visible area of the popover.
+  useEffect(() => {
+    const el = popoverItemsRef.current[selectedIndex]
+    if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" })
+  }, [selectedIndex, mentionQuery, commandQuery])
 
   useEffect(() => { setText(localStorage.getItem(`aoc.room.draft.${room.id}`) || "") }, [room.id])
   useEffect(() => { localStorage.setItem(`aoc.room.draft.${room.id}`, text) }, [room.id, text])
@@ -576,6 +585,7 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
             {filteredAgents.map((a, i) => (
               <button
                 key={a.id}
+                ref={(el) => { if (el) popoverItemsRef.current[i] = el; else delete popoverItemsRef.current[i] }}
                 onClick={() => handleSelectMention(a.name)}
                 className={cn(
                   "w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors text-left",
@@ -599,6 +609,7 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
             {filteredCommands.map((c, i) => (
               <button
                 key={c.id}
+                ref={(el) => { if (el) popoverItemsRef.current[i] = el; else delete popoverItemsRef.current[i] }}
                 onClick={() => handleSelectCommand(c.name)}
                 className={cn(
                   "w-full flex flex-col gap-0.5 px-2 py-1.5 rounded-lg transition-colors text-left",
@@ -659,17 +670,31 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
         
         {/* Chips Row */}
         <div className="px-3 py-1.5 flex flex-col gap-1 border-t border-border/40">
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            <span className="text-[10px] uppercase font-bold text-muted-foreground/60 flex items-center w-24 shrink-0">Commands</span>
-            {COMMANDS.map(c => (
-              <button 
-                key={c.id} 
+          <div className={cn(
+            "flex items-start gap-1.5",
+            showAllCommandChips ? "flex-wrap" : "overflow-x-auto no-scrollbar"
+          )}>
+            <span className="text-[10px] uppercase font-bold text-muted-foreground/60 flex items-center w-24 shrink-0 self-stretch">Commands</span>
+            {(showAllCommandChips ? COMMANDS : COMMANDS.slice(0, 6)).map(c => (
+              <button
+                key={c.id}
                 onClick={() => { setText((t) => `${t}${c.name} `); setTimeout(() => textareaRef.current?.focus(), 0) }}
                 className="flex items-center gap-1 px-1.5 py-0.5 bg-muted/30 hover:bg-muted/60 text-foreground/80 rounded-md border border-border/50 transition-colors shrink-0"
+                title={c.description || c.name}
               >
                 <span className="text-[10px] font-medium">{c.name}</span>
               </button>
             ))}
+            {COMMANDS.length > 6 && (
+              <button
+                onClick={() => setShowAllCommandChips(v => !v)}
+                className="flex items-center gap-1 px-1.5 py-0.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-md border border-primary/30 transition-colors shrink-0"
+              >
+                <span className="text-[10px] font-semibold">
+                  {showAllCommandChips ? "− less" : `+${COMMANDS.length - 6} more`}
+                </span>
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
             <span className="text-[10px] uppercase font-bold text-muted-foreground/60 flex items-center w-24 shrink-0">Agents</span>
