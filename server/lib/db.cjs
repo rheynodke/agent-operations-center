@@ -20,6 +20,42 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 let db = null;
 let SQL = null;
 
+// In-file aliases for helpers extracted to ./db/agent-profiles.cjs.
+// Rooms / projects code still in this file references them directly; this
+// keeps those callers working until we extract rooms.cjs / projects.cjs.
+// Lazy require to avoid circular load (agent-profiles.cjs may import handle).
+function getUserMasterAgentId(uid) {
+  return require('./db/agent-profiles.cjs').getUserMasterAgentId(uid);
+}
+function userOwnsAgent(req, agentId) {
+  return require('./db/agent-profiles.cjs').userOwnsAgent(req, agentId);
+}
+function getAgentProfile(agentId, ownerId) {
+  return require('./db/agent-profiles.cjs').getAgentProfile(agentId, ownerId);
+}
+function setUserMasterAgent(uid, agentId) {
+  return require('./db/agent-profiles.cjs').setUserMasterAgent(uid, agentId);
+}
+function markAgentProfileMaster(agentId, ownerId) {
+  return require('./db/agent-profiles.cjs').markAgentProfileMaster(agentId, ownerId);
+}
+function getAgentOwner(agentId, hint) {
+  return require('./db/agent-profiles.cjs').getAgentOwner(agentId, hint);
+}
+function getAllAgentProfiles(opts) {
+  return require('./db/agent-profiles.cjs').getAllAgentProfiles(opts);
+}
+function backfillProjectDefaultRooms() {
+  return require('./db/rooms.cjs').backfillProjectDefaultRooms();
+}
+function ensureProjectDefaultRoom(projectId, createdBy, memberAgentIds) {
+  return require('./db/rooms.cjs').ensureProjectDefaultRoom(projectId, createdBy, memberAgentIds);
+}
+function getProject(id) { return require('./db/projects.cjs').getProject(id); }
+function getAllProjects() { return require('./db/projects.cjs').getAllProjects(); }
+function userOwnsProject(req, projectId) { return require('./db/projects.cjs').userOwnsProject(req, projectId); }
+// getTaskSessionKeys is now in ./db/tasks.cjs and re-exported via the barrel below.
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function initDatabase() {
   if (db) return db;
@@ -652,6 +688,8 @@ async function initDatabase() {
           updated_at TEXT DEFAULT (datetime('now')),
           is_master INTEGER NOT NULL DEFAULT 0,
           role TEXT,
+          meta TEXT NOT NULL DEFAULT '{}',
+          max_parallel_steps INTEGER DEFAULT NULL,
           PRIMARY KEY (agent_id, provisioned_by)
         )
       `);
@@ -674,6 +712,8 @@ async function initDatabase() {
         has('updated_at')       ? 'updated_at'       : "datetime('now') AS updated_at",
         has('is_master')        ? 'is_master'        : '0 AS is_master',
         has('role')             ? 'role'             : "NULL AS role",
+        has('meta')             ? 'meta'             : "'{}' AS meta",
+        has('max_parallel_steps') ? 'max_parallel_steps' : "NULL AS max_parallel_steps",
       ].join(', ');
       db.run(`INSERT INTO agent_profiles_new SELECT ${select} FROM agent_profiles`);
       db.run('DROP TABLE agent_profiles');
@@ -854,1130 +894,88 @@ async function initDatabase() {
     }
   }
 
-  persist();
+  // Register the sql.js handle with the shared module so domain-split files
+  // (server/lib/db/*.cjs) can read/write without a circular require back here.
+  // Must run BEFORE the migration runner — migrations may invoke domain helpers.
+  try {
+    require('./db/_handle.cjs').setHandle(db, { persist, persistNow });
+  } catch (e) {
+    console.warn('[db] handle registration failed:', e.message);
+  }
+
+  // Run versioned migrations (forward-only, idempotent). Inline ALTER TABLEs
+  // above remain as the implicit "baseline v0"; new migrations live in
+  // server/lib/db-migrations/ and are recorded in schema_migrations.
+  try {
+    const { runMigrations } = require('./db-migrations/index.cjs');
+    const result = runMigrations(db);
+    if (result.applied.length) {
+      console.log(`[db] migrations applied: ${result.applied.join(', ')}`);
+    }
+  } catch (e) {
+    console.error('[db] migration runner failed:', e.message);
+    throw e;
+  }
+
+  persistNow(); // synchronous initial flush so first reader sees full schema
   return db;
 }
 
-// ─── Task helpers ──────────────────────────────────────────────────────────────
-function normalizeTask(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    title: row.title,
-    description: row.description || undefined,
-    status: row.status,
-    priority: row.priority || 'medium',
-    agentId: row.agent_id || undefined,
-    sessionId: row.session_id || undefined,
-    tags: (() => { try { return row.tags ? JSON.parse(row.tags) : []; } catch { return []; } })(),
-    cost: row.cost != null ? row.cost : undefined,
-    inputTokens: row.input_tokens != null ? row.input_tokens : undefined,
-    outputTokens: row.output_tokens != null ? row.output_tokens : undefined,
-    projectId: row.project_id || 'general',
-    externalId: row.external_id || undefined,
-    externalSource: row.external_source || undefined,
-    requestFrom: row.request_from || '-',
-    analysis: (() => { try { return row.analysis ? JSON.parse(row.analysis) : null; } catch { return null; } })(),
-    attachments: (() => { try { return row.attachments ? JSON.parse(row.attachments) : []; } catch { return []; } })(),
-    // ADLC fields (Phase B)
-    stage: row.stage || undefined,
-    role: row.role || undefined,
-    epicId: row.epic_id || undefined,
-    memoryReviewedAt: row.memory_reviewed_at || null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    completedAt: row.completed_at || undefined,
-  };
-}
-
-function normalizeActivity(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    taskId: row.task_id,
-    type: row.type,
-    fromValue: row.from_value || undefined,
-    toValue: row.to_value || undefined,
-    actor: row.actor,
-    note: row.note || undefined,
-    createdAt: row.created_at,
-  };
-}
-
-function normalizeComment(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    taskId: row.task_id,
-    authorType: row.author_type,
-    authorId: row.author_id,
-    authorName: row.author_name || undefined,
-    body: row.body,
-    createdAt: row.created_at,
-    editedAt: row.edited_at || undefined,
-    deletedAt: row.deleted_at || undefined,
-  };
-}
-
-function normalizeProject(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    color: row.color || '#6366f1',
-    description: row.description || undefined,
-    kind: row.kind || 'ops',
-    workspacePath: row.workspace_path || undefined,
-    workspaceMode: row.workspace_mode || undefined,
-    repoUrl: row.repo_url || undefined,
-    repoBranch: row.repo_branch || undefined,
-    repoRemoteName: row.repo_remote_name || undefined,
-    boundAt: row.bound_at != null ? Number(row.bound_at) : undefined,
-    lastFetchedAt: row.last_fetched_at != null ? Number(row.last_fetched_at) : undefined,
-    createdBy: row.created_by != null ? Number(row.created_by) : null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function getAllProjects() {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM projects ORDER BY created_at ASC');
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeProject(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-function getProject(id) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM projects WHERE id = :id');
-  const row = stmt.getAsObject({ ':id': id });
-  stmt.free();
-  return row.id ? normalizeProject(row) : null;
-}
-
-function getProjectByPath(workspacePath) {
-  if (!db) throw new Error('DB not initialized');
-  if (!workspacePath) return null;
-  const stmt = db.prepare('SELECT * FROM projects WHERE workspace_path = :p');
-  const row = stmt.getAsObject({ ':p': workspacePath });
-  stmt.free();
-  return row.id ? normalizeProject(row) : null;
-}
-
-function createProject({
-  name, color = '#6366f1', description,
-  kind, workspacePath, workspaceMode,
-  repoUrl, repoBranch, repoRemoteName,
-  createdBy,
-} = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!name) throw new Error('createProject: name is required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  const boundAt = (workspacePath ? Date.now() : null);
-  db.run(
-    `INSERT INTO projects (
-       id, name, color, description, kind,
-       workspace_path, workspace_mode,
-       repo_url, repo_branch, repo_remote_name, bound_at,
-       created_by, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id, name, color, description || null, kind || 'ops',
-      workspacePath || null, workspaceMode || null,
-      repoUrl || null, repoBranch || null, repoRemoteName || null, boundAt,
-      createdBy != null ? Number(createdBy) : null,
-      now, now,
-    ]
-  );
-  ensureProjectDefaultRoom(id, createdBy);
-  persist();
-  return getProject(id);
-}
-
-function parseJsonArray(value) {
-  try {
-    const parsed = JSON.parse(value || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
-    return [];
-  }
-}
-
-function parseJsonObject(value) {
-  try {
-    const parsed = JSON.parse(value || '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch (_) {
-    return {};
-  }
-}
-
-/**
- * Normalize mission-room membership: dedupe + ensure the requesting user's
- * Master Agent is always included.
- *
- * Each user has their own (isolated) master agent — admin's master is `main`,
- * but other users have arbitrary slugs. Pass `masterAgentId` so the right
- * master gets prepended. If omitted, falls back to `'main'` for back-compat
- * with admin-scoped legacy code paths.
- *
- * @param {string[]} memberAgentIds
- * @param {string|null} [masterAgentId] — the requesting user's master agent id
- */
-function normalizeMissionMembers(memberAgentIds, masterAgentId = null) {
-  const ids = Array.isArray(memberAgentIds) ? memberAgentIds : [];
-  const master = masterAgentId && String(masterAgentId).trim() ? String(masterAgentId).trim() : 'main';
-  const out = [];
-  for (const raw of [master, ...ids]) {
-    const id = String(raw || '').trim();
-    if (id && !out.includes(id)) out.push(id);
-  }
-  return out;
-}
-
-function normalizeMissionRoom(row) {
-  if (!row || !row.id) return null;
-  // Look up the owner's master agent so re-normalization on read doesn't
-  // prepend 'main' (which would silently leak admin's agent into other users'
-  // room membership).
-  const ownerId = row.created_by != null ? Number(row.created_by) : null;
-  const ownerMaster = ownerId != null ? getUserMasterAgentId(ownerId) : null;
-  return {
-    id: row.id,
-    kind: row.kind || 'global',
-    projectId: row.project_id || null,
-    name: row.name,
-    description: row.description || null,
-    memberAgentIds: normalizeMissionMembers(parseJsonArray(row.member_agent_ids), ownerMaster),
-    createdBy: ownerId,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    isHq: row.is_hq === 1,
-    isSystem: row.is_system === 1,
-    ownerUserId: row.owner_user_id != null ? Number(row.owner_user_id) : null,
-  };
-}
-
-function normalizeMissionMessage(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    roomId: row.room_id,
-    authorType: row.author_type || 'user',
-    authorId: row.author_id || null,
-    authorName: row.author_name || null,
-    body: row.body || '',
-    mentions: parseJsonArray(row.mentions_json),
-    relatedTaskId: row.related_task_id || null,
-    meta: parseJsonObject(row.meta_json),
-    createdAt: row.created_at,
-  };
-}
-
-function getOwnedAgentIds(userId) {
-  if (!db || userId == null) return [];
-  const res = db.exec('SELECT agent_id FROM agent_profiles WHERE provisioned_by = ?', [Number(userId)]);
-  if (!res.length) return [];
-  return res[0].values.map(r => r[0]).filter(Boolean);
-}
-
-function getMissionRoom(id) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM mission_rooms WHERE id = :id');
-  const row = stmt.getAsObject({ ':id': id });
-  stmt.free();
-  return row.id ? normalizeMissionRoom(row) : null;
-}
-
-function getHqRoomForUser(userId) {
-  if (!db) throw new Error('DB not initialized');
-  if (userId == null) return null;
-  const stmt = db.prepare('SELECT * FROM mission_rooms WHERE is_hq = 1 AND owner_user_id = ?');
-  const row = stmt.getAsObject([Number(userId)]);
-  stmt.free();
-  if (!row.id) return null;
-  return normalizeMissionRoom(row);
-}
-
-function getProjectDefaultRoom(projectId) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare("SELECT * FROM mission_rooms WHERE kind = 'project' AND project_id = :pid ORDER BY created_at ASC LIMIT 1");
-  const row = stmt.getAsObject({ ':pid': projectId });
-  stmt.free();
-  return row.id ? normalizeMissionRoom(row) : null;
-}
-
-function ensureProjectDefaultRoom(projectId, createdBy = null, memberAgentIds = null) {
-  if (!db) throw new Error('DB not initialized');
-  if (!projectId) throw new Error('ensureProjectDefaultRoom: projectId is required');
-  // 'general' is the master project — its room is the seeded global room, not a project room.
-  if (projectId === 'general') return null;
-  const existing = getProjectDefaultRoom(projectId);
-  if (existing) return existing;
-  const project = getProject(projectId);
-  if (!project) return null;
-  // Use the project owner's Master Agent (per-user, isolated) as the always-on
-  // member — admin's master is 'main', other users have their own slug.
-  const masterAgentId = createdBy != null ? getUserMasterAgentId(createdBy) : null;
-  const ids = normalizeMissionMembers(memberAgentIds || getOwnedAgentIds(createdBy), masterAgentId);
-  const id = `room-project-${projectId}`;
-  const now = new Date().toISOString();
-  db.run(
-    'INSERT OR IGNORE INTO mission_rooms (id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, 'project', projectId, `${project.name} Room`, `Default mission room for ${project.name}.`, JSON.stringify(ids), createdBy != null ? Number(createdBy) : null, now, now]
-  );
-  persist();
-  return getProjectDefaultRoom(projectId);
-}
-
-function backfillProjectDefaultRooms() {
-  if (!db) throw new Error('DB not initialized');
-  const projects = getAllProjects();
-  let created = 0;
-  for (const project of projects) {
-    if (project.id === 'general') continue;
-    if (!getProjectDefaultRoom(project.id)) {
-      ensureProjectDefaultRoom(project.id, project.createdBy ?? null);
-      created++;
-    }
-  }
-  return { created };
-}
-
-function listMissionRooms() {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM mission_rooms ORDER BY kind ASC, created_at ASC');
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeMissionRoom(stmt.getAsObject()));
-  stmt.free();
-  return rows.filter(Boolean);
-}
-
-function listMissionRoomsForUser(req) {
-  const rooms = listMissionRooms();
-  if (!req?.user) return [];
-  if (req.user.role === 'admin' || req.user.role === 'agent') return rooms;
-  const uid = req.user.userId;
-  // Filter out the user's own master agent when checking ownership — its presence
-  // alone shouldn't grant access to a room (the master is auto-added everywhere).
-  // Falls back to 'main' for legacy rows from before per-user masters existed.
-  const userMasterId = getUserMasterAgentId(uid) || 'main';
-  return rooms.filter((room) => {
-    // Global rooms: only own + admin (HQ handled in route layer)
-    if (room.kind === 'global') {
-      return room.createdBy != null ? room.createdBy === uid : false;
-    }
-    if (room.projectId && userOwnsProject(req, room.projectId)) return true;
-    return room.memberAgentIds.some((id) => id !== userMasterId && userOwnsAgent(req, id));
-  });
-}
-
-function createMissionRoom({ kind = 'global', projectId = null, name, description = null, memberAgentIds = [], createdBy = null, masterAgentId = null } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!name?.trim()) throw new Error('createMissionRoom: name is required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  // Resolve master from createdBy if not explicitly provided
-  const master = masterAgentId || (createdBy != null ? getUserMasterAgentId(createdBy) : null);
-  db.run(
-    'INSERT INTO mission_rooms (id, kind, project_id, name, description, member_agent_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, kind, projectId || null, name.trim(), description || null, JSON.stringify(normalizeMissionMembers(memberAgentIds, master)), createdBy != null ? Number(createdBy) : null, now, now]
-  );
-  persist();
-  return getMissionRoom(id);
-}
-
-function updateMissionRoomMembers(id, memberAgentIds = [], masterAgentId = null) {
-  if (!db) throw new Error('DB not initialized');
-  const now = new Date().toISOString();
-  // If masterAgentId not provided, look it up from the room's created_by so we
-  // don't accidentally drop the owner's master from membership.
-  let master = masterAgentId;
-  if (!master) {
-    const room = getMissionRoom(id);
-    if (room?.createdBy != null) master = getUserMasterAgentId(room.createdBy);
-  }
-  db.run('UPDATE mission_rooms SET member_agent_ids = ?, updated_at = ? WHERE id = ?', [JSON.stringify(normalizeMissionMembers(memberAgentIds, master)), now, id]);
-  persist();
-  return getMissionRoom(id);
-}
-
-function listMissionMessages(roomId, { before, limit = 50 } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
-  const rows = [];
-  const sql = before
-    ? 'SELECT * FROM mission_messages WHERE room_id = :rid AND created_at < :before ORDER BY created_at DESC LIMIT :limit'
-    : 'SELECT * FROM mission_messages WHERE room_id = :rid ORDER BY created_at DESC LIMIT :limit';
-  const stmt = db.prepare(sql);
-  stmt.bind(before ? { ':rid': roomId, ':before': before, ':limit': safeLimit } : { ':rid': roomId, ':limit': safeLimit });
-  while (stmt.step()) rows.push(normalizeMissionMessage(stmt.getAsObject()));
-  stmt.free();
-  return rows.filter(Boolean);
-}
-
-function createMissionMessage({ roomId, authorType, authorId, authorName, body, mentions = [], relatedTaskId = null, meta = {} } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!roomId) throw new Error('createMissionMessage: roomId is required');
-  if (!body?.trim()) throw new Error('createMissionMessage: body is required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    'INSERT INTO mission_messages (id, room_id, author_type, author_id, author_name, body, mentions_json, related_task_id, meta_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, roomId, authorType || 'user', authorId || null, authorName || null, body.trim(), JSON.stringify(mentions || []), relatedTaskId || null, JSON.stringify(meta || {}), now]
-  );
-  persist();
-  return normalizeMissionMessage({ id, room_id: roomId, author_type: authorType || 'user', author_id: authorId || null, author_name: authorName || null, body: body.trim(), mentions_json: JSON.stringify(mentions || []), related_task_id: relatedTaskId || null, meta_json: JSON.stringify(meta || {}), created_at: now });
-}
-
-function deleteMissionRoom(id) {
-  if (!db) throw new Error('DB not initialized');
-  db.run('DELETE FROM mission_messages WHERE room_id = ?', [id]);
-  db.run('DELETE FROM mission_rooms WHERE id = ?', [id]);
-  persist();
-}
-
-// ─── Room Sessions (gateway session ↔ room tracking) ──────────────────────────
-
-/** Mark a gateway session as triggered by a room mention */
-function markSessionAsRoomTriggered(sessionKey, roomId, agentId) {
-  if (!db) throw new Error('DB not initialized');
-  db.run(
-    `INSERT OR REPLACE INTO room_sessions (session_key, room_id, agent_id, created_at) VALUES (?, ?, ?, datetime('now'))`,
-    [sessionKey, roomId, agentId]
-  );
-  persist();
-}
-
-/** Get all session keys that were triggered by room mentions */
-function getRoomSessionKeys() {
-  if (!db) return [];
-  const res = db.exec('SELECT session_key FROM room_sessions');
-  if (!res.length) return [];
-  return res[0].values.map(r => r[0]).filter(Boolean);
-}
-
-/** Get the most recent gateway session for a specific agent+room combo (Phase 2: reuse) */
-function getRoomAgentSession(roomId, agentId) {
-  if (!db) return null;
-  const stmt = db.prepare(
-    'SELECT session_key FROM room_sessions WHERE room_id = :rid AND agent_id = :aid ORDER BY created_at DESC LIMIT 1'
-  );
-  const row = stmt.getAsObject({ ':rid': roomId, ':aid': agentId });
-  stmt.free();
-  return row.session_key || null;
-}
-
-/** Get room+agent info for a session key (Phase 3: auto-reply) */
-function getRoomForSession(sessionKey) {
-  if (!db) return null;
-  const stmt = db.prepare(
-    'SELECT room_id, agent_id FROM room_sessions WHERE session_key = :key'
-  );
-  const row = stmt.getAsObject({ ':key': sessionKey });
-  stmt.free();
-  return (row.room_id && row.agent_id) ? { roomId: row.room_id, agentId: row.agent_id } : null;
-}
-
-function updateProject(id, patch) {
-  if (!db) throw new Error('DB not initialized');
-  const before = getProject(id);
-  if (!before) return null;
-  const now = new Date().toISOString();
-  const fields = ['updated_at = ?'];
-  const vals = [now];
-  if (patch.name        !== undefined) { fields.push('name = ?');        vals.push(patch.name); }
-  if (patch.color       !== undefined) { fields.push('color = ?');       vals.push(patch.color); }
-  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description || null); }
-  if (patch.kind        !== undefined) { fields.push('kind = ?');        vals.push(patch.kind || 'ops'); }
-  vals.push(id);
-  db.run(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`, vals);
-  persist();
-  return getProject(id);
-}
-
-// Set / replace workspace binding on an existing project. Pass null to clear.
-function setProjectWorkspace(id, {
-  workspacePath, workspaceMode,
-  repoUrl, repoBranch, repoRemoteName,
-  boundAt,
-} = {}) {
-  if (!db) throw new Error('DB not initialized');
-  const before = getProject(id);
-  if (!before) return null;
-  const now = new Date().toISOString();
-  const fields = ['updated_at = ?'];
-  const vals = [now];
-  if (workspacePath   !== undefined) { fields.push('workspace_path = ?');   vals.push(workspacePath); }
-  if (workspaceMode   !== undefined) { fields.push('workspace_mode = ?');   vals.push(workspaceMode); }
-  if (repoUrl         !== undefined) { fields.push('repo_url = ?');         vals.push(repoUrl); }
-  if (repoBranch      !== undefined) { fields.push('repo_branch = ?');      vals.push(repoBranch); }
-  if (repoRemoteName  !== undefined) { fields.push('repo_remote_name = ?'); vals.push(repoRemoteName); }
-  if (boundAt         !== undefined) { fields.push('bound_at = ?');         vals.push(boundAt); }
-  vals.push(id);
-  db.run(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`, vals);
-  persist();
-  return getProject(id);
-}
-
-function bumpProjectFetchedAt(id, ts = Date.now()) {
-  if (!db) throw new Error('DB not initialized');
-  db.run('UPDATE projects SET last_fetched_at = ?, updated_at = ? WHERE id = ?',
-    [ts, new Date().toISOString(), id]);
-  persist();
-  return getProject(id);
-}
-
-function deleteProject(id) {
-  if (!db) throw new Error('DB not initialized');
-  if (id === 'general') throw new Error('deleteProject: cannot delete the default project');
-  // Reassign orphaned tasks back to 'general'
-  db.run("UPDATE tasks SET project_id = 'general' WHERE project_id = ?", [id]);
-  // Cascade-delete integrations tied to this project
-  db.run('DELETE FROM project_integrations WHERE project_id = ?', [id]);
-  db.run('DELETE FROM projects WHERE id = ?', [id]);
-  persist();
-}
-
-function normalizeIntegration(row) {
-  if (!row || !row.id) return null;
-  let config = {};
-  try { config = JSON.parse(row.config || '{}'); } catch (_) {}
-  const { credentials, ...safeConfig } = config;
-  return {
-    id: row.id,
-    projectId: row.project_id,
-    type: row.type,
-    hasCredentials: !!credentials,
-    config: safeConfig,
-    syncIntervalMs: row.sync_interval_ms || undefined,
-    enabled: row.enabled === 1,
-    lastSyncedAt: row.last_synced_at || undefined,
-    lastSyncError: row.last_sync_error || undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function _mapIntegrationRaw(row) {
-  let config = {};
-  try { config = JSON.parse(row.config || '{}'); } catch (_) {}
-  return {
-    id: row.id,
-    projectId: row.project_id,
-    type: row.type,
-    config,
-    syncIntervalMs: row.sync_interval_ms || undefined,
-    enabled: row.enabled === 1,
-    lastSyncedAt: row.last_synced_at || undefined,
-    lastSyncError: row.last_sync_error || undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-// Internal version — includes raw config WITH credentials (for sync orchestrator only)
-function getIntegrationRaw(id) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM project_integrations WHERE id = :id');
-  const row = stmt.getAsObject({ ':id': id });
-  stmt.free();
-  if (!row.id) return null;
-  return _mapIntegrationRaw(row);
-}
-
-function getAllIntegrations() {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM project_integrations ORDER BY created_at ASC');
-  const rows = [];
-  while (stmt.step()) rows.push(_mapIntegrationRaw(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-function getProjectIntegrations(projectId) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM project_integrations WHERE project_id = :pid ORDER BY created_at ASC');
-  stmt.bind({ ':pid': projectId });
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeIntegration(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-function createIntegration({ projectId, type, config, syncIntervalMs, enabled = true } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!projectId) throw new Error('createIntegration: projectId is required');
-  if (!type) throw new Error('createIntegration: type is required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    'INSERT INTO project_integrations (id, project_id, type, config, sync_interval_ms, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, projectId, type, JSON.stringify(config || {}), syncIntervalMs || null, enabled ? 1 : 0, now, now]
-  );
-  persist();
-  return getIntegrationRaw(id);
-}
-
-function updateIntegration(id, patch) {
-  if (!db) throw new Error('DB not initialized');
-  const existing = getIntegrationRaw(id);
-  if (!existing) return null;
-  const now = new Date().toISOString();
-  const fields = ['updated_at = ?'];
-  const vals = [now];
-  if (patch.config         !== undefined) { fields.push('config = ?');          vals.push(JSON.stringify(patch.config)); }
-  if (patch.syncIntervalMs !== undefined) { fields.push('sync_interval_ms = ?'); vals.push(patch.syncIntervalMs || null); }
-  if (patch.enabled        !== undefined) { fields.push('enabled = ?');         vals.push(patch.enabled ? 1 : 0); }
-  vals.push(id);
-  db.run(`UPDATE project_integrations SET ${fields.join(', ')} WHERE id = ?`, vals);
-  persist();
-  return getIntegrationRaw(id);
-}
-
-function deleteIntegration(id) {
-  if (!db) throw new Error('DB not initialized');
-  db.run('DELETE FROM project_integrations WHERE id = ?', [id]);
-  persist();
-}
-
-function updateIntegrationSyncState(id, { lastSyncedAt, lastSyncError }) {
-  if (!db) throw new Error('DB not initialized');
-  const now = new Date().toISOString();
-  db.run(
-    'UPDATE project_integrations SET last_synced_at = ?, last_sync_error = ?, updated_at = ? WHERE id = ?',
-    [lastSyncedAt || null, lastSyncError || null, now, id]
-  );
-  persist();
-}
-
-function getAllTasks(filters = {}) {
-  if (!db) throw new Error('DB not initialized');
-  const conditions = [];
-  const params = {};
-  if (filters.agentId) { conditions.push('agent_id = :agentId'); params[':agentId'] = filters.agentId; }
-  if (filters.status)  { conditions.push('status = :status');    params[':status']  = filters.status; }
-  if (filters.priority){ conditions.push('priority = :priority');params[':priority']= filters.priority; }
-  if (filters.tag)     { conditions.push('tags LIKE :tag');      params[':tag']     = `%"${filters.tag}"%`; }
-  if (filters.q)       { conditions.push('title LIKE :q');       params[':q']       = `%${filters.q}%`; }
-  if (filters.projectId) { conditions.push('project_id = :projectId'); params[':projectId'] = filters.projectId; }
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const stmt = db.prepare(`SELECT * FROM tasks ${where} ORDER BY created_at DESC`);
-  if (Object.keys(params).length) stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeTask(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-function getTask(id) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM tasks WHERE id = :id');
-  const row = stmt.getAsObject({ ':id': id });
-  stmt.free();
-  return row.id ? normalizeTask(row) : null;
-}
-
-function getTaskByExternalId(externalId, externalSource) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM tasks WHERE external_id = :eid AND external_source = :src LIMIT 1');
-  const row = stmt.getAsObject({ ':eid': externalId, ':src': externalSource });
-  stmt.free();
-  return row.id ? normalizeTask(row) : null;
-}
-
-function createTask({
-  title, description, status = 'backlog', priority = 'medium',
-  agentId, tags = [], sessionId,
-  projectId = 'general', externalId, externalSource,
-  requestFrom = '-', attachments = [],
-  // Phase B — ADLC fields (all nullable; surfaced only for adlc-kind projects).
-  stage, role, epicId,
-} = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!title) throw new Error('createTask: title is required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    'INSERT INTO tasks (id, title, description, status, priority, agent_id, session_id, tags, project_id, external_id, external_source, request_from, attachments, stage, role, epic_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [
-      id, title, description || null, status, priority,
-      agentId || null, sessionId || null, JSON.stringify(tags || []),
-      projectId, externalId || null, externalSource || null,
-      requestFrom || '-', JSON.stringify(attachments || []),
-      stage || null, role || null, epicId || null,
-      now, now,
-    ]
-  );
-  persist();
-  return getTask(id);
-}
-
-function updateTask(id, patch) {
-  if (!db) throw new Error('DB not initialized');
-  const before = getTask(id);
-  if (!before) return null;
-  const now = new Date().toISOString();
-  const fields = ['updated_at = ?'];
-  const vals = [now];
-  if (patch.title       !== undefined) { fields.push('title = ?');       vals.push(patch.title); }
-  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description || null); }
-  if (patch.status      !== undefined) { fields.push('status = ?');      vals.push(patch.status); }
-  if (patch.priority    !== undefined) { fields.push('priority = ?');    vals.push(patch.priority); }
-  if (patch.agentId     !== undefined) { fields.push('agent_id = ?');    vals.push(patch.agentId || null); }
-  if (patch.sessionId   !== undefined) { fields.push('session_id = ?');  vals.push(patch.sessionId || null); }
-  if (patch.tags        !== undefined) { fields.push('tags = ?');        vals.push(JSON.stringify(patch.tags)); }
-  if (patch.cost         !== undefined) { fields.push('cost = ?');          vals.push(patch.cost); }
-  if (patch.inputTokens  !== undefined) { fields.push('input_tokens = ?');  vals.push(patch.inputTokens  != null ? Number(patch.inputTokens)  : null); }
-  if (patch.outputTokens !== undefined) { fields.push('output_tokens = ?'); vals.push(patch.outputTokens != null ? Number(patch.outputTokens) : null); }
-  if (patch.requestFrom  !== undefined) { fields.push('request_from = ?');  vals.push(patch.requestFrom || '-'); }
-  if (patch.analysis     !== undefined) { fields.push('analysis = ?');      vals.push(typeof patch.analysis === 'string' ? patch.analysis : JSON.stringify(patch.analysis)); }
-  if (patch.attachments  !== undefined) { fields.push('attachments = ?');   vals.push(JSON.stringify(Array.isArray(patch.attachments) ? patch.attachments : [])); }
-  if (patch.stage        !== undefined) { fields.push('stage = ?');         vals.push(patch.stage || null); }
-  if (patch.role         !== undefined) { fields.push('role = ?');          vals.push(patch.role || null); }
-  if (patch.epicId       !== undefined) { fields.push('epic_id = ?');       vals.push(patch.epicId || null); }
-  if (patch.memoryReviewedAt !== undefined) { fields.push('memory_reviewed_at = ?'); vals.push(patch.memoryReviewedAt || null); }
-  if (patch.status === 'done' && before.status !== 'done') {
-    fields.push('completed_at = ?'); vals.push(now);
-  } else if (patch.status !== undefined && patch.status !== 'done' && before.status === 'done') {
-    fields.push('completed_at = ?'); vals.push(null);
-  }
-  vals.push(id);
-  db.run(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`, vals);
-  persist();
-  return getTask(id);
-}
-
-function deleteTask(id) {
-  if (!db) throw new Error('DB not initialized');
-  db.run('DELETE FROM task_activity WHERE task_id = ?', [id]);
-  db.run('DELETE FROM task_dependencies WHERE blocker_task_id = ? OR blocked_task_id = ?', [id, id]);
-  db.run('DELETE FROM tasks WHERE id = ?', [id]);
-  persist();
-}
-
-// ─── Epics (Phase B — group of related ADLC tasks) ──────────────────────────
-
-function normalizeEpic(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    projectId: row.project_id,
-    title: row.title,
-    description: row.description || undefined,
-    status: row.status || 'open',
-    color: row.color || undefined,
-    createdBy: row.created_by != null ? Number(row.created_by) : null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function listEpics(projectId) {
-  if (!db) throw new Error('DB not initialized');
-  if (!projectId) return [];
-  const stmt = db.prepare('SELECT * FROM epics WHERE project_id = :p ORDER BY created_at DESC');
-  stmt.bind({ ':p': projectId });
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeEpic(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-function getEpic(id) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM epics WHERE id = :id');
-  const row = stmt.getAsObject({ ':id': id });
-  stmt.free();
-  return row.id ? normalizeEpic(row) : null;
-}
-
-function createEpic({ projectId, title, description, status = 'open', color, createdBy } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!projectId) throw new Error('createEpic: projectId is required');
-  if (!title) throw new Error('createEpic: title is required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    'INSERT INTO epics (id, project_id, title, description, status, color, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, projectId, title, description || null, status, color || null, createdBy != null ? Number(createdBy) : null, now, now]
-  );
-  persist();
-  return getEpic(id);
-}
-
-function updateEpic(id, patch) {
-  if (!db) throw new Error('DB not initialized');
-  const before = getEpic(id);
-  if (!before) return null;
-  const now = new Date().toISOString();
-  const fields = ['updated_at = ?'];
-  const vals = [now];
-  if (patch.title       !== undefined) { fields.push('title = ?');       vals.push(patch.title); }
-  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description || null); }
-  if (patch.status      !== undefined) { fields.push('status = ?');      vals.push(patch.status); }
-  if (patch.color       !== undefined) { fields.push('color = ?');       vals.push(patch.color || null); }
-  vals.push(id);
-  db.run(`UPDATE epics SET ${fields.join(', ')} WHERE id = ?`, vals);
-  persist();
-  return getEpic(id);
-}
-
-function deleteEpic(id) {
-  if (!db) throw new Error('DB not initialized');
-  // Detach tasks (set epic_id = NULL) — don't cascade-delete the work.
-  db.run('UPDATE tasks SET epic_id = NULL, updated_at = ? WHERE epic_id = ?', [new Date().toISOString(), id]);
-  db.run('DELETE FROM epics WHERE id = ?', [id]);
-  persist();
-}
-
-// ─── Task dependencies (Phase B — directed edges) ───────────────────────────
-
-function normalizeDep(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    blockerTaskId: row.blocker_task_id,
-    blockedTaskId: row.blocked_task_id,
-    kind: row.kind || 'blocks',
-    createdAt: row.created_at,
-  };
-}
-
-function listDependenciesForTask(taskId) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare(
-    'SELECT * FROM task_dependencies WHERE blocker_task_id = :id OR blocked_task_id = :id ORDER BY created_at ASC'
-  );
-  stmt.bind({ ':id': taskId });
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeDep(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-// Returns true if adding edge blocker→blocked would create a cycle.
-// Walk forward from blockedTaskId following its outgoing "blocks" edges
-// (tasks that blockedTaskId blocks) — if we reach blockerTaskId, cycle.
-function wouldCreateDependencyCycle(blockerTaskId, blockedTaskId) {
-  if (!db) return false;
-  const visited = new Set();
-  const queue = [blockedTaskId];
-  while (queue.length) {
-    const cur = queue.shift();
-    if (cur === blockerTaskId) return true;
-    if (visited.has(cur)) continue;
-    visited.add(cur);
-    const stmt = db.prepare('SELECT blocked_task_id FROM task_dependencies WHERE blocker_task_id = ? AND kind = ?');
-    stmt.bind([cur, 'blocks']);
-    while (stmt.step()) queue.push(stmt.getAsObject().blocked_task_id);
-    stmt.free();
-  }
-  return false;
-}
-
-// List of unmet blockers for a task: blocker tasks (tasks blocking this one)
-// whose status is not 'done' or 'cancelled'. Used by dispatch guard + UI.
-function getUnmetBlockers(taskId) {
-  if (!db) return [];
-  const stmt = db.prepare(`
-    SELECT t.* FROM task_dependencies d
-    JOIN tasks t ON t.id = d.blocker_task_id
-    WHERE d.blocked_task_id = ? AND d.kind = 'blocks'
-      AND t.status NOT IN ('done', 'cancelled')
-    ORDER BY t.created_at ASC
-  `);
-  stmt.bind([taskId]);
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeTask(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-// All deps for a project — joins through tasks to filter by project_id.
-// ── Project memory (Phase A2) ─────────────────────────────────────────────
-
-const PROJECT_MEMORY_KINDS = ['decision', 'question', 'risk', 'glossary'];
-const PROJECT_MEMORY_STATUSES = ['open', 'resolved', 'archived'];
-
-function normalizeProjectMemory(row) {
-  if (!row) return null;
-  let meta = {};
-  try { meta = row.meta ? JSON.parse(row.meta) : {}; } catch { meta = {}; }
-  return {
-    id: row.id,
-    projectId: row.project_id,
-    kind: row.kind,
-    title: row.title,
-    body: row.body || '',
-    status: row.status || 'open',
-    meta,
-    sourceTaskId: row.source_task_id || null,
-    createdBy: row.created_by ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function listProjectMemory(projectId, { kind, status } = {}) {
-  if (!db) return [];
-  let sql = 'SELECT * FROM project_memory WHERE project_id = ?';
-  const params = [projectId];
-  if (kind) { sql += ' AND kind = ?'; params.push(kind); }
-  if (status) { sql += ' AND status = ?'; params.push(status); }
-  sql += ' ORDER BY created_at DESC';
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeProjectMemory(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-function getProjectMemory(id) {
-  if (!db) return null;
-  const stmt = db.prepare('SELECT * FROM project_memory WHERE id = ?');
-  stmt.bind([id]);
-  const row = stmt.step() ? normalizeProjectMemory(stmt.getAsObject()) : null;
-  stmt.free();
-  return row;
-}
-
-function createProjectMemory({ projectId, kind, title, body, status, meta, sourceTaskId, createdBy } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!projectId) throw new Error('projectId required');
-  if (!PROJECT_MEMORY_KINDS.includes(kind)) throw new Error(`kind must be one of ${PROJECT_MEMORY_KINDS.join(', ')}`);
-  if (!title || !title.trim()) throw new Error('title required');
-  const finalStatus = status && PROJECT_MEMORY_STATUSES.includes(status)
-    ? status
-    : (kind === 'question' || kind === 'risk' ? 'open' : 'resolved');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    `INSERT INTO project_memory (id, project_id, kind, title, body, status, meta, source_task_id, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, projectId, kind, title.trim(), body || '', finalStatus, JSON.stringify(meta || {}),
-     sourceTaskId || null, createdBy ?? null, now, now]
-  );
-  persist();
-  return getProjectMemory(id);
-}
-
-function getTaskSessionKeys() {
-  if (!db) return [];
-  const stmt = db.prepare('SELECT session_id FROM tasks WHERE session_id IS NOT NULL');
-  const rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject().session_id);
-  }
-  stmt.free();
-  return rows;
-}
-
-function updateProjectMemory(id, patch = {}) {
-  if (!db) throw new Error('DB not initialized');
-  const cur = getProjectMemory(id);
-  if (!cur) throw new Error('Memory entry not found');
-  const sets = [];
-  const params = [];
-  if (patch.title !== undefined) { sets.push('title = ?'); params.push(patch.title); }
-  if (patch.body !== undefined)  { sets.push('body = ?');  params.push(patch.body); }
-  if (patch.status !== undefined) {
-    if (!PROJECT_MEMORY_STATUSES.includes(patch.status)) throw new Error('invalid status');
-    sets.push('status = ?'); params.push(patch.status);
-  }
-  if (patch.meta !== undefined) {
-    sets.push('meta = ?'); params.push(JSON.stringify(patch.meta || {}));
-  }
-  if (patch.sourceTaskId !== undefined) { sets.push('source_task_id = ?'); params.push(patch.sourceTaskId || null); }
-  if (sets.length === 0) return cur;
-  sets.push('updated_at = ?'); params.push(new Date().toISOString());
-  params.push(id);
-  db.run(`UPDATE project_memory SET ${sets.join(', ')} WHERE id = ?`, params);
-  persist();
-  return getProjectMemory(id);
-}
-
-function deleteProjectMemory(id) {
-  if (!db) throw new Error('DB not initialized');
-  db.run('DELETE FROM project_memory WHERE id = ?', [id]);
-  persist();
-}
-
-// Build a compact snapshot of memory to inject into the agent dispatch
-// context.json. Includes the most relevant items only — open questions,
-// open risks, the latest N decisions, and all glossary terms.
-function buildProjectMemorySnapshot(projectId, { decisionLimit = 10, glossaryLimit = 50 } = {}) {
-  if (!db) return null;
-  const decisions = listProjectMemory(projectId, { kind: 'decision' }).slice(0, decisionLimit);
-  const openQuestions = listProjectMemory(projectId, { kind: 'question', status: 'open' });
-  const openRisks = listProjectMemory(projectId, { kind: 'risk', status: 'open' });
-  const glossary = listProjectMemory(projectId, { kind: 'glossary' }).slice(0, glossaryLimit);
-  if (decisions.length + openQuestions.length + openRisks.length + glossary.length === 0) return null;
-  return {
-    decisions: decisions.map(d => ({ id: d.id, title: d.title, body: d.body, createdAt: d.createdAt })),
-    openQuestions: openQuestions.map(q => ({ id: q.id, title: q.title, body: q.body, createdAt: q.createdAt })),
-    openRisks: openRisks.map(r => ({ id: r.id, title: r.title, body: r.body, category: r.meta?.category, severity: r.meta?.severity })),
-    glossary: glossary.map(g => ({ term: g.title, definition: g.body })),
-  };
-}
-
-function listDependenciesForProject(projectId) {
-  if (!db) return [];
-  const stmt = db.prepare(`
-    SELECT d.* FROM task_dependencies d
-    JOIN tasks t ON t.id = d.blocker_task_id OR t.id = d.blocked_task_id
-    WHERE t.project_id = ?
-    GROUP BY d.id
-    ORDER BY d.created_at ASC
-  `);
-  stmt.bind([projectId]);
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeDep(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-function addTaskDependency({ blockerTaskId, blockedTaskId, kind = 'blocks' } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!blockerTaskId || !blockedTaskId) throw new Error('addTaskDependency: both task ids required');
-  if (blockerTaskId === blockedTaskId) throw new Error('addTaskDependency: cannot depend on self');
-  if (kind === 'blocks' && wouldCreateDependencyCycle(blockerTaskId, blockedTaskId)) {
-    const err = new Error('Adding this dependency would create a cycle');
-    err.code = 'DEP_CYCLE';
-    throw err;
-  }
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  try {
-    db.run(
-      'INSERT INTO task_dependencies (id, blocker_task_id, blocked_task_id, kind, created_at) VALUES (?, ?, ?, ?, ?)',
-      [id, blockerTaskId, blockedTaskId, kind, now]
-    );
-    persist();
-  } catch (e) {
-    if (String(e.message || e).includes('UNIQUE')) {
-      // Already exists — return existing edge instead of erroring.
-      const stmt = db.prepare('SELECT * FROM task_dependencies WHERE blocker_task_id = ? AND blocked_task_id = ? AND kind = ?');
-      stmt.bind([blockerTaskId, blockedTaskId, kind]);
-      const row = stmt.step() ? stmt.getAsObject() : null;
-      stmt.free();
-      return row ? normalizeDep(row) : null;
-    }
-    throw e;
-  }
-  const stmt = db.prepare('SELECT * FROM task_dependencies WHERE id = :id');
-  const row = stmt.getAsObject({ ':id': id });
-  stmt.free();
-  return row.id ? normalizeDep(row) : null;
-}
-
-function removeTaskDependency(id) {
-  if (!db) throw new Error('DB not initialized');
-  db.run('DELETE FROM task_dependencies WHERE id = ?', [id]);
-  persist();
-}
-
-function addTaskActivity({ taskId, type, fromValue, toValue, actor, note } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!taskId || !type || !actor) throw new Error('addTaskActivity: taskId, type, and actor are required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    'INSERT INTO task_activity (id, task_id, type, from_value, to_value, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, taskId, type, fromValue || null, toValue || null, actor, note || null, now]
-  );
-  persist();
-}
-
-function getTaskActivity(taskId) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM task_activity WHERE task_id = :taskId ORDER BY created_at ASC');
-  stmt.bind({ ':taskId': taskId });
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeActivity(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
-// ─── Task Comments (user ↔ agent discussion) ─────────────────────────────────
-
-function addTaskComment({ taskId, authorType, authorId, authorName, body } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!taskId) throw new Error('addTaskComment: taskId is required');
-  if (!body || !body.trim()) throw new Error('addTaskComment: body is required');
-  if (authorType !== 'user' && authorType !== 'agent') throw new Error('addTaskComment: authorType must be user or agent');
-  if (!authorId) throw new Error('addTaskComment: authorId is required');
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    'INSERT INTO task_comments (id, task_id, author_type, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, taskId, authorType, String(authorId), authorName || null, body, now]
-  );
-  persist();
-  return getTaskComment(id);
-}
-
-function getTaskComment(id) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM task_comments WHERE id = :id');
-  const row = stmt.getAsObject({ ':id': id });
-  stmt.free();
-  return row.id ? normalizeComment(row) : null;
-}
-
-function listTaskComments(taskId, { includeDeleted = false } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare('SELECT * FROM task_comments WHERE task_id = :taskId ORDER BY created_at ASC');
-  stmt.bind({ ':taskId': taskId });
-  const rows = [];
-  while (stmt.step()) {
-    const c = normalizeComment(stmt.getAsObject());
-    if (c && (includeDeleted || !c.deletedAt)) rows.push(c);
-  }
-  stmt.free();
-  return rows;
-}
-
-function updateTaskComment(id, { body } = {}) {
-  if (!db) throw new Error('DB not initialized');
-  if (!body || !body.trim()) throw new Error('updateTaskComment: body is required');
-  const now = new Date().toISOString();
-  db.run('UPDATE task_comments SET body = ?, edited_at = ? WHERE id = ? AND deleted_at IS NULL', [body, now, id]);
-  persist();
-  return getTaskComment(id);
-}
-
-function deleteTaskComment(id) {
-  if (!db) throw new Error('DB not initialized');
-  const now = new Date().toISOString();
-  db.run('UPDATE task_comments SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', [now, id]);
-  persist();
-  return getTaskComment(id);
-}
-
-/** Recent undeleted comments for dispatch context. `limit` rows, oldest first. */
-function getRecentTaskComments(taskId, limit = 10) {
-  if (!db) throw new Error('DB not initialized');
-  const stmt = db.prepare(
-    'SELECT * FROM (SELECT * FROM task_comments WHERE task_id = :taskId AND deleted_at IS NULL ORDER BY created_at DESC LIMIT :lim) ORDER BY created_at ASC'
-  );
-  stmt.bind({ ':taskId': taskId, ':lim': limit });
-  const rows = [];
-  while (stmt.step()) rows.push(normalizeComment(stmt.getAsObject()));
-  stmt.free();
-  return rows;
-}
-
+// Tasks + epics + dependencies + activity + comments extracted to ./db/tasks.cjs
 // ─── Persistence ──────────────────────────────────────────────────────────────
+//
+// sql.js is in-memory; persist() serializes the full DB image to disk. Each
+// call rewrites the entire file, so naive every-mutation persist() at AOC's
+// concurrent provisioning load (10+ users registering at once) creates back-
+// to-back full snapshots that compete for disk IO.
+//
+// Strategy: queue a trailing-edge debounced flush on a 250ms timer. Mutations
+// keep landing in memory; we serialize at most ~4×/second under burst. On
+// process exit (SIGTERM, beforeExit) we synchronously flush so the latest
+// state lands on disk. Callers can still force a synchronous flush via
+// `persistNow()` for write-then-read paths that must hit disk (rare).
+
+const PERSIST_DEBOUNCE_MS = 250;
+let _persistTimer = null;
+let _persistPending = false;
+
+function persistNow() {
+  if (!db) return;
+  if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; }
+  _persistPending = false;
+  const data = db.export();
+  fs.writeFileSync(DB_PATH, Buffer.from(data));
+}
+
 function persist() {
   if (!db) return;
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
+  _persistPending = true;
+  if (_persistTimer) return; // a flush is already scheduled
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    if (_persistPending) {
+      try { persistNow(); }
+      catch (e) { console.error('[db] debounced persist failed:', e.message); }
+    }
+  }, PERSIST_DEBOUNCE_MS);
+  if (typeof _persistTimer.unref === 'function') _persistTimer.unref();
+}
+
+// Drain any pending writes synchronously on process shutdown so the disk
+// image matches in-memory state. Idempotent — safe to call multiple times.
+function flushPendingPersist() {
+  if (_persistPending || _persistTimer) {
+    try { persistNow(); } catch (e) { console.error('[db] flush on shutdown failed:', e.message); }
+  }
+}
+
+// Wire shutdown hooks once at module load. process.on is idempotent if the
+// listener identity matches, but we guard with a flag to be safe under HMR.
+if (!global.__aocDbShutdownHooked) {
+  global.__aocDbShutdownHooked = true;
+  process.on('beforeExit', flushPendingPersist);
+  process.on('SIGINT',  () => { flushPendingPersist(); process.exit(0); });
+  process.on('SIGTERM', () => { flushPendingPersist(); process.exit(0); });
 }
 
 // ─── Password Hashing (Node built-in scrypt) ─────────────────────────────────
@@ -2032,13 +1030,17 @@ function getUserByUsername(username) {
 
 function getUserById(id) {
   if (!db) return null;
-  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login, master_agent_id FROM users WHERE id = ?', [id]);
+  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login, master_agent_id, daily_token_quota, daily_token_used, daily_token_reset_at FROM users WHERE id = ?', [id]);
   if (result.length === 0 || result[0].values.length === 0) return null;
 
   const row = result[0].values[0];
   const cols = result[0].columns;
   return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
 }
+
+// Token budget enforcement extracted to ./db/budget.cjs — re-exported via the
+// barrel below so existing callers (db.checkTokenBudget / db.recordTokenUsage)
+// keep working without a code change.
 
 // ─── Google OAuth helpers ────────────────────────────────────────────────────
 function getUserByGoogleSub(sub) {
@@ -2093,25 +1095,7 @@ function createGoogleUser({ username, displayName, email, googleSub, role = 'use
   return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
 }
 
-function setUserMasterAgent(userId, agentId) {
-  if (!db) return;
-  db.run('UPDATE users SET master_agent_id = ? WHERE id = ?', [agentId, Number(userId)]);
-  persist();
-}
-
-function getUserMasterAgentId(userId) {
-  if (!db) return null;
-  const result = db.exec('SELECT master_agent_id FROM users WHERE id = ?', [Number(userId)]);
-  if (result.length === 0 || result[0].values.length === 0) return null;
-  return result[0].values[0][0] || null;
-}
-
-function markAgentProfileMaster(agentId, ownerId) {
-  if (!db) return;
-  if (ownerId == null) throw new Error('markAgentProfileMaster: ownerId is required');
-  db.run('UPDATE agent_profiles SET is_master = 1 WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerId)]);
-  persist();
-}
+// Master agent linking + agent profile CRUD extracted to ./db/agent-profiles.cjs
 
 function updateLastLogin(userId) {
   if (!db) return;
@@ -2121,7 +1105,11 @@ function updateLastLogin(userId) {
 
 function getAllUsers() {
   if (!db) return [];
-  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login FROM users ORDER BY created_at');
+  const result = db.exec(
+    'SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login, ' +
+    'master_agent_id, daily_token_quota, daily_token_used, daily_token_reset_at, last_activity_at ' +
+    'FROM users ORDER BY created_at'
+  );
   if (result.length === 0) return [];
 
   return result[0].values.map(row =>
@@ -2192,7 +1180,7 @@ function scalarCount(sql, params) {
   } catch { return 0; }
 }
 
-function updateUser(id, { displayName, role, password, canUseClaudeTerminal } = {}) {
+function updateUser(id, { displayName, role, password, canUseClaudeTerminal, dailyTokenQuota } = {}) {
   if (!db) return null;
   const fields = ["updated_at = datetime('now')"];
   const vals = [];
@@ -2200,6 +1188,14 @@ function updateUser(id, { displayName, role, password, canUseClaudeTerminal } = 
   if (role !== undefined) { fields.push('role = ?'); vals.push(role); }
   if (password) { fields.push('password_hash = ?'); vals.push(hashPassword(password)); }
   if (canUseClaudeTerminal !== undefined) { fields.push('can_use_claude_terminal = ?'); vals.push(canUseClaudeTerminal ? 1 : 0); }
+  if (dailyTokenQuota !== undefined) {
+    // Treat 0/null/empty as "unlimited" — store as NULL so JOINs treat it consistently.
+    const q = (dailyTokenQuota === null || dailyTokenQuota === '' || Number(dailyTokenQuota) <= 0)
+      ? null
+      : Math.floor(Number(dailyTokenQuota));
+    fields.push('daily_token_quota = ?');
+    vals.push(q);
+  }
   if (vals.length === 0) return getUserById(id);
   vals.push(id);
   db.run(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, vals);
@@ -2207,86 +1203,7 @@ function updateUser(id, { displayName, role, password, canUseClaudeTerminal } = 
   return getUserById(id);
 }
 
-// ─── Invitations ─────────────────────────────────────────────────────────────
-function normalizeInvitation(row) {
-  if (!row || !row.id) return null;
-  const now = new Date();
-  const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
-  const expired = expiresAt ? expiresAt.getTime() < now.getTime() : false;
-  return {
-    id: row.id,
-    token: row.token,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-    expiresAt: row.expires_at,
-    revokedAt: row.revoked_at || null,
-    defaultRole: row.default_role || 'user',
-    note: row.note || null,
-    useCount: row.use_count || 0,
-    expired,
-    active: !row.revoked_at && !expired,
-  };
-}
-
-function createInvitation({ createdBy, expiresAt, defaultRole = 'user', note }) {
-  if (!db) throw new Error('DB not initialized');
-  if (!createdBy) throw new Error('createInvitation: createdBy required');
-  if (!expiresAt) throw new Error('createInvitation: expiresAt required');
-  const token = crypto.randomBytes(24).toString('hex');
-  db.run(
-    'INSERT INTO invitations (token, created_by, expires_at, default_role, note) VALUES (?, ?, ?, ?, ?)',
-    [token, createdBy, expiresAt, defaultRole, note || null]
-  );
-  persist();
-  return getInvitationByToken(token);
-}
-
-function getAllInvitations() {
-  if (!db) return [];
-  const res = db.exec('SELECT * FROM invitations ORDER BY created_at DESC');
-  if (!res.length) return [];
-  const cols = res[0].columns;
-  return res[0].values.map(row => {
-    const obj = {}; cols.forEach((c, i) => { obj[c] = row[i]; });
-    return normalizeInvitation(obj);
-  });
-}
-
-function getInvitationByToken(token) {
-  if (!db) return null;
-  const res = db.exec('SELECT * FROM invitations WHERE token = ?', [token]);
-  if (!res.length || !res[0].values.length) return null;
-  const cols = res[0].columns;
-  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
-  return normalizeInvitation(obj);
-}
-
-function getInvitationById(id) {
-  if (!db) return null;
-  const res = db.exec('SELECT * FROM invitations WHERE id = ?', [id]);
-  if (!res.length || !res[0].values.length) return null;
-  const cols = res[0].columns;
-  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
-  return normalizeInvitation(obj);
-}
-
-function revokeInvitation(id) {
-  if (!db) return;
-  db.run("UPDATE invitations SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL", [id]);
-  persist();
-}
-
-function deleteInvitation(id) {
-  if (!db) return;
-  db.run('DELETE FROM invitations WHERE id = ?', [id]);
-  persist();
-}
-
-function incrementInvitationUse(id) {
-  if (!db) return;
-  db.run('UPDATE invitations SET use_count = use_count + 1 WHERE id = ?', [id]);
-  persist();
-}
+// Invitations extracted to ./db/invitations.cjs (re-exported via barrel below).
 
 // ─── JWT ──────────────────────────────────────────────────────────────────────
 function generateToken(user) {
@@ -2299,6 +1216,36 @@ function generateToken(user) {
     },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
+  );
+}
+
+/**
+ * Mint a per-agent service token. Used by skill scripts running as a specific
+ * agent (delegate, mcp-call, update-task) so each agent authenticates as
+ * itself rather than sharing one cluster-wide DASHBOARD_TOKEN.
+ *
+ * Claims:
+ *   - kind:    'agent-service' (lets authMiddleware route the JWT correctly)
+ *   - agentId: the agent the token represents
+ *   - ownerId: the user who owns that agent (used as req.user.userId)
+ *   - role:    'agent' (preserves existing service-token semantics)
+ *
+ * No expiry — these live on disk in `.aoc_agent_env` (mode 0600). Rotate
+ * by re-provisioning or via a future "rotate token" admin endpoint.
+ */
+function generateAgentServiceToken({ agentId, ownerId }) {
+  if (!agentId) throw new Error('generateAgentServiceToken: agentId required');
+  if (ownerId == null) throw new Error('generateAgentServiceToken: ownerId required');
+  return jwt.sign(
+    {
+      kind: 'agent-service',
+      agentId: String(agentId),
+      ownerId: Number(ownerId),
+      role: 'agent',
+    },
+    JWT_SECRET
+    // intentionally no expiresIn — agent tokens are filesystem-bound and
+    // revoked by re-provisioning the agent.
   );
 }
 
@@ -2319,17 +1266,32 @@ function authMiddleware(req, res, next) {
 
   const token = authHeader.slice(7);
 
-  // Accept DASHBOARD_TOKEN directly — used by agents calling update_task.sh
+  // Accept legacy cluster-wide DASHBOARD_TOKEN (deprecated — full bypass).
+  // Per-agent service tokens (minted at provision, JWT kind='agent-service')
+  // are preferred and validated below alongside dashboard JWTs.
   const dashboardToken = process.env.DASHBOARD_TOKEN;
   if (dashboardToken && token === dashboardToken) {
     req.user = { userId: 0, username: 'agent', role: 'agent' };
     return next();
   }
 
-  // Otherwise verify as JWT (dashboard user session)
+  // Otherwise verify as JWT (dashboard user session OR per-agent service token)
   const payload = verifyToken(token);
   if (!payload) {
     return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+
+  // Per-agent service token: scope this request to (agentId, ownerId). Routes
+  // see role='agent' but unlike DASHBOARD_TOKEN, ownership is bounded —
+  // userOwnsAgent below enforces match against payload.agentId.
+  if (payload.kind === 'agent-service') {
+    req.user = {
+      userId: Number(payload.ownerId) || 0,
+      role: 'agent',
+      agentId: payload.agentId,
+      username: `agent:${payload.agentId}`,
+    };
+    return next();
   }
 
   // Backfill displayName for tokens issued before it was embedded.
@@ -2355,769 +1317,15 @@ function requireAdmin(req, res, next) {
 // Agent ownership is tracked on agent_profiles.provisioned_by.
 // Admin always bypasses ownership checks.
 
-// Composite-PK aware. Pass `ownerHint` (typically req.user.userId) to disambiguate
-// when the slug exists under multiple users. Without a hint, returns the single
-// owner if only one exists, otherwise null (caller must specify whose agent).
-function getAgentOwner(agentId, ownerHint) {
-  if (!db) return null;
-  if (ownerHint != null) {
-    const r = db.exec('SELECT provisioned_by FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerHint)]);
-    if (r.length && r[0].values.length) return r[0].values[0][0];
-    return null;
-  }
-  const res = db.exec('SELECT provisioned_by FROM agent_profiles WHERE agent_id = ?', [agentId]);
-  if (!res.length || !res[0].values.length) return null;
-  if (res[0].values.length > 1) return null; // ambiguous — caller must scope
-  return res[0].values[0][0];
-}
-
-function getConnectionOwner(connId) {
-  if (!db) return null;
-  const res = db.exec('SELECT created_by FROM connections WHERE id = ?', [connId]);
-  if (!res.length || !res[0].values.length) return null;
-  return res[0].values[0][0];
-}
-
-function getPipelineOwner(pipelineId) {
-  if (!db) return null;
-  const res = db.exec('SELECT created_by FROM pipelines WHERE id = ?', [pipelineId]);
-  if (!res.length || !res[0].values.length) return null;
-  return res[0].values[0][0];
-}
-
-function userOwnsPipeline(req, pipelineId) {
-  if (!req?.user) return false;
-  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
-  const owner = getPipelineOwner(pipelineId);
-  return owner != null && owner === req.user.userId;
-}
-
-function requirePipelineOwnership(req, res, next) {
-  const id = req.params.id;
-  if (!id) return res.status(400).json({ error: 'pipeline id missing' });
-  if (!userOwnsPipeline(req, id)) {
-    return res.status(403).json({ error: 'You do not have permission to modify this pipeline' });
-  }
-  next();
-}
-
-/**
- * True if `req.user` owns a profile row for this agent_id.
- *
- * Under composite-PK multi-tenancy: admin no longer auto-bypasses for ALL
- * agents — admin can only act on agents where provisioned_by = admin's userId.
- * Service tokens (role=agent) keep the bypass since they run inside a user
- * gateway and operate on behalf of agents in that scope.
- *
- * Cross-tenant admin monitoring is intentionally a separate (future) feature.
- */
-function userOwnsAgent(req, agentId) {
-  if (!req?.user) return false;
-  if (req.user.role === 'agent') return true;
-  return getAgentProfile(agentId, req.user.userId) != null;
-}
-
-function userOwnsConnection(req, connId) {
-  if (!req?.user) return false;
-  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
-  const owner = getConnectionOwner(connId);
-  return owner != null && owner === req.user.userId;
-}
-
-/** Express middleware: require that req.user owns the agent named by :id (or :agentId) */
-function requireAgentOwnership(req, res, next) {
-  const agentId = req.params.id || req.params.agentId;
-  if (!agentId) return res.status(400).json({ error: 'agentId missing from route' });
-  if (!userOwnsAgent(req, agentId)) {
-    return res.status(403).json({ error: 'You do not have permission to modify this agent' });
-  }
-  // Establish owner context so downstream parsers (which resolve filesystem
-  // paths via getAgentOwner) pick THIS user's home even when the slug is
-  // ambiguous across tenants. Service tokens skip this — they don't carry a
-  // userId and parsers rely on header/query agentId routing.
-  if (req.user.role !== 'agent' && req.user.userId) {
-    const { withOwnerContext } = require('./agents/detail.cjs');
-    return withOwnerContext(req.user.userId, () => next());
-  }
-  next();
-}
-
-function requireConnectionOwnership(req, res, next) {
-  const id = req.params.id;
-  if (!id) return res.status(400).json({ error: 'connection id missing' });
-  if (!userOwnsConnection(req, id)) {
-    return res.status(403).json({ error: 'You do not have permission to modify this connection' });
-  }
-  next();
-}
-
-// ── Project ownership ──
-//
-// Rules (mirroring the connections/agents pattern):
-//   - admin role  → bypass all checks
-//   - agent token → bypass (service tokens used by built-in skills)
-//   - 'general' (the default seeded project, owner=null) → treated as shared:
-//     any logged-in user may mutate. Keeps backwards compat with pre-ownership
-//     installations where every task lived under 'general'.
-//   - any other project with owner=null → also treated as shared (legacy rows
-//     created before ownership tracking shipped). Once a row has a non-null
-//     created_by, only that user (or admin) may mutate.
-function getProjectOwner(projectId) {
-  if (!db) return null;
-  const res = db.exec('SELECT created_by FROM projects WHERE id = ?', [projectId]);
-  if (!res.length || !res[0].values.length) return null;
-  return res[0].values[0][0]; // may be null for legacy rows
-}
-
-function userOwnsProject(req, projectId) {
-  if (!req?.user) return false;
-  if (req.user.role === 'admin' || req.user.role === 'agent') return true;
-  const owner = getProjectOwner(projectId);
-  if (owner == null) return true; // shared / legacy project
-  return owner === req.user.userId;
-}
-
-function requireProjectOwnership(req, res, next) {
-  const id = req.params.id || req.params.projectId;
-  if (!id) return res.status(400).json({ error: 'project id missing' });
-  if (!userOwnsProject(req, id)) {
-    return res.status(403).json({ error: 'You do not have permission to modify this project' });
-  }
-  next();
-}
-
-// Variant for routes scoped to a task — looks up the task's projectId then
-// applies the project ownership rule. Falls through (200 OK) for legacy tasks
-// without a projectId.
-function requireProjectOwnershipForTask(req, res, next) {
-  const taskId = req.params.id || req.params.taskId;
-  if (!taskId) return res.status(400).json({ error: 'task id missing' });
-  if (!db) return res.status(500).json({ error: 'DB not initialized' });
-  const result = db.exec('SELECT project_id FROM tasks WHERE id = ?', [taskId]);
-  if (!result.length || !result[0].values.length) {
-    return res.status(404).json({ error: 'task not found' });
-  }
-  const projectId = result[0].values[0][0];
-  if (!projectId) return next(); // legacy task with no project — allow
-  if (!userOwnsProject(req, projectId)) {
-    return res.status(403).json({ error: 'You do not have permission to modify tasks in this project' });
-  }
-  next();
-}
-
-/**
- * Return a SQL WHERE-fragment + bind values that scope a list query by ownership.
- * Admin sees all by default; non-admins always scoped to their own id regardless
- * of the requested scope.
- *
- * @param {object} user - { id, role } from req.user
- * @param {string} ownerCol - column name, e.g. 'created_by' or 'provisioned_by'
- * @param {'me'|'all'|number|null} scope - parsed from ?owner= query
- * @returns {{where: string, params: any[]}}
- */
-function scopeByOwner(user, ownerCol, scope) {
-  if (!user) return { where: '1 = 0', params: [] };
-  // JWT payload uses `userId`; some legacy code passes `id`. Accept both.
-  const uid = user.userId ?? user.id;
-  if (user.role === 'admin') {
-    if (scope === 'all' || scope == null) return { where: '', params: [] };
-    if (scope === 'me') return { where: `${ownerCol} = ?`, params: [uid] };
-    if (typeof scope === 'number') return { where: `${ownerCol} = ?`, params: [scope] };
-    return { where: '', params: [] };
-  }
-  return { where: `${ownerCol} = ?`, params: [uid] };
-}
-
-// ─── Gateway state ───────────────────────────────────────────────────────────
-
-/**
- * Persist a user's gateway lifecycle data.
- * @param {number} userId
- * @param {{port: number|null, pid: number|null, state: 'running'|'starting'|'error'|'stopped'|null}} data
- */
-function setGatewayState(userId, { port, pid, state, token }) {
-  if (!db) return;
-  // Token is preserved unless explicitly cleared (state==='stopped' OR token===null).
-  // Pass `token: undefined` to leave it untouched.
-  if (token === undefined) {
-    db.run(
-      "UPDATE users SET gateway_port = ?, gateway_pid = ?, gateway_state = ? WHERE id = ?",
-      [port, pid, state, Number(userId)]
-    );
-  } else {
-    db.run(
-      "UPDATE users SET gateway_port = ?, gateway_pid = ?, gateway_state = ?, gateway_token = ? WHERE id = ?",
-      [port, pid, state, token, Number(userId)]
-    );
-  }
-}
-
-function getGatewayToken(userId) {
-  if (!db) return null;
-  const res = db.exec("SELECT gateway_token FROM users WHERE id = ?", [Number(userId)]);
-  return res[0]?.values?.[0]?.[0] || null;
-}
-
-/**
- * Read a user's gateway state.
- * @param {number} userId
- * @returns {{port: number|null, pid: number|null, state: string|null}}
- */
-function getGatewayState(userId) {
-  if (!db) return { port: null, pid: null, state: null };
-  const res = db.exec(
-    "SELECT gateway_port, gateway_pid, gateway_state FROM users WHERE id = ?",
-    [Number(userId)]
-  );
-  const row = res[0]?.values?.[0];
-  if (!row) return { port: null, pid: null, state: null };
-  return {
-    port:  row[0] != null ? Number(row[0]) : null,
-    pid:   row[1] != null ? Number(row[1]) : null,
-    state: row[2] != null ? String(row[2]) : null,
-  };
-}
-
-/**
- * List all users with a non-null gateway_pid.
- * Used by orchestrator startup cleanup and admin overview.
- * @returns {Array<{userId: number, port: number|null, pid: number, state: string|null}>}
- */
-function listGatewayStates() {
-  if (!db) return [];
-  const res = db.exec(
-    "SELECT id, gateway_port, gateway_pid, gateway_state FROM users WHERE gateway_state IS NOT NULL AND gateway_state != 'stopped' AND gateway_state != ''"
-  );
-  return (res[0]?.values || []).map(([id, port, pid, state]) => ({
-    userId: Number(id),
-    port:  port != null ? Number(port) : null,
-    pid:   pid != null ? Number(pid) : null,
-    state: state != null ? String(state) : null,
-  }));
-}
-
-/**
- * Clear gateway state for all users. Used by orchestrator at AOC startup.
- */
-function clearAllGatewayStates() {
-  if (!db) return;
-  db.run("UPDATE users SET gateway_port = NULL, gateway_pid = NULL, gateway_state = NULL");
-}
-
-// ─── port_reservations (atomic per-host port claim) ─────────────────────────
-// Operations run inside a single synchronous JS block — sql.js is sync, so
-// no other Express handler can interleave between scan and insert.
-//
-// Each call reserves a *triple* (p, p+1, p+2) — gateways need WS / canvas /
-// browser-control ports. The triple is contiguous and stride-3 aligned to the
-// allocator base.
-
-const _PORT_BASE_DEFAULT = 19000;
-const _PORT_END_DEFAULT  = 19999;
-
-function _portRowExists(port) {
-  const r = db.exec('SELECT 1 FROM port_reservations WHERE port = ? LIMIT 1', [port]);
-  return r.length > 0 && r[0].values.length > 0;
-}
-
-function _userGatewayPortInUse(port) {
-  const r = db.exec(
-    'SELECT 1 FROM users WHERE gateway_port = ? AND gateway_state IS NOT NULL LIMIT 1',
-    [port],
-  );
-  return r.length > 0 && r[0].values.length > 0;
-}
-
-/**
- * Atomically reserve a free port-triple for a user.
- * Returns { port, reservationId }. Throws on pool exhaustion.
- *
- * Caller MUST eventually call markReservationLive (on spawn success) or
- * releaseReservation (on failure / shutdown) — otherwise the rows leak.
- *
- * @param {number} userId
- * @param {{base?: number, end?: number, exclude?: number[]}} [opts]
- */
-function reservePortTriple(userId, opts = {}) {
-  if (!db) throw new Error('db not initialized');
-  const base = opts.base || _PORT_BASE_DEFAULT;
-  const end  = opts.end  || _PORT_END_DEFAULT;
-  const exclude = new Set(opts.exclude || []);
-  const reservationId = require('crypto').randomUUID();
-  const now = Date.now();
-
-  // Stride-3 candidate scan. The whole loop runs synchronously without
-  // awaits, so concurrent JS handlers cannot interleave between probe + insert.
-  for (let p = base; p <= end - 2; p += 3) {
-    if (exclude.has(p) || exclude.has(p + 1) || exclude.has(p + 2)) continue;
-    if (_portRowExists(p) || _portRowExists(p + 1) || _portRowExists(p + 2)) continue;
-    if (_userGatewayPortInUse(p) || _userGatewayPortInUse(p + 1) || _userGatewayPortInUse(p + 2)) continue;
-
-    // All three free — claim the triple atomically.
-    try {
-      db.run(
-        `INSERT INTO port_reservations (port, user_id, reservation_id, reserved_at, pid, state)
-         VALUES (?, ?, ?, ?, NULL, 'reserving'),
-                (?, ?, ?, ?, NULL, 'reserving'),
-                (?, ?, ?, ?, NULL, 'reserving')`,
-        [
-          p,     userId, reservationId, now,
-          p + 1, userId, reservationId, now,
-          p + 2, userId, reservationId, now,
-        ],
-      );
-      persist();
-      return { port: p, reservationId };
-    } catch (e) {
-      // Concurrent insert collision — rare. Move on to next stride.
-      continue;
-    }
-  }
-  throw new Error('PORT_POOL_EXHAUSTED');
-}
-
-function markReservationSpawning(reservationId, pid) {
-  if (!db) return;
-  db.run(
-    "UPDATE port_reservations SET state = 'spawning', pid = ? WHERE reservation_id = ?",
-    [pid, reservationId],
-  );
-  persist();
-}
-
-function markReservationLive(reservationId) {
-  if (!db) return;
-  db.run(
-    "UPDATE port_reservations SET state = 'live' WHERE reservation_id = ?",
-    [reservationId],
-  );
-  persist();
-}
-
-function releaseReservation(reservationId) {
-  if (!db) return;
-  db.run('DELETE FROM port_reservations WHERE reservation_id = ?', [reservationId]);
-  persist();
-}
-
-function releaseReservationByUser(userId) {
-  if (!db) return;
-  db.run('DELETE FROM port_reservations WHERE user_id = ?', [userId]);
-  persist();
-}
-
-/** All reservations whose pid is no longer alive on this host. */
-function findDeadReservations() {
-  if (!db) return [];
-  const r = db.exec("SELECT port, user_id, reservation_id, pid, state FROM port_reservations WHERE pid IS NOT NULL");
-  if (!r.length) return [];
-  const out = [];
-  for (const row of r[0].values) {
-    const [port, user_id, reservation_id, pid, state] = row;
-    let alive = false;
-    try { process.kill(pid, 0); alive = true; } catch { alive = false; }
-    if (!alive) out.push({ port, userId: user_id, reservationId: reservation_id, pid, state });
-  }
-  return out;
-}
-
-/** Reservations that never finished spawning (state='reserving' or 'spawning' with pid null). */
-function findStaleReservations(olderThanMs = 5 * 60 * 1000) {
-  if (!db) return [];
-  const cutoff = Date.now() - olderThanMs;
-  const r = db.exec(
-    "SELECT port, user_id, reservation_id, pid, state FROM port_reservations " +
-    "WHERE state = 'reserving' AND reserved_at < ?",
-    [cutoff],
-  );
-  if (!r.length) return [];
-  return r[0].values.map(([port, user_id, reservation_id, pid, state]) => ({
-    port, userId: user_id, reservationId: reservation_id, pid, state,
-  }));
-}
-
-/** All currently-active port reservation rows (live + spawning). */
-function listReservations() {
-  if (!db) return [];
-  const r = db.exec("SELECT port, user_id, reservation_id, pid, state FROM port_reservations");
-  if (!r.length) return [];
-  return r[0].values.map(([port, user_id, reservation_id, pid, state]) => ({
-    port, userId: user_id, reservationId: reservation_id, pid, state,
-  }));
-}
-
-// ─── Agent Profiles ──────────────────────────────────────────────────────────
-
-// Composite-key aware lookup. Pass `ownerId` to disambiguate when the same
-// slug exists under multiple users; without it, prefer admin (uid=1) then
-// the lowest provisioned_by — keeps legacy single-tenant call sites working.
-function getAgentProfile(agentId, ownerId) {
-  if (!db) return null;
-  const result = ownerId != null
-    ? db.exec('SELECT * FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerId)])
-    : db.exec(
-        `SELECT * FROM agent_profiles WHERE agent_id = ?
-         ORDER BY (provisioned_by = 1) DESC, provisioned_by ASC LIMIT 1`,
-        [agentId]
-      );
-  if (!result.length || !result[0].values.length) return null;
-  const row = result[0].values[0];
-  const cols = result[0].columns;
-  const obj = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
-  try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
-  obj.avatarPresetId = obj.avatar_preset_id ?? null;
-  obj.role = obj.role ?? null;
-  obj.isMaster = obj.is_master === 1 || obj.is_master === true;
-  return obj;
-}
-
-// List every owner row that holds this agent_id. Used by ambiguity resolvers
-// (e.g. /api/master/team where caller knows their own ownerId).
-function getAgentProfilesByAgentId(agentId) {
-  if (!db) return [];
-  const result = db.exec('SELECT * FROM agent_profiles WHERE agent_id = ? ORDER BY provisioned_by ASC', [agentId]);
-  if (!result.length) return [];
-  return result[0].values.map(row => {
-    const obj = Object.fromEntries(result[0].columns.map((c, i) => [c, row[i]]));
-    try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
-    obj.avatarPresetId = obj.avatar_preset_id ?? null;
-    obj.isMaster = obj.is_master === 1 || obj.is_master === true;
-    return obj;
-  });
-}
-
-function upsertAgentProfile({ agentId, displayName, emoji, avatarData, avatarMime, avatarPresetId, color, description, tags, notes, provisionedBy, role }) {
-  if (!db) throw new Error('Database not initialized');
-  // provisioned_by is part of the composite PK now — required.
-  const owner = provisionedBy != null ? Number(provisionedBy) : 1;
-  const existing = getAgentProfile(agentId, owner);
-  const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : (tags || '[]');
-  if (existing) {
-    db.run(
-      `UPDATE agent_profiles SET
-        display_name = COALESCE(?, display_name),
-        emoji = COALESCE(?, emoji),
-        avatar_data = COALESCE(?, avatar_data),
-        avatar_mime = COALESCE(?, avatar_mime),
-        avatar_preset_id = ?,
-        color = ?,
-        description = COALESCE(?, description),
-        tags = ?,
-        notes = COALESCE(?, notes),
-        role = COALESCE(?, role),
-        updated_at = datetime('now')
-      WHERE agent_id = ? AND provisioned_by = ?`,
-      [displayName ?? null, emoji ?? null, avatarData ?? null, avatarMime ?? null,
-       avatarPresetId ?? existing.avatar_preset_id ?? null,
-       color ?? existing.color ?? null,
-       description ?? null, tagsJson, notes ?? null,
-       role ?? null, agentId, owner]
-    );
-  } else {
-    db.run(
-      `INSERT INTO agent_profiles
-        (agent_id, display_name, emoji, avatar_data, avatar_mime, avatar_preset_id, color, description, tags, notes, provisioned_by, role)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [agentId, displayName ?? null, emoji ?? null, avatarData ?? null, avatarMime ?? null,
-       avatarPresetId ?? null, color ?? null, description ?? null, tagsJson, notes ?? null,
-       owner, role ?? null]
-    );
-  }
-  persist();
-  return getAgentProfile(agentId, owner);
-}
-
-function renameAgentProfile(oldAgentId, newAgentId, ownerId) {
-  if (!db) return;
-  if (ownerId == null) throw new Error('renameAgentProfile: ownerId is required');
-  const owner = Number(ownerId);
-  const existing = getAgentProfile(oldAgentId, owner);
-  if (!existing) return;
-  const conflict = getAgentProfile(newAgentId, owner);
-  if (conflict) {
-    db.run('DELETE FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [oldAgentId, owner]);
-  } else {
-    db.run('UPDATE agent_profiles SET agent_id = ? WHERE agent_id = ? AND provisioned_by = ?', [newAgentId, oldAgentId, owner]);
-  }
-  // Carry over connection assignments
-  db.run('UPDATE agent_connections SET agent_id = ? WHERE agent_id = ? AND owner_id = ?', [newAgentId, oldAgentId, owner]);
-  persist();
-}
-
-function getAllAgentProfiles(opts = {}) {
-  if (!db) return [];
-  const { ownerId } = opts || {};
-  const result = ownerId != null
-    ? db.exec('SELECT * FROM agent_profiles WHERE provisioned_by = ? ORDER BY provisioned_at DESC', [Number(ownerId)])
-    : db.exec('SELECT * FROM agent_profiles ORDER BY provisioned_at DESC');
-  if (!result.length) return [];
-  return result[0].values.map(row => {
-    const obj = Object.fromEntries(result[0].columns.map((c, i) => [c, row[i]]));
-    try { obj.tags = obj.tags ? JSON.parse(obj.tags) : []; } catch { obj.tags = []; }
-    obj.avatarPresetId = obj.avatar_preset_id ?? null;
-    obj.isMaster = obj.is_master === 1 || obj.is_master === true;
-    return obj;
-  });
-}
-
-function deleteAgentProfile(agentId, ownerId) {
-  if (!db) return;
-  if (ownerId == null) {
-    // Legacy guard: callers must scope. We refuse rather than silently nuking
-    // every owner's profile for this slug.
-    throw new Error('deleteAgentProfile: ownerId is required to avoid cross-tenant deletion');
-  }
-  db.run('DELETE FROM agent_profiles WHERE agent_id = ? AND provisioned_by = ?', [agentId, Number(ownerId)]);
-  db.run('DELETE FROM agent_connections WHERE agent_id = ? AND owner_id = ?', [agentId, Number(ownerId)]);
-  persist();
-}
-
-// ─── Connections ─────────────────────────────────────────────────────────────
-
-const { encrypt: encryptConn, decrypt: decryptConn } = require('./integrations/base.cjs');
-
-function normalizeConnection(row) {
-  if (!row || !row.id) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    hasCredentials: !!row.credentials,
-    metadata: (() => { try { return row.metadata ? JSON.parse(row.metadata) : {}; } catch { return {}; } })(),
-    enabled: !!row.enabled,
-    createdBy: row.created_by ?? null,
-    lastTestedAt: row.last_tested_at || null,
-    lastTestOk: row.last_test_ok != null ? !!row.last_test_ok : null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function getAllConnections() {
-  if (!db) return [];
-  const res = db.exec('SELECT * FROM connections ORDER BY created_at DESC');
-  if (!res.length) return [];
-  const cols = res[0].columns;
-  return res[0].values.map(row => {
-    const obj = {}; cols.forEach((c, i) => { obj[c] = row[i]; });
-    return normalizeConnection(obj);
-  }).filter(Boolean);
-}
-
-function getConnection(id) {
-  if (!db) return null;
-  const res = db.exec('SELECT * FROM connections WHERE id = ?', [id]);
-  if (!res.length || !res[0].values.length) return null;
-  const cols = res[0].columns;
-  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
-  return normalizeConnection(obj);
-}
-
-/** Get raw connection with decrypted credentials (for internal use only — never expose to frontend) */
-function getConnectionRaw(id) {
-  if (!db) return null;
-  const res = db.exec('SELECT * FROM connections WHERE id = ?', [id]);
-  if (!res.length || !res[0].values.length) return null;
-  const cols = res[0].columns;
-  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
-  const meta = (() => { try { return obj.metadata ? JSON.parse(obj.metadata) : {}; } catch { return {}; } })();
-  let creds = '';
-  try { creds = obj.credentials ? decryptConn(obj.credentials) : ''; } catch { creds = ''; }
-  return { ...obj, credentials: creds, metadata: meta };
-}
-
-/** Get all enabled connections with decrypted credentials (for dispatch injection) */
-function getEnabledConnectionsRaw() {
-  if (!db) return [];
-  const res = db.exec('SELECT * FROM connections WHERE enabled = 1');
-  if (!res.length) return [];
-  const cols = res[0].columns;
-  return res[0].values.map(row => {
-    const obj = {}; cols.forEach((c, i) => { obj[c] = row[i]; });
-    const meta = (() => { try { return obj.metadata ? JSON.parse(obj.metadata) : {}; } catch { return {}; } })();
-    let creds = '';
-    try { creds = obj.credentials ? decryptConn(obj.credentials) : ''; } catch { creds = ''; }
-    return { ...obj, credentials: creds, metadata: meta };
-  });
-}
-
-function createConnection({ id, name, type, credentials, metadata, enabled, createdBy }) {
-  if (!db) throw new Error('DB not initialized');
-  const now = new Date().toISOString();
-  const encCreds = credentials ? encryptConn(credentials) : '';
-  const metaStr = JSON.stringify(metadata || {});
-  db.run(
-    `INSERT INTO connections (id, name, type, credentials, metadata, enabled, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, name, type, encCreds, metaStr, enabled !== false ? 1 : 0, createdBy || null, now, now]
-  );
-  persist();
-  return getConnection(id);
-}
-
-function updateConnection(id, patch) {
-  if (!db) throw new Error('DB not initialized');
-  const now = new Date().toISOString();
-  const fields = ['updated_at = ?'];
-  const vals = [now];
-  if (patch.name        !== undefined) { fields.push('name = ?');        vals.push(patch.name); }
-  if (patch.type        !== undefined) { fields.push('type = ?');        vals.push(patch.type); }
-  if (patch.credentials !== undefined) { fields.push('credentials = ?'); vals.push(patch.credentials ? encryptConn(patch.credentials) : ''); }
-  if (patch.metadata    !== undefined) { fields.push('metadata = ?');    vals.push(JSON.stringify(patch.metadata)); }
-  if (patch.enabled     !== undefined) { fields.push('enabled = ?');     vals.push(patch.enabled ? 1 : 0); }
-  if (patch.lastTestedAt !== undefined) { fields.push('last_tested_at = ?'); vals.push(patch.lastTestedAt); }
-  if (patch.lastTestOk   !== undefined) { fields.push('last_test_ok = ?');   vals.push(patch.lastTestOk ? 1 : 0); }
-  vals.push(id);
-  db.run(`UPDATE connections SET ${fields.join(', ')} WHERE id = ?`, vals);
-  persist();
-  return getConnection(id);
-}
-
-function deleteConnection(id) {
-  if (!db) throw new Error('DB not initialized');
-  db.run('DELETE FROM connections WHERE id = ?', [id]);
-  db.run('DELETE FROM agent_connections WHERE connection_id = ?', [id]);
-  persist();
-}
-
-// ─── Agent ↔ Connection assignments ─────────────────────────────────────────
-
-function getAgentConnectionIds(agentId, ownerId) {
-  if (!db) return [];
-  if (ownerId == null) throw new Error('getAgentConnectionIds: ownerId is required');
-  const res = db.exec('SELECT connection_id FROM agent_connections WHERE agent_id = ? AND owner_id = ?', [agentId, Number(ownerId)]);
-  if (!res.length) return [];
-  return res[0].values.map(r => r[0]);
-}
-
-// Returns {agentId, ownerId} pairs — caller must filter by owner if displaying
-// to a specific user (cross-tenant agents share connection_id rarely, but the
-// schema allows it).
-function getConnectionAgentIds(connectionId) {
-  if (!db) return [];
-  const res = db.exec('SELECT agent_id, owner_id FROM agent_connections WHERE connection_id = ?', [connectionId]);
-  if (!res.length) return [];
-  return res[0].values.map(r => ({ agentId: r[0], ownerId: r[1] }));
-}
-
-function setAgentConnections(agentId, connectionIds, ownerId) {
-  if (!db) throw new Error('DB not initialized');
-  if (ownerId == null) throw new Error('setAgentConnections: ownerId is required');
-  const owner = Number(ownerId);
-  db.run('DELETE FROM agent_connections WHERE agent_id = ? AND owner_id = ?', [agentId, owner]);
-  const now = new Date().toISOString();
-  for (const cid of connectionIds) {
-    db.run('INSERT INTO agent_connections (agent_id, connection_id, owner_id, created_at) VALUES (?, ?, ?, ?)', [agentId, cid, owner, now]);
-  }
-  persist();
-}
-
-// ─── Pipelines ───────────────────────────────────────────────────────────────
-
-function normalizePipeline(row) {
-  if (!row || !row.id) return null;
-  let graph = { nodes: [], edges: [] };
-  try { graph = row.graph_json ? JSON.parse(row.graph_json) : graph; } catch {}
-  return {
-    id: row.id,
-    name: row.name,
-    description: row.description || null,
-    graph,
-    createdBy: row.created_by ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function getAllPipelines() {
-  if (!db) return [];
-  const res = db.exec('SELECT * FROM pipelines ORDER BY updated_at DESC');
-  if (!res.length) return [];
-  const cols = res[0].columns;
-  return res[0].values.map(r => {
-    const obj = {}; cols.forEach((c, i) => { obj[c] = r[i]; });
-    return normalizePipeline(obj);
-  }).filter(Boolean);
-}
-
-function getPipeline(id) {
-  if (!db) return null;
-  const res = db.exec('SELECT * FROM pipelines WHERE id = ?', [id]);
-  if (!res.length || !res[0].values.length) return null;
-  const cols = res[0].columns;
-  const obj = {}; cols.forEach((c, i) => { obj[c] = res[0].values[0][i]; });
-  return normalizePipeline(obj);
-}
-
-function createPipeline({ id, name, description, graph, createdBy }) {
-  if (!db) throw new Error('DB not initialized');
-  const now = new Date().toISOString();
-  const graphJson = JSON.stringify(graph || { nodes: [], edges: [] });
-  db.run(
-    `INSERT INTO pipelines (id, name, description, graph_json, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, name, description || null, graphJson, createdBy || null, now, now]
-  );
-  persist();
-  return getPipeline(id);
-}
-
-function updatePipeline(id, patch) {
-  if (!db) throw new Error('DB not initialized');
-  const now = new Date().toISOString();
-  const fields = ['updated_at = ?'];
-  const vals = [now];
-  if (patch.name        !== undefined) { fields.push('name = ?');        vals.push(patch.name); }
-  if (patch.description !== undefined) { fields.push('description = ?'); vals.push(patch.description); }
-  if (patch.graph       !== undefined) { fields.push('graph_json = ?');  vals.push(JSON.stringify(patch.graph)); }
-  vals.push(id);
-  db.run(`UPDATE pipelines SET ${fields.join(', ')} WHERE id = ?`, vals);
-  persist();
-  return getPipeline(id);
-}
-
-function deletePipeline(id) {
-  if (!db) throw new Error('DB not initialized');
-  // Cascades via FK to steps/artifacts; manually nuke runs first for safety.
-  db.run('DELETE FROM pipeline_artifacts WHERE run_id IN (SELECT id FROM pipeline_runs WHERE pipeline_id = ?)', [id]);
-  db.run('DELETE FROM pipeline_steps     WHERE run_id IN (SELECT id FROM pipeline_runs WHERE pipeline_id = ?)', [id]);
-  db.run('DELETE FROM pipeline_runs      WHERE pipeline_id = ?', [id]);
-  db.run('DELETE FROM pipelines          WHERE id = ?', [id]);
-  persist();
-}
-
-function listPipelinesForUser(req) {
-  const all = getAllPipelines();
-  if (!req?.user) return [];
-  if (req.user.role === 'admin' || req.user.role === 'agent') return all;
-  return all.filter(p => p.createdBy == null || p.createdBy === req.user.userId);
-}
-
-function getAgentConnectionsRaw(agentId, ownerId) {
-  if (!db) return [];
-  if (ownerId == null) throw new Error('getAgentConnectionsRaw: ownerId is required');
-  const ids = getAgentConnectionIds(agentId, ownerId);
-  if (ids.length === 0) return [];
-  return ids.map(id => getConnectionRaw(id)).filter(c => c && c.enabled);
-}
-
-// Map of connection_id → [{agentId, ownerId}, ...]. Callers MUST filter by
-// owner when displaying back to a specific user. Returning the owner inline
-// keeps that filter explicit at the call site.
-function getAllAgentConnectionAssignments(opts = {}) {
-  if (!db) return {};
-  const { ownerId } = opts || {};
-  const res = ownerId != null
-    ? db.exec('SELECT agent_id, connection_id, owner_id FROM agent_connections WHERE owner_id = ?', [Number(ownerId)])
-    : db.exec('SELECT agent_id, connection_id, owner_id FROM agent_connections');
-  if (!res.length) return {};
-  const map = {};
-  for (const [agentId, connId, ownerCol] of res[0].values) {
-    if (!map[connId]) map[connId] = [];
-    map[connId].push({ agentId, ownerId: ownerCol });
-  }
-  return map;
-}
+// Agent ownership + composite-PK profile CRUD extracted to ./db/agent-profiles.cjs.
+// Connection ownership extracted to ./db/connections.cjs.
+// Pipeline ownership extracted to ./db/pipelines.cjs.
+
+// Project ownership + scopeByOwner extracted to ./db/projects.cjs
+// Gateway state + port_reservations extracted to ./db/gateway-state.cjs
+
+// Agent profile CRUD extracted to ./db/agent-profiles.cjs
+// Connections (table) + agent_connections (junction) extracted to ./db/connections.cjs
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 // Raw DB accessor — for modules that need to run ad-hoc queries.
@@ -3128,6 +1336,8 @@ module.exports = {
   initDatabase,
   getDb: () => db,
   persist,
+  persistNow,
+  flushPendingPersist,
   // ─── Settings ───────────────────────────────────────────────────────────────
   getSetting(key) {
     if (!db) return null;
@@ -3167,78 +1377,30 @@ module.exports = {
   hashPassword,
   verifyPassword,
   generateToken,
+  generateAgentServiceToken,
+  // Token budget — extracted to ./db/budget.cjs (Sprint 4 split foundation)
+  ...require('./db/budget.cjs'),
   verifyToken,
   authMiddleware,
   requireAdmin,
-  requireAgentOwnership,
-  requireConnectionOwnership,
-  requirePipelineOwnership,
-  userOwnsAgent,
-  userOwnsConnection,
-  userOwnsPipeline,
-  getAgentOwner,
-  getConnectionOwner,
-  getPipelineOwner,
   deleteUser,
   purgeUserData,
   updateUser,
-  // Invitations
-  createInvitation, getAllInvitations, getInvitationByToken, getInvitationById,
-  revokeInvitation, deleteInvitation, incrementInvitationUse,
+  // Invitations — extracted to ./db/invitations.cjs
+  ...require('./db/invitations.cjs'),
   JWT_SECRET,
-  // Agent profiles
-  getAgentProfile,
-  getAgentProfilesByAgentId,
-  upsertAgentProfile,
-  renameAgentProfile,
-  getAllAgentProfiles,
-  deleteAgentProfile,
-  // Tasks
-  getAllTasks, getTask, getTaskByExternalId, createTask, updateTask, deleteTask,
-  addTaskActivity, getTaskActivity, getTaskSessionKeys,
-  addTaskComment, getTaskComment, listTaskComments, updateTaskComment, deleteTaskComment, getRecentTaskComments,
-  // Epics + dependencies (Phase B)
-  listEpics, getEpic, createEpic, updateEpic, deleteEpic,
-  listDependenciesForTask, listDependenciesForProject, addTaskDependency, removeTaskDependency,
-  getUnmetBlockers, wouldCreateDependencyCycle,
-  // Project memory (Phase A2)
-  listProjectMemory, getProjectMemory, createProjectMemory, updateProjectMemory, deleteProjectMemory,
-  buildProjectMemorySnapshot,
-  PROJECT_MEMORY_KINDS, PROJECT_MEMORY_STATUSES,
-  // Projects
-  getAllProjects, getProject, getProjectByPath, createProject, updateProject, deleteProject,
-  setProjectWorkspace, bumpProjectFetchedAt,
-  getProjectOwner, userOwnsProject, requireProjectOwnership, requireProjectOwnershipForTask,
-  scopeByOwner,
-  // Mission rooms
-  normalizeMissionRoom, normalizeMissionMessage,
-  listMissionRooms, listMissionRoomsForUser, getMissionRoom, createMissionRoom, updateMissionRoomMembers,
-  deleteMissionRoom,
-  getProjectDefaultRoom, ensureProjectDefaultRoom, backfillProjectDefaultRooms,
-  getHqRoomForUser,
-  getMissionRoomById: getMissionRoom,
-  listMissionMessages, createMissionMessage,
-  // Room sessions (room ↔ gateway session tracking)
-  markSessionAsRoomTriggered, getRoomSessionKeys, getRoomAgentSession, getRoomForSession,
-  // Integrations
-  getAllIntegrations, getProjectIntegrations, getIntegrationRaw,
-  createIntegration, updateIntegration, deleteIntegration, updateIntegrationSyncState,
-  // Connections
-  getAllConnections, getConnection, getConnectionRaw, getEnabledConnectionsRaw,
-  createConnection, updateConnection, deleteConnection,
-  // Agent ↔ Connection assignments
-  getAgentConnectionIds, getConnectionAgentIds, setAgentConnections,
-  getAgentConnectionsRaw, getAllAgentConnectionAssignments,
-  // Pipelines
-  getAllPipelines, getPipeline, createPipeline, updatePipeline, deletePipeline,
-  listPipelinesForUser,
-  // Gateway state
-  setGatewayState, getGatewayState, getGatewayToken, listGatewayStates, clearAllGatewayStates,
-  reservePortTriple, markReservationSpawning, markReservationLive,
-  releaseReservation, releaseReservationByUser,
-  findDeadReservations, findStaleReservations, listReservations,
-  // Master agent
-  setUserMasterAgent,
-  getUserMasterAgentId,
-  markAgentProfileMaster,
+  // Agent profiles + ownership + master linking — extracted to ./db/agent-profiles.cjs
+  ...require('./db/agent-profiles.cjs'),
+  // Tasks + epics + dependencies + activity + comments — extracted to ./db/tasks.cjs
+  ...require('./db/tasks.cjs'),
+  // Mission rooms + messages + room↔session tracking — extracted to ./db/rooms.cjs
+  ...require('./db/rooms.cjs'),
+  // Projects + integrations + memory + ownership + scopeByOwner — extracted to ./db/projects.cjs
+  ...require('./db/projects.cjs'),
+  // Connections + agent_connections junction + ownership — extracted to ./db/connections.cjs
+  ...require('./db/connections.cjs'),
+  // Pipelines — extracted to ./db/pipelines.cjs (incl. ownership helpers)
+  ...require('./db/pipelines.cjs'),
+  // Gateway state + port_reservations — extracted to ./db/gateway-state.cjs
+  ...require('./db/gateway-state.cjs'),
 };

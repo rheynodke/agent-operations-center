@@ -10,6 +10,7 @@
 
 const orchestrator = require('../lib/gateway-orchestrator.cjs');
 const { gatewayPool } = require('../lib/gateway-ws.cjs');
+const audit = require('../lib/audit-log.cjs');
 
 /** Per-user mutex so two simultaneous logins for the same user dedupe spawn. */
 const _spawnInflight = new Map();
@@ -273,6 +274,12 @@ module.exports = function authRouter(deps) {
         defaultRole,
         note,
       });
+      audit.record(req, {
+        action: 'invitation.created',
+        targetType: 'invitation',
+        targetId: inv.id,
+        after: { defaultRole, expiresAt: expDate.toISOString(), note: note || null },
+      });
       res.json({ invitation: inv });
     } catch (err) {
       console.error('[invitations/create]', err);
@@ -285,12 +292,14 @@ module.exports = function authRouter(deps) {
     const inv = db.getInvitationById(id);
     if (!inv) return res.status(404).json({ error: 'Invitation not found' });
     db.revokeInvitation(id);
+    audit.record(req, { action: 'invitation.revoked', targetType: 'invitation', targetId: id });
     res.json({ invitation: db.getInvitationById(id) });
   });
 
   router.delete('/invitations/:id', db.authMiddleware, db.requireAdmin, (req, res) => {
     const id = parseInt(req.params.id, 10);
     db.deleteInvitation(id);
+    audit.record(req, { action: 'invitation.deleted', targetType: 'invitation', targetId: id });
     res.json({ ok: true });
   });
 
@@ -312,6 +321,12 @@ module.exports = function authRouter(deps) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
     db.updateUser(id, { password });
+    audit.record(req, {
+      action: 'user.password_reset',
+      targetType: 'user',
+      targetId: id,
+      reason: req.body?.reason || null,
+    });
     console.log(`[users/reset-password] admin=${req.user.username} (id=${req.user.userId}) reset password for user="${target.username}" (id=${id})`);
     // Note: JWT is stateless so previously-issued tokens stay valid until expiry.
     // Acceptable for an admin-recovery flow; user should be told to log out & back in.
@@ -322,16 +337,46 @@ module.exports = function authRouter(deps) {
     const id = parseInt(req.params.id, 10);
     const target = db.getUserById(id);
     if (!target) return res.status(404).json({ error: 'User not found' });
-    const { displayName, role, password, canUseClaudeTerminal } = req.body || {};
+    const { displayName, role, password, canUseClaudeTerminal, dailyTokenQuota } = req.body || {};
     if (role !== undefined && !['admin', 'user'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role' });
+    }
+    if (dailyTokenQuota !== undefined && dailyTokenQuota !== null && dailyTokenQuota !== '') {
+      const n = Number(dailyTokenQuota);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ error: 'dailyTokenQuota must be a non-negative number, or 0/null to disable the cap' });
+      }
     }
     // Don't let an admin demote themselves if they are the last admin
     if (role === 'user' && id === req.user.userId) {
       const admins = db.getAllUsers().filter(u => u.role === 'admin');
       if (admins.length <= 1) return res.status(400).json({ error: 'Cannot demote the last admin' });
     }
-    const updated = db.updateUser(id, { displayName, role, password, canUseClaudeTerminal });
+    const before = {
+      displayName: target.display_name,
+      role: target.role,
+      canUseClaudeTerminal: target.can_use_claude_terminal,
+      dailyTokenQuota: target.daily_token_quota,
+    };
+    const updated = db.updateUser(id, { displayName, role, password, canUseClaudeTerminal, dailyTokenQuota });
+    if (role !== undefined && role !== before.role) {
+      audit.record(req, {
+        action: 'user.role_changed',
+        targetType: 'user', targetId: id,
+        before: { role: before.role }, after: { role },
+      });
+    }
+    if (password !== undefined) {
+      audit.record(req, { action: 'user.password_changed', targetType: 'user', targetId: id });
+    }
+    if (dailyTokenQuota !== undefined && Number(dailyTokenQuota || 0) !== Number(before.dailyTokenQuota || 0)) {
+      audit.record(req, {
+        action: 'user.token_quota_changed',
+        targetType: 'user', targetId: id,
+        before: { dailyTokenQuota: before.dailyTokenQuota },
+        after: { dailyTokenQuota: dailyTokenQuota || null },
+      });
+    }
     res.json({ user: updated });
   });
 
@@ -406,6 +451,13 @@ module.exports = function authRouter(deps) {
       summary.db = `purge-failed:${e.message}`;
     }
 
+    audit.record(req, {
+      action: 'user.deleted',
+      targetType: 'user',
+      targetId: id,
+      before: { username: target.username, role: target.role },
+      after: { summary },
+    });
     console.log(`[users/delete] uid=${id} (${target.username}) summary=`, summary);
     res.json({ ok: true, summary });
   });
@@ -429,6 +481,22 @@ module.exports = function authRouter(deps) {
         masterAgentId,
       },
     });
+  });
+
+  // Admin-only read of the audit trail. Filterable; latest first.
+  router.get('/audit-log', db.authMiddleware, db.requireAdmin, (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const offset = Number(req.query.offset) || 0;
+    const entries = audit.list({
+      actorId: req.query.actorId ? Number(req.query.actorId) : undefined,
+      targetType: req.query.targetType || undefined,
+      targetId: req.query.targetId || undefined,
+      action: req.query.action || undefined,
+      since: req.query.since || undefined,
+      limit,
+      offset,
+    });
+    res.json({ entries });
   });
 
   return router;

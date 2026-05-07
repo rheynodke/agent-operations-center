@@ -4,6 +4,7 @@ import { useChatStore, parseMediaAttachments, mediaPathToUrl, stripGatewayEnvelo
 import { useProjectStore } from '@/stores/useProjectStore'
 import { useViewAsStore } from '@/stores/useViewAsStore'
 import { api } from "@/lib/api"
+import { queryClient, queryKeys } from "@/lib/queryClient"
 import type { WsMessage, LiveFeedEntry } from "@/types"
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 30000]
@@ -87,6 +88,9 @@ export function useWebSocket() {
         case "agents:updated": {
           const agents = (msg.payload as { agents?: unknown[] })?.agents
           if (Array.isArray(agents)) useAgentStore.getState().mergeAgents(agents as never)
+          // Invalidate React Query caches so any useQuery-driven view re-fetches
+          // with fresh data on the next render.
+          queryClient.invalidateQueries({ queryKey: ["agents"] })
           break
         }
 
@@ -402,6 +406,7 @@ export function useWebSocket() {
           const { integrationId, projectId } = msg.payload as { integrationId: string; projectId: string }
           useProjectStore.getState().setSyncing(integrationId, false)
           useProjectStore.getState().fetchIntegrations(projectId)
+          queryClient.invalidateQueries({ queryKey: queryKeys.projects() })
           break
         }
         case "project:sync_error": {
@@ -489,6 +494,7 @@ export function useWebSocket() {
           // Refresh the connections list so UI picks up new authState + linkedEmail.
           // Payload shape: { connectionId }
           useConnectionsStore.getState().refresh().catch(() => {})
+          queryClient.invalidateQueries({ queryKey: queryKeys.connections() })
           break
         }
 
@@ -509,6 +515,7 @@ export function useWebSocket() {
         case "room:created": {
           const room = (msg.payload as { room?: import("@/types").MissionRoom })?.room
           if (room) useRoomStore.getState().upsertRoom(room)
+          queryClient.invalidateQueries({ queryKey: queryKeys.rooms() })
           break
         }
 

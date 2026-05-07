@@ -17,7 +17,7 @@ async function setupDb() {
   raw.run("INSERT OR IGNORE INTO users (id, username, password_hash, role, created_at) VALUES (42, 'testuser', 'x', 'user', '2026-01-01')");
   raw.run("UPDATE users SET master_agent_id = 'master-1' WHERE id = 42");
   raw.run("INSERT OR IGNORE INTO agent_profiles (agent_id, provisioned_by) VALUES ('master-1', 42)");
-  if (db.markAgentProfileMaster) db.markAgentProfileMaster('master-1');
+  if (db.markAgentProfileMaster) db.markAgentProfileMaster('master-1', 42);
   return { db, tmpDir };
 }
 

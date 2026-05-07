@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom"
 import { useEffect, useState } from "react"
+import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { Sidebar } from "@/components/layout/Sidebar"
 import { TopBar } from "@/components/layout/TopBar"
 import { LiveFeedPanel } from "@/components/layout/LiveFeedPanel"
@@ -76,6 +77,7 @@ function DashboardShell() {
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
         <main className={isChatPage ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-3 md:p-6"}>
+          <ErrorBoundary scope="route">
           <Routes>
             {/* Dashboard valid routes */}
             <Route path="/" element={<OverviewPage />} />
@@ -112,6 +114,7 @@ function DashboardShell() {
             <Route path="/setup" element={<Navigate to="/" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </ErrorBoundary>
         </main>
         <LiveFeedPanel />
         <MobileFeedSheet />

@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
 
 const SKILL_SLUG = 'aoc-master';
-const BUNDLE_VERSION = '1.0.2';
+const BUNDLE_VERSION = '1.0.3'; // 1.0.3: source order fixed so per-agent token wins over cluster DASHBOARD_TOKEN
 
 const SKILL_MD = `---
 name: aoc-master
@@ -154,10 +154,13 @@ const PROVISION_SH = `#!/usr/bin/env bash
 # aoc-master / provision.sh — provision a new agent
 set -euo pipefail
 
-# Source AOC credentials (agent env → global env fallback)
+# Source AOC credentials. Order matters: cluster-wide .aoc_env FIRST so the
+# per-agent .aoc_agent_env can override AOC_TOKEN with the scoped service
+# token (Sprint 2). Reverse order = cluster DASHBOARD_TOKEN wins = isolation
+# break.
+[ -f "\${HOME}/.openclaw/.aoc_env" ] && source "\${HOME}/.openclaw/.aoc_env" 2>/dev/null || true
 [ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
 [ -f "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
-[ -f "\${HOME}/.openclaw/.aoc_env" ] && source "\${HOME}/.openclaw/.aoc_env" 2>/dev/null || true
 
 : "\${AOC_URL:=http://localhost:18800}"
 : "\${AOC_TOKEN:?AOC_TOKEN env required}"

@@ -156,6 +156,11 @@ module.exports = function mcpAgentsRouter(deps) {
 
     res.json({ ok: true, connectionIds, gatewayRestarted });
   } catch (err) {
+    // Surface 403 from setAgentConnections (user trying to assign a connection
+    // they don't have access to) instead of swallowing it as 500.
+    if (err && err.status === 403) {
+      return res.status(403).json({ error: err.message, code: err.code });
+    }
     res.status(500).json({ error: err.message });
   }
 });

@@ -109,6 +109,14 @@ module.exports = function onboardingRouter(deps) {
       });
       db.markAgentProfileMaster(result.agentId, userId);
       db.setUserMasterAgent(userId, result.agentId);
+      try {
+        require('../lib/audit-log.cjs').record(req, {
+          action: 'onboarding.master_linked',
+          targetType: 'agent',
+          targetId: result.agentId,
+          after: { userId, isMaster: true, role: templateId || null },
+        });
+      } catch (_) { /* audit failures never block flow */ }
       emitPhase(userId, 'profile_linked', { agentId: result.agentId });
       // Belt-and-suspenders: enrol the new master into aoc-master in openclaw.json
       // even if provisionAgent's allowlist write was skipped (e.g. legacy path).

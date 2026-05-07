@@ -507,9 +507,17 @@ module.exports = function roomsRouter(deps) {
   router.delete('/agents/:id', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
     const agentId = req.params.id;
+    const audit = require('../lib/audit-log.cjs');
+    const profileBefore = db.getAgentProfile(agentId, Number(req.user.userId));
     parsers.deleteAgent(agentId);
     // Remove profile from SQLite (scoped to caller's tenant)
     db.deleteAgentProfile(agentId, Number(req.user.userId));
+    audit.record(req, {
+      action: 'agent.deleted',
+      targetType: 'agent',
+      targetId: agentId,
+      before: profileBefore ? { displayName: profileBefore.display_name, isMaster: !!profileBefore.is_master } : null,
+    });
     // Remove agent from HQ membership (throws if agentId is the master — expected).
     try {
       const hqRoom = require('../lib/hq-room.cjs');

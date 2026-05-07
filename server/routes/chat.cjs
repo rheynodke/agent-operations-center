@@ -188,6 +188,24 @@ module.exports = function chatRouter(deps) {
     if (sessionAgentId && !db.userOwnsAgent(req, sessionAgentId)) {
       return res.status(403).json({ error: 'You can only chat with agents you own' });
     }
+    // Token budget gate. Block at the request edge before we kick off model
+    // generation. Quota of 0/null = unlimited (default for new users + admin).
+    // We can't pre-compute the exact spend but we refuse if the user is
+    // already over quota — the actual usage delta lands via WS event handlers
+    // that call recordTokenUsage().
+    {
+      const ok = db.checkTokenBudget(req.user?.userId, 0);
+      if (!ok.allowed) {
+        return res.status(429).json({
+          error: 'Daily token quota exceeded',
+          code: 'TOKEN_QUOTA_EXCEEDED',
+          quota: ok.quota,
+          used: ok.used,
+          remaining: 0,
+          hint: 'Hubungi admin untuk menaikkan kuota harian, atau tunggu reset di pergantian hari (UTC).',
+        });
+      }
+    }
     // Gateway's chat.send requires `message` as a plain string and carries
     // media via the separate `attachments` array (see ChatSendParamsSchema in
     // openclaw:src/gateway/protocol/schema/logs-chat.ts). Previous code shoved

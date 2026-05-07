@@ -95,7 +95,7 @@ export const api = {
 
   // Admin: Users
   listUsers: () => request<{ users: import("@/types").ManagedUser[] }>("/users"),
-  updateUser: (id: number, patch: { displayName?: string; role?: string; password?: string; canUseClaudeTerminal?: boolean }) =>
+  updateUser: (id: number, patch: { displayName?: string; role?: string; password?: string; canUseClaudeTerminal?: boolean; dailyTokenQuota?: number | null }) =>
     request<{ user: import("@/types").ManagedUser }>(`/users/${id}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -529,6 +529,15 @@ export const api = {
     request<{ ok: boolean }>(`/connections/${id}`, { method: 'DELETE' }),
   testConnection: (id: string) =>
     request<{ ok: boolean; message?: string; error?: string; preview?: string }>(`/connections/${id}/test`, { method: 'POST' }),
+
+  // Connection sharing (org-wide boolean — owner toggles, anyone can use).
+  setConnectionShared: (id: string, shared: boolean) =>
+    request<{ ok: boolean; connection: Connection }>(
+      `/connections/${encodeURIComponent(id)}/share`,
+      { method: 'PATCH', body: JSON.stringify({ shared }) },
+    ),
+  getConnectionUsage: (id: string) =>
+    request<{ usage: import('@/types').ConnectionUsageEntry[] }>(`/connections/${encodeURIComponent(id)}/usage`),
 
   // Google Workspace connection flows
   getConnectionFeatures: () =>

@@ -7,6 +7,7 @@
 'use strict';
 
 const { parseOwnerParam } = require('../helpers/access-control.cjs');
+const audit = require('../lib/audit-log.cjs');
 
 module.exports = function connectionsRouter(deps) {
   const { db, parsers, broadcast, mcpOauth, composio } = deps;
@@ -27,24 +28,37 @@ module.exports = function connectionsRouter(deps) {
 
   router.get('/connections', db.authMiddleware, (req, res) => {
   const allConnections = db.getAllConnections();
-  // Owner-scoped by default for everyone (admin too) — cross-tenant monitoring
-  // is a future separate feature. Caller can opt into 'all' explicitly via
-  // ?owner=all but only admin's request honors it.
-  const explicit = req.query?.owner ? parseOwnerParam(req) : 'me';
   const uid = req.user?.userId;
   const isAdmin = req.user?.role === 'admin';
 
-  let connections = allConnections;
+  // Default scope = "accessible" (owned ∪ shared). `?owner=me` = strict-owned
+  // (legacy), `?owner=all` = cross-tenant monitoring (admin only).
+  const explicit = req.query?.owner ? parseOwnerParam(req) : 'accessible';
+
+  function decorate(c) {
+    return { ...c, sharedWithMe: c.createdBy !== uid && !!c.shared };
+  }
+
+  let connections;
   if (explicit === 'me') {
-    connections = allConnections.filter(c => c.createdBy === uid);
+    connections = allConnections.filter(c => c.createdBy === uid).map(decorate);
   } else if (typeof explicit === 'number') {
     connections = isAdmin
-      ? allConnections.filter(c => c.createdBy === explicit)
-      : allConnections.filter(c => c.createdBy === uid);
-  } else if (explicit === 'all' && !isAdmin) {
-    connections = allConnections.filter(c => c.createdBy === uid);
+      ? allConnections.filter(c => c.createdBy === explicit).map(decorate)
+      : allConnections.filter(c => c.createdBy === uid).map(decorate);
+  } else if (explicit === 'all') {
+    if (isAdmin) {
+      connections = allConnections.map(decorate);
+    } else {
+      connections = allConnections.filter(c => c.createdBy === uid || c.shared).map(decorate);
+    }
+  } else {
+    // 'accessible' (default): owned ∪ shared for everyone, including admin.
+    // Admin still uses ?owner=all to opt into the cross-tenant view.
+    connections = allConnections
+      .filter(c => c.createdBy === uid || c.shared)
+      .map(decorate);
   }
-  // scope === 'all' AND admin → no filter
 
   res.json({ connections });
 });
@@ -251,6 +265,189 @@ module.exports = function connectionsRouter(deps) {
     res.status(err.status || 500).send(renderHtml({ type: 'oauth-error', errorMsg: err.message }));
   }
 });
+
+// ─── Connection sharing (org-wide boolean) ──────────────────────────────────
+//
+// Owner (or admin) toggles `shared` on a connection. When ON, any user on
+// this AOC instance may assign it to their own agents (dispatch reads
+// decrypted creds at runtime). Editing/deleting/testing remains owner-only
+// regardless. Turning OFF auto-cleans non-owner assignments to avoid silent
+// dispatch failures.
+
+  router.patch('/connections/:id/share', db.authMiddleware, db.requireConnectionOwnership, (req, res) => {
+    try {
+      const conn = db.getConnection(req.params.id);
+      if (!conn) return res.status(404).json({ error: 'Connection not found' });
+      const wantShared = !!(req.body && req.body.shared);
+      const prevShared = !!conn.shared;
+      if (wantShared === prevShared) return res.json({ ok: true, connection: conn });
+      const updated = db.setConnectionShared(req.params.id, wantShared);
+      try {
+        audit.record(req, {
+          action: wantShared ? 'connection.shared' : 'connection.unshared',
+          targetType: 'connection',
+          targetId: req.params.id,
+          before: { shared: prevShared },
+          after: { shared: wantShared },
+        });
+      } catch (_) {}
+      try { broadcast({ type: 'connection:share_changed', payload: { connectionId: req.params.id, shared: wantShared } }); } catch (_) {}
+      res.json({ ok: true, connection: updated });
+    } catch (err) {
+      console.error('[api/connections/share]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Who is using this connection? Returns every (agent, owner) pair that
+  // currently has it assigned. Visible to anyone who can use the connection
+  // — owners, admin, and (if shared) all users — so the "5 agents are using
+  // this" affordance works for everyone, not just the owner.
+  router.get('/connections/:id/usage', db.authMiddleware, (req, res) => {
+    const conn = db.getConnection(req.params.id);
+    if (!conn) return res.status(404).json({ error: 'Connection not found' });
+    if (!db.userCanUseConnection(req, req.params.id)) {
+      return res.status(403).json({ error: 'You do not have access to this connection' });
+    }
+    res.json({ usage: db.getConnectionUsage(req.params.id) });
+  });
+
+  // ─── odoocli profile materialization ───────────────────────────────────────
+  // GET /api/connections/:idOrName/odoo-profile
+  // Used by the `aoc-odoo` skill's wrapper script. Returns a rendered TOML
+  // body the wrapper writes to a temp file (mode 0600) then runs odoocli with
+  // `--config <tmp>`. Credentials never round-trip through the browser; this
+  // endpoint exists for shell scripts running with $AOC_AGENT_TOKEN (or a
+  // dashboard JWT). Gated by userCanUseConnection so the boolean `shared`
+  // flag governs both "can assign" and "can fetch creds".
+  router.get('/connections/:id/odoo-profile', db.authMiddleware, (req, res) => {
+    try {
+      const uid = req.user?.userId;
+      const isAdmin = req.user?.role === 'admin';
+      const idOrName = req.params.id;
+
+      // Agent-scoping: when request carries an agent context (service token
+      // sets req.user.agentId; dashboard users may pass ?agentId=…), the
+      // connection must be ASSIGNED to that agent — not merely accessible.
+      // This prevents an agent from operating on a connection the user has
+      // access to but didn't assign to that specific agent.
+      const requestedAgentId = String(req.user?.agentId || req.query?.agentId || '').trim() || null;
+      const ownerHint = uid != null ? Number(uid) : (requestedAgentId ? db.getAgentOwner(requestedAgentId) : null);
+      const assignedIds = requestedAgentId
+        ? new Set(db.getAgentConnectionIds(requestedAgentId, ownerHint) || [])
+        : null;
+
+      // Resolve: try direct id lookup first, fall back to name match across
+      // accessible (or, if agent-scoped, assigned) connections.
+      let connId = idOrName;
+      let raw = db.getConnectionRaw(connId);
+      if (!raw) {
+        const all = db.getAllConnections();
+        const accessible = all.filter(c =>
+          c.type === 'odoocli' && (c.createdBy === uid || c.shared || isAdmin)
+        );
+        const pool = assignedIds
+          ? accessible.filter(c => assignedIds.has(c.id))
+          : accessible;
+        const byName = pool.filter(c => c.name === idOrName);
+        if (byName.length === 0) {
+          return res.status(404).json({ error: `connection '${idOrName}' not found or not accessible` });
+        }
+        if (byName.length > 1) {
+          // Prefer owned, then shared. If still ambiguous, surface candidates.
+          const owned = byName.filter(c => c.createdBy === uid);
+          if (owned.length === 1) {
+            raw = db.getConnectionRaw(owned[0].id);
+            connId = owned[0].id;
+          } else {
+            return res.status(409).json({
+              error: `connection name '${idOrName}' is ambiguous`,
+              candidates: byName.map(c => ({ id: c.id, name: c.name, sharedWithMe: c.createdBy !== uid })),
+            });
+          }
+        } else {
+          raw = db.getConnectionRaw(byName[0].id);
+          connId = byName[0].id;
+        }
+      }
+
+      if (!raw) return res.status(404).json({ error: 'Connection not found' });
+      if (raw.type !== 'odoocli') {
+        return res.status(400).json({ error: `connection type is '${raw.type}', not 'odoocli'` });
+      }
+      if (!db.userIdCanUseConnection(uid, connId)) {
+        return res.status(403).json({ error: 'You do not have access to this connection' });
+      }
+      if (assignedIds && !assignedIds.has(connId)) {
+        return res.status(403).json({
+          error: `Connection '${raw.name}' is not assigned to agent '${requestedAgentId}'. Ask the user to assign it via the Connections tab on the agent's detail page.`,
+          code: 'CONNECTION_NOT_ASSIGNED',
+          agentId: requestedAgentId,
+          connectionId: connId,
+        });
+      }
+
+      const meta = raw.metadata || {};
+      const url      = String(meta.odooUrl || '').trim();
+      const dbName   = String(meta.odooDb  || '').trim();
+      const username = String(meta.odooUsername || '').trim();
+      const authType = String(meta.odooAuthType || 'password');
+      const credential = String(raw.credentials || '');
+
+      if (!url || !dbName || !username || !credential) {
+        return res.status(422).json({
+          error: 'Connection is missing required odoocli fields',
+          missing: [
+            !url      && 'odooUrl',
+            !dbName   && 'odooDb',
+            !username && 'odooUsername',
+            !credential && 'credentials',
+          ].filter(Boolean),
+        });
+      }
+
+      // Sanitize profile name: alnum / dash / underscore only. odoocli reads
+      // `[<profile>]` as the TOML section header, so anything else risks
+      // breaking the parser. Fall back to a stable id-based slug.
+      const safeName = (raw.name || '').replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+      const profileName = safeName || `aoc-${connId}`;
+
+      // Render TOML. Escape values: TOML basic-string requires backslash-
+      // and double-quote-escaping. Newlines in a credential would break the
+      // line; reject them rather than silently corrupting.
+      const tomlEscape = (v) => String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      if (/[\r\n]/.test(credential) || /[\r\n]/.test(url) || /[\r\n]/.test(dbName) || /[\r\n]/.test(username)) {
+        return res.status(422).json({ error: 'Connection contains a newline character; refusing to render TOML' });
+      }
+      const lines = [
+        `[${profileName}]`,
+        `url = "${tomlEscape(url)}"`,
+        `db = "${tomlEscape(dbName)}"`,
+        `username = "${tomlEscape(username)}"`,
+      ];
+      if (authType === 'api_key') {
+        lines.push(`api_key = "${tomlEscape(credential)}"`);
+      } else {
+        lines.push(`password = "${tomlEscape(credential)}"`);
+      }
+      const toml = lines.join('\n') + '\n';
+
+      try {
+        audit.record(req, {
+          action: 'connection.creds_fetched',
+          targetType: 'connection',
+          targetId: connId,
+          before: null,
+          after: { profileName, format: 'odoocli-toml' },
+        });
+      } catch (_) {}
+
+      res.json({ profileName, toml, connectionId: connId });
+    } catch (err) {
+      console.error('[api/connections/odoo-profile]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
 // ─── MCP OAuth ──────────────────────────────────────────────────────────────
 

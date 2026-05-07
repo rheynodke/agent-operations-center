@@ -332,17 +332,55 @@ function _loadComposio(req, res) {
       const m = raw.metadata;
       const host = m.sshHost; const port = m.sshPort || 22; const user = m.sshUser || 'root';
       if (!host) return res.json({ ok: false, error: 'sshHost not set' });
-      // Write key to temp file
+
+      // Validate key shape early — `ssh` will silently fall through to other
+      // auth methods (password, agent) when the key is malformed and produce
+      // a confusing "Permission denied" instead of a clear error.
+      const keyMaterial = String(raw.credentials || '').trim();
+      if (!keyMaterial) {
+        return res.json({ ok: false, error: 'SSH private key is empty. Edit the connection and paste the key (BEGIN/END block).' });
+      }
+      const looksLikeKey = /-----BEGIN [A-Z ]+PRIVATE KEY-----/.test(keyMaterial)
+                        && /-----END [A-Z ]+PRIVATE KEY-----/.test(keyMaterial);
+      if (!looksLikeKey) {
+        return res.json({
+          ok: false,
+          error: 'Credentials do not look like a private key. Expected an OpenSSH/PEM block starting with "-----BEGIN ... PRIVATE KEY-----".',
+        });
+      }
+
+      // Write key to temp file. ssh requires keyfile to end with a newline
+      // and have mode 0600 — without the trailing newline OpenSSH 9.x rejects
+      // the key with "Load key: error in libcrypto" on some distros.
       const tmpKey = `/tmp/aoc-ssh-test-${Date.now()}`;
-      require('fs').writeFileSync(tmpKey, raw.credentials, { mode: 0o600 });
+      const keyBody = keyMaterial.endsWith('\n') ? keyMaterial : keyMaterial + '\n';
+      require('fs').writeFileSync(tmpKey, keyBody, { mode: 0o600 });
+
       try {
-        const output = execSync(
-          `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${tmpKey}" -p ${port} ${user}@${host} "hostname && uptime" 2>&1`,
-          { timeout: 15000, encoding: 'utf-8' }
-        );
+        // -v gives us auth-stage diagnostics on stderr, which surfaces the
+        // *actual* failure ("Permission denied (publickey)", "no matching
+        // host key type", "Connection refused", etc.) instead of an empty
+        // stdout. We also disable agent + identities-only so the test only
+        // exercises the key the user pasted, not whatever's loaded in
+        // ssh-agent on the AOC host.
+        const cmd = `ssh -v -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no `
+                  + `-o ConnectTimeout=5 -o NumberOfPasswordPrompts=0 `
+                  + `-i "${tmpKey}" -p ${port} ${user}@${host} "hostname && uptime"`;
+        const output = execSync(cmd, { timeout: 15000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
         result = { ok: true, message: `Connected to ${host}`, preview: output.trim() };
       } catch (e) {
-        result = { ok: false, error: e.message || e.toString() };
+        // execSync error: e.message is only "Command failed: ssh ...".
+        // The real diagnostic is split between e.stdout / e.stderr. Pick
+        // the most useful tail.
+        const stderr = (e.stderr ? String(e.stderr) : '').trim();
+        const stdout = (e.stdout ? String(e.stdout) : '').trim();
+        // Pull a one-line summary from -v output if possible.
+        const lines = (stderr + '\n' + stdout).split(/\r?\n/).filter(Boolean);
+        const summaryLine = lines.reverse().find(l =>
+          /(Permission denied|denied|Connection refused|Connection timed out|No route to host|Could not resolve|Host key verification|kex_exchange_identification|no matching|Bad permissions|Load key|error in libcrypto)/i.test(l)
+        );
+        const detail = summaryLine || lines.slice(0, 1)[0] || e.message || 'unknown ssh error';
+        result = { ok: false, error: detail, preview: (stderr || stdout || '').slice(-2000) };
       } finally {
         try { require('fs').unlinkSync(tmpKey); } catch {}
       }

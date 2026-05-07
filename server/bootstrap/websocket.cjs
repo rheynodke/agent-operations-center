@@ -51,6 +51,12 @@ function getWss() {
 function broadcast(event) {
   if (!wss) return;
   try {
+    // Validate event.type against the registry — typos surface here instead
+    // of silently breaking the matching frontend handler.
+    if (event && event.type) {
+      const { assertEventType } = require('../lib/ws-events.cjs');
+      assertEventType(event.type);
+    }
     const msg = JSON.stringify({ ...event, timestamp: event.timestamp || new Date().toISOString() });
     wss.clients.forEach((client) => {
       if (client.readyState === client.OPEN) client.send(msg);

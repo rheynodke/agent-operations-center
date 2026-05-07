@@ -742,44 +742,91 @@ export interface LiveFeedEntry {
 
 // ─── WebSocket Types ─────────────────────────────────────────────────────────
 
+/**
+ * All WS event types broadcast by the AOC server. Adding a new event type
+ * here is the only way to make `useWebSocket` switch on it cleanly — TypeScript
+ * narrows `case "..."` against this union, so a typo is a compile error.
+ *
+ * Keep this list in lockstep with `server/lib/ws-events.cjs` (the server's
+ * source of truth). New events MUST land in both.
+ */
 export type WsEventType =
+  // Lifecycle
   | "init"
   | "connected"
+  // Agents & sessions
   | "agents:updated"
+  | "agent:status"
+  | "agent:deployed"
+  | "agent:decommissioned"
+  | "subagent:update"
   | "sessions:updated"
   | "session:update"
+  | "session:aborted"
   | "session:live-event"
+  // Tasks & cron
   | "tasks:updated"
+  | "task:interrupted"
+  | "task:comment_added"
+  | "task:comment_edited"
+  | "task:comment_deleted"
+  | "task:output_added"
+  | "task:output_removed"
   | "cron:updated"
   | "cron:update"
+  // Activity / alerts / feed
   | "activity:event"
   | "live:entry"
   | "alert:new"
   | "alert:acknowledged"
-  | "agent:status"
-  | "agent:deployed"
-  | "agent:decommissioned"
+  // Progress
   | "opencode:event"
-  | "subagent:update"
   | "progress:update"
   | "progress:step"
+  // Gateway
   | "gateway:connected"
   | "gateway:disconnected"
   | "gateway:event"
   | "gateway:log"
+  // Chat
   | "chat:message"
   | "chat:tool"
   | "chat:event"
   | "chat:sessions-changed"
   | "chat:done"
+  | "chat:progress"
+  // Rooms (mission rooms / HQ)
   | "room:message"
   | "room:created"
+  | "room:deleted"
+  | "room:stop"
+  // Skills / connections / projects
   | "skills:updated"
+  | "connection:auth_completed"
+  | "connection:auth_expired"
+  | "connection:share_changed"
+  | "project:sync_start"
+  | "project:sync_complete"
+  | "project:sync_error"
+  // Workflow runs
+  | "workflow:run_start"
+  | "workflow:run_complete"
+  | "workflow:step_start"
+  | "workflow:step_complete"
+  | "workflow:step_failed"
+  | "workflow:approval_needed"
+  // Onboarding
+  | "onboarding:phase"
+  // Processing indicators (per-room agent thinking state)
+  | "processing_end"
 
 export interface WsMessage {
   type: WsEventType
+  /** Per-event payload shape — narrowing is the consumer's responsibility for now. */
   payload: unknown
   timestamp?: string
+  /** Per-tenant routing hint; set on events that should only reach a specific user. */
+  ownerUserId?: number
 }
 
 // ─── API Response Types ───────────────────────────────────────────────────────
@@ -834,6 +881,12 @@ export interface ManagedUser {
   can_use_claude_terminal?: number
   created_at: string
   last_login: string | null
+  /** Hard daily token budget. `null` or `0` means no limit. */
+  daily_token_quota?: number | null
+  /** Tokens consumed since `daily_token_reset_at`. */
+  daily_token_used?: number
+  /** YYYYMMDD bucket the counter last reset on (UTC). */
+  daily_token_reset_at?: number | null
 }
 
 // ─── Skill Types ──────────────────────────────────────────────────────────────
@@ -1318,11 +1371,23 @@ export interface Connection {
   hasCredentials: boolean
   metadata: ConnectionMetadata
   enabled: boolean
+  /** Owner-toggled flag — when true, every user on this AOC instance may assign it to their agents. */
+  shared?: boolean
   createdBy?: number | null
+  /** Convenience: true when caller is NOT the owner and the connection is shared. */
+  sharedWithMe?: boolean
   lastTestedAt?: string | null
   lastTestOk?: boolean | null
   createdAt: string
   updatedAt: string
+}
+
+export interface ConnectionUsageEntry {
+  agentId: string
+  ownerId: number | null
+  ownerUsername: string | null
+  ownerEmail: string | null
+  assignedAt: string
 }
 
 export interface ProjectIntegration {

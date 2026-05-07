@@ -434,8 +434,8 @@ gatewayPool.addGlobalListener((event) => {
     }
   }, 4000); // 4s delay for JSONL flush
 });
-const feedWatcher = new LiveFeedWatcher({ ownerUserId: 1 });
-const watcherPool = new WatcherPool();
+const feedWatcher = new LiveFeedWatcher({ ownerUserId: 1, db });
+const watcherPool = new WatcherPool({ db });
 
 orchestrator.on('spawned', ({ userId }) => {
   if (Number(userId) === 1) return;   // admin already covered by feedWatcher
@@ -752,6 +752,12 @@ async function start() {
     parsers.aocRoomSkill.ensureSkillEnabledForAllAgents()
       .catch((e) => console.warn('[startup] aoc-room ensure failed:', e.message));
   } catch (e) { console.warn('[startup] aoc-room skill init failed:', e.message); }
+  // aoc-odoo built-in skill: install bundle + auto-enable for every agent.
+  try {
+    parsers.aocOdooSkill.installSafe();
+    parsers.aocOdooSkill.ensureSkillEnabledForAllAgents()
+      .catch((e) => console.warn('[startup] aoc-odoo ensure failed:', e.message));
+  } catch (e) { console.warn('[startup] aoc-odoo skill init failed:', e.message); }
   // mission-orchestrator built-in skill: install bundle + enable only for main.
   try {
     parsers.missionOrchestratorSkill.installSafe();
@@ -772,6 +778,16 @@ async function start() {
 
   const hasUsers = db.hasAnyUsers();
   console.log(`[auth] Database ready. ${hasUsers ? 'Users exist.' : 'No users — setup required.'}`);
+
+  // Periodic SQLite backup (opt-in via AOC_BACKUP_ENABLED=1). See server/lib/backup.cjs.
+  try {
+    const backupResult = require('./lib/backup.cjs').start();
+    if (!backupResult.enabled) {
+      console.log('[backup] disabled — set AOC_BACKUP_ENABLED=1 to turn on hourly snapshots');
+    }
+  } catch (e) {
+    console.warn(`[backup] start failed: ${e.message}`);
+  }
 
   // ── EADDRINUSE retry logic for `node --watch` restarts ──────────────────
   // When node --watch restarts the server, the old process may not have fully

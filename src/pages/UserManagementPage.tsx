@@ -80,6 +80,22 @@ export function UserManagementPage() {
     catch (err) { setError(err instanceof Error ? err.message : "Failed") }
   }
 
+  async function handleQuotaSave(user: ManagedUser, raw: string) {
+    // Convention: empty / 0 / negative ⇒ unlimited (server stores NULL).
+    const trimmed = (raw || "").trim()
+    const n = trimmed === "" ? null : Number(trimmed)
+    if (n !== null && (!Number.isFinite(n) || n < 0)) {
+      setError("Token quota must be a non-negative number, or empty for unlimited")
+      return
+    }
+    try {
+      await api.updateUser(user.id, { dailyTokenQuota: n })
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed")
+    }
+  }
+
   async function runConfirm() {
     if (!confirm) return
     setConfirmLoading(true)
@@ -161,6 +177,7 @@ export function UserManagementPage() {
                 <th className="px-4 py-2 font-semibold">Display name</th>
                 <th className="px-4 py-2 font-semibold">Role</th>
                 <th className="px-4 py-2 font-semibold" title="Grant access to the Skills page Claude Code terminal">Claude Terminal</th>
+                <th className="px-4 py-2 font-semibold" title="Daily token budget. Empty / 0 = unlimited.">Token quota</th>
                 <th className="px-4 py-2 font-semibold">Created</th>
                 <th className="px-4 py-2 font-semibold">Last login</th>
                 <th className="px-4 py-2"></th>
@@ -193,6 +210,38 @@ export function UserManagementPage() {
                         />
                         <span className="text-[11px] text-muted-foreground">{u.can_use_claude_terminal ? "Enabled" : "Disabled"}</span>
                       </label>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    {u.role === "admin" ? (
+                      <span className="text-[11px] text-muted-foreground italic">unlimited (admin)</span>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={0}
+                          step={1000}
+                          defaultValue={u.daily_token_quota ?? ""}
+                          placeholder="∞"
+                          onBlur={(e) => {
+                            const next = e.currentTarget.value
+                            const prev = u.daily_token_quota == null ? "" : String(u.daily_token_quota)
+                            if (next !== prev) handleQuotaSave(u, next)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur()
+                          }}
+                          className="w-24 rounded-md border border-border bg-background px-2 py-1 text-xs text-right tabular-nums focus:border-primary outline-none"
+                          title="Empty / 0 = unlimited. Otherwise hard cap of tokens per UTC day."
+                        />
+                        {u.daily_token_quota ? (
+                          <span className="text-[10px] text-muted-foreground tabular-nums" title="Used today / Quota">
+                            {(u.daily_token_used ?? 0).toLocaleString()}/{u.daily_token_quota.toLocaleString()}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground italic">unlimited</span>
+                        )}
+                      </div>
                     )}
                   </td>
                   <td className="px-4 py-2 text-muted-foreground text-xs">{formatDate(u.created_at)}</td>

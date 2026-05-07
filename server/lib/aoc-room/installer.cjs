@@ -14,7 +14,18 @@ const crypto = require('node:crypto');
 const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
 
 const SKILL_SLUG = 'aoc-room';
-const BUNDLE_VERSION = '1.0.0';
+const BUNDLE_VERSION = '1.1.0'; // 1.1.0: source per-agent env so AOC_TOKEN resolves to the agent's scoped service token
+
+// Common preamble: source ~/.openclaw/.aoc_env (cluster-wide) THEN the agent's
+// per-workspace .aoc_agent_env so AOC_TOKEN ends up bound to the per-agent
+// service token (Sprint 2). Without this the cluster-wide DASHBOARD_TOKEN
+// would leak — these scripts must run as a specific agent, not as cluster.
+const ENV_PRELUDE = `\\
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
+[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
+[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env"
+[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
+`;
 
 const SKILL_MD = `---
 name: aoc-room
@@ -118,7 +129,7 @@ const ROOM_PUBLISH_SH = `#!/usr/bin/env bash
 # aoc-room / room-publish.sh — publish a file as an artifact to the room
 # Usage: room-publish.sh <file> [category] [title]
 set -euo pipefail
-
+${ENV_PRELUDE}
 FILE="\${1:?Usage: room-publish.sh <file> [category] [title]}"
 CATEGORY="\${2:-outputs}"
 TITLE="\${3:-\$(basename "$FILE" | sed 's/\\.[^.]*$//')}"
@@ -151,7 +162,7 @@ const ROOM_LIST_SH = `#!/usr/bin/env bash
 # aoc-room / room-list.sh — list artifacts in the room
 # Usage: room-list.sh [category]
 set -euo pipefail
-
+${ENV_PRELUDE}
 CATEGORY="\${1:-}"
 ROOM_ID="\${AOC_ROOM_ID:-}"
 AOC_URL="\${AOC_URL:=http://localhost:18800}"
@@ -171,6 +182,7 @@ curl -sf -H "Authorization: Bearer \$AOC_TOKEN" "\$URL" | \\
 const ROOM_CONTEXT_READ_SH = `#!/usr/bin/env bash
 # aoc-room / room-context-read.sh — read the shared CONTEXT.md
 set -euo pipefail
+${ENV_PRELUDE}
 ROOM_ID="\${AOC_ROOM_ID:-}"
 AOC_URL="\${AOC_URL:=http://localhost:18800}"
 AOC_TOKEN="\${AOC_TOKEN:?AOC_TOKEN not set}"
@@ -182,6 +194,7 @@ const ROOM_CONTEXT_APPEND_SH = `#!/usr/bin/env bash
 # aoc-room / room-context-append.sh — append an entry to the shared CONTEXT.md
 # Usage: room-context-append.sh "<body text>"
 set -euo pipefail
+${ENV_PRELUDE}
 BODY="\${1:?Usage: room-context-append.sh \\\"<body text>\\\"}"
 ROOM_ID="\${AOC_ROOM_ID:-}"
 AOC_URL="\${AOC_URL:=http://localhost:18800}"
@@ -199,6 +212,7 @@ echo "Context updated."
 const ROOM_STATE_GET_SH = `#!/usr/bin/env bash
 # aoc-room / room-state-get.sh — get this agent's state for the room
 set -euo pipefail
+${ENV_PRELUDE}
 ROOM_ID="\${AOC_ROOM_ID:-}"
 AOC_URL="\${AOC_URL:=http://localhost:18800}"
 AOC_TOKEN="\${AOC_TOKEN:?AOC_TOKEN not set}"
@@ -213,6 +227,7 @@ const ROOM_STATE_SET_SH = `#!/usr/bin/env bash
 # Usage: room-state-set.sh '<json-object>'
 # Example: room-state-set.sh '{"status":"working","task":"analyze Q1 data"}'
 set -euo pipefail
+${ENV_PRELUDE}
 STATE="\${1:?Usage: room-state-set.sh '<json-object>'}"
 ROOM_ID="\${AOC_ROOM_ID:-}"
 AOC_URL="\${AOC_URL:=http://localhost:18800}"

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react"
-import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2, FileText, Workflow, Eye, EyeOff, X } from "lucide-react"
+import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2, FileText, Workflow, Eye, EyeOff, X, Share2, Users2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -172,13 +172,14 @@ function getTypeLabel(type: string) {
 // ── Connection Card ──────────────────────────────────────────────────────────
 
 function ConnectionCard({
-  conn, onTest, onDelete, onEdit, onManageComposio, assignedAgents, onGoogleOauth, canEdit,
+  conn, onTest, onDelete, onEdit, onManageComposio, onShare, assignedAgents, onGoogleOauth, canEdit,
 }: {
   conn: Connection
   onTest: (id: string) => void
   onDelete: (conn: Connection) => void
   onEdit: (conn: Connection) => void
   onManageComposio?: (conn: Connection) => void
+  onShare?: (conn: Connection) => void
   assignedAgents?: string[]
   onGoogleOauth?: (authUrl: string) => Promise<{ connectionId: string } | null>
   canEdit: boolean
@@ -255,6 +256,14 @@ function ConnectionCard({
             <h3 className="text-sm font-semibold text-foreground truncate">{conn.name}</h3>
             {conn.lastTestOk === true && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />}
             {conn.lastTestOk === false && <XCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />}
+            {conn.sharedWithMe && (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 font-medium shrink-0"
+                title="Shared with you — you can use it for your agents but cannot edit the credential."
+              >
+                <Share2 className="h-2.5 w-2.5" /> Shared
+              </span>
+            )}
             {conn.type === "google_workspace" && (() => {
               const gmeta = (conn.metadata || {}) as Partial<GoogleWorkspaceMetadata>
               const state = gmeta.authState || 'unknown'
@@ -367,6 +376,22 @@ function ConnectionCard({
               >
                 <RefreshCw className="h-3.5 w-3.5" />
               </button>
+              {onShare && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onShare(conn) }}
+                  className={cn(
+                    "p-1.5 rounded-md transition-colors",
+                    conn.shared
+                      ? "bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25"
+                      : "hover:bg-cyan-500/10 text-muted-foreground/50 hover:text-cyan-300"
+                  )}
+                  title={conn.shared
+                    ? "Shared with the team — click to manage or see who's using it"
+                    : "Share with the team (anyone can assign it to their agents; only you can edit/delete)"}
+                >
+                  <Share2 className="h-3.5 w-3.5" />
+                </button>
+              )}
               <button
                 onClick={() => onDelete(conn)}
                 className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground/50 hover:text-red-400 transition-colors"
@@ -385,6 +410,158 @@ function ConnectionCard({
         <span className="inline-block mt-2 text-[10px] px-2 py-0.5 rounded-full bg-muted/30 text-muted-foreground/60 font-medium">Disabled</span>
       )}
     </div>
+  )
+}
+
+// ── Share Connection Dialog ──────────────────────────────────────────────────
+//
+// Use-only ACL: recipient enters owner's connection by email — backend resolves
+// to a userId and inserts into `connection_shares`. Recipient may then assign
+// the connection to their agents (dispatch reads decrypted creds at runtime),
+// but cannot edit/delete/test/reauth or read raw credentials.
+
+function ShareConnectionDialog({
+  conn, canEdit, onClose, onUpdated,
+}: {
+  conn: Connection
+  canEdit: boolean
+  onClose: () => void
+  onUpdated: (next: Connection) => void
+}) {
+  const [shared, setShared] = useState<boolean>(!!conn.shared)
+  const [usage, setUsage] = useState<import("@/types").ConnectionUsageEntry[]>([])
+  const [loadingUsage, setLoadingUsage] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => { setShared(!!conn.shared) }, [conn.shared])
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingUsage(true)
+    api.getConnectionUsage(conn.id)
+      .then(r => { if (!cancelled) setUsage(r.usage) })
+      .catch(e => { if (!cancelled) setError((e as Error).message) })
+      .finally(() => { if (!cancelled) setLoadingUsage(false) })
+    return () => { cancelled = true }
+  }, [conn.id])
+
+  async function toggle() {
+    if (!canEdit || submitting) return
+    const next = !shared
+    setSubmitting(true)
+    setError(null)
+    const prev = shared
+    setShared(next) // optimistic
+    try {
+      const r = await api.setConnectionShared(conn.id, next)
+      onUpdated(r.connection)
+    } catch (e) {
+      setShared(prev)
+      setError((e as Error).message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // Group usage by owner so the panel reads "Alice: agent-a, agent-b" instead
+  // of one row per agent — keeps the dialog compact when many agents reuse
+  // a popular shared credential.
+  const groupedUsage = usage.reduce((acc, u) => {
+    const key = u.ownerId == null ? '__unknown__' : String(u.ownerId)
+    if (!acc[key]) acc[key] = { ownerId: u.ownerId, label: u.ownerEmail || u.ownerUsername || `user #${u.ownerId ?? '?'}`, agents: [] as string[] }
+    acc[key].agents.push(u.agentId)
+    return acc
+  }, {} as Record<string, { ownerId: number | null; label: string; agents: string[] }>)
+  const groups = Object.values(groupedUsage).sort((a, b) => a.label.localeCompare(b.label))
+
+  return (
+    <Dialog open={true} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Share2 className="h-4 w-4 text-cyan-400" />
+            Sharing "{conn.name}"
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          {/* Toggle */}
+          <div className={cn(
+            "flex items-start gap-3 p-3 rounded-lg border",
+            shared ? "border-cyan-500/30 bg-cyan-500/5" : "border-border/40 bg-muted/20",
+          )}>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={shared}
+              disabled={!canEdit || submitting}
+              onClick={toggle}
+              className={cn(
+                "relative inline-flex h-5 w-9 shrink-0 mt-0.5 items-center rounded-full transition-colors",
+                shared ? "bg-cyan-500" : "bg-muted/60",
+                (!canEdit || submitting) && "opacity-50 cursor-not-allowed",
+              )}
+            >
+              <span className={cn(
+                "inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform",
+                shared ? "translate-x-4" : "translate-x-0.5",
+              )} />
+            </button>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-foreground">
+                {shared ? "Shared with the team" : "Private to you"}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                {shared
+                  ? "Anyone on this AOC can assign this connection to their agents. Only you (and admins) can edit, test, or delete it. Turning this off will detach every agent currently using it that doesn't belong to you."
+                  : "Only you can see and use this connection. Toggle on to let teammates assign it to their own agents."}
+              </p>
+              {!canEdit && (
+                <p className="text-[10px] text-amber-400/80 mt-1.5">Only the owner or an admin can change this.</p>
+              )}
+            </div>
+          </div>
+
+          {error && (
+            <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2.5 py-1.5">
+              {error}
+            </div>
+          )}
+
+          {/* Usage list */}
+          <div>
+            <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground mb-2">
+              <Users2 className="h-3 w-3" />
+              Currently in use
+              <span className="ml-auto normal-case tracking-normal text-muted-foreground/60">{usage.length} agent{usage.length === 1 ? "" : "s"}</span>
+            </div>
+            {loadingUsage ? (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : usage.length === 0 ? (
+              <p className="text-xs text-muted-foreground/60 italic py-2">No agents are using this connection yet.</p>
+            ) : (
+              <ul className="space-y-1.5 max-h-56 overflow-y-auto">
+                {groups.map(g => (
+                  <li key={String(g.ownerId)} className="px-2.5 py-1.5 rounded-md bg-muted/20 border border-border/30">
+                    <p className="text-xs font-medium text-foreground truncate">{g.label}</p>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {g.agents.map(a => (
+                        <span key={a} className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary/80 font-mono">{a}</span>
+                      ))}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1473,13 +1650,21 @@ function ConnectionDialog({
 
         {testResult && (
           <div className={cn(
-            "flex items-start gap-2 text-xs rounded px-2.5 py-2 shrink-0",
+            "flex flex-col gap-1.5 text-xs rounded px-2.5 py-2 shrink-0",
             testResult.ok ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
           )}>
-            {testResult.ok
-              ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              : <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
-            <span className="break-all">{testResult.ok ? (testResult.message || "Connection successful") : (testResult.error || "Connection failed")}</span>
+            <div className="flex items-start gap-2">
+              {testResult.ok
+                ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                : <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
+              <span className="break-all">{testResult.ok ? (testResult.message || "Connection successful") : (testResult.error || "Connection failed")}</span>
+            </div>
+            {testResult.preview && (
+              <details className="text-[10px] opacity-80 ml-5">
+                <summary className="cursor-pointer select-none hover:opacity-100">show diagnostic output</summary>
+                <pre className="mt-1 whitespace-pre-wrap break-all bg-black/30 rounded p-1.5 max-h-48 overflow-auto font-mono">{testResult.preview}</pre>
+              </details>
+            )}
           </div>
         )}
 
@@ -1517,6 +1702,7 @@ export function ConnectionsPage() {
   const [editConn, setEditConn] = useState<Connection | null>(null)
   const [composioPanelConn, setComposioPanelConn] = useState<Connection | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null)
+  const [shareTarget, setShareTarget] = useState<Connection | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
   void testingId // reserved for future per-card loader
@@ -1664,6 +1850,7 @@ export function ConnectionsPage() {
                       onDelete={setDeleteTarget}
                       onEdit={(c) => { setEditConn(c); setDialogOpen(true) }}
                       onManageComposio={(c) => setComposioPanelConn(c)}
+                      onShare={(c) => setShareTarget(c)}
                       onGoogleOauth={runGoogleOauth}
                       canEdit={canEditConnection(conn, currentUser)}
                     />
@@ -1690,6 +1877,20 @@ export function ConnectionsPage() {
         conn={composioPanelConn}
         onClose={() => { setComposioPanelConn(null); load() }}
       />
+
+      {/* Share Modal */}
+      {shareTarget && (
+        <ShareConnectionDialog
+          conn={shareTarget}
+          canEdit={canEditConnection(shareTarget, currentUser)}
+          onClose={() => setShareTarget(null)}
+          onUpdated={(next) => {
+            setShareTarget(next)
+            // Refresh the list so the badge + sharedWithMe flag update.
+            load()
+          }}
+        />
+      )}
 
       {/* Delete Confirm */}
       {deleteTarget && (

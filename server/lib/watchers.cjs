@@ -11,11 +11,45 @@ const { processClaudeCliFile: forwardClaudeCliIntermediateToTelegram } =
   require('./claude-cli-telegram-forwarder.cjs');
 
 class LiveFeedWatcher {
-  constructor({ ownerUserId = 1 } = {}) {
+  constructor({ ownerUserId = 1, db = null } = {}) {
     this.ownerUserId = ownerUserId;
     this.listeners = new Set();
     this.watchers = [];
     this.tailPositions = new Map();
+    // Optional db handle — when set, the JSONL tail loop credits per-user
+    // token usage so the daily quota meter can reach a hard cap.
+    this._db = db;
+    // Loop detection: per-session tracker for consecutive identical failed
+    // tool calls. The 50-step "spiral" pattern from the audit (agent retries
+    // the same broken curl 8x) gets aborted at threshold so the user gets
+    // their turn back instead of watching tokens burn.
+    this._loopState = new Map(); // sessionId → { sig, count, sessionKey, agentId }
+  }
+
+  _onSessionAborted(sessionId, agentId, sessionKey, reason) {
+    // Best-effort abort + system message + cleanup. Failures here are non-fatal —
+    // worst case the agent finishes its current turn naturally and we miss the cap.
+    try {
+      this.broadcast({
+        type: 'session:aborted',
+        agent: agentId,
+        sessionId,
+        sessionKey: sessionKey || null,
+        reason,
+        ownerUserId: this.ownerUserId,
+      });
+    } catch (_) {}
+    try {
+      const { gatewayPool } = require('./gateway-ws.cjs');
+      const conn = gatewayPool.forUser(this.ownerUserId);
+      if (conn?.isConnected && sessionKey) {
+        conn.chatAbort(sessionKey).catch((e) => {
+          console.warn(`[watchers] loop-abort chatAbort failed sess=${sessionKey}: ${e.message}`);
+        });
+      }
+    } catch (e) {
+      console.warn(`[watchers] loop-abort dispatch failed: ${e.message}`);
+    }
   }
 
   _home() {
@@ -283,6 +317,76 @@ class LiveFeedWatcher {
                         sessionKey: this._sessionIdMap?.get(sessionId) || null,
                         event: parsed,
                       });
+                    }
+                    // Token-budget meter: any usage block in a freshly-appended
+                    // gateway message represents tokens just spent. Attribute to
+                    // the agent's owner so the per-user daily cap moves in
+                    // near-realtime (2s polling interval). Best-effort — usage
+                    // is parsed from raw JSONL because parseSingleGatewayEntry
+                    // strips it for the wire shape.
+                    let raw = null;
+                    try { raw = JSON.parse(line); } catch { /* not JSON */ }
+                    if (raw) {
+                      try {
+                        const usage = raw?.message?.usage;
+                        if (usage) {
+                          const total = Number(usage.totalTokens || 0)
+                            || (Number(usage.input || 0) + Number(usage.output || 0));
+                          if (total > 0 && this._db && typeof this._db.recordTokenUsage === 'function') {
+                            const ownerId = this._db.getAgentOwner ? this._db.getAgentOwner(agentId) : null;
+                            if (ownerId != null) {
+                              this._db.recordTokenUsage(ownerId, total);
+                            }
+                          }
+                        }
+                      } catch (_) { /* ignore */ }
+
+                      // Loop detection: same failed tool with same inputs N times
+                      // in a row → abort the run and surface a system message.
+                      // Threshold 3: anything less is normal retry hygiene; more
+                      // than 3 starts wasting tokens on a problem the agent
+                      // can't escape on its own.
+                      try {
+                        const msg = raw?.message;
+                        if (msg?.role === 'toolResult') {
+                          const content = Array.isArray(msg.content) ? msg.content : [];
+                          const errLike = content.some((x) => {
+                            if (!x || typeof x !== 'object') return false;
+                            const t = x.text || (typeof x === 'string' ? x : '');
+                            return /^(error|ERROR|Error)\b|HTTP 4|HTTP 5|"is_error":\s*true|^bash:|: command not found|: No such file|exit (?:status )?[1-9]/m.test(String(t).slice(0, 400));
+                          });
+                          if (errLike) {
+                            const sig = String(msg.toolCallId || msg.toolName || '') + '|' +
+                              JSON.stringify(content.map((x) => (x && (x.input || x.text)) || '')).slice(0, 200);
+                            const prev = this._loopState.get(sessionId);
+                            if (prev && prev.sig === sig) {
+                              prev.count += 1;
+                              if (prev.count >= 3 && !prev.aborted) {
+                                prev.aborted = true;
+                                console.warn(
+                                  `[watchers] loop detected uid=${this.ownerUserId} agent=${agentId} sess=${sessionId} ` +
+                                  `tool=${msg.toolName || '?'} count=${prev.count} — aborting`
+                                );
+                                const sessionKey = this._sessionIdMap?.get(sessionId) || null;
+                                this._onSessionAborted(sessionId, agentId, sessionKey, {
+                                  kind: 'loop',
+                                  toolName: msg.toolName || null,
+                                  consecutiveFailures: prev.count,
+                                });
+                              }
+                            } else {
+                              this._loopState.set(sessionId, { sig, count: 1, aborted: false });
+                            }
+                          } else {
+                            // Successful tool result resets the loop counter for this session.
+                            this._loopState.delete(sessionId);
+                          }
+                        } else if (msg?.role === 'assistant') {
+                          // A new assistant message means the agent saw the result
+                          // and decided to do something else — break the loop chain.
+                          this._loopState.delete(sessionId);
+                        }
+                      } catch (_) { /* ignore */ }
                     }
                   }
                 } catch {}
@@ -707,15 +811,16 @@ class LiveFeedWatcher {
 }
 
 class WatcherPool {
-  constructor() {
+  constructor({ db = null } = {}) {
     this.watchers = new Map();    // userId → LiveFeedWatcher
     this.listeners = new Set();
+    this._db = db;
   }
 
   ensureForUser(userId) {
     const uid = Number(userId);
     if (this.watchers.has(uid)) return this.watchers.get(uid);
-    const w = new LiveFeedWatcher({ ownerUserId: uid });
+    const w = new LiveFeedWatcher({ ownerUserId: uid, db: this._db });
     w.addListener((event) => this._fanout(event));
     w.start();
     this.watchers.set(uid, w);

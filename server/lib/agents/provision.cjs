@@ -779,8 +779,28 @@ function provisionAgentLocked(opts, userId, home, configPath) {
     // means only 'always' triggers fire — task scripts + aoc-connect + check_connections).
     syncAgentBuiltins(id, { connections: [], skills: [] }, getFileFn, saveFileFn);
     injectHeartbeatTaskCheck(id, workspacePath);
-    // Write per-agent identity env file
-    const agentEnvContent = `# AOC agent identity — auto-generated\nexport AOC_AGENT_ID="${id}"\n`;
+    // Write per-agent identity env file. Includes a service token scoped to
+    // (agentId, ownerId) so this agent can hit AOC APIs as itself only —
+    // bocor token = bocor *that* agent's scope, not the whole cluster.
+    //
+    // We export the per-agent JWT as BOTH `AOC_AGENT_TOKEN` (new, explicit
+    // name) AND `AOC_TOKEN` (overrides the cluster-wide DASHBOARD_TOKEN that
+    // ~/.openclaw/.aoc_env sets). The shell loads .aoc_agent_env after the
+    // global env file, so existing skill scripts that use `$AOC_TOKEN`
+    // pick up the scoped token automatically — zero script changes.
+    let agentEnvContent = `# AOC agent identity — auto-generated\nexport AOC_AGENT_ID="${id}"\n`;
+    try {
+      const dbMod = require('../db.cjs');
+      const tok = dbMod.generateAgentServiceToken
+        ? dbMod.generateAgentServiceToken({ agentId: id, ownerId: userId ?? 1 })
+        : null;
+      if (tok) {
+        agentEnvContent += `export AOC_AGENT_TOKEN="${tok}"\n`;
+        agentEnvContent += `export AOC_TOKEN="${tok}"\n`;
+      }
+    } catch (e) {
+      console.warn(`[provision] could not mint agent service token: ${e.message}`);
+    }
     fs.writeFileSync(path.join(workspacePath, '.aoc_agent_env'), agentEnvContent, { mode: 0o600, encoding: 'utf-8' });
     console.log(`[provision] Created .aoc_agent_env for agent: ${id}`);
   } catch (e) {
