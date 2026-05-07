@@ -7,6 +7,10 @@
  */
 'use strict';
 
+const fs   = require('fs');
+const path = require('path');
+const os   = require('os');
+
 module.exports = function configRouter(deps) {
   const { db, parsers, versioning, vSave } = deps;
   const router = require('express').Router();
@@ -103,9 +107,6 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
 
 // GET /api/browse-dirs — list directories at a given path (for directory picker)
   router.get('/browse-dirs', db.authMiddleware, (req, res) => {
-  const os   = require('os');
-  const path = require('path');
-  const fs   = require('fs');
   const targetPath = req.query.path || os.homedir();
   try {
     const resolved = path.resolve(targetPath);
@@ -145,7 +146,6 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
   }
   if (value === undefined) return res.status(400).json({ error: 'value is required' });
 
-  const fs = require('fs');
   const configPath = path.join(parsers.OPENCLAW_HOME, 'openclaw.json');
   try {
     const raw = fs.readFileSync(configPath, 'utf-8');
@@ -277,7 +277,6 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
 // Serves files from OPENCLAW_HOME only — paths outside are rejected.
 // Accepts token as query param because <img> tags cannot send Authorization headers.
   router.get('/media', (req, res) => {
-  const fs = require('fs');
   const mime = require('mime-types');
 
   // Auth: accept Bearer header OR ?token= query param (needed for <img> src)
