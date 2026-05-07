@@ -127,7 +127,7 @@ export const api = {
   getAgentDetail: (id: string) => request(`/agents/${id}/detail`),
   updateAgent: (id: string, updates: Record<string, unknown>) =>
     request(`/agents/${id}`, { method: "PATCH", body: JSON.stringify(updates) }),
-  getAgentSessions: (id: string) => request(`/agents/${id}/sessions`),
+  getAgentSessions: (id: string) => request(withScope(`/agents/${id}/sessions`)),
   provisionAgent: (opts: ProvisionAgentOpts) =>
     request<ProvisionResult>("/agents", { method: "POST", body: JSON.stringify(opts) }),
   provisionMaster: (body: {
@@ -361,9 +361,9 @@ export const api = {
     const qs = params ? "?" + new URLSearchParams(params).toString() : ""
     return request(withScope(`/sessions${qs}`))
   },
-  getSession: (id: string) => request(`/sessions/${id}`),
+  getSession: (id: string) => request(withScope(`/sessions/${id}`)),
   getSessionMessages: (agentId: string, sessionId: string) =>
-    request(`/sessions/${agentId}/${sessionId}/messages`),
+    request(withScope(`/sessions/${agentId}/${sessionId}/messages`)),
 
   // Tasks
   getTasks: (filters?: { agentId?: string; status?: string; priority?: string; tag?: string; q?: string; projectId?: string }) => {
@@ -1041,6 +1041,18 @@ export const api = {
     request<{ ok: boolean; section: string }>(`/config/${section}`, {
       method: "PATCH",
       body: JSON.stringify({ value }),
+    }),
+  syncProvidersToAllUsers: (opts: { restartGateways?: boolean } = {}) =>
+    request<{
+      ok: boolean
+      regenerated: boolean
+      reason: string
+      secrets: { envVar: string; provider: string }[]
+      usersUpdated: string[]
+      usersRestarted: string[]
+    }>("/config/providers/sync", {
+      method: "POST",
+      body: JSON.stringify(opts),
     }),
 
   // Agent capabilities (composite — used by skill template selectors)

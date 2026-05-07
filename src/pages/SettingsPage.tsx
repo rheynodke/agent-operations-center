@@ -184,11 +184,47 @@ function ModelsTab({ config, onSaved }: { config: Record<string, unknown>; onSav
   const agentsCfg = (config.agents ?? {}) as Record<string, unknown>
   const defaults = (agentsCfg.defaults ?? {}) as Record<string, unknown>
   const modelCfg = (defaults.model ?? {}) as { primary?: string; fallbacks?: string[] }
+  const modelsRoot = (config.models ?? {}) as { providers?: Record<string, unknown> }
+  const providerCount = Object.keys(modelsRoot.providers ?? {}).length
+
+  const isAdmin = useAuthStore(s => s.user?.role === "admin")
 
   const [primary, setPrimary] = useState(modelCfg.primary ?? "")
   const [fallbacks, setFallbacks] = useState((modelCfg.fallbacks ?? []).join("\n"))
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState<SaveStatus | null>(null)
+
+  const [syncing, setSyncing] = useState(false)
+  const [syncRestart, setSyncRestart] = useState(false)
+  const [syncResult, setSyncResult] = useState<{
+    ok: boolean
+    message: string
+    detail?: { usersUpdated: string[]; usersRestarted: string[]; secrets: { envVar: string; provider: string }[]; regenerated: boolean }
+  } | null>(null)
+
+  async function syncProviders() {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const r = await api.syncProvidersToAllUsers({ restartGateways: syncRestart })
+      const userCount = r.usersUpdated.length
+      const restartCount = r.usersRestarted.length
+      const parts = []
+      if (r.regenerated) parts.push(`shared/providers.json5 ${r.regenerated ? "regenerated" : "unchanged"}`)
+      if (userCount > 0) parts.push(`${userCount} user(s) patched`)
+      else parts.push("no users needed patching")
+      if (restartCount > 0) parts.push(`${restartCount} gateway(s) restarted`)
+      setSyncResult({
+        ok: true,
+        message: parts.join(" · "),
+        detail: { usersUpdated: r.usersUpdated, usersRestarted: r.usersRestarted, secrets: r.secrets, regenerated: r.regenerated },
+      })
+    } catch (e) {
+      setSyncResult({ ok: false, message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   async function save() {
     setSaving(true)
@@ -235,6 +271,65 @@ function ModelsTab({ config, onSaved }: { config: Record<string, unknown>; onSav
         />
       </div>
       <SaveBar saving={saving} status={status} onSave={save} />
+
+      {isAdmin && (
+        <div className="mt-6 rounded-md border border-border bg-card/40 p-4">
+          <div className="flex items-start gap-3">
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-foreground">Sync Providers to All Users</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Regenerates <code className="font-mono">~/.openclaw/shared/providers.json5</code> from your{" "}
+                <code className="font-mono">openclaw.json</code> and overwrites <code className="font-mono">models.providers</code> in
+                every per-user <code className="font-mono">openclaw.json</code>. Use after rotating API keys or adding a new provider.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {providerCount} provider{providerCount === 1 ? "" : "s"} currently configured at admin scope.
+              </p>
+              <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={syncRestart}
+                  onChange={(e) => setSyncRestart(e.target.checked)}
+                  disabled={syncing}
+                  className="rounded border-border"
+                />
+                <span>Restart running per-user gateways after sync (drops in-flight sessions)</span>
+              </label>
+            </div>
+            <Button onClick={syncProviders} disabled={syncing} size="sm" className="shrink-0">
+              {syncing ? <RefreshCw className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+              Sync Now
+            </Button>
+          </div>
+
+          {syncResult && (
+            <div className={cn(
+              "mt-3 rounded border px-3 py-2 text-xs",
+              syncResult.ok
+                ? "border-emerald-600/30 bg-emerald-600/10 text-emerald-400"
+                : "border-red-600/30 bg-red-600/10 text-red-400"
+            )}>
+              <div className="flex items-center gap-2">
+                {syncResult.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
+                <span>{syncResult.message}</span>
+              </div>
+              {syncResult.detail && syncResult.detail.usersUpdated.length > 0 && (
+                <div className="mt-2 text-muted-foreground">
+                  Users patched: <span className="font-mono">{syncResult.detail.usersUpdated.join(", ")}</span>
+                </div>
+              )}
+              {syncResult.detail && syncResult.detail.secrets.length > 0 && (
+                <div className="mt-2 text-amber-400">
+                  ⚠ {syncResult.detail.secrets.length} apiKey{syncResult.detail.secrets.length === 1 ? "" : "s"} externalized to env var
+                  {syncResult.detail.secrets.length === 1 ? "" : "s"}: define{" "}
+                  <span className="font-mono">{syncResult.detail.secrets.map(s => s.envVar).join(", ")}</span> in your AOC{" "}
+                  <code>.env</code>.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -597,15 +597,15 @@ function collectSessionEvents(sessionId, session, userId) {
 
   // 1) Session has an explicit link → fetch by claude-cli UUID
   if (session?.claudeCliSessionId) {
-    claudeCliEvents = parsers.parseClaudeCliSessionEvents(session.claudeCliSessionId) || [];
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(session.claudeCliSessionId, { userId }) || [];
   }
   // 2) Session source is claude-cli (standalone) → the id IS a claude-cli UUID
   else if (session?.source === 'claude-cli') {
-    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId) || [];
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId, { userId }) || [];
   }
   // 3) No session match yet — try both; whichever finds the id wins
   else if (!session) {
-    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId) || [];
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId, { userId }) || [];
   }
 
   if (claudeCliEvents.length === 0) return gatewayEvents;

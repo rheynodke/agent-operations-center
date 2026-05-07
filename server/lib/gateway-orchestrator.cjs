@@ -95,10 +95,10 @@ function _isPortFree(port) {
  * Returns `{ written, secrets }` for testability.
  */
 function ensureSharedProviders() {
-  if (fs.existsSync(SHARED_PROVIDERS) && process.env.PROVIDERS_OVERWRITE !== '1') {
-    return { written: false, secrets: [] };
-  }
-
+  // Drift detection: regenerate when admin's models.providers no longer matches
+  // the on-disk shared providers.json5 (after env-var externalization). Avoids
+  // stale provider config when admin rotates keys or adds providers between
+  // restarts. PROVIDERS_OVERWRITE=1 forces regenerate regardless.
   const adminCfgPath = path.join(require('./config.cjs').OPENCLAW_BASE, 'openclaw.json');
   let adminCfg;
   try {
@@ -107,12 +107,12 @@ function ensureSharedProviders() {
     if (e.code !== 'ENOENT') {
       console.warn(`[orchestrator] ensureSharedProviders: cannot read admin openclaw.json: ${e.message}`);
     }
-    return { written: false, secrets: [] };
+    return { written: false, secrets: [], reason: 'no-admin-config' };
   }
 
   const providersIn = adminCfg?.models?.providers;
   if (!providersIn || Object.keys(providersIn).length === 0) {
-    return { written: false, secrets: [] };
+    return { written: false, secrets: [], reason: 'no-providers' };
   }
 
   const out = {};
@@ -128,25 +128,152 @@ function ensureSharedProviders() {
     out[name] = copy;
   }
 
+  const expectedHash = crypto.createHash('sha256')
+    .update(JSON.stringify(out))
+    .digest('hex');
+
+  // Compare against existing file (after stripping comments).
+  if (fs.existsSync(SHARED_PROVIDERS) && process.env.PROVIDERS_OVERWRITE !== '1') {
+    try {
+      const existing = readSharedProviders(); // strips comments + parses
+      const existingHash = existing?.models?.providers
+        ? crypto.createHash('sha256').update(JSON.stringify(existing.models.providers)).digest('hex')
+        : null;
+      if (existingHash === expectedHash) {
+        return { written: false, secrets: [], reason: 'unchanged' };
+      }
+      console.log('[orchestrator] providers.json5 drift detected — regenerating from admin config');
+    } catch (_) { /* fall through and overwrite */ }
+  }
+
   const body = '// Auto-generated from ~/.openclaw/openclaw.json by AOC orchestrator.\n' +
                '// Per-user gateways inline this file for shared model provider config.\n' +
                '// API keys are referenced via ${ENV_VAR} — define them in AOC backend\'s environment.\n' +
-               '// Set PROVIDERS_OVERWRITE=1 to regenerate after rotating admin providers.\n\n' +
+               '// Regenerated automatically on AOC startup when drift is detected.\n' +
+               `// Generated: ${new Date().toISOString()}\n\n` +
                JSON.stringify({ models: { providers: out } }, null, 2) + '\n';
 
   try {
     fs.mkdirSync(path.dirname(SHARED_PROVIDERS), { recursive: true });
     fs.writeFileSync(SHARED_PROVIDERS, body);
-    console.log(`[orchestrator] auto-generated ${SHARED_PROVIDERS} (${Object.keys(out).length} provider(s))`);
+    console.log(`[orchestrator] wrote ${SHARED_PROVIDERS} (${Object.keys(out).length} provider(s))`);
     if (secrets.length > 0) {
       console.warn(`[orchestrator] ⚠️  ${secrets.length} provider apiKey(s) externalized to env vars — define them in your .env:`);
       for (const s of secrets) console.warn(`               - ${s.envVar}   (provider: ${s.provider})`);
     }
-    return { written: true, secrets };
+    return { written: true, secrets, reason: 'regenerated' };
   } catch (e) {
     console.warn(`[orchestrator] ensureSharedProviders write failed: ${e.message}`);
-    return { written: false, secrets };
+    return { written: false, secrets, reason: 'write-failed', error: e.message };
   }
+}
+
+/**
+ * Build a PATH prefix that includes every installed skill's scripts/ dir.
+ *
+ * Without this, an agent running `aoc-connect.sh` / `team-status.sh` /
+ * `schedules-list.sh` via the gateway exec tool gets `command not found`
+ * because the gateway-spawned shell (zsh -c / bash -c) is non-interactive
+ * and does NOT source `~/.openclaw/.aoc_env`. Audit data calls this out as
+ * the #1 failure pattern in early sessions.
+ *
+ * Walks both:
+ *   <userHome>/skills/<slug>/scripts        (per-user state dir)
+ *   <OPENCLAW_BASE>/skills/<slug>/scripts   (admin / shared, since per-user
+ *                                            <userHome>/skills is a symlink
+ *                                            here — defensive double-glob)
+ *
+ * Returns a colon-joined PATH string, or '' if no skill scripts exist.
+ */
+function buildSkillsPathPrefix(userHome) {
+  const dirs = new Set();
+  const roots = [path.join(userHome, 'skills')];
+  const adminSkills = path.join(require('./config.cjs').OPENCLAW_BASE, 'skills');
+  if (!roots.includes(adminSkills)) roots.push(adminSkills);
+  for (const root of roots) {
+    let entries = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const scriptsDir = path.join(root, e.name, 'scripts');
+      try {
+        if (fs.statSync(scriptsDir).isDirectory()) dirs.add(scriptsDir);
+      } catch { /* not all skills have scripts/ */ }
+    }
+  }
+  return Array.from(dirs).join(':');
+}
+
+/**
+ * Propagate admin's `models.providers` (with env-var externalization) to every
+ * already-bootstrapped per-user openclaw.json. Run after `ensureSharedProviders`
+ * regenerates the shared file, or on-demand from the admin Settings UI.
+ *
+ * Replaces only the `models.providers` key — keeps each user's `agents`,
+ * `tools`, `approvals`, `channels` etc untouched.
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.restartGateways=false] — if true, restart each user's
+ *        running gateway after patching so the new providers are loaded.
+ *
+ * @returns {Promise<{ usersUpdated: string[], usersRestarted: string[], secrets: Array }>}
+ */
+async function propagateProvidersToAllUsers(opts = {}) {
+  const { withFileLock } = require('./locks.cjs');
+  const cfg = require('./config.cjs');
+
+  // Re-read the just-rendered shared providers file as canonical source.
+  const shared = readSharedProviders();
+  if (!shared?.models?.providers) {
+    return { usersUpdated: [], usersRestarted: [], secrets: [], reason: 'no-shared-providers' };
+  }
+
+  const usersDir = path.join(cfg.OPENCLAW_BASE, 'users');
+  const usersUpdated = [];
+  if (!fs.existsSync(usersDir)) return { usersUpdated, usersRestarted: [], secrets: [] };
+
+  for (const entry of fs.readdirSync(usersDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const cfgPath = path.join(usersDir, entry.name, '.openclaw', 'openclaw.json');
+    if (!fs.existsSync(cfgPath)) continue;
+    try {
+      await withFileLock(cfgPath, async () => {
+        const userCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const before = JSON.stringify(userCfg.models?.providers || null);
+        userCfg.models = userCfg.models || {};
+        userCfg.models.providers = JSON.parse(JSON.stringify(shared.models.providers));
+        // Preserve `mode` and other models.* keys.
+        const after = JSON.stringify(userCfg.models.providers);
+        if (before === after) return; // nothing changed
+        fs.writeFileSync(cfgPath, JSON.stringify(userCfg, null, 2), 'utf-8');
+        usersUpdated.push(entry.name);
+      });
+    } catch (e) {
+      console.warn(`[orchestrator] propagateProviders user ${entry.name} failed: ${e.message}`);
+    }
+  }
+
+  if (usersUpdated.length > 0) {
+    console.log(`[orchestrator] propagated providers to ${usersUpdated.length} user(s): [${usersUpdated.join(', ')}]`);
+  }
+
+  const usersRestarted = [];
+  if (opts.restartGateways && usersUpdated.length > 0) {
+    for (const uidStr of usersUpdated) {
+      const uid = Number(uidStr);
+      if (!Number.isInteger(uid)) continue;
+      try {
+        const state = getGatewayState(uid);
+        if (state?.status === 'running') {
+          await restartGateway(uid);
+          usersRestarted.push(uidStr);
+        }
+      } catch (e) {
+        console.warn(`[orchestrator] propagateProviders restart user ${uidStr} failed: ${e.message}`);
+      }
+    }
+  }
+
+  return { usersUpdated, usersRestarted, secrets: [] };
 }
 
 /**
@@ -411,12 +538,17 @@ async function spawnGatewayLocked(userId) {
   // the state dir. Setting OPENCLAW_HOME=<userHome> would resolve state dir to
   // <userHome>/.openclaw — wrong path. Use OPENCLAW_STATE_DIR to point at the state
   // dir directly (and OPENCLAW_HOME at the parent for any tooling that reads HOME).
+  // Pre-expand skill scripts dirs into PATH so the gateway-spawned exec shell
+  // (non-interactive, doesn't source .aoc_env) can resolve bare command names
+  // like `aoc-connect.sh`, `team-status.sh`, `schedules-list.sh` directly.
+  const skillsPath = buildSkillsPathPrefix(userHome);
   const childEnv = {
     ...process.env,
     OPENCLAW_HOME: path.dirname(userHome),
     OPENCLAW_STATE_DIR: userHome,
     OPENCLAW_GATEWAY_TOKEN: token,
     OPENCLAW_GATEWAY_PORT: String(port),
+    PATH: skillsPath ? `${skillsPath}:${process.env.PATH || ''}` : (process.env.PATH || ''),
   };
 
   // For mock-binary tests: openclawBin may be a .cjs script. Detect and pass through node.
@@ -892,11 +1024,12 @@ module.exports = {
   getGatewayState, listGateways, getRunningToken,
   cleanupOrphans, gracefulShutdown, findAocManagedOrphanPids,
   ensureSharedProviders,
+  propagateProvidersToAllUsers,
   on:  (...a) => orchestratorEvents.on(...a),
   off: (...a) => orchestratorEvents.off(...a),
   // Test-only
   _test: {
-    generateToken, allocatePort, ensureUserHome, waitGatewayReady,
+    generateToken, allocatePort, ensureUserHome, waitGatewayReady, buildSkillsPathPrefix,
     _dropFromMemory: (userId) => { children.delete(userId); },
     _emitter: orchestratorEvents,
   },

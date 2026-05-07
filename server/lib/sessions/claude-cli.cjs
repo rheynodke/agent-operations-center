@@ -26,8 +26,15 @@
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
-const { AGENTS_DIR, OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('../config.cjs');
+const { AGENTS_DIR, OPENCLAW_HOME, OPENCLAW_WORKSPACE, getUserHome, readJsonSafe } = require('../config.cjs');
 const { parseAgentRegistry } = require('./opencode.cjs');
+
+function homeFor(userId) {
+  return userId == null ? OPENCLAW_HOME : getUserHome(userId);
+}
+function workspaceForDefault(userId) {
+  return userId == null ? OPENCLAW_WORKSPACE : path.join(getUserHome(userId), 'workspace');
+}
 // Reuse gateway's metadata strippers — user messages delivered to claude-cli include
 // the same "Conversation info"/"Sender" metadata blocks as gateway sessions (gateway
 // composes them once before dispatching to either CLI or its own transport).
@@ -56,13 +63,13 @@ function workspaceToSlug(workspacePath) {
  * Build a map of { agentId → { slug, projectDir, workspace } } from openclaw.json.
  * Agents without an explicit `workspace` fall back to the default workspace.
  */
-function buildAgentClaudeCliMap() {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+function buildAgentClaudeCliMap(userId) {
+  const configPath = path.join(homeFor(userId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) return {};
 
   const list = config.agents?.list || [];
-  const defaultWorkspace = config.agents?.defaults?.workspace || OPENCLAW_WORKSPACE;
+  const defaultWorkspace = config.agents?.defaults?.workspace || workspaceForDefault(userId);
   const map = {};
 
   for (const a of list) {
@@ -298,9 +305,9 @@ function parseClaudeCliSessionEventsByFile(fullPath, opts = {}) {
  * Find a claude-cli jsonl file by session ID (UUID).
  * Searches every configured agent's project dir.
  */
-function findClaudeCliFileBySessionId(sessionId) {
+function findClaudeCliFileBySessionId(sessionId, userId) {
   if (!sessionId) return null;
-  const agentMap = buildAgentClaudeCliMap();
+  const agentMap = buildAgentClaudeCliMap(userId);
   for (const [agentId, info] of Object.entries(agentMap)) {
     const candidate = path.join(info.projectDir, `${sessionId}.jsonl`);
     if (fs.existsSync(candidate)) return { agentId, fullPath: candidate };
@@ -314,9 +321,9 @@ function findClaudeCliFileBySessionId(sessionId) {
  * Heuristic: the file whose mtime is closest to the gateway session's updatedAt,
  * within LINK_WINDOW_MS. Returns null if no file qualifies.
  */
-function findClaudeCliFileForGatewaySession(gatewayMeta, agentId) {
+function findClaudeCliFileForGatewaySession(gatewayMeta, agentId, userId) {
   if (!gatewayMeta || !agentId) return null;
-  const agentMap = buildAgentClaudeCliMap();
+  const agentMap = buildAgentClaudeCliMap(userId);
   const info = agentMap[agentId];
   if (!info || !fs.existsSync(info.projectDir)) return null;
 
@@ -349,11 +356,12 @@ function findClaudeCliFileForGatewaySession(gatewayMeta, agentId) {
  */
 function parseClaudeCliSessionEvents(sessionOrGatewayId, opts = {}) {
   if (!sessionOrGatewayId) return [];
+  const userId = opts.userId;
 
   // Try direct lookup first (assumes the ID is a claude-cli UUID)
-  const direct = findClaudeCliFileBySessionId(sessionOrGatewayId);
+  const direct = findClaudeCliFileBySessionId(sessionOrGatewayId, userId);
   if (direct) {
-    const agents = parseAgentRegistry();
+    const agents = parseAgentRegistry(userId);
     const agentInfo = agents.find(a => a.id === direct.agentId);
     return parseClaudeCliSessionEventsByFile(direct.fullPath, {
       ...opts,
@@ -362,9 +370,9 @@ function parseClaudeCliSessionEvents(sessionOrGatewayId, opts = {}) {
   }
 
   // Fallback: treat ID as a gateway sessionId and look up the linked claude-cli file
-  const linked = findClaudeCliForGatewaySessionId(sessionOrGatewayId);
+  const linked = findClaudeCliForGatewaySessionId(sessionOrGatewayId, userId);
   if (linked) {
-    const agents = parseAgentRegistry();
+    const agents = parseAgentRegistry(userId);
     const agentInfo = agents.find(a => a.id === linked.agentId);
     return parseClaudeCliSessionEventsByFile(linked.fullPath, {
       ...opts,
@@ -379,24 +387,26 @@ function parseClaudeCliSessionEvents(sessionOrGatewayId, opts = {}) {
  * Look up { agentId, fullPath } for the claude-cli jsonl linked to a given gateway sessionId.
  * Scans every agent's sessions.json to find the gateway session, then does an mtime match.
  */
-function findClaudeCliForGatewaySessionId(gatewaySessionId) {
-  if (!gatewaySessionId || !fs.existsSync(AGENTS_DIR)) return null;
+function findClaudeCliForGatewaySessionId(gatewaySessionId, userId) {
+  if (!gatewaySessionId) return null;
+  const agentsDir = userId == null ? AGENTS_DIR : path.join(homeFor(userId), 'agents');
+  if (!fs.existsSync(agentsDir)) return null;
   let agentDirs;
   try {
-    agentDirs = fs.readdirSync(AGENTS_DIR).filter(d => {
-      try { return fs.statSync(path.join(AGENTS_DIR, d)).isDirectory(); }
+    agentDirs = fs.readdirSync(agentsDir).filter(d => {
+      try { return fs.statSync(path.join(agentsDir, d)).isDirectory(); }
       catch { return false; }
     });
   } catch { return null; }
 
   for (const agentId of agentDirs) {
-    const sessionsFile = path.join(AGENTS_DIR, agentId, 'sessions', 'sessions.json');
+    const sessionsFile = path.join(agentsDir, agentId, 'sessions', 'sessions.json');
     const data = readJsonSafe(sessionsFile);
     if (!data || typeof data !== 'object') continue;
 
     for (const [, meta] of Object.entries(data)) {
       if (meta?.sessionId !== gatewaySessionId) continue;
-      const match = findClaudeCliFileForGatewaySession(meta, agentId);
+      const match = findClaudeCliFileForGatewaySession(meta, agentId, userId);
       if (match) return { agentId, ...match };
     }
   }

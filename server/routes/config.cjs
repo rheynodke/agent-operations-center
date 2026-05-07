@@ -161,6 +161,61 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
   }
 });
 
+// POST /api/config/providers/sync — admin-only. Regenerate
+// ~/.openclaw/shared/providers.json5 from admin's openclaw.json AND propagate
+// the new providers to every per-user openclaw.json. Optionally restart each
+// user's running gateway so the new providers take effect immediately.
+//
+// Body: { restartGateways?: boolean (default false) }
+// Response: { ok, regenerated, secrets, usersUpdated, usersRestarted }
+  router.post('/config/providers/sync', db.authMiddleware, db.requireAdmin, async (req, res) => {
+  try {
+    const orchestrator = require('../lib/gateway-orchestrator.cjs');
+    const restartGateways = req.body?.restartGateways === true;
+
+    // Force regenerate by overriding the env var for this call only.
+    const prevOverride = process.env.PROVIDERS_OVERWRITE;
+    process.env.PROVIDERS_OVERWRITE = '1';
+    let regenerateResult;
+    try {
+      regenerateResult = orchestrator.ensureSharedProviders();
+    } finally {
+      if (prevOverride === undefined) delete process.env.PROVIDERS_OVERWRITE;
+      else process.env.PROVIDERS_OVERWRITE = prevOverride;
+    }
+
+    const propagateResult = await orchestrator.propagateProvidersToAllUsers({ restartGateways });
+
+    // Audit-log the sync — provider rotation is a sensitive admin op.
+    try {
+      const audit = require('../lib/audit-log.cjs');
+      audit.record(req, {
+        action: 'config.providers_synced',
+        targetType: 'config',
+        targetId: 'shared/providers.json5',
+        after: {
+          regenerated: regenerateResult.written,
+          secretCount: (regenerateResult.secrets || []).length,
+          usersUpdated: propagateResult.usersUpdated,
+          usersRestarted: propagateResult.usersRestarted,
+        },
+      });
+    } catch (e) { console.warn('[api/config/providers/sync] audit failed:', e.message); }
+
+    res.json({
+      ok: true,
+      regenerated: regenerateResult.written,
+      reason: regenerateResult.reason,
+      secrets: regenerateResult.secrets || [],
+      usersUpdated: propagateResult.usersUpdated,
+      usersRestarted: propagateResult.usersRestarted,
+    });
+  } catch (err) {
+    console.error('[api/config/providers/sync]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Hooks / Inbound Webhooks ─────────────────────────────────────────────────
 
 // GET /api/hooks/config
