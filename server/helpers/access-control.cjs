@@ -121,7 +121,11 @@ function checkTaskAccess(req, taskId, db) {
 async function checkCronAccess(req, jobId, db, parsers) {
   if (req.user?.role === 'admin' || req.user?.role === 'agent') return null;
   try {
-    const jobs = parsers.parseCronJobs();
+    // Per-user cron file — without scoping userId, this defaults to admin's
+    // ~/.openclaw/cron/jobs.json and silently bypasses the access check for
+    // every non-admin user (their job is never found there).
+    const targetUid = parseScopeUserId(req);
+    const jobs = parsers.parseCronJobs(targetUid);
     const job = (jobs || []).find(j => j.id === jobId);
     if (!job) return null; // let handler return 404 naturally
     if (job.agentId && !db.userOwnsAgent(req, job.agentId)) {

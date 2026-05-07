@@ -103,6 +103,9 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
 
 // GET /api/browse-dirs — list directories at a given path (for directory picker)
   router.get('/browse-dirs', db.authMiddleware, (req, res) => {
+  const os   = require('os');
+  const path = require('path');
+  const fs   = require('fs');
   const targetPath = req.query.path || os.homedir();
   try {
     const resolved = path.resolve(targetPath);

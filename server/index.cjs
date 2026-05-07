@@ -767,6 +767,14 @@ async function start() {
     parsers.aocOdooSkill.ensureSkillEnabledForAllAgents()
       .catch((e) => console.warn('[startup] aoc-odoo ensure failed:', e.message));
   } catch (e) { console.warn('[startup] aoc-odoo skill init failed:', e.message); }
+
+  // aoc-schedules built-in skill: install bundle + auto-enable in admin's
+  // openclaw.json AND every per-user openclaw.json that already exists.
+  try {
+    parsers.aocSchedulesSkill.installSafe();
+    parsers.aocSchedulesSkill.ensureSkillEnabledForAllAgents()
+      .catch((e) => console.warn('[startup] aoc-schedules ensure failed:', e.message));
+  } catch (e) { console.warn('[startup] aoc-schedules skill init failed:', e.message); }
   // mission-orchestrator built-in skill: install bundle + enable only for main.
   try {
     parsers.missionOrchestratorSkill.installSafe();

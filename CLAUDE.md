@@ -270,7 +270,7 @@ Per-user "General" project is created in `POST /api/onboarding/master` (NOT regi
 **Core principle:** the unit of capability is a **Skill bundle**, not a loose script. Agents enable a skill; the skill's scripts come along automatically. Loose toggleable "custom tools" are a thin escape hatch, not the primary contract.
 
 **Three tiers:**
-1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled. Currently: `aoc-tasks`, `aoc-connections`, `aoc-room`, `aoc-odoo`, `browser-harness-odoo`, and `aoc-master` (master-only). See **AOC Built-in Skills & Sync Engine** below.
+1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled. Currently: `aoc-tasks`, `aoc-connections`, `aoc-room`, `aoc-odoo`, `aoc-schedules`, `browser-harness-odoo`, and `aoc-master` (master-only). See **AOC Built-in Skills & Sync Engine** below.
 2. **User skills** — full CRUD via Skills page or per-agent. Resolved via the Skill Resolution Order. Scripts at `{skillDir}/scripts/`.
 3. **Loose scripts** (`server/lib/scripts.cjs`) — only for cron/orchestrator wiring or one-offs not yet warranting a skill bundle. Two scopes:
    - **Shared** (`~/.openclaw/scripts/`, symlinked into per-user homes) — managed in Skills & Tools → Custom Tools.
@@ -284,7 +284,7 @@ Allowed extensions: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`,
 
 ## AOC Built-in Skills & Sync Engine
 
-AOC ships **five** skill bundles. They are infrastructure, not toggleable in the UI.
+AOC ships **six** skill bundles. They are infrastructure, not toggleable in the UI.
 
 | Slug | Master-only? | Purpose |
 |---|---|---|
@@ -292,6 +292,7 @@ AOC ships **five** skill bundles. They are infrastructure, not toggleable in the
 | `aoc-connections` | No | Connection layer: `aoc-connect`, `mcp-call`, `gws-call`, `check_connections`. |
 | `aoc-room` | No | Room collaboration toolkit: `room-publish`, `room-list`, `room-context-read`, `room-context-append`, `room-state-get`, `room-state-set`. Reads `AOC_ROOM_ID` env (injected when session started from a room). |
 | `aoc-odoo` | No | Full odoocli operator surface (auth, model, record, method, debug, view) + 5 reference docs. Wrapper `odoo.sh <connection-name> <args...>` fetches creds from the assigned `odoocli`-typed connection at runtime via `GET /api/connections/:idOrName/odoo-profile`, materializes ephemeral `.odoocli.toml` (mode 0600 in `$TMPDIR`), runs odoocli with `--config`, removes the file on exit. **Never writes `~/.odoocli.toml`.** Bundle source vendored under `server/lib/aoc-odoo/bundle/`. Connection lookup accepts ID or name; ambiguous names → 409 with candidates. |
+| `aoc-schedules` | No | Scheduled-task toolkit for in-room conversations: `schedules-list`, `-create`, `-update`, `-toggle`, `-run-now`, `-runs`, `-delete`. New jobs bind to `AOC_AGENT_ID` by default; pass `--no-bind` for owner-level. **Always reminds the user that gateway restart is required after any mutation** (cron scheduler reads `jobs.json` once at gateway boot). Delete refuses without `--yes`. |
 | `browser-harness-odoo` | No (but defaults exclude it) | Odoo browser automation. SKILL.md + 10 shell scripts. |
 | `aoc-master` | **Yes** | Orchestration toolkit: `delegate.sh`, `team-status.sh`, `list-team-roles.sh`. Auto-enabled only for agents with `is_master=1`. |
 

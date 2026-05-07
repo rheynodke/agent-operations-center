@@ -9,24 +9,29 @@
 const fs   = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
+const { OPENCLAW_HOME, getUserHome, readJsonSafe } = require('../config.cjs');
 
-// TODO: per-user cron files (slice 1.5.g) — cron CRUD currently writes to the
-// admin cron file. When per-user cron is needed, thread userId through each
-// function and use getUserCronFile(userId) from config.cjs instead.
-const CRON_FILE = path.join(OPENCLAW_HOME, 'cron', 'jobs.json');
+// Per-user cron file. userId === undefined / null falls back to admin's home
+// for back-compat with code paths that haven't been threaded yet (e.g.
+// scheduled re-pickup at gateway boot — gateways are already per-user, so the
+// fallback only matters for tests).
+function cronFileFor(userId) {
+  const home = userId == null ? OPENCLAW_HOME : getUserHome(userId);
+  return path.join(home, 'cron', 'jobs.json');
+}
 
 // ─── File helpers ─────────────────────────────────────────────────────────────
 
-function readCronFile() {
-  const data = readJsonSafe(CRON_FILE);
+function readCronFile(userId) {
+  const data = readJsonSafe(cronFileFor(userId));
   return data || { version: 1, jobs: [] };
 }
 
-function writeCronFile(data) {
-  const dir = path.dirname(CRON_FILE);
+function writeCronFile(userId, data) {
+  const file = cronFileFor(userId);
+  const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(CRON_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 function buildSchedule(opts) {
@@ -118,7 +123,7 @@ function buildJobFromOpts(opts, existingId) {
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
 
-async function cronCreateJob(opts, gatewayProxy) {
+async function cronCreateJob(opts, gatewayProxy, userId) {
   if (gatewayProxy && gatewayProxy.isConnected) {
     try {
       const result = await gatewayProxy.cronCreate(opts);
@@ -127,38 +132,35 @@ async function cronCreateJob(opts, gatewayProxy) {
       console.warn('[cron] Gateway cronCreate failed, falling back to file write:', err.message);
     }
   }
-  // Fallback: write directly
-  const data = readCronFile();
+  // Fallback: write directly to the user's per-user cron file.
+  const data = readCronFile(userId);
   const job = buildJobFromOpts(opts);
   data.jobs.push(job);
-  writeCronFile(data);
+  writeCronFile(userId, data);
   return { job, source: 'file' };
 }
 
-async function cronUpdateJob(id, opts, gatewayProxy) {
+async function cronUpdateJob(id, opts, gatewayProxy, userId) {
   // Gateway has no cron.update RPC — always write to file directly.
   // User must restart gateway for changes to take effect.
-  // Fallback: mutate file entry
-  const data = readCronFile();
+  const data = readCronFile(userId);
   const idx = data.jobs.findIndex((j) => j.id === id);
   if (idx === -1) throw new Error(`Cron job not found: ${id}`);
   const existing = data.jobs[idx];
-  // Merge existing fields back so buildJobFromOpts can use createdAtMs etc.
   const mergedOpts = { ...existing, ...opts, createdAtMs: existing.createdAtMs };
   const updated = buildJobFromOpts(mergedOpts, existing.id);
   data.jobs[idx] = updated;
-  writeCronFile(data);
+  writeCronFile(userId, data);
   return { job: updated, source: 'file' };
 }
 
-async function cronDeleteJob(id, gatewayProxy) {
+async function cronDeleteJob(id, gatewayProxy, userId) {
   // Gateway has no cron.delete RPC — always write to file directly.
-  // Fallback: filter from file
-  const data = readCronFile();
+  const data = readCronFile(userId);
   const before = data.jobs.length;
   data.jobs = data.jobs.filter((j) => j.id !== id);
   if (data.jobs.length === before) throw new Error(`Cron job not found: ${id}`);
-  writeCronFile(data);
+  writeCronFile(userId, data);
   return { ok: true, source: 'file' };
 }
 
@@ -169,7 +171,7 @@ async function cronRunJob(id, gatewayProxy) {
   return gatewayProxy.cronRun(id);
 }
 
-async function cronGetRuns(id, limit, gatewayProxy) {
+async function cronGetRuns(id, limit, gatewayProxy, userId) {
   if (gatewayProxy && gatewayProxy.isConnected) {
     try {
       const result = await gatewayProxy.cronRuns(id, limit || 50);
@@ -178,8 +180,9 @@ async function cronGetRuns(id, limit, gatewayProxy) {
       console.warn('[cron] Gateway cronRuns failed, reading from file:', err.message);
     }
   }
-  // Fallback: read directly from ~/.openclaw/cron/runs/<jobId>.jsonl
-  const runsFile = path.join(OPENCLAW_HOME, 'cron', 'runs', `${id}.jsonl`);
+  // Fallback: read directly from <userHome>/cron/runs/<jobId>.jsonl
+  const home = userId == null ? OPENCLAW_HOME : getUserHome(userId);
+  const runsFile = path.join(home, 'cron', 'runs', `${id}.jsonl`);
   if (!fs.existsSync(runsFile)) return { runs: [] };
 
   const lines = fs.readFileSync(runsFile, 'utf-8').trim().split('\n').filter(Boolean);
@@ -210,15 +213,14 @@ async function cronGetRuns(id, limit, gatewayProxy) {
   return { runs };
 }
 
-async function cronToggleJob(id, enabled, gatewayProxy) {
+async function cronToggleJob(id, enabled, gatewayProxy, userId) {
   // Gateway has no cron.toggle RPC — write to file directly.
-  // Fallback: toggle enabled + status in file
-  const data = readCronFile();
+  const data = readCronFile(userId);
   const idx = data.jobs.findIndex((j) => j.id === id);
   if (idx === -1) throw new Error(`Cron job not found: ${id}`);
   data.jobs[idx].enabled = enabled;
   data.jobs[idx].updatedAtMs = Date.now();
-  writeCronFile(data);
+  writeCronFile(userId, data);
   return { job: data.jobs[idx], source: 'file' };
 }
 
@@ -233,11 +235,12 @@ module.exports = {
 
 // ─── Delivery targets ─────────────────────────────────────────────────────────
 
-function getDeliveryTargets() {
-  const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+function getDeliveryTargets(userId) {
+  const home = userId == null ? OPENCLAW_HOME : getUserHome(userId);
+  const configPath = path.join(home, 'openclaw.json');
   const cfg = readJsonSafe(configPath) || {};
   const channels = cfg.channels || {};
-  const agentsDir = path.join(OPENCLAW_HOME, 'agents');
+  const agentsDir = path.join(home, 'agents');
   const result = [];
 
   // ── Telegram ──────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const { parseOwnerParam } = require('../helpers/access-control.cjs');
+const { parseOwnerParam, checkCronAccess } = require('../helpers/access-control.cjs');
 const { gatewayForReq } = require('../helpers/gateway-context.cjs');
 
 module.exports = function projectsRouter(deps) {
@@ -696,7 +696,9 @@ module.exports = function projectsRouter(deps) {
 // Cron — delivery targets (known channels + contacts from sessions)
   router.get('/cron/delivery-targets', db.authMiddleware, (req, res) => {
   try {
-    res.json({ channels: parsers.getDeliveryTargets() });
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    res.json({ channels: parsers.getDeliveryTargets(targetUid) });
   } catch (err) {
     console.error('[api/cron/delivery-targets]', err.message);
     res.status(500).json({ error: 'Failed to fetch delivery targets' });
@@ -726,10 +728,12 @@ module.exports = function projectsRouter(deps) {
 // Cron — create
   router.post('/cron', db.authMiddleware, async (req, res) => {
   try {
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
     if (req.body?.agentId && !db.userOwnsAgent(req, req.body.agentId)) {
       return res.status(403).json({ error: 'You can only create cron jobs for agents you own' });
     }
-    const result = await parsers.cronCreateJob(req.body, gatewayForReq(req));
+    const result = await parsers.cronCreateJob(req.body, gatewayForReq(req), targetUid);
     res.status(201).json(result);
   } catch (err) {
     console.error('[api/cron POST]', err.message);
@@ -740,8 +744,10 @@ module.exports = function projectsRouter(deps) {
 // Cron — run history for a job
   router.get('/cron/:id/runs', db.authMiddleware, async (req, res) => {
   try {
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
     const limit = parseInt(req.query.limit) || 50;
-    const result = await parsers.cronGetRuns(req.params.id, limit, gatewayForReq(req));
+    const result = await parsers.cronGetRuns(req.params.id, limit, gatewayForReq(req), targetUid);
     res.json(result);
   } catch (err) {
     console.error('[api/cron/:id/runs]', err.message);
@@ -752,7 +758,7 @@ module.exports = function projectsRouter(deps) {
 // Cron — trigger job now
   router.post('/cron/:id/run', db.authMiddleware, async (req, res) => {
   try {
-    const gate = await checkCronAccess(req, req.params.id);
+    const gate = await checkCronAccess(req, req.params.id, db, parsers);
     if (gate) return res.status(403).json({ error: gate });
     const result = await parsers.cronRunJob(req.params.id, gatewayForReq(req));
     res.json(result);
@@ -765,11 +771,13 @@ module.exports = function projectsRouter(deps) {
 // Cron — toggle enabled/disabled
   router.post('/cron/:id/toggle', db.authMiddleware, async (req, res) => {
   try {
-    const gate = await checkCronAccess(req, req.params.id);
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const gate = await checkCronAccess(req, req.params.id, db, parsers);
     if (gate) return res.status(403).json({ error: gate });
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean') return res.status(400).json({ error: '`enabled` boolean required' });
-    const result = await parsers.cronToggleJob(req.params.id, enabled, gatewayForReq(req));
+    const result = await parsers.cronToggleJob(req.params.id, enabled, gatewayForReq(req), targetUid);
     res.json(result);
   } catch (err) {
     console.error('[api/cron/:id/toggle]', err.message);
@@ -780,9 +788,11 @@ module.exports = function projectsRouter(deps) {
 // Cron — edit
   router.patch('/cron/:id', db.authMiddleware, async (req, res) => {
   try {
-    const gate = await checkCronAccess(req, req.params.id);
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const gate = await checkCronAccess(req, req.params.id, db, parsers);
     if (gate) return res.status(403).json({ error: gate });
-    const result = await parsers.cronUpdateJob(req.params.id, req.body, gatewayForReq(req));
+    const result = await parsers.cronUpdateJob(req.params.id, req.body, gatewayForReq(req), targetUid);
     res.json(result);
   } catch (err) {
     console.error('[api/cron PATCH]', err.message);
@@ -793,9 +803,11 @@ module.exports = function projectsRouter(deps) {
 // Cron — delete
   router.delete('/cron/:id', db.authMiddleware, async (req, res) => {
   try {
-    const gate = await checkCronAccess(req, req.params.id);
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
+    const gate = await checkCronAccess(req, req.params.id, db, parsers);
     if (gate) return res.status(403).json({ error: gate });
-    const result = await parsers.cronDeleteJob(req.params.id, gatewayForReq(req));
+    const result = await parsers.cronDeleteJob(req.params.id, gatewayForReq(req), targetUid);
     res.json(result);
   } catch (err) {
     console.error('[api/cron DELETE]', err.message);
