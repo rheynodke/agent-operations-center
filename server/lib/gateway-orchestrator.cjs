@@ -84,6 +84,72 @@ function _isPortFree(port) {
 }
 
 /**
+ * Auto-generate `~/.openclaw/shared/providers.json5` from admin's `openclaw.json`
+ * if it doesn't exist yet. Idempotent — skips when the file is already present
+ * (set env `PROVIDERS_OVERWRITE=1` to force regenerate).
+ *
+ * Literal `apiKey` values found in admin's providers are rewritten to `${ENV_VAR}`
+ * references in the output and logged to stderr so the operator knows which env
+ * vars to define. The literal secret is NEVER printed.
+ *
+ * Returns `{ written, secrets }` for testability.
+ */
+function ensureSharedProviders() {
+  if (fs.existsSync(SHARED_PROVIDERS) && process.env.PROVIDERS_OVERWRITE !== '1') {
+    return { written: false, secrets: [] };
+  }
+
+  const adminCfgPath = path.join(require('./config.cjs').OPENCLAW_BASE, 'openclaw.json');
+  let adminCfg;
+  try {
+    adminCfg = JSON.parse(fs.readFileSync(adminCfgPath, 'utf8'));
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      console.warn(`[orchestrator] ensureSharedProviders: cannot read admin openclaw.json: ${e.message}`);
+    }
+    return { written: false, secrets: [] };
+  }
+
+  const providersIn = adminCfg?.models?.providers;
+  if (!providersIn || Object.keys(providersIn).length === 0) {
+    return { written: false, secrets: [] };
+  }
+
+  const out = {};
+  const secrets = [];
+  for (const [name, cfg] of Object.entries(providersIn)) {
+    const copy = { ...cfg };
+    const literal = cfg?.apiKey;
+    if (typeof literal === 'string' && literal.length > 0 && !literal.startsWith('${')) {
+      const envVar = String(name).toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY';
+      copy.apiKey = '${' + envVar + '}';
+      secrets.push({ envVar, provider: name });
+    }
+    out[name] = copy;
+  }
+
+  const body = '// Auto-generated from ~/.openclaw/openclaw.json by AOC orchestrator.\n' +
+               '// Per-user gateways inline this file for shared model provider config.\n' +
+               '// API keys are referenced via ${ENV_VAR} — define them in AOC backend\'s environment.\n' +
+               '// Set PROVIDERS_OVERWRITE=1 to regenerate after rotating admin providers.\n\n' +
+               JSON.stringify({ models: { providers: out } }, null, 2) + '\n';
+
+  try {
+    fs.mkdirSync(path.dirname(SHARED_PROVIDERS), { recursive: true });
+    fs.writeFileSync(SHARED_PROVIDERS, body);
+    console.log(`[orchestrator] auto-generated ${SHARED_PROVIDERS} (${Object.keys(out).length} provider(s))`);
+    if (secrets.length > 0) {
+      console.warn(`[orchestrator] ⚠️  ${secrets.length} provider apiKey(s) externalized to env vars — define them in your .env:`);
+      for (const s of secrets) console.warn(`               - ${s.envVar}   (provider: ${s.provider})`);
+    }
+    return { written: true, secrets };
+  } catch (e) {
+    console.warn(`[orchestrator] ensureSharedProviders write failed: ${e.message}`);
+    return { written: false, secrets };
+  }
+}
+
+/**
  * Read & parse the admin-managed shared providers file. Returns null if absent.
  * The file is JSON5-ish — generated with line comments. Strip them before JSON.parse.
  * Result is merged into per-user openclaw.json (inlined, since OpenClaw rejects
@@ -825,6 +891,7 @@ module.exports = {
   spawnGateway, stopGateway, restartGateway,
   getGatewayState, listGateways, getRunningToken,
   cleanupOrphans, gracefulShutdown, findAocManagedOrphanPids,
+  ensureSharedProviders,
   on:  (...a) => orchestratorEvents.on(...a),
   off: (...a) => orchestratorEvents.off(...a),
   // Test-only

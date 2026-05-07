@@ -681,6 +681,15 @@ async function start() {
     console.warn('[startup] HQ backfill failed:', e.message);
   }
 
+  // Auto-bootstrap shared/providers.json5 from admin's openclaw.json on first
+  // run. Idempotent: skips if the file already exists. Set PROVIDERS_OVERWRITE=1
+  // to force regenerate after rotating provider credentials in admin's config.
+  try {
+    orchestrator.ensureSharedProviders();
+  } catch (e) {
+    console.warn('[orchestrator] ensureSharedProviders failed:', e.message);
+  }
+
   try {
     await orchestrator.cleanupOrphans();
     console.log('[orchestrator] startup cleanup complete');
