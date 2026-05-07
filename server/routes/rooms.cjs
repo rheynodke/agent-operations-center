@@ -173,6 +173,28 @@ module.exports = function roomsRouter(deps) {
   }
 });
 
+// GET /api/rooms/:id/commands — list slash commands available in this room.
+// Aggregated from BUILT-IN skill bundles only (whitelist enforced server-side).
+// User-authored skills (via aoc-self) are intentionally excluded — they show
+// up via channel adapters (Telegram/WhatsApp/Discord) instead.
+//
+// Returns: [{ name, description, argHint, skillSlug }] (template body omitted
+// from response — that's a server-side concern only).
+  router.get('/rooms/:id/commands', db.authMiddleware, (req, res) => {
+  try {
+    const room = withRoomAccess(req, res, req.params.id);
+    if (!room) return;
+    const slashCmds = require('../lib/slash-commands.cjs');
+    const all = slashCmds.getBuiltinSlashCommands();
+    // Strip the template body — UI doesn't need it.
+    const commands = all.map(({ template: _t, ...rest }) => rest);
+    res.json({ commands });
+  } catch (err) {
+    console.error('[api/rooms/:id/commands GET]', err);
+    res.status(500).json({ error: 'Failed to fetch slash commands' });
+  }
+});
+
   router.post('/rooms/:id/messages', db.authMiddleware, (req, res) => {
   try {
     const room = withRoomAccess(req, res, req.params.id);
@@ -251,6 +273,48 @@ module.exports = function roomsRouter(deps) {
         });
         emitRoomMessage(sysMsg);
         return res.status(201).json({ message: sysMsg });
+      }
+
+      // Built-in skill slash commands — discovered from each whitelisted
+      // skill bundle's commands.json. The user-visible body stays as the
+      // literal `/cmd args` text; the agent receives a rendered template
+      // with explicit STOP rules so it doesn't drift to other topics.
+      const slashCmds = require('../lib/slash-commands.cjs');
+      const skillCmd = slashCmds.findSlashCommand(cmd);
+      if (skillCmd) {
+        const ownerId = room.createdBy ?? req.user?.userId ?? null;
+        const masterAgentId = ownerId != null ? (db.getUserMasterAgentId(ownerId) || null) : null;
+        if (!masterAgentId) {
+          return res.status(400).json({ error: 'Master Agent not found. Cannot dispatch slash command.' });
+        }
+        // Resolve mentions on the literal body so @-mentions still work alongside.
+        const mentions = resolveMentions(req, room, body, req.body?.mentions || []);
+        const message = db.createMissionMessage({
+          roomId: room.id,
+          authorType: 'user',
+          authorId: String(req.user?.userId ?? ''),
+          authorName: req.user?.displayName || req.user?.username || 'User',
+          body, // store literal "/cmd args" — useful for audit + visible UI
+          mentions,
+          meta: { ...(req.body?.meta || {}), slashCommand: skillCmd.name, slashSkill: skillCmd.skillSlug },
+        });
+        emitRoomMessage(message);
+        res.status(201).json({ message });
+
+        // Render template + dispatch to master (or first @-mentioned agent).
+        const targetAgentId = mentions[0] || masterAgentId;
+        const rendered = slashCmds.renderSlashTemplate(skillCmd, args, {
+          agentId: targetAgentId,
+          agentName: getAgentDisplayName(targetAgentId, ownerId),
+          userName: req.user?.displayName || req.user?.username || 'User',
+          roomId: room.id,
+          roomName: room.name,
+        });
+        const forwardedMessage = { ...message, body: rendered };
+        forwardRoomMentionToAgent(room, forwardedMessage, targetAgentId).catch((err) => {
+          console.error(`[room-msg] slash command "${cmd}" forward failed for room=${room.id}:`, err.message);
+        });
+        return;
       }
 
       if (cmd === '/summary' || cmd === '/delegate') {

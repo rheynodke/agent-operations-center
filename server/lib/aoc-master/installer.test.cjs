@@ -43,7 +43,7 @@ test('install is idempotent (second call writes 0 files)', () => {
   assert.equal(r2.written, 0);
 });
 
-test('ensureSkillEnabledForUserMasters adds aoc-master to master agents only', () => {
+test('ensureSkillEnabledForUserMasters adds aoc-master to master agents only', async () => {
   const home = setupHome();
   const cfgPath = path.join(home, 'openclaw.json');
   fs.writeFileSync(cfgPath, JSON.stringify({
@@ -57,11 +57,39 @@ test('ensureSkillEnabledForUserMasters adds aoc-master to master agents only', (
   }));
 
   const inst = require('./installer.cjs');
-  const r = inst.ensureSkillEnabledForUserMasters({ masterAgentIds: ['master-a'] });
+  const r = await inst.ensureSkillEnabledForUserMasters({ masterAgentIds: ['master-a'] });
   assert.equal(r.changed, true);
   const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
   const master = cfg.agents.list.find(a => a.id === 'master-a');
   const sub = cfg.agents.list.find(a => a.id === 'sub-b');
   assert.ok(master.skills.includes('aoc-master'));
   assert.ok(!sub.skills.includes('aoc-master'));
+});
+
+test('migrateRetireMissionOrchestrator strips legacy slug from configs', async () => {
+  const home = setupHome();
+  const cfgPath = path.join(home, 'openclaw.json');
+  fs.writeFileSync(cfgPath, JSON.stringify({
+    agents: {
+      defaults: { skills: ['mission-orchestrator', 'aoc-tasks'] },
+      list: [
+        { id: 'main', skills: ['mission-orchestrator', 'aoc-master'] },
+        { id: 'specialist', skills: ['mission-orchestrator', 'aoc-tasks'] },
+      ],
+    },
+    skills: { entries: { 'mission-orchestrator': { enabled: true } } },
+  }));
+
+  const inst = require('./installer.cjs');
+  const r = await inst.migrateRetireMissionOrchestrator();
+  assert.equal(r.adminChanged, true);
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+  assert.deepEqual(cfg.agents.defaults.skills, ['aoc-tasks']);
+  assert.deepEqual(cfg.agents.list[0].skills, ['aoc-master']);
+  assert.deepEqual(cfg.agents.list[1].skills, ['aoc-tasks']);
+  assert.equal(cfg.skills.entries['mission-orchestrator'], undefined);
+
+  // Idempotent
+  const r2 = await inst.migrateRetireMissionOrchestrator();
+  assert.equal(r2.adminChanged, false);
 });

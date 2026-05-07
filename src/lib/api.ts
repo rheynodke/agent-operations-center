@@ -186,6 +186,8 @@ export const api = {
   },
   postRoomMessage: (id: string, body: string, mentions: string[] = [], meta?: Record<string, any>) =>
     request<{ message: MissionMessage }>(`/rooms/${encodeURIComponent(id)}/messages`, { method: "POST", body: JSON.stringify({ body, mentions, meta }) }),
+  getRoomCommands: (id: string) =>
+    request<{ commands: { name: string; description: string; argHint: string; skillSlug: string }[] }>(`/rooms/${encodeURIComponent(id)}/commands`),
   getAvatar: (id: string) =>
     request<{ avatarData: string; avatarMime: string }>(`/agents/${id}/avatar`),
   getAgentFile: (id: string, filename: string) =>

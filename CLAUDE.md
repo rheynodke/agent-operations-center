@@ -95,7 +95,7 @@ The platform is **multi-tenant by default**. The cross-cutting invariants:
   - `server/lib/agents/files.cjs` — editable files allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`. `injectSoulStandard()` idempotently appends the AOC research output standard.
   - `server/lib/agents/skills.cjs`, `tools.cjs`, `skillScripts.cjs` — per-agent skill + tool plumbing.
   - `server/lib/agents/provision.cjs` — writes new agent to `openclaw.json` + scaffolds workspace. **Master-aware**: when `isMaster=true`, uses `<home>/workspace` (not nested), grants broad fs access (`tools.fs.workspaceOnly: false`), explicit skills allowlist (`MASTER_EXTRA_SKILLS + agents.defaults.skills`), injects orchestration sections into SOUL.md/AGENTS.md/TOOLS.md.
-  - `server/lib/aoc-master/installer.cjs` — bundled `aoc-master` skill (delegate.sh, team-status.sh, list-team-roles.sh + SKILL.md). Master-only auto-enable via `ensureSkillEnabledForUserMasters({ masterAgentIds })`.
+  - `server/lib/aoc-master/installer.cjs` — bundled `aoc-master` skill (delegate.sh, team-status.sh, list-team-roles.sh, provision.sh, mission_room.sh + SKILL.md). Master-only auto-enable via `ensureSkillEnabledForUserMasters({ masterAgentIds })`. As of 1.1.0 this skill absorbed the deprecated `mission-orchestrator` (mission_room.sh + task-board playbook); `migrateRetireMissionOrchestrator()` strips the legacy slug from every openclaw.json on startup.
   - `server/lib/aoc-tasks/installer.cjs`, `aoc-connections/installer.cjs`, `browser-harness/odoo-installer.cjs` — other built-in skill bundles. See **AOC Built-in Skills & Sync Engine** below.
   - `server/lib/pairing.cjs` — DM pairing approval + allow-list for telegram/whatsapp/discord.
   - `server/lib/sessions/index.cjs`, `opencode.cjs`, `gateway.cjs` — session parsers (per-user via `homeFor(userId)`).
@@ -183,9 +183,9 @@ Each user has exactly **one** Master Agent. Backed by:
 - AGENTS.md instructs three-tier behavior: safe ops just run; risky ops announce + 1 clarifying question; hard-stop ops refuse and surface to user.
 - Don't re-introduce gateway approval prompts thinking it's safer — it breaks the master's flow and contradicts the design.
 
-### `aoc-master` Skill (Delegation Primitives)
+### `aoc-master` Skill (Delegation + Task Board Primitives)
 
-Bundled at `~/.openclaw/skills/aoc-master/` (symlinked into per-user homes). Master-only — `ensureSkillEnabledForUserMasters` enrols only agents with `is_master=1`.
+Bundled at `~/.openclaw/skills/aoc-master/` (symlinked into per-user homes). Master-only — `ensureSkillEnabledForUserMasters` enrols only agents with `is_master=1`. **History**: as of 1.1.0 this skill absorbed the previously-separate `mission-orchestrator` skill; `mission_room.sh` (Task Board driver) now ships from here, so every per-user master gets task-board operations — not just admin's `main` like before.
 
 - `team-status.sh` — list user's sub-agents (excludes master) with role + last activity. Hits `GET /api/master/team`.
 - `delegate.sh <agent_id> "<task>"` — opens or reuses session keyed `master-delegate-<master>-<target>` via `gateway.sessionsCreate` + posts task as first chat turn. Hits `POST /api/master/delegate`.
@@ -270,7 +270,7 @@ Per-user "General" project is created in `POST /api/onboarding/master` (NOT regi
 **Core principle:** the unit of capability is a **Skill bundle**, not a loose script. Agents enable a skill; the skill's scripts come along automatically. Loose toggleable "custom tools" are a thin escape hatch, not the primary contract.
 
 **Three tiers:**
-1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled. Currently: `aoc-tasks`, `aoc-connections`, `aoc-room`, `aoc-odoo`, `aoc-schedules`, `browser-harness-odoo`, and `aoc-master` (master-only). See **AOC Built-in Skills & Sync Engine** below.
+1. **AOC built-in skills** — packaged & owned by AOC, auto-enabled. Currently: `aoc-tasks`, `aoc-connections`, `aoc-room`, `aoc-odoo`, `aoc-schedules`, `aoc-self`, `browser-harness-odoo`, and `aoc-master` (master-only). See **AOC Built-in Skills & Sync Engine** below.
 2. **User skills** — full CRUD via Skills page or per-agent. Resolved via the Skill Resolution Order. Scripts at `{skillDir}/scripts/`.
 3. **Loose scripts** (`server/lib/scripts.cjs`) — only for cron/orchestrator wiring or one-offs not yet warranting a skill bundle. Two scopes:
    - **Shared** (`~/.openclaw/scripts/`, symlinked into per-user homes) — managed in Skills & Tools → Custom Tools.
@@ -284,7 +284,7 @@ Allowed extensions: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`,
 
 ## AOC Built-in Skills & Sync Engine
 
-AOC ships **six** skill bundles. They are infrastructure, not toggleable in the UI.
+AOC ships **seven** skill bundles. They are infrastructure, not toggleable in the UI.
 
 | Slug | Master-only? | Purpose |
 |---|---|---|
@@ -293,8 +293,9 @@ AOC ships **six** skill bundles. They are infrastructure, not toggleable in the 
 | `aoc-room` | No | Room collaboration toolkit: `room-publish`, `room-list`, `room-context-read`, `room-context-append`, `room-state-get`, `room-state-set`. Reads `AOC_ROOM_ID` env (injected when session started from a room). |
 | `aoc-odoo` | No | Full odoocli operator surface (auth, model, record, method, debug, view) + 5 reference docs. Wrapper `odoo.sh <connection-name> <args...>` fetches creds from the assigned `odoocli`-typed connection at runtime via `GET /api/connections/:idOrName/odoo-profile`, materializes ephemeral `.odoocli.toml` (mode 0600 in `$TMPDIR`), runs odoocli with `--config`, removes the file on exit. **Never writes `~/.odoocli.toml`.** Bundle source vendored under `server/lib/aoc-odoo/bundle/`. Connection lookup accepts ID or name; ambiguous names → 409 with candidates. |
 | `aoc-schedules` | No | Scheduled-task toolkit for in-room conversations: `schedules-list`, `-create`, `-update`, `-toggle`, `-run-now`, `-runs`, `-delete`. New jobs bind to `AOC_AGENT_ID` by default; pass `--no-bind` for owner-level. **Always reminds the user that gateway restart is required after any mutation** (cron scheduler reads `jobs.json` once at gateway boot). Delete refuses without `--yes`. |
+| `aoc-self` | No | Lets agents author their own personal (scope='agent') skills: `agent-skill-create`, `-add-script`, `-list`, `-remove`. Skills land at `<workspace>/.agents/skills/<slug>/` — visible only to that agent. `buildSkillsPathPrefix` walks each agent's workspace too, so script names resolve on PATH after gateway restart. Delete refuses without `--yes`. |
 | `browser-harness-odoo` | No (but defaults exclude it) | Odoo browser automation. SKILL.md + 10 shell scripts. |
-| `aoc-master` | **Yes** | Orchestration toolkit: `delegate.sh`, `team-status.sh`, `list-team-roles.sh`. Auto-enabled only for agents with `is_master=1`. |
+| `aoc-master` | **Yes** | Orchestration toolkit: `delegate.sh`, `team-status.sh`, `list-team-roles.sh`, `provision.sh`, `mission_room.sh` (Task Board driver: create/update/comment/dispatch/approve/request-change tasks + post to other rooms). Auto-enabled only for agents with `is_master=1`. As of 1.1.0 absorbed the deprecated `mission-orchestrator` skill. |
 
 **Auto-enable mechanism (each installer):**
 1. Install/refresh the skill bundle to `~/.openclaw/skills/{slug}/`.
@@ -527,7 +528,7 @@ These are the load-bearing constraints discovered during Tier 3 multi-tenant wor
 
 - **OpenClaw gateway rejects unknown keys** in `agents.list[]` of `openclaw.json`. Confirmed rejected: `isMaster`, `adlcRole`. **Track all custom flags in SQLite** (`agent_profiles` columns), NEVER in openclaw.json.
 - **`<userHome>/skills/` is a symlink** to admin's `~/.openclaw/skills/`. Installing a bundle once at admin's home propagates to every user. Don't try to install per-user.
-- **Gateway exec PATH must include skill scripts dirs.** OpenClaw's `exec` tool spawns `zsh -c '<cmd>'` / `bash -c '<cmd>'` — non-interactive non-login shells that **do NOT source `~/.openclaw/.aoc_env`**. Bare commands like `aoc-connect.sh` / `team-status.sh` / `schedules-list.sh` fail with "command not found" unless skill scripts dirs are pre-injected into the gateway's PATH. Per-user gateways: orchestrator's `buildSkillsPathPrefix(userHome)` does this in `childEnv` at spawn. Admin's external (systemd-managed) gateway: read `~/.openclaw/.aoc_paths` (static KEY=VALUE format, written at AOC startup alongside `.aoc_env`) via `EnvironmentFile=` in the systemd unit. The `.aoc_env` file uses shell `for` loops and is NOT consumable by systemd directly — that's what `.aoc_paths` is for. New skills installed after gateway boot require gateway restart to land on PATH.
+- **Gateway exec PATH must include skill scripts dirs.** OpenClaw's `exec` tool spawns `zsh -c '<cmd>'` / `bash -c '<cmd>'` — non-interactive non-login shells that **do NOT source `~/.openclaw/.aoc_env`**. Bare commands like `aoc-connect.sh` / `team-status.sh` / `schedules-list.sh` fail with "command not found" unless skill scripts dirs are pre-injected into the gateway's PATH. Per-user gateways: orchestrator's `buildSkillsPathPrefix(userHome)` does this in `childEnv` at spawn. It walks (a) `<userHome>/skills/*/scripts` (admin-symlinked + user-installed), (b) `<adminBase>/skills/*/scripts` (defensive double-glob), AND (c) every agent's workspace via `cfg.agents.list[].workspace` for `<ws>/skills/*/scripts` + `<ws>/.agents/skills/*/scripts` — so agent-authored personal skills (via `aoc-self`) resolve too. Admin's external (systemd-managed) gateway: read `~/.openclaw/.aoc_paths` (static KEY=VALUE format, written at AOC startup alongside `.aoc_env`) via `EnvironmentFile=` in the systemd unit. The `.aoc_env` file uses shell `for` loops and is NOT consumable by systemd directly — that's what `.aoc_paths` is for. New skills (built-in OR agent-authored) require gateway restart to land on PATH.
 - **GatewayPool does not auto-connect.** `gatewayPool.forUser(userId)` returns a connection object but you must verify `conn.isConnected` and use `orchestrator.getRunningToken(userId)` + `conn.connect({port,token})` if stale. See `server/routes/master.cjs` for the lazy-connect pattern.
 - **macOS `ps -E` doesn't expose env.** Orphan gateway detection uses `lsof -p <pid> -i tcp -P -n -a -sTCP:LISTEN` to map PIDs to listening ports — see `findAocManagedOrphanPids()` in the orchestrator.
 - **Composite-PK for cross-tenant agent slugs.** `agent_profiles` is keyed by `(agent_id, provisioned_by)` — two users can independently provision agents with the same slug and they coexist as distinct rows. `agent_connections` carries `owner_id` for the same reason. **Implication for accessors:** `db.getAgentProfile`, `getAgentConnectionIds`, `setAgentConnections`, `deleteAgentProfile`, `markAgentProfileMaster`, `renameAgentProfile` all take `ownerId` — some throw if you forget. `getAgentOwner(agentId)` returns null on ambiguity; pass `ownerHint` (usually `req.user.userId`) to disambiguate.

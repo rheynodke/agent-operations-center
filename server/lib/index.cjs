@@ -23,10 +23,14 @@ const browserHarnessPool = require('./browser-harness/pool.cjs');
 const browserHarnessOdoo = require('./browser-harness/odoo-installer.cjs');
 const aocTasksSkill       = require('./aoc-tasks/installer.cjs');
 const aocConnectionsSkill = require('./aoc-connections/installer.cjs');
-const missionOrchestratorSkill = require('./mission-orchestrator/installer.cjs');
+// mission-orchestrator deprecated as of aoc-master 1.1.0 — its functionality
+// (mission_room.sh + task-board playbook) was absorbed into aoc-master. The
+// installer file remains on disk for emergency rollback but is no longer
+// auto-loaded or re-exported.
 const aocRoomSkill        = require('./aoc-room/installer.cjs');
 const aocOdooSkill        = require('./aoc-odoo/installer.cjs');
 const aocSchedulesSkill   = require('./aoc-schedules/installer.cjs');
+const aocSelfSkill        = require('./aoc-self/installer.cjs');
 const workspaceBrowser    = require('./workspace-browser.cjs');
 const roleTemplates = require('./role-templates.cjs');
 const skillCatalog  = require('./skill-catalog.cjs');
@@ -195,10 +199,10 @@ module.exports = {
   browserHarnessOdoo,
   aocTasksSkill,
   aocConnectionsSkill,
-  missionOrchestratorSkill,
   aocRoomSkill,
   aocOdooSkill,
   aocSchedulesSkill,
+  aocSelfSkill,
   workspaceBrowser,
 
   // ── role templates (Phase 1: read-only + seed) ────────────────────────────

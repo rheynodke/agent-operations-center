@@ -200,6 +200,32 @@ function buildSkillsPathPrefix(userHome) {
       } catch { /* not all skills have scripts/ */ }
     }
   }
+
+  // Per-agent workspace-local skills: agents that wrote their own skills under
+  // <workspace>/skills/<slug>/scripts/ or <workspace>/.agents/skills/<slug>/scripts/.
+  // Scan via openclaw.json so we discover every agent's actual workspace path.
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(userHome, 'openclaw.json'), 'utf8'));
+    const list = cfg?.agents?.list || [];
+    const defaultWs = cfg?.agents?.defaults?.workspace;
+    for (const agent of list) {
+      const ws = agent?.workspace || defaultWs;
+      if (!ws) continue;
+      for (const sub of ['skills', '.agents/skills']) {
+        const root = path.join(ws, sub);
+        let entries = [];
+        try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+        for (const e of entries) {
+          if (!e.isDirectory()) continue;
+          const scriptsDir = path.join(root, e.name, 'scripts');
+          try {
+            if (fs.statSync(scriptsDir).isDirectory()) dirs.add(scriptsDir);
+          } catch { /* skill has no scripts/ */ }
+        }
+      }
+    }
+  } catch { /* no openclaw.json yet — first-spawn case */ }
+
   return Array.from(dirs).join(':');
 }
 

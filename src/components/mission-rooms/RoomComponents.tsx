@@ -351,14 +351,23 @@ function MessageBubble({ message, repliedMessage, agentsById, onReply }: { messa
   )
 }
 
-const COMMANDS = [
+// Built-in room slash commands (always available, no skill required).
+const BUILTIN_ROOM_COMMANDS: SlashCommand[] = [
   { id: "status", name: "/status", description: "View team roles and availability" },
   { id: "connections", name: "/connections", description: "List each agent's assigned connections" },
   { id: "summary", name: "/summary", description: "Summarize the room's chat history" },
   { id: "delegate", name: "/delegate", description: "Let Master Agent assign a task" },
   { id: "reset", name: "/reset", description: "Clear agent session contexts" },
-  { id: "stop", name: "/stop", description: "Abort active agent executions" }
+  { id: "stop", name: "/stop", description: "Abort active agent executions" },
 ]
+
+interface SlashCommand {
+  id: string
+  name: string
+  description: string
+  argHint?: string
+  skillSlug?: string
+}
 
 const renderHighlightedText = (text: string) => {
   if (!text) return null
@@ -377,10 +386,31 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
   const [mentionQuery, setMentionQuery] = useState<{ query: string; index: number } | null>(null)
   const [commandQuery, setCommandQuery] = useState<{ query: string; index: number } | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [skillCommands, setSkillCommands] = useState<SlashCommand[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => { setText(localStorage.getItem(`aoc.room.draft.${room.id}`) || "") }, [room.id])
   useEffect(() => { localStorage.setItem(`aoc.room.draft.${room.id}`, text) }, [room.id, text])
+
+  // Fetch built-in skill slash commands available in this room. Server only
+  // includes commands from whitelisted built-in skill bundles (aoc-schedules,
+  // aoc-self, etc) — not from user-authored skills.
+  useEffect(() => {
+    let cancelled = false
+    api.getRoomCommands(room.id).then(r => {
+      if (cancelled) return
+      setSkillCommands((r.commands || []).map(c => ({
+        id: c.name,
+        name: `/${c.name}`,
+        description: c.description || "",
+        argHint: c.argHint,
+        skillSlug: c.skillSlug,
+      })))
+    }).catch(() => { /* keep empty if endpoint missing / not authorized */ })
+    return () => { cancelled = true }
+  }, [room.id])
+
+  const COMMANDS: SlashCommand[] = [...BUILTIN_ROOM_COMMANDS, ...skillCommands]
 
   const canSend = text.trim() && !sending
 
@@ -561,7 +591,7 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
       )}
 
       {commandQuery && filteredCommands.length > 0 && (
-        <div className="absolute bottom-full left-4 mb-2 w-64 max-h-48 overflow-y-auto rounded-xl border border-border bg-card shadow-lg z-50">
+        <div className="absolute bottom-full left-4 mb-2 w-80 max-h-72 overflow-y-auto rounded-xl border border-border bg-card shadow-lg z-50">
           <div className="p-1">
             <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
               Commands
@@ -575,7 +605,15 @@ function MentionComposer({ room, agents, replyingToMessage, setReplyingToMessage
                   i === selectedIndex ? "bg-primary/15" : "hover:bg-primary/10"
                 )}
               >
-                <span className={cn("text-xs font-bold", i === selectedIndex ? "text-primary" : "text-foreground")}>{c.name}</span>
+                <div className="flex items-center gap-1.5 w-full">
+                  <span className={cn("text-xs font-bold", i === selectedIndex ? "text-primary" : "text-foreground")}>{c.name}</span>
+                  {c.argHint && <span className="text-[10px] text-muted-foreground/60 italic truncate">{c.argHint}</span>}
+                  {c.skillSlug && (
+                    <span className="ml-auto text-[9px] font-mono text-muted-foreground/60 px-1 py-0.5 rounded bg-muted">
+                      {c.skillSlug}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px] text-muted-foreground truncate w-full">{c.description}</span>
               </button>
             ))}

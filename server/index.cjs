@@ -576,7 +576,10 @@ function syncBuiltinsForAgent(agentId) {
       parsers.getAgentFile,
       parsers.saveAgentFile,
     );
-    if (agentId === 'main') parsers.missionOrchestratorSkill.ensureSkillEnabledForMainAgent();
+    // Note: pre-1.1.0 we re-enabled `mission-orchestrator` here for admin's
+    // `main` agent. As of aoc-master 1.1.0 the mission_room.sh script lives
+    // inside aoc-master, which is enrolled per-master via the onboarding flow.
+    // No per-sync re-enable needed.
   } catch (err) {
     console.warn(`[builtins] syncBuiltinsForAgent(${agentId}):`, err.message);
   }
@@ -775,14 +778,22 @@ async function start() {
     parsers.aocSchedulesSkill.ensureSkillEnabledForAllAgents()
       .catch((e) => console.warn('[startup] aoc-schedules ensure failed:', e.message));
   } catch (e) { console.warn('[startup] aoc-schedules skill init failed:', e.message); }
-  // mission-orchestrator built-in skill: install bundle + enable only for main.
+
+  // aoc-self built-in skill: lets agents author their own personal skills.
   try {
-    parsers.missionOrchestratorSkill.installSafe();
-    parsers.missionOrchestratorSkill.ensureSkillEnabledForMainAgent();
-  } catch (e) { console.warn('[startup] mission-orchestrator skill init failed:', e.message); }
-  // aoc-master skill: install bundle (master agents are enrolled per-provision / per-onboarding).
+    parsers.aocSelfSkill.installSafe();
+    parsers.aocSelfSkill.ensureSkillEnabledForAllAgents()
+      .catch((e) => console.warn('[startup] aoc-self ensure failed:', e.message));
+  } catch (e) { console.warn('[startup] aoc-self skill init failed:', e.message); }
+  // aoc-master skill: install bundle (master agents are enrolled per-provision /
+  // per-onboarding via ensureSkillEnabledForUserMasters elsewhere).
+  // As of aoc-master 1.1.0, mission_room.sh + the task-board playbook live
+  // here. Run the migration helper to strip the deprecated 'mission-orchestrator'
+  // slug from every openclaw.json on this AOC instance.
   try {
     aocMasterInstaller.installSafe();
+    aocMasterInstaller.migrateRetireMissionOrchestrator()
+      .catch((e) => console.warn('[startup] aoc-master mission-orchestrator migration failed:', e.message));
   } catch (e) { console.warn('[startup] aoc-master skill init failed:', e.message); }
   // After all skill bundles install, purge legacy flat copies of skill scripts
   // (they live inside the skill folder now). Idempotent.

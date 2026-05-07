@@ -17,7 +17,7 @@ const crypto = require('node:crypto');
 const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
 
 const SKILL_SLUG = 'aoc-schedules';
-const BUNDLE_VERSION = '1.0.0';
+const BUNDLE_VERSION = '1.1.0'; // 1.1.0: ship commands.json for room slash menu
 
 // Source ~/.openclaw/.aoc_env (cluster-wide) THEN the agent's per-workspace
 // .aoc_agent_env so AOC_TOKEN ends up bound to the per-agent service token.
@@ -407,9 +407,94 @@ echo
 echo "NOTE: Gateway restart required to fully purge the schedule." >&2
 `;
 
+// commands.json — declarative slash-command registry for AOC rooms.
+// The dashboard renders these in the composer's `/` menu and replaces the
+// agent-bound message body with the rendered template before forwarding.
+// All built-in skill slash templates MUST end with an explicit STOP rule so
+// the agent doesn't drift to unrelated topics.
+const COMMANDS_JSON = JSON.stringify([
+  {
+    name: 'list-schedules',
+    description: 'Tampilkan jadwal aktif yang dimiliki agent ini',
+    argHint: '(opsional: --all untuk semua jadwal owner)',
+    template:
+`Anda menerima slash command /list-schedules dari user.
+
+LANGKAH (eksekusi persis, tidak boleh menyimpang):
+1. Jalankan \`schedules-list.sh\` (kalau argumen user mengandung "all" / "semua", tambahkan flag \`--all\`).
+2. Rangkum hasil JSON ke bahasa natural — gunakan format bullet ringkas:
+   \`• <name> — schedule expression — next run: <human-friendly>\`
+   Sertakan ID job dalam tanda kurung di akhir tiap bullet.
+3. Kalau hasilnya kosong, jelaskan singkat "Belum ada jadwal aktif." dan saran satu kalimat untuk membuat jadwal baru.
+4. STOP. Jangan tawarkan layanan lain. Jangan mulai topik baru.
+
+User input mentah: {{args}}`
+  },
+  {
+    name: 'create-schedule',
+    description: 'Buat jadwal baru dari narasi natural language',
+    argHint: '<kapan + apa yang dijalankan, contoh: tiap pagi 9 cek inventory>',
+    template:
+`Anda menerima slash command /create-schedule dari user.
+
+User input mentah: {{args}}
+
+LANGKAH (eksekusi persis, tidak boleh menyimpang):
+1. Parse narasi user untuk:
+   - schedule kind: "cron" | "every" | "at"
+   - schedule expression (cron 5-field / "30m" / ISO timestamp)
+   - timezone (default Asia/Jakarta jika user pakai bahasa Indonesia)
+   - message: prompt yang Anda akan terima saat job dijalankan
+   - delivery channel (opsional): telegram / whatsapp / discord, hanya kalau user menyebutkan eksplisit
+2. Kalau ada field WAJIB (schedule, message) yang tidak jelas: ajukan TEPAT SATU pertanyaan klarifikasi singkat, lalu STOP. Jangan menebak.
+3. Kalau lengkap: konfirmasi 1 kalimat ke user — "Saya akan buat jadwal: <NAMA>, akan jalan <KAPAN>, melakukan: <APA>. OK?" — lalu tunggu balasan.
+4. Setelah user konfirmasi: panggil \`schedules-create.sh\` dengan flag yang sesuai.
+5. Lapor: ID job, next run time WIB, dan ingatkan **gateway perlu di-restart** lewat dashboard agar jadwal aktif.
+6. STOP. Jangan menawarkan tugas lain.
+
+Hanya gunakan tools: schedules-create.sh, schedules-list.sh.`
+  },
+  {
+    name: 'toggle-schedule',
+    description: 'Aktifkan / non-aktifkan satu jadwal berdasarkan ID atau nama',
+    argHint: '<id-atau-nama-jadwal> on|off',
+    template:
+`Anda menerima slash command /toggle-schedule dari user.
+
+User input: {{args}}
+
+LANGKAH:
+1. Parse id atau nama jadwal dari input. Parse state target ("on" / "off" / "aktifkan" / "matikan").
+2. Kalau yang dikasih nama (bukan ID), jalankan \`schedules-list.sh --all\` dulu untuk cari ID-nya.
+3. Kalau ada ambiguitas (lebih dari 1 jadwal cocok), tampilkan kandidat dan minta user pilih, lalu STOP tunggu jawaban.
+4. Kalau jelas, konfirmasi 1 kalimat: "Akan <aktifkan/matikan> jadwal '<nama>' (ID <id>). OK?"
+5. Setelah user konfirmasi, jalankan \`schedules-toggle.sh <id> <on|off>\`.
+6. Lapor hasil + ingatkan gateway restart kalau diperlukan.
+7. STOP. Jangan menawarkan tugas lain.`
+  },
+  {
+    name: 'delete-schedule',
+    description: 'Hapus jadwal (selalu konfirmasi dulu)',
+    argHint: '<id-atau-nama-jadwal>',
+    template:
+`Anda menerima slash command /delete-schedule dari user.
+
+User input: {{args}}
+
+LANGKAH:
+1. Parse id atau nama jadwal. Kalau nama, cari ID via \`schedules-list.sh --all\`.
+2. Tampilkan detail jadwal yang akan dihapus (name, schedule, message) lalu minta konfirmasi EKSPLISIT: "Konfirmasi hapus jadwal X? (ya/tidak)" — lalu STOP, tunggu jawaban.
+3. Kalau user balas "ya" / "iya" / "lanjut": jalankan \`schedules-delete.sh <id> --yes\`.
+4. Kalau user balas "tidak" / "batal": batalkan, beri 1 kalimat acknowledgment, STOP.
+5. Setelah delete sukses, lapor + ingatkan gateway restart.
+6. STOP.`
+  }
+], null, 2) + '\n';
+
 const BUNDLE = {
   files: [
     { rel: 'SKILL.md', content: SKILL_MD, mode: 0o644 },
+    { rel: 'commands.json', content: COMMANDS_JSON, mode: 0o644 },
     { rel: 'scripts/schedules-list.sh',    content: SCHEDULES_LIST_SH,    mode: 0o755 },
     { rel: 'scripts/schedules-create.sh',  content: SCHEDULES_CREATE_SH,  mode: 0o755 },
     { rel: 'scripts/schedules-update.sh',  content: SCHEDULES_UPDATE_SH,  mode: 0o755 },
