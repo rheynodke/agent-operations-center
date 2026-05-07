@@ -45,8 +45,13 @@ function AdminOnly({ children }: { children: React.ReactNode }) {
 
 function MasterGate({ children }: { children: React.ReactNode }) {
   const { hasMaster } = useMasterStatus()
+  const user = useAuthStore((s) => s.user)
   const location = useLocation()
   const allowed = location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/logout')
+  // Admins are exempt — they manage the platform, they don't go through the
+  // user master-onboarding wizard. Admin's master agent (when needed) is wired
+  // by `runMasterBackfill()` on startup or set up manually via openclaw.json.
+  if (user?.role === 'admin') return <>{children}</>
   if (!hasMaster && !allowed) {
     return <Navigate to="/onboarding" replace />
   }
@@ -54,10 +59,11 @@ function MasterGate({ children }: { children: React.ReactNode }) {
 }
 
 // /onboarding is a first-time-user-only route. Anyone who already has a Master
-// Agent is bounced back to the dashboard so they can't re-run the wizard.
+// Agent — and admins — are bounced back to the dashboard.
 function OnboardingGate({ children }: { children: React.ReactNode }) {
   const { hasMaster } = useMasterStatus()
-  if (hasMaster) {
+  const user = useAuthStore((s) => s.user)
+  if (user?.role === 'admin' || hasMaster) {
     return <Navigate to="/" replace />
   }
   return <>{children}</>

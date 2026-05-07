@@ -104,8 +104,10 @@ export function GoogleSignInButton({
       }
 
       setAuth(result.token, result.user)
-      // Onboarding gate handles routing: if no master → /onboarding; else → /
-      nav(result.user.hasMaster ? '/' : '/onboarding', { replace: true })
+      // Admins skip the onboarding wizard entirely; only regular users without
+      // a master are routed there.
+      const needsOnboarding = result.user.role !== 'admin' && !result.user.hasMaster
+      nav(needsOnboarding ? '/onboarding' : '/', { replace: true })
     } catch (e) {
       onError?.(e instanceof Error ? e.message : 'Google sign-in error')
       setLoading(false)
