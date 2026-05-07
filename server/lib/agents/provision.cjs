@@ -500,10 +500,17 @@ function provisionAgentLocked(opts, userId, home, configPath) {
     skills: isMaster
       ? Array.from(new Set([...MASTER_EXTRA_SKILLS, ...defaultSkills]))
       : [...defaultSkills],
-    // Enable heartbeat for this agent (OpenClaw requires explicit config per agent)
-    // Empty {} = use all defaults (every: 30m). Fields are optional overrides:
-    // every, activeHours, model, session, target, to, accountId, prompt, ackMaxChars, lightContext
-    heartbeat: {},
+    // Enable heartbeat for this agent (OpenClaw requires explicit config per agent).
+    // Budget-friendly defaults: isolatedSession + lightContext drop per-heartbeat
+    // input from ~99K to <5K tokens by skipping transcript replay and bootstrap
+    // files. Model pinned to local LM Studio so heartbeat does not consume cloud
+    // tokens at all. Override any field per-agent as needed.
+    heartbeat: {
+      isolatedSession: true,
+      lightContext: true,
+      suppressToolErrorWarnings: true,
+      model: 'lmstudio/qwen/qwen3.6-35b-a3b',
+    },
     // NOTE: adlcRole and isMaster are tracked in SQLite (agent_profiles.role,
     // agent_profiles.is_master + users.master_agent_id), NOT in openclaw.json
     // — OpenClaw rejects unknown keys via schema validation.
@@ -521,9 +528,15 @@ function provisionAgentLocked(opts, userId, home, configPath) {
   // Backfill heartbeat config for all existing agents that don't have it.
   // OpenClaw's heartbeat-runner only enables heartbeat for agents with explicit
   // `heartbeat` config once ANY agent has it — so all agents need the field.
+  // Use the same budget-friendly defaults as new agents (see agentEntry above).
   for (const existing of config.agents.list) {
     if (!existing.heartbeat) {
-      existing.heartbeat = {};
+      existing.heartbeat = {
+        isolatedSession: true,
+        lightContext: true,
+        suppressToolErrorWarnings: true,
+        model: 'lmstudio/qwen/qwen3.6-35b-a3b',
+      };
     }
   }
 
