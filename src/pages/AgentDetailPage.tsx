@@ -33,6 +33,7 @@ import { SkillsTerminal } from "@/components/skills/SkillsTerminal"
 import { useCanUseClaudeTerminal } from "@/lib/permissions"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
+import { confirmDialog, alertDialog } from "@/lib/dialogs"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
 import { useCanEditAgent } from "@/lib/permissions"
 import { Lock as LockIcon } from "lucide-react"
@@ -3035,7 +3036,7 @@ function AgentScriptEditor({
       onSaved({ ...result, scope: 'agent', enabled: tool.enabled, content, displayName, description } as CustomTool)
       setDirty(false)
       setMetaDirty(false)
-    } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Save failed') }
+    } catch (e: unknown) { alertDialog({ title: "Save failed", description: e instanceof Error ? e.message : String(e), tone: "error" }) }
     finally { setSaving(false) }
   }
 
@@ -3043,7 +3044,7 @@ function AgentScriptEditor({
     try {
       await api.deleteAgentScript(agentId, tool.name)
       onDeleted(tool.name)
-    } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Delete failed') }
+    } catch (e: unknown) { alertDialog({ title: "Delete failed", description: e instanceof Error ? e.message : String(e), tone: "error" }) }
   }
 
   return (
@@ -3522,7 +3523,12 @@ function ChannelAllowFromSection({
   }
 
   async function handleRemove(entry: string) {
-    if (!confirm(`Remove ${entry} from ${channelLabel} allow list?`)) return
+    if (!await confirmDialog({
+      title: `Remove ${entry}?`,
+      description: `Removes this entry from the ${channelLabel} allow list.`,
+      confirmLabel: "Remove",
+      destructive: true,
+    })) return
     setBusy(`del:${entry}`)
     try {
       const res = await api.removeAllowFromEntry(agentId, channel, accountId, entry)

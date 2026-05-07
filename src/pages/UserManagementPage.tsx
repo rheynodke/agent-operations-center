@@ -5,6 +5,7 @@ import { useAuthStore } from "@/stores"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { PasswordResetDialog } from "@/components/ui/PasswordResetDialog"
 import type { Invitation, ManagedUser } from "@/types"
+import { confirmDialog, alertDialog } from "@/lib/dialogs"
 
 type Confirm =
   | { kind: "revoke-invite"; id: number }
@@ -254,9 +255,9 @@ export function UserManagementPage() {
                         <>
                           <button
                             onClick={async () => {
-                              if (!confirm(`Restart workspace for ${u.username}?`)) return
+                              if (!await confirmDialog({ title: `Restart workspace for ${u.username}?`, confirmLabel: "Restart" })) return
                               try { await api.adminRestartUserGateway(u.id) }
-                              catch (e) { alert(`Restart failed: ${(e as Error).message}`) }
+                              catch (e) { alertDialog({ title: "Restart failed", description: (e as Error).message, tone: "error" }) }
                             }}
                             className="text-xs px-2 py-1 border border-border rounded hover:bg-card"
                             title="Restart this user's gateway workspace"
@@ -265,9 +266,9 @@ export function UserManagementPage() {
                           </button>
                           <button
                             onClick={async () => {
-                              if (!confirm(`Stop workspace for ${u.username}?`)) return
+                              if (!await confirmDialog({ title: `Stop workspace for ${u.username}?`, confirmLabel: "Stop", destructive: true })) return
                               try { await api.adminStopUserGateway(u.id) }
-                              catch (e) { alert(`Stop failed: ${(e as Error).message}`) }
+                              catch (e) { alertDialog({ title: "Stop failed", description: (e as Error).message, tone: "error" }) }
                             }}
                             className="text-xs px-2 py-1 border border-border rounded hover:bg-card text-red-500"
                           >

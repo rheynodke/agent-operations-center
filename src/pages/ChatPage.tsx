@@ -8,6 +8,7 @@ import { chatApi, type ChatSession } from "@/lib/chat-api"
 import { ChatMessage } from "@/components/chat/ChatMessage"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { NewRoomDialog, RoomMain, RoomSidebar } from "@/components/mission-rooms/RoomComponents"
+import { alertDialog } from "@/lib/dialogs"
 import { cn } from "@/lib/utils"
 import { useCanWrite } from "@/lib/permissions"
 import {
@@ -962,7 +963,7 @@ export function ChatPage() {
       setActiveSessionKey(key)
       setNewChatOpen(false)
     } catch (err: unknown) {
-      alert(`Failed to create session: ${err instanceof Error ? err.message : "Unknown error"}`)
+      alertDialog({ title: "Failed to create session", description: err instanceof Error ? err.message : "Unknown error", tone: "error" })
     } finally {
       setCreatingSession(false)
     }

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { confirmDialog } from "@/lib/dialogs"
 import { Loader2, ChevronDown, Wrench, User, Zap, Hash, DollarSign, Coins, OctagonX } from "lucide-react"
 import { useSessionStore, useSessionLiveStore, useAgentStore, useAuthStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -153,7 +154,12 @@ export function SessionDetailModal({ session, onClose }: Props) {
 
   const handleAbort = useCallback(async () => {
     if (!session.id) return
-    if (!confirm("Stop this session?\n\nThe gateway will abort the current generation. The session stays alive — the user can continue the conversation afterwards.")) return
+    if (!await confirmDialog({
+      title: "Stop this session?",
+      description: "The gateway will abort the current generation. The session stays alive — the user can continue the conversation afterwards.",
+      confirmLabel: "Stop",
+      destructive: true,
+    })) return
     setAborting(true)
     setAbortMsg(null)
     try {

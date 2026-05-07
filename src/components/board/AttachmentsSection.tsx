@@ -3,6 +3,7 @@ import { api } from "@/lib/api"
 import type { Task, TaskAttachment } from "@/types"
 import { Paperclip, Upload, X, FileText, Image as ImageIcon, FileArchive, ExternalLink, Loader2, ClipboardPaste } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { confirmDialog } from "@/lib/dialogs"
 
 const IMAGE_MIME = /^image\//i
 const ARCHIVE_MIME = /(zip|tar|gzip|rar|7z)/i
@@ -92,7 +93,7 @@ export function AttachmentsSection({ task, onUpdated, readOnly }: Props) {
   }
 
   async function handleDelete(att: TaskAttachment) {
-    if (!confirm(`Remove attachment "${att.filename}"?`)) return
+    if (!await confirmDialog({ title: `Remove attachment "${att.filename}"?`, confirmLabel: "Remove", destructive: true })) return
     setBusy(true)
     setError(null)
     try {

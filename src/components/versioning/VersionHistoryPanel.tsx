@@ -6,6 +6,7 @@ import {
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
+import { alertDialog } from "@/lib/dialogs"
 import type { FileVersion, FileVersionDetail } from "@/types"
 
 // ─── LCS-based unified diff ───────────────────────────────────────────────────
@@ -320,7 +321,7 @@ export function VersionHistoryPanel({ scopeKey, currentContent, onClose, onResto
       if (v?.content && onRestored) onRestored(v.content)
       setTimeout(() => setRestoredId(null), 3000)
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : String(e))
+      alertDialog({ title: "Restore failed", description: e instanceof Error ? e.message : String(e), tone: "error" })
     } finally {
       setRestoring(null)
     }
@@ -333,7 +334,7 @@ export function VersionHistoryPanel({ scopeKey, currentContent, onClose, onResto
       setVersions(prev => prev.filter(x => x.id !== id))
       if (selectedId === id) setSelectedId(null)
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : String(e))
+      alertDialog({ title: "Delete failed", description: e instanceof Error ? e.message : String(e), tone: "error" })
     }
   }
 

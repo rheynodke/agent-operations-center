@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { alertDialog } from "@/lib/dialogs"
 import { useAgentStore, useAuthStore, useProcessingStore, useRoomStore, useTaskStore, useLiveFeedStore } from "@/stores"
 import type { Agent, Artifact, MissionMessage, MissionRoom, Task } from "@/types"
 import { MarkdownRenderer } from "../chat/MarkdownRenderer"
@@ -165,7 +166,7 @@ function MessageBubble({ message, repliedMessage, agentsById, onReply }: { messa
       if (!taskId || submitting) return
       setSubmitting("approve")
       try { await api.approveTask(taskId) }
-      catch (e) { console.error(e); alert((e as Error).message || "Failed to approve") }
+      catch (e) { console.error(e); alertDialog({ title: "Failed to approve", description: (e as Error).message || "", tone: "error" }) }
       finally { setSubmitting(null) }
     }
     const onSubmitRequestChange = async () => {
@@ -175,7 +176,7 @@ function MessageBubble({ message, repliedMessage, agentsById, onReply }: { messa
         await api.requestTaskChange(taskId, requestReason.trim())
         setShowRequestPrompt(false)
         setRequestReason("")
-      } catch (e) { console.error(e); alert((e as Error).message || "Failed to request change") }
+      } catch (e) { console.error(e); alertDialog({ title: "Failed to request change", description: (e as Error).message || "", tone: "error" }) }
       finally { setSubmitting(null) }
     }
 

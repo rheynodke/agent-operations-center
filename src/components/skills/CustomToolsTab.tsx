@@ -8,6 +8,7 @@ import React, { useState, useEffect, useRef } from "react"
 import { api } from "@/lib/api"
 import type { WorkspaceScript } from "@/types"
 import { cn } from "@/lib/utils"
+import { alertDialog } from "@/lib/dialogs"
 import { SyntaxEditor, EXT_LANGUAGE } from "@/components/ui/SyntaxEditor"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
 import { TemplatePicker } from "@/components/ai/TemplatePicker"
@@ -215,7 +216,7 @@ function ScriptEditor({
       onSaved({ ...script, displayName, description })
       setMetaDirty(false)
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : "Failed to save metadata")
+      alertDialog({ title: "Failed to save metadata", description: e instanceof Error ? e.message : String(e), tone: "error" })
     } finally {
       setSavingMeta(false)
     }
@@ -232,7 +233,7 @@ function ScriptEditor({
       setDirty(false)
       setMetaDirty(false)
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : "Failed to save")
+      alertDialog({ title: "Failed to save", description: e instanceof Error ? e.message : String(e), tone: "error" })
     } finally {
       setSaving(false)
     }
@@ -244,7 +245,7 @@ function ScriptEditor({
       await api.deleteScript(script.name)
       onDeleted(script.name)
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : "Failed to delete")
+      alertDialog({ title: "Failed to delete", description: e instanceof Error ? e.message : String(e), tone: "error" })
       setDeleting(false)
     }
   }
@@ -258,7 +259,7 @@ function ScriptEditor({
       onRenamed(script.name, result)
       setRenaming(false)
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : "Failed to rename")
+      alertDialog({ title: "Failed to rename", description: e instanceof Error ? e.message : String(e), tone: "error" })
     }
   }
 

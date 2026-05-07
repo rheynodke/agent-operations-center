@@ -18,6 +18,7 @@ import { SkillsTerminal } from "@/components/skills/SkillsTerminal"
 import { useCanUseClaudeTerminal } from "@/lib/permissions"
 import { VersionHistoryPanel } from "@/components/versioning/VersionHistoryPanel"
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
+import { alertDialog } from "@/lib/dialogs"
 import { AiAssistPanel } from "@/components/ai/AiAssistPanel"
 import { TemplatePicker } from "@/components/ai/TemplatePicker"
 import { SkillTemplatePicker, SKILL_TEMPLATES, type SkillTemplate } from "@/components/skills/SkillTemplatePicker"
@@ -809,7 +810,7 @@ function SkillDetail({
       onClose()
       onRefresh()
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : String(e))
+      alertDialog({ title: "Delete failed", description: e instanceof Error ? e.message : String(e), tone: "error" })
       setDeleting(false)
     }
   }

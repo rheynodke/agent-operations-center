@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { confirmDialog } from "@/lib/dialogs"
 import { useAgentStore } from "@/stores"
 import { useCanEditAgent } from "@/lib/permissions"
 
@@ -109,7 +110,12 @@ export function DiscordGuildsSection({ agentId }: { agentId: string }) {
   }
 
   async function handleRemove(guildId: string) {
-    if (!confirm(`Remove guild ${guildId} from allowlist? The agent will stop responding in this server's channels.`)) return
+    if (!await confirmDialog({
+      title: `Remove guild ${guildId}?`,
+      description: "The agent will stop responding in this server's channels.",
+      confirmLabel: "Remove",
+      destructive: true,
+    })) return
     setBusy(`del:${guildId}`)
     try {
       const res = await api.removeAgentDiscordGuild(agentId, guildId)

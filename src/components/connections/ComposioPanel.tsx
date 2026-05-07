@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { confirmDialog } from "@/lib/dialogs"
 import type { Connection, ComposioConnectedAccount } from "@/types"
 
 // Same curated list as ConnectionsPage. Keeping it local so this component can
@@ -78,7 +79,12 @@ export function ComposioPanel({ open, onClose, conn }: {
 
   async function handleDisconnectAccount(accountId: string, toolkit?: string) {
     if (!conn) return
-    if (!window.confirm(`Disconnect ${toolkit || accountId}? Composio revokes the OAuth token.`)) return
+    if (!await confirmDialog({
+      title: `Disconnect ${toolkit || accountId}?`,
+      description: "Composio will revoke the OAuth token.",
+      confirmLabel: "Disconnect",
+      destructive: true,
+    })) return
     try {
       await api.composioDisconnectAccount(conn.id, accountId)
       await refresh()
@@ -89,7 +95,11 @@ export function ComposioPanel({ open, onClose, conn }: {
 
   async function handleRefreshSession() {
     if (!conn) return
-    if (!window.confirm('Recreate the Composio tool router session? This invalidates the previous session URL but keeps connected accounts.')) return
+    if (!await confirmDialog({
+      title: "Recreate Composio session?",
+      description: "This invalidates the previous session URL but keeps connected accounts.",
+      confirmLabel: "Recreate",
+    })) return
     setLoading(true); setError('')
     try {
       await api.composioRefreshSession(conn.id)

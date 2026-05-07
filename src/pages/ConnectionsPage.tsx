@@ -11,7 +11,54 @@ import { useAuthStore } from "@/stores"
 import { Connection, ConnectionType, ConnectionFeatureFlags, GoogleWorkspaceMetadata, McpPreset, McpTool, McpTransport, McpOAuthMetadata } from "@/types"
 import { ComposioPanel } from "@/components/connections/ComposioPanel"
 import { cn } from "@/lib/utils"
-import { useConnectionsStore } from "@/stores"
+import { useConnectionsStore, useThemeStore } from "@/stores"
+import { confirmDialog, alertDialog } from "@/lib/dialogs"
+
+// Asset icons live in /public/connections_icon. GitHub has separate light/dark
+// glyphs; everything else is theme-neutral. Returns null → fallback to lucide.
+const CONN_ICON_BASE = "/connections_icon"
+function getTypeImage(type: string, theme: 'light' | 'dark'): string | null {
+  switch (type) {
+    case "bigquery": return `${CONN_ICON_BASE}/bigquery.svg`
+    case "postgres": return `${CONN_ICON_BASE}/postgres.jpg`
+    case "ssh": return `${CONN_ICON_BASE}/vps.png`
+    case "website": return `${CONN_ICON_BASE}/website.png`
+    case "github": return theme === 'dark' ? `${CONN_ICON_BASE}/github-white.webp` : `${CONN_ICON_BASE}/github-black.png`
+    case "odoocli": return `${CONN_ICON_BASE}/odoo.webp`
+    case "google_workspace": return `${CONN_ICON_BASE}/google.webp`
+    case "mcp": return `${CONN_ICON_BASE}/mcp.png`
+    default: return null
+  }
+}
+
+function ConnectionTypeIcon({ type, size = 40, rounded = "rounded-lg" }: { type: string; size?: number; rounded?: string }) {
+  const theme = useThemeStore(s => s.theme)
+  const src = getTypeImage(type, theme)
+  const Fallback = CONNECTION_TYPES.find(t => t.value === type)?.icon || Plug
+  // bg-card backdrop keeps light/transparent assets readable in dark mode and
+  // gives the dark-mode github glyph contrast against the card.
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-center shrink-0 overflow-hidden",
+        rounded
+      )}
+      style={{ width: size, height: size }}
+    >
+      {src ? (
+        <img
+          src={src}
+          alt={type}
+          className="object-contain"
+          style={{ width: size * 0.7, height: size * 0.7 }}
+          draggable={false}
+        />
+      ) : (
+        <Fallback className="h-1/2 w-1/2 text-muted-foreground" />
+      )}
+    </div>
+  )
+}
 
 const CONNECTION_TYPES: { value: ConnectionType; label: string; icon: React.ComponentType<{ className?: string }>; description: string }[] = [
   { value: "bigquery", label: "Google BigQuery", icon: Cloud, description: "Query data warehouse via bq CLI" },
@@ -161,10 +208,6 @@ const MCP_PRESETS: McpPresetDef[] = [
   },
 ]
 
-function getTypeIcon(type: string) {
-  return CONNECTION_TYPES.find(t => t.value === type)?.icon || Plug
-}
-
 function getTypeLabel(type: string) {
   return CONNECTION_TYPES.find(t => t.value === type)?.label || type
 }
@@ -184,7 +227,6 @@ function ConnectionCard({
   onGoogleOauth?: (authUrl: string) => Promise<{ connectionId: string } | null>
   canEdit: boolean
 }) {
-  const Icon = getTypeIcon(conn.type)
   const meta = conn.metadata || {}
 
   let detail = ""
@@ -236,20 +278,7 @@ function ConnectionCard({
       onClick={canEdit ? () => onEdit(conn) : undefined}
     >
       <div className="flex items-start gap-3">
-        <div className={cn(
-          "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
-          conn.type === "bigquery" ? "bg-blue-500/10 text-blue-400" :
-          conn.type === "postgres" ? "bg-indigo-500/10 text-indigo-400" :
-          conn.type === "website" ? "bg-orange-500/10 text-orange-400" :
-          conn.type === "github" ? "bg-purple-500/10 text-purple-400" :
-          conn.type === "odoocli" ? "bg-violet-500/10 text-violet-400" :
-          conn.type === "google_workspace" ? "bg-blue-500/10 text-blue-400" :
-          conn.type === "mcp" ? "bg-cyan-500/10 text-cyan-400" :
-          conn.type === "composio" ? "bg-fuchsia-500/10 text-fuchsia-400" :
-          "bg-emerald-500/10 text-emerald-400"
-        )}>
-          <Icon className="h-5 w-5" />
-        </div>
+        <ConnectionTypeIcon type={conn.type} size={40} />
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
@@ -311,15 +340,20 @@ function ConnectionCard({
                         const result = await onGoogleOauth(authUrl)
                         if (result) onTest(conn.id)
                       }
-                    } catch (err) { alert((err as Error).message) }
+                    } catch (err) { alertDialog({ title: "OAuth failed", description: (err as Error).message, tone: "error" }) }
                   }}>{state === 'pending' ? 'Connect' : 'Re-authenticate'}</Button>
                 )}
                 {state === 'connected' && (
                   <Button size="sm" variant="ghost" className="h-7 text-[11px] px-2" onClick={async (e) => {
                     e.stopPropagation()
-                    if (!window.confirm(`Disconnect ${conn.name}? The MCP server will revoke the token; the connection row is kept.`)) return
+                    if (!await confirmDialog({
+                      title: `Disconnect ${conn.name}?`,
+                      description: "The MCP server will revoke the token. The connection row is kept.",
+                      confirmLabel: "Disconnect",
+                      destructive: true,
+                    })) return
                     try { await api.disconnectMcpOauth(conn.id); onTest(conn.id) }
-                    catch (err) { alert((err as Error).message) }
+                    catch (err) { alertDialog({ title: "Disconnect failed", description: (err as Error).message, tone: "error" }) }
                   }}>Disconnect</Button>
                 )}
               </>
@@ -339,19 +373,24 @@ function ConnectionCard({
                         if (result) onTest(conn.id)
                       }
                     } catch (err) {
-                      alert((err as Error).message)
+                      alertDialog({ title: "Re-authenticate failed", description: (err as Error).message, tone: "error" })
                     }
                   }}>Re-authenticate</Button>
                 )}
                 {gmeta.authState === 'connected' && (
                   <Button size="sm" variant="ghost" className="h-7 text-[11px] px-2" onClick={async (e) => {
                     e.stopPropagation()
-                    if (!window.confirm(`Disconnect ${conn.name}? This revokes the token at Google; the connection row is kept.`)) return
+                    if (!await confirmDialog({
+                      title: `Disconnect ${conn.name}?`,
+                      description: "This revokes the token at Google. The connection row is kept.",
+                      confirmLabel: "Disconnect",
+                      destructive: true,
+                    })) return
                     try {
                       await api.disconnectGoogleConnection(conn.id)
                       onTest(conn.id)
                     } catch (err) {
-                      alert((err as Error).message)
+                      alertDialog({ title: "Disconnect failed", description: (err as Error).message, tone: "error" })
                     }
                   }}>Disconnect</Button>
                 )}
@@ -1083,7 +1122,15 @@ function ConnectionDialog({
     <Dialog open={open} onOpenChange={o => { if (!o) onClose() }}>
       <DialogContent className="sm:max-w-md flex flex-col max-h-[90vh]">
         <DialogHeader className="shrink-0">
-          <DialogTitle className="text-base">{editConn ? "Edit Connection" : "New Connection"}</DialogTitle>
+          <DialogTitle className="text-base flex items-center gap-2.5">
+            <ConnectionTypeIcon type={f.type} size={32} rounded="rounded-md" />
+            <div className="flex flex-col min-w-0">
+              <span className="leading-tight truncate">{editConn ? "Edit Connection" : "New Connection"}</span>
+              <span className="text-[11px] font-normal text-muted-foreground leading-tight truncate">
+                {getTypeLabel(f.type)}
+              </span>
+            </div>
+          </DialogTitle>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto min-h-0 space-y-3 py-1">
@@ -1093,32 +1140,49 @@ function ConnectionDialog({
             </div>
           )}
 
-          {/* Name + Type */}
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Name</Label>
-              <input value={f.name} onChange={e => set("name", e.target.value)}
-                placeholder="e.g. DKE BigQuery" className={inputClass} />
-            </div>
-            <div className="space-y-1">
+          {/* Type picker (new) or locked badge (edit) */}
+          {!editConn && (
+            <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">Type</Label>
-              {editConn ? (
-                <div className="h-8 flex items-center px-2.5 rounded-md border border-border/50 bg-input text-xs font-medium">
-                  {getTypeLabel(f.type)}
-                </div>
-              ) : (
-                <Select value={f.type} onValueChange={v => set("type", v)}>
-                  <SelectTrigger className="h-8 text-xs border-border/50"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {CONNECTION_TYPES
-                      .filter(t => t.value !== 'google_workspace' || features.googleWorkspace)
-                      .map(t => (
-                        <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              )}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {CONNECTION_TYPES
+                  .filter(t => t.value !== 'google_workspace' || features.googleWorkspace)
+                  .map(t => {
+                    const selected = f.type === t.value
+                    return (
+                      <button
+                        key={t.value}
+                        type="button"
+                        onClick={() => set("type", t.value)}
+                        title={t.description}
+                        className={cn(
+                          "group flex flex-col items-center gap-1.5 rounded-lg border p-2.5 text-center transition-all",
+                          selected
+                            ? "border-primary/70 bg-primary/5 ring-1 ring-primary/30"
+                            : "border-border/50 bg-card/40 hover:border-border hover:bg-card/70"
+                        )}
+                      >
+                        <ConnectionTypeIcon type={t.value} size={36} rounded="rounded-md" />
+                        <span className={cn(
+                          "text-[11px] font-medium leading-tight line-clamp-2",
+                          selected ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"
+                        )}>
+                          {t.label}
+                        </span>
+                      </button>
+                    )
+                  })}
+              </div>
+              <p className="text-[10px] text-muted-foreground/60 leading-snug pt-0.5">
+                {CONNECTION_TYPES.find(t => t.value === f.type)?.description}
+              </p>
             </div>
+          )}
+
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Name</Label>
+            <input value={f.name} onChange={e => set("name", e.target.value)}
+              placeholder="e.g. DKE BigQuery" className={inputClass} />
           </div>
 
           {/* Type-specific fields */}
@@ -1715,7 +1779,7 @@ export function ConnectionsPage() {
 
   const runGoogleOauth = useCallback(async (authUrl: string): Promise<{ connectionId: string } | null> => {
     const popup = window.open(authUrl, 'gws-oauth', 'width=600,height=700')
-    if (!popup) { alert('Popup blocked. Please allow popups for this site and retry.'); return null }
+    if (!popup) { alertDialog({ title: "Popup blocked", description: "Please allow popups for this site and retry.", tone: "warn" }); return null }
     return await new Promise((resolve) => {
       const onMsg = (e: MessageEvent) => {
         if (!e.data || typeof e.data !== 'object') return
@@ -1724,7 +1788,7 @@ export function ConnectionsPage() {
           resolve({ connectionId: e.data.connectionId })
         } else if (e.data.type === 'oauth-error') {
           window.removeEventListener('message', onMsg)
-          alert(`OAuth failed: ${e.data.error || 'unknown error'}`)
+          alertDialog({ title: "OAuth failed", description: e.data.error || 'unknown error', tone: "error" })
           resolve(null)
         }
       }

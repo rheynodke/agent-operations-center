@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { useCanWrite } from "@/lib/permissions"
+import { confirmDialog } from "@/lib/dialogs"
 import {
   Wifi, WifiOff, RefreshCw, Square, Loader2, Play,
   Server, Radio, Hash, AlertTriangle, CheckCircle2,
@@ -97,7 +98,12 @@ export function GatewayControlCard() {
 
   async function handleStop() {
     if (action !== "idle") return
-    if (!confirm("This will stop your workspace. Active sessions will disconnect. Continue?")) return
+    if (!await confirmDialog({
+      title: "Stop your workspace?",
+      description: "This will stop your workspace. Active sessions will disconnect.",
+      confirmLabel: "Stop",
+      destructive: true,
+    })) return
     setAction("stopping")
     try {
       const res = await api.stopGatewaySelf()

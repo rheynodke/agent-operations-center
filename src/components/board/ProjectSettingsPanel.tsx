@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
 import { useProjectStore } from "@/stores/useProjectStore"
 import { ProjectIntegration } from "@/types"
+import { confirmDialog } from "@/lib/dialogs"
 
 const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16']
 
@@ -110,7 +111,12 @@ export function ProjectSettingsPanel({ open, onClose, onAddIntegration, onEditIn
   }
 
   async function handleDelete() {
-    if (!confirm(`Delete project "${project?.name}"? Tasks will not be deleted.`)) return
+    if (!await confirmDialog({
+      title: `Delete project "${project?.name}"?`,
+      description: "Tasks will not be deleted.",
+      confirmLabel: "Delete",
+      destructive: true,
+    })) return
     await deleteProject(activeProjectId)
     onClose()
   }

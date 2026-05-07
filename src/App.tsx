@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom"
+import { DialogHost } from "@/lib/dialogs"
 import { useEffect, useState } from "react"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { Sidebar } from "@/components/layout/Sidebar"
@@ -202,6 +203,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <MainApp />
+      <DialogHost />
     </BrowserRouter>
   )
 }

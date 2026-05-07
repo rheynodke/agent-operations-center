@@ -16,20 +16,26 @@ import React, { useState, useEffect, useCallback, useMemo } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   Loader2, Plus, Plug, Hash, Check, X, ChevronDown, ChevronRight,
-  Database, Terminal, Globe, Code2, Package, ArrowRight, Share2,
+  ArrowRight, Share2,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import type { Connection } from "@/types"
+import { ConnectionTypeIcon, CONNECTION_TYPE_LABELS } from "@/lib/connectionIcons"
 
-const CONN_TYPE_META: Record<string, { label: string; color: string; bg: string; icon: React.ComponentType<{ className?: string }> }> = {
-  bigquery: { label: 'BigQuery',   color: 'text-blue-400',     bg: 'bg-blue-500/10',     icon: Database },
-  postgres: { label: 'PostgreSQL', color: 'text-indigo-400',   bg: 'bg-indigo-500/10',   icon: Database },
-  ssh:      { label: 'SSH/VPS',    color: 'text-emerald-400',  bg: 'bg-emerald-500/10',  icon: Terminal },
-  website:  { label: 'Website',    color: 'text-orange-400',   bg: 'bg-orange-500/10',   icon: Globe },
-  github:   { label: 'GitHub',     color: 'text-purple-400',   bg: 'bg-purple-500/10',   icon: Code2 },
-  odoocli:  { label: 'Odoo',       color: 'text-violet-400',   bg: 'bg-violet-500/10',   icon: Package },
+// Color hint for the type-filter pill text. Icon glyph itself comes from the
+// shared <ConnectionTypeIcon> so it stays in sync with ConnectionsPage.
+const CONN_TYPE_META: Record<string, { label: string; color: string }> = {
+  bigquery:         { label: 'BigQuery',         color: 'text-blue-400' },
+  postgres:         { label: 'PostgreSQL',       color: 'text-indigo-400' },
+  ssh:              { label: 'SSH/VPS',          color: 'text-emerald-400' },
+  website:          { label: 'Website',          color: 'text-orange-400' },
+  github:           { label: 'GitHub',           color: 'text-purple-400' },
+  odoocli:          { label: 'Odoo',             color: 'text-violet-400' },
+  google_workspace: { label: 'Google Workspace', color: 'text-blue-400' },
+  mcp:              { label: 'MCP',              color: 'text-cyan-400' },
+  composio:         { label: 'Composio',         color: 'text-fuchsia-400' },
 }
 
 function connectionDetail(conn: Connection): string {
@@ -290,8 +296,7 @@ export function AgentConnectionsTab({ agentId }: { agentId: string }) {
             </button>
           </div>
         ) : filteredGroups.map(([type, list]) => {
-          const meta = CONN_TYPE_META[type] || { label: type, color: 'text-muted-foreground', bg: 'bg-muted/20', icon: Plug }
-          const Icon = meta.icon
+          const meta = CONN_TYPE_META[type] || { label: CONNECTION_TYPE_LABELS[type] || type, color: 'text-muted-foreground' }
           const ids = list.map(c => c.id)
           const assignedHere = ids.filter(id => assignedIds.has(id)).length
           const allAssigned = assignedHere === ids.length
@@ -309,9 +314,7 @@ export function AgentConnectionsTab({ agentId }: { agentId: string }) {
                     "w-3.5 h-3.5 text-muted-foreground/60 transition-transform shrink-0",
                     !collapsed && "rotate-90",
                   )} />
-                  <div className={cn("w-5 h-5 rounded flex items-center justify-center shrink-0", meta.bg)}>
-                    <Icon className={cn("w-3 h-3", meta.color)} />
-                  </div>
+                  <ConnectionTypeIcon type={type} size={20} rounded="rounded" />
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/80 shrink-0">{meta.label}</span>
                   <span className={cn(
                     "text-[10px] shrink-0",

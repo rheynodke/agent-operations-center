@@ -167,12 +167,30 @@ function Step1Identity({
         <FieldLabel>Mascot Character</FieldLabel>
         <AvatarPicker
           value={form.avatarPresetId || null}
-          onChange={preset => setForm({
-            ...form,
-            avatarPresetId: preset.id,
-            color: preset.color,
-            emoji: "🤖",
-          })}
+          onChange={preset => {
+            // Replace name/theme/persona/description IFF empty OR still matches
+            // the previously-applied preset's value (i.e., user hasn't
+            // customized). Mirrors OnboardingPage so both flows feel the same.
+            const prev = form.avatarPresetId ? AVATAR_PRESETS.find(p => p.id === form.avatarPresetId) : null
+            const isPristine = (current: string | undefined, prevValue: string | undefined) => {
+              const trimmed = (current || "").trim()
+              return !trimmed || (prevValue !== undefined && trimmed === prevValue.trim())
+            }
+            const nextName = isPristine(form.name, prev?.presetName) ? preset.presetName : (form.name || "")
+            // Keep agent id in lockstep with name unless user has manually edited it.
+            const nextId = idManuallySet ? (form.id || "") : slugify(nextName)
+            setForm({
+              ...form,
+              avatarPresetId: preset.id,
+              color: preset.color,
+              emoji: "🤖",
+              name: nextName,
+              id: nextId,
+              theme: isPristine(form.theme, prev?.vibe) ? preset.vibe : form.theme,
+              soulContent: isPristine(form.soulContent, prev?.presetPersona) ? preset.presetPersona : form.soulContent,
+              description: isPristine(form.description, prev?.presetDescription) ? preset.presetDescription : form.description,
+            })
+          }}
         />
         {form.avatarPresetId && (() => {
           const preset = AVATAR_PRESETS.find(p => p.id === form.avatarPresetId)

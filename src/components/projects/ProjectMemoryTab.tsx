@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { confirmDialog } from "@/lib/dialogs"
 import type {
   ProjectMemoryItem, ProjectMemoryKind, ProjectMemoryMeta,
   ProjectMemoryStatus, ProjectRiskCategory, ProjectRiskSeverity,
@@ -330,7 +331,7 @@ function MemoryRow({
   }
 
   async function handleDelete() {
-    if (!confirm(`Delete this ${cfg.label.toLowerCase()}?`)) return
+    if (!await confirmDialog({ title: `Delete this ${cfg.label.toLowerCase()}?`, confirmLabel: "Delete", destructive: true })) return
     setBusy(true)
     try { await api.deleteProjectMemory(item.id); onDelete(item.id) }
     finally { setBusy(false) }

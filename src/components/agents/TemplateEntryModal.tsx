@@ -15,15 +15,15 @@ export function TemplateEntryModal({ onSelectTemplate, onSelectBlank, onClose }:
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto"
       style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(12px)" }}
     >
       <div className={cn(
-        "bg-card border border-border rounded-2xl w-full shadow-2xl transition-all duration-300",
+        "bg-card border border-border rounded-2xl w-full shadow-2xl transition-all duration-300 flex flex-col max-h-[calc(100vh-2rem)] my-auto",
         showGrid ? "max-w-2xl" : "max-w-lg"
       )}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 shrink-0">
           <div>
             <h2 className="text-base font-bold text-foreground">Buat Agent Baru</h2>
             <p className="text-[11px] text-muted-foreground/70">Pilih cara membuat agent baru.</p>
@@ -36,6 +36,8 @@ export function TemplateEntryModal({ onSelectTemplate, onSelectBlank, onClose }:
           </button>
         </div>
 
+        {/* Scrollable body */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
         {/* Two options */}
         <div className="grid grid-cols-2 gap-4 p-6">
           {/* ADLC Template */}
@@ -83,6 +85,7 @@ export function TemplateEntryModal({ onSelectTemplate, onSelectBlank, onClose }:
             />
           </div>
         )}
+        </div>
       </div>
     </div>
   )

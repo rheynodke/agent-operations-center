@@ -5,6 +5,7 @@ import type { Agent, Task, TaskComment } from "@/types"
 import { MessageSquare, Bot, User, Pencil, Trash2, Loader2, X, Check } from "lucide-react"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { cn } from "@/lib/utils"
+import { confirmDialog } from "@/lib/dialogs"
 
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
@@ -85,7 +86,7 @@ export function CommentsThread({ task, agents }: Props) {
   }
 
   async function handleDelete(c: TaskComment) {
-    if (!confirm(`Delete this comment?`)) return
+    if (!await confirmDialog({ title: "Delete this comment?", confirmLabel: "Delete", destructive: true })) return
     try {
       await api.deleteTaskComment(task.id, c.id)
     } catch (e) {

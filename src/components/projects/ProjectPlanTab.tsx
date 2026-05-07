@@ -22,6 +22,7 @@ import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import type { Epic, EpicStatus, Task, TaskStage } from "@/types"
 import { STAGE_LABEL, STAGE_TONE, ALL_STAGES } from "@/lib/projectLabels"
+import { confirmDialog } from "@/lib/dialogs"
 
 const EPIC_STATUS_CONFIG: Record<EpicStatus, { label: string; tone: string; dot: string }> = {
   open:        { label: "Planned",     tone: "text-zinc-300 bg-zinc-500/10 border-zinc-500/30",   dot: "bg-zinc-400" },
@@ -266,7 +267,12 @@ function EpicCard({
   }
 
   async function handleDelete() {
-    if (!confirm(`Delete epic "${epic.title}"?\n\nTasks under this epic will be detached but not deleted.`)) return
+    if (!await confirmDialog({
+      title: `Delete epic "${epic.title}"?`,
+      description: "Tasks under this epic will be detached but not deleted.",
+      confirmLabel: "Delete",
+      destructive: true,
+    })) return
     setBusy(true)
     try { await api.deleteEpic(epic.id); onDeleted(epic.id) }
     finally { setBusy(false) }

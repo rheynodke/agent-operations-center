@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils"
 import { useAgentStore } from "@/stores"
 import { useCanEditAgent } from "@/lib/permissions"
 import type { PairingRequest, PairingRequestsByChannel } from "@/types"
+import { confirmDialog } from "@/lib/dialogs"
 
 export function PairingRequestsPanel({ agentId }: { agentId: string }) {
   const [pairing, setPairing] = useState<PairingRequestsByChannel | null>(null)
@@ -80,7 +81,12 @@ export function PairingRequestsPanel({ agentId }: { agentId: string }) {
   }
 
   async function handleReject(channel: string, code: string) {
-    if (!confirm(`Reject ${channel} pairing request ${code}? This deletes the pending request.`)) return
+    if (!await confirmDialog({
+      title: `Reject ${channel} pairing request?`,
+      description: `Code ${code} will be deleted from pending requests.`,
+      confirmLabel: "Reject",
+      destructive: true,
+    })) return
     setRejecting(code)
     try {
       const result = await api.rejectPairing(channel, code, agentId)

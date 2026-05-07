@@ -13,6 +13,7 @@ import {
   Search, AlertTriangle, Database, ListChecks, RefreshCw, Loader2, ShieldCheck, ShieldAlert, OctagonX, Briefcase, Map, Layers,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { confirmDialog } from "@/lib/dialogs"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { PriorityIndicator } from "./PriorityIndicator"
 import { STAGE_LABEL, STAGE_TONE, ROLE_FULL_LABEL } from "@/lib/projectLabels"
@@ -407,7 +408,12 @@ export function TaskPanel({ task, agents, open, isActive = true, onClose, onUpda
 
   async function handleInterrupt() {
     if (!task) return
-    if (!confirm("Stop this agent?\n\nThe gateway will abort the current generation. The session stays alive — you can re-dispatch later (Continue / Request Changes / Mark Blocked).")) return
+    if (!await confirmDialog({
+      title: "Stop this agent?",
+      description: "The gateway will abort the current generation. The session stays alive — you can re-dispatch later (Continue / Request Changes / Mark Blocked).",
+      confirmLabel: "Stop",
+      destructive: true,
+    })) return
     setInterrupting(true)
     setDispatchMsg("")
     try {
