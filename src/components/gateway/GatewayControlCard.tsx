@@ -148,7 +148,7 @@ export function GatewayControlCard() {
               }
             </div>
             <div>
-              <p className="text-sm font-display font-bold text-foreground">OpenClaw Gateway</p>
+              <p className="text-sm font-display font-bold text-foreground">Agent Gateway</p>
               <div className="flex items-center gap-1.5 mt-0.5">
                 {/* Live pulse */}
                 {isRunning && (

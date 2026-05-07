@@ -16,8 +16,12 @@ import {
   Loader2,
   Globe2,
   LayoutDashboard,
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { AreaChart, Area, ResponsiveContainer } from "recharts"
 import { SessionDetailModal } from "@/components/sessions/SessionDetailModal"
 import { GatewayControlCard } from "@/components/gateway/GatewayControlCard"
 import { AgentWorldView } from "@/components/world/AgentWorldView"
@@ -47,6 +51,113 @@ function relativeTime(timestamp: string | number | null | undefined): string {
     " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
+const generateSparkline = (points = 10, min = 10, max = 50) => {
+  return Array.from({ length: points }).map((_, i) => ({
+    name: `P${i}`,
+    value: Math.floor(Math.random() * (max - min + 1)) + min
+  }));
+};
+
+const gatewayData = generateSparkline(10, 80, 100);
+const sessionData = generateSparkline(10, 20, 80);
+const agentData = generateSparkline(10, 5, 25);
+const costData = generateSparkline(10, 10, 100);
+
+function MascotCard({ stats }: { stats: any }) {
+  const isOperational = stats?.gatewayStatus === "running";
+  
+  return (
+    <div className="relative h-full min-h-[160px] flex flex-col justify-between overflow-visible rounded-[24px] border border-black/5 dark:border-white/5 bg-white dark:bg-[#0F0F13]">
+      {/* Background soft glow at top left to mimic the reference's soft lighting */}
+      <div className="absolute -top-32 -left-32 w-[600px] h-[600px] bg-orange-500/10 rounded-full blur-[120px] pointer-events-none" />
+
+      {/* Top Section: Text Content & Button */}
+      <div className="relative z-10 w-[70%] sm:w-[65%] p-4 md:p-5 flex flex-col justify-start">
+        <h2 className="text-xl md:text-2xl lg:text-[2rem] font-display font-bold tracking-tight leading-[1.1] mb-1">
+          <span className="text-foreground block">Control Your</span>
+          <span className="text-orange-500 block mt-0.5">AI Mission</span>
+        </h2>
+        
+        <p className="text-[10px] md:text-[11px] text-muted-foreground mb-3 max-w-[220px] leading-relaxed hidden sm:block">
+          Monitor systems, manage agents, and orchestrate AI operations across your organization.
+        </p>
+
+        <div className="mt-1 sm:mt-0">
+          <button 
+            onClick={() => document.getElementById('recent-activity')?.scrollIntoView({ behavior: 'smooth' })}
+            className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-[11px] md:text-[12px] font-semibold rounded-xl shadow-lg shadow-orange-500/20 transition-colors pointer-events-auto flex items-center gap-1.5"
+          >
+            View Activity 
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Floating Mascot Image on the Right */}
+      <div className="absolute -right-4 sm:-right-8 md:-right-12 -top-24 sm:-top-32 md:-top-40 bottom-[40px] w-[65%] sm:w-[55%] md:w-[50%] lg:w-[48%] pointer-events-none flex items-end justify-end z-30">
+        <style>{`
+          @keyframes runHover {
+            0%, 100% { transform: translateY(4px) rotate(1deg) scale(1.25); }
+            50% { transform: translateY(-4px) rotate(-1deg) scale(1.25); }
+          }
+          .animate-run-hover {
+            animation: runHover 4s ease-in-out infinite;
+          }
+        `}</style>
+        <img 
+          src="/robot_running_mascot.png" 
+          alt="3D Robot Mascot Running" 
+          className="w-full h-auto max-h-[220%] object-contain opacity-100 drop-shadow-[0_25px_45px_rgba(249,115,22,0.3)] animate-run-hover origin-bottom-right" 
+          style={{ objectPosition: 'right bottom' }}
+        />
+      </div>
+
+      {/* Bottom Floating Stats Bar */}
+      <div className="relative z-20 m-2 mt-auto">
+        <div className="bg-black/5 dark:bg-white/5 backdrop-blur-xl border border-black/10 dark:border-white/10 rounded-[14px] p-2.5 md:p-3 flex items-center justify-between divide-x divide-black/10 dark:divide-white/10 shadow-xl shadow-black/5 dark:shadow-2xl dark:shadow-black/50">
+          
+          {/* Stat 1: Active Sessions */}
+          <div className="flex-1 px-2.5 flex flex-col gap-0.5">
+            <span className="text-[9px] font-semibold text-muted-foreground">Active Sessions</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-lg md:text-xl font-bold font-display tracking-tight leading-none">{stats?.activeSessions || 0}</span>
+              {Number(stats?.activeSessions || 0) > 0 ? (
+                <span className="text-[8px] font-bold text-emerald-400 flex items-center bg-emerald-500/10 px-1 py-0.5 rounded">
+                  <ChevronUp className="w-2.5 h-2.5 mr-0.5" /> 12%
+                </span>
+              ) : (
+                <span className="text-[8px] font-bold text-muted-foreground flex items-center bg-black/5 dark:bg-white/5 px-1 py-0.5 rounded">
+                  <span className="w-2.5 h-2.5 mr-0.5 flex items-center justify-center font-black">-</span> 0%
+                </span>
+              )}
+            </div>
+            <span className="text-[7px] text-muted-foreground/70 font-medium">vs yesterday</span>
+          </div>
+
+          {/* Stat 3: Alerts */}
+          <div className="flex-1 px-2.5 flex flex-col gap-0.5">
+            <span className="text-[9px] font-semibold text-muted-foreground">Alerts</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-lg md:text-xl font-bold font-display tracking-tight leading-none">{!isOperational ? "1" : "0"}</span>
+              {!isOperational ? (
+                <span className="text-[8px] font-bold text-red-400 flex items-center bg-red-500/10 px-1 py-0.5 rounded">
+                  <ChevronUp className="w-2.5 h-2.5 mr-0.5" /> 100%
+                </span>
+              ) : (
+                <span className="text-[8px] font-bold text-emerald-400 flex items-center bg-emerald-500/10 px-1 py-0.5 rounded">
+                  <ChevronDown className="w-2.5 h-2.5 mr-0.5" /> 25%
+                </span>
+              )}
+            </div>
+            <span className="text-[7px] text-muted-foreground/70 font-medium">vs yesterday</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 
 /* ─────────────────────────────────────────────────────────────────── */
@@ -61,6 +172,8 @@ function StatCard({
   sub,
   subColor,
   pulseDot,
+  chartData,
+  chartColor = "#3b82f6",
 }: {
   icon: React.ElementType
   label: string
@@ -69,34 +182,54 @@ function StatCard({
   sub?: string
   subColor?: string
   pulseDot?: boolean
+  chartData?: any[]
+  chartColor?: string
 }) {
   return (
-    <div className="bg-surface-low p-6 rounded-xl border border-transparent hover:border-[rgba(72,72,72,0.1)] transition-all group">
-      <div className="flex justify-between items-start mb-4">
-        <span className="text-muted-foreground text-[11px] font-semibold uppercase tracking-widest">
-          {label}
-        </span>
-        <div className="p-1.5 rounded-lg bg-accent/10">
-          <Icon className="h-4 w-4 text-primary" />
-        </div>
-      </div>
-      <div className="flex items-center gap-3">
-        {pulseDot && (
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 pulse-dot shrink-0" />
-        )}
-        <div className="flex items-baseline gap-1.5">
-          <span className="font-display text-3xl font-bold text-foreground tracking-tighter tabular-nums">
-            {value}
+    <div className="bg-surface-low p-5 rounded-xl border border-transparent hover:border-[rgba(72,72,72,0.1)] transition-all group relative overflow-hidden flex flex-col justify-between h-full min-h-[110px]">
+      <div className="z-10 relative">
+        <div className="flex justify-between items-start mb-2">
+          <span className="text-muted-foreground text-[11px] font-semibold uppercase tracking-widest">
+            {label}
           </span>
-          {valueSuffix && (
-            <span className="text-muted-foreground text-sm font-medium ml-1">{valueSuffix}</span>
-          )}
+          <div className="p-1.5 rounded-lg bg-accent/10">
+            <Icon className="h-4 w-4 text-primary" />
+          </div>
         </div>
+        <div className="flex items-center gap-2">
+          {pulseDot && (
+            <span className="h-2 w-2 rounded-full bg-emerald-500 pulse-dot shrink-0" />
+          )}
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-display text-2xl font-bold text-foreground tracking-tighter tabular-nums">
+              {value}
+            </span>
+            {valueSuffix && (
+              <span className="text-muted-foreground text-xs font-medium ml-1">{valueSuffix}</span>
+            )}
+          </div>
+        </div>
+        {sub && (
+          <p className={cn("text-[10px] mt-1 font-mono uppercase tracking-tighter", subColor ?? "text-muted-foreground")}>
+            {sub}
+          </p>
+        )}
       </div>
-      {sub && (
-        <p className={cn("text-[10px] mt-2 font-mono uppercase tracking-tighter", subColor ?? "text-muted-foreground")}>
-          {sub}
-        </p>
+
+      {chartData && (
+        <div className="absolute bottom-0 left-0 right-0 h-16 opacity-20 group-hover:opacity-40 transition-opacity z-0 pointer-events-none">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData}>
+               <defs>
+                 <linearGradient id={`color-${label.replace(/\\s+/g, '')}`} x1="0" y1="0" x2="0" y2="1">
+                   <stop offset="5%" stopColor={chartColor} stopOpacity={0.8}/>
+                   <stop offset="95%" stopColor={chartColor} stopOpacity={0}/>
+                 </linearGradient>
+               </defs>
+               <Area type="monotone" dataKey="value" stroke={chartColor} strokeWidth={2} fillOpacity={1} fill={`url(#color-${label.replace(/\\s+/g, '')})`} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       )}
     </div>
   )
@@ -297,13 +430,11 @@ function LiveAgentCard({ agent, isProcessing, activeSessions, onClick }: {
   activeSessions: number
   onClick?: () => void
 }) {
-  const Icon = getAgentIcon(agent.name)
-
   return (
     <div
       onClick={onClick}
       className={cn(
-        "bg-surface-container p-4 rounded-xl border transition-all relative overflow-hidden cursor-pointer",
+        "bg-surface-container p-3 rounded-xl border transition-all relative overflow-hidden cursor-pointer flex items-center justify-between gap-3",
         isProcessing
           ? "border-amber-500/30 shadow-[0_0_20px_rgba(245,158,11,0.08)]"
           : "border-[rgba(72,72,72,0.1)] hover:border-primary/20"
@@ -314,39 +445,40 @@ function LiveAgentCard({ agent, isProcessing, activeSessions, onClick }: {
         <div className="absolute inset-0 bg-linear-to-br from-amber-500/5 to-transparent pointer-events-none" />
       )}
 
-      <div className="relative z-10">
-        <div className="flex justify-between items-start mb-3">
-          <AgentAvatar
-            avatarPresetId={(agent as any).avatarPresetId}
-            emoji={agent.emoji}
-            size="w-10 h-10"
-            className={cn(
-              "rounded-lg border",
-              isProcessing ? "border-amber-500/20" : "border-white/8"
-            )}
-          />
-          <div className="flex items-center gap-2">
-            {isProcessing ? (
-              <ProcessingBadge />
-            ) : (
-              <StatusBadge status={agent.status} />
-            )}
-          </div>
+      <div className="relative z-10 flex items-center gap-3 min-w-0 flex-1">
+        <AgentAvatar
+          avatarPresetId={(agent as any).avatarPresetId}
+          emoji={agent.emoji}
+          size="w-9 h-9"
+          className={cn(
+            "rounded-lg border shrink-0",
+            isProcessing ? "border-amber-500/20" : "border-white/8"
+          )}
+        />
+        <div className="flex flex-col min-w-0">
+          <h4 className="font-display font-bold text-[13px] text-foreground truncate">{agent.name}</h4>
+          {agent.model && (
+            <p className="text-[10px] text-muted-foreground font-medium truncate">{agent.model}</p>
+          )}
+          {isProcessing && activeSessions > 0 && (
+            <div className="mt-0.5 flex items-center gap-1.5">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500" />
+              </span>
+              <span className="text-[9px] text-amber-400/80 font-medium truncate">
+                {activeSessions} active session{activeSessions > 1 ? "s" : ""}
+              </span>
+            </div>
+          )}
         </div>
-        <h4 className="font-display font-bold text-sm text-foreground">{agent.name}</h4>
-        {agent.model && (
-          <p className="text-[11px] text-muted-foreground font-medium mt-0.5 truncate">{agent.model}</p>
-        )}
-        {isProcessing && activeSessions > 0 && (
-          <div className="mt-2 flex items-center gap-1.5">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
-            </span>
-            <span className="text-[10px] text-amber-400/80 font-medium">
-              {activeSessions} active session{activeSessions > 1 ? "s" : ""}
-            </span>
-          </div>
+      </div>
+
+      <div className="relative z-10 shrink-0 flex flex-col items-end gap-1">
+        {isProcessing ? (
+          <ProcessingBadge />
+        ) : (
+          <StatusBadge status={agent.status} />
         )}
       </div>
     </div>
@@ -502,42 +634,55 @@ export function OverviewPage() {
       {/* ── Dashboard Tab ── */}
       {activeTab === "dashboard" && <>
 
-      {/* ── Stat Row ── */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
-        <StatCard
-          icon={Wifi}
-          label="Gateway"
-          value={stats.gatewayStatus === "running" ? "Running" : "Offline"}
-          pulseDot={stats.gatewayStatus === "running"}
-          sub={stats.gatewayStatus === "running" ? `PORT ${stats.gatewayPort}` : "Reconnecting…"}
-          subColor={stats.gatewayStatus === "running" ? undefined : "text-[var(--status-paused-text)]"}
-        />
-        <StatCard
-          icon={MessageSquare}
-          label="Sessions"
-          value={stats.totalSessions}
-          valueSuffix="total"
-          sub={`${stats.activeSessions} Active • ${stats.gwSessions} Gateway`}
-        />
-        <StatCard
-          icon={Bot}
-          label="Agents"
-          value={stats.totalAgents}
-          valueSuffix="provisioned"
-          sub={`${stats.activeAgents} Active`}
-        />
-        <StatCard
-          icon={DollarSign}
-          label="Total Cost"
-          value={`$${stats.totalCost.toFixed(2)}`}
-          valueSuffix="USD"
-        />
+      {/* ── Top Row: Mascot + Stats ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-6">
+        <div className="lg:col-span-5">
+          <MascotCard stats={stats} />
+        </div>
+        <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <StatCard
+            icon={Wifi}
+            label="Gateway"
+            value={stats.gatewayStatus === "running" ? "Running" : "Offline"}
+            pulseDot={stats.gatewayStatus === "running"}
+            sub={stats.gatewayStatus === "running" ? `PORT ${stats.gatewayPort}` : "Reconnecting…"}
+            subColor={stats.gatewayStatus === "running" ? undefined : "text-[var(--status-paused-text)]"}
+            chartData={gatewayData}
+            chartColor="#10b981"
+          />
+          <StatCard
+            icon={MessageSquare}
+            label="Sessions"
+            value={stats.totalSessions}
+            valueSuffix="total"
+            sub={`${stats.activeSessions} Active • ${stats.gwSessions} Gateway`}
+            chartData={sessionData}
+            chartColor="#6366f1"
+          />
+          <StatCard
+            icon={Bot}
+            label="Agents"
+            value={stats.totalAgents}
+            valueSuffix="provisioned"
+            sub={`${stats.activeAgents} Active`}
+            chartData={agentData}
+            chartColor="#8b5cf6"
+          />
+          <StatCard
+            icon={DollarSign}
+            label="Total Cost"
+            value={`$${stats.totalCost.toFixed(2)}`}
+            valueSuffix="USD"
+            chartData={costData}
+            chartColor="#f59e0b"
+          />
+        </div>
       </div>
 
       {/* ── Main Content: Activity + Live Agents ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
         {/* Left Column — Recent Activity (built from sessions) */}
-        <div className="lg:col-span-7 space-y-4">
+        <div id="recent-activity" className="lg:col-span-7 space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <h3 className="text-lg font-display font-bold text-foreground">Recent Activity</h3>
