@@ -14,6 +14,7 @@ import { useDataLoader } from "@/hooks/useDataLoader"
 import { api } from "@/lib/api"
 import { Loader2 } from "lucide-react"
 import { ImpersonationBanner } from "@/components/ImpersonationBanner"
+import { AnnouncementBanner } from "@/components/AnnouncementBanner"
 
 // Pages
 import { OverviewPage } from "@/pages/OverviewPage"
@@ -35,6 +36,7 @@ import { ChatPage } from "@/pages/ChatPage"
 import { ConnectionsPage } from "@/pages/ConnectionsPage"
 import { RegisterPage } from "@/pages/RegisterPage"
 import { UserManagementPage } from "@/pages/UserManagementPage"
+import { AnnouncementsAdminPage } from "@/pages/AnnouncementsAdminPage"
 import OnboardingPage from "@/pages/OnboardingPage"
 import { useMasterStatus } from "@/hooks/useMasterStatus"
 
@@ -79,6 +81,7 @@ function DashboardShell() {
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-background">
       <ImpersonationBanner />
+      <AnnouncementBanner />
       <div className="flex flex-1 min-h-0 overflow-hidden">
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
@@ -115,6 +118,7 @@ function DashboardShell() {
             <Route path="/missions/*" element={<Navigate to="/projects" replace />} />
             <Route path="/settings" element={<AdminOnly><SettingsPage /></AdminOnly>} />
             <Route path="/users" element={<AdminOnly><UserManagementPage /></AdminOnly>} />
+            <Route path="/announcements" element={<AdminOnly><AnnouncementsAdminPage /></AdminOnly>} />
             <Route path="/chat" element={<ChatPage />} />
             {/* If authenticated user goes to login or setup, redirect them to dashboard root */}
             <Route path="/login" element={<Navigate to="/" replace />} />

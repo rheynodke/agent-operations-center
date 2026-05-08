@@ -46,4 +46,6 @@ export const queryKeys = {
   connections: () => ["connections"] as const,
   connectionAssignments: () => ["connections", "assignments"] as const,
   models: () => ["models"] as const,
+  announcementsActive: () => ["announcements", "active"] as const,
+  announcementsAll: () => ["announcements", "all"] as const,
 } as const

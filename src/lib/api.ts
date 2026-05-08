@@ -1132,4 +1132,31 @@ export const api = {
     request<{ state: Record<string, unknown> }>(
       `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/state`
     ),
+
+  // Announcements
+  getActiveAnnouncements: () =>
+    request<{ announcements: Announcement[] }>('/announcements/active'),
+  dismissAnnouncement: (id: number) =>
+    request<{ ok: boolean }>(`/announcements/${id}/dismiss`, { method: 'POST' }),
+  listAllAnnouncements: () =>
+    request<{ announcements: AnnouncementWithReads[] }>('/admin/announcements'),
+  createAnnouncement: (input: { title: string; body?: string; severity?: 'info' | 'warn' | 'error'; expiresAt?: string | null }) =>
+    request<{ ok: boolean; announcement: Announcement }>('/admin/announcements', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  deactivateAnnouncement: (id: number) =>
+    request<{ ok: boolean; announcement: Announcement }>(`/admin/announcements/${id}/deactivate`, { method: 'POST' }),
 }
+
+export interface Announcement {
+  id: number
+  title: string
+  body: string
+  severity: 'info' | 'warn' | 'error'
+  createdBy: number
+  createdAt: string
+  expiresAt: string | null
+  active: boolean
+}
+export interface AnnouncementWithReads extends Announcement { readCount: number }

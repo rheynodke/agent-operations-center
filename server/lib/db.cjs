@@ -1403,4 +1403,6 @@ module.exports = {
   ...require('./db/pipelines.cjs'),
   // Gateway state + port_reservations — extracted to ./db/gateway-state.cjs
   ...require('./db/gateway-state.cjs'),
+  // Admin announcements + per-user read receipts — extracted to ./db/announcements.cjs
+  ...require('./db/announcements.cjs'),
 };

@@ -519,6 +519,16 @@ export function useWebSocket() {
           break
         }
 
+        case "announcement:new":
+        case "announcement:dismissed":
+        case "announcement:deactivated": {
+          // Banner subscribes to this query key; admin page also lists all.
+          // A single broadcast triggers both refreshes — cheap (count is small).
+          queryClient.invalidateQueries({ queryKey: queryKeys.announcementsActive() })
+          queryClient.invalidateQueries({ queryKey: queryKeys.announcementsAll() })
+          break
+        }
+
         case "room:stop": {
           const payload = msg.payload as { roomId?: string }
           if (payload?.roomId) {

@@ -323,6 +323,7 @@ app.use('/api', require('./routes/config.cjs')({ db, parsers, versioning, vSave 
 // ─── Chat API (extracted to routes/chat.cjs, Step 9c) ──────────────────────
 app.use('/api', require('./routes/chat.cjs')({ db, parsers, gatewayProxy, loadAllJSONLMessagesForTask }));
 app.use('/api', require('./routes/role-templates.cjs')({ db, parsers }));
+app.use('/api', require('./routes/announcements.cjs')({ db }));
 
 // ─── Serve Vite build in prod ─────────────────────────────────────────────────
 const distDir = path.join(__dirname, '..', 'dist');

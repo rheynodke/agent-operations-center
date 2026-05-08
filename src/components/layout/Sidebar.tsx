@@ -18,6 +18,7 @@ import {
   Plug,
   Users,
   FolderGit2,
+  Megaphone,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -183,6 +184,24 @@ export function Sidebar() {
 
         {/* Bottom */}
         <div className="flex flex-col gap-0.5 mt-2 pt-3 border-t border-sidebar-border">
+          {isAdmin && (
+            <NavLink
+              to="/announcements"
+              title={sidebarCollapsed ? "Announcements" : undefined}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-2.5 py-2 rounded-lg text-sm transition-all duration-150",
+                  sidebarCollapsed ? "md:justify-center md:px-0 px-2.5" : "px-2.5",
+                  isActive
+                    ? "bg-surface-high text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                )
+              }
+            >
+              <Megaphone className="h-4 w-4 shrink-0" />
+              {!sidebarCollapsed && <span>Announcements</span>}
+            </NavLink>
+          )}
           {isAdmin && (
             <NavLink
               to="/users"

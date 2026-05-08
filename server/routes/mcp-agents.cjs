@@ -114,12 +114,6 @@ module.exports = function mcpAgentsRouter(deps) {
 
     // requireAgentOwnership already proved caller owns this slug; scope by their userId.
     const ownerId = Number(req.user.userId);
-    // Detect actual change so we only restart the gateway when the assignment
-    // truly differs (avoids gratuitous restarts on no-op writes from the UI).
-    const prevIds = new Set(db.getAgentConnectionIds(req.params.id, ownerId) || []);
-    const nextIds = new Set(connectionIds);
-    const changed = prevIds.size !== nextIds.size
-      || [...nextIds].some(id => !prevIds.has(id));
 
     db.setAgentConnections(req.params.id, connectionIds, ownerId);
     try {
@@ -131,34 +125,21 @@ module.exports = function mcpAgentsRouter(deps) {
     }
     if (typeof syncBuiltinsForAgent === 'function') syncBuiltinsForAgent(req.params.id);
 
-    // Auto-restart the OWNING USER's gateway so any in-flight session picks up
-    // the new connection list on its next thinking turn. Without this the agent
-    // keeps using the stale TOOLS.md it loaded at session start and stays
-    // confused about whether a freshly-assigned connection exists.
-    let gatewayRestarted = false;
-    if (changed) {
-      try {
-        if (Number(ownerId) !== 1) {
-          // Non-admin: bounce per-user gateway via orchestrator.
-          const orchestrator = require('../lib/gateway-orchestrator.cjs');
-          // Fire-and-forget — we don't want the HTTP response to block on the
-          // 5-10s gateway warm-up. UI's optimistic state already reflects the
-          // new assignment, and the next chat turn will hit a fresh gateway.
-          orchestrator.restartGateway(ownerId).catch((e) =>
-            console.warn(`[connections] async gateway restart for uid=${ownerId} failed: ${e.message}`)
-          );
-          gatewayRestarted = true;
-        } else if (typeof restartGateway === 'function') {
-          // Admin: external systemd-managed gateway — best-effort signal.
-          try { restartGateway(`connection assignment changed for ${req.params.id}`); gatewayRestarted = true; }
-          catch (_) {}
-        }
-      } catch (e) {
-        console.warn(`[connections] gateway restart trigger failed: ${e.message}`);
-      }
-    }
-
-    res.json({ ok: true, connectionIds, gatewayRestarted });
+    // Connection assignment is data-only. We deliberately do NOT restart the
+    // gateway here:
+    //   - Live scripts (odoo-list.sh, check_connections.sh, aoc-connect.sh)
+    //     fetch the assignment list fresh from /api/agent/connections every
+    //     call, so the new list is visible immediately to in-flight sessions.
+    //   - The TOOLS.md / connections context file was just rewritten above by
+    //     syncAgentConnectionsContext, so any session started AFTER this
+    //     point will see it. Sessions that were already running keep their
+    //     loaded system prompt — that's expected and matches how every other
+    //     skill update behaves; users can /reset if they want a fresh prompt.
+    //   - Restarting the user gateway would interrupt every concurrent session
+    //     for that user (not just the agent whose assignment changed),
+    //     including unrelated agents, heartbeats, and mission-room polling.
+    //     For a 10+ user deployment that's unacceptable noise.
+    res.json({ ok: true, connectionIds, gatewayRestarted: false });
   } catch (err) {
     // Surface 403 from setAgentConnections (user trying to assign a connection
     // they don't have access to) instead of swallowing it as 500.
