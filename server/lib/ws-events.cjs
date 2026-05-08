@@ -84,6 +84,9 @@ const EVENT_TYPES = Object.freeze({
   ONBOARDING_PHASE:           'onboarding:phase',
   // Processing indicators
   PROCESSING_END:             'processing_end',
+  // Open World — master agent roster change (provision/delete) so live
+  // viewers see new masters spawn / removed masters disappear without reload.
+  OPEN_WORLD_CHANGED:         'open-world:changed',
 });
 
 const EVENT_VALUES = new Set(Object.values(EVENT_TYPES));

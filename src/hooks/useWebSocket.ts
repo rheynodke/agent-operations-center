@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react"
-import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore, useProcessingStore, useRoomStore } from "@/stores"
+import { useAuthStore, useWsStore, useActivityStore, useLiveFeedStore, useAgentStore, useSessionStore, useTaskStore, useCronStore, useSessionLiveStore, useGatewayLogStore, useConnectionsStore, useProcessingStore, useRoomStore, useOpenWorldStore } from "@/stores"
 import { useChatStore, parseMediaAttachments, mediaPathToUrl, stripGatewayEnvelopes, stripUserMetadataEnvelope, isSystemInjectedUserMessage } from "@/stores/useChatStore"
 import { useProjectStore } from '@/stores/useProjectStore'
 import { useViewAsStore } from '@/stores/useViewAsStore'
@@ -531,6 +531,13 @@ export function useWebSocket() {
                 if (k.includes(`:room:${payload.roomId}`)) chatStore.setAgentRunning(k, false)
              })
           }
+          break
+        }
+
+        case "open-world:changed": {
+          // A master agent was provisioned or deleted somewhere — bump the
+          // store so AgentWorldView refetches the Open World roster live.
+          useOpenWorldStore.getState().bump()
           break
         }
 

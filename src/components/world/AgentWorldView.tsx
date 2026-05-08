@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react"
 import { motion } from "framer-motion"
-import { useAgentStore, useLiveFeedStore, useThemeStore } from "@/stores"
+import { useAgentStore, useLiveFeedStore, useThemeStore, useOpenWorldStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 import type { Agent, OpenWorldMaster } from "@/types"
@@ -725,17 +725,26 @@ export function AgentWorldView() {
   const [openLoading, setOpenLoading] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
 
+  // Refetch trigger — bumps when a master is provisioned/deleted anywhere.
+  // The WS event `open-world:changed` calls useOpenWorldStore.bump(), which
+  // changes lastChangeAt; this dep array refires the effect → live refetch
+  // without polling. Initial fetch fires on `worldMode === 'open'` flip.
+  const openWorldChangeAt = useOpenWorldStore(s => s.lastChangeAt)
   useEffect(() => {
     if (worldMode !== "open") return
     let cancelled = false
-    setOpenLoading(true)
+    // Show the loading pill only on the very first fetch — not on subsequent
+    // refreshes triggered by spawn/delete events. Avoids a flicker every time
+    // someone joins.
+    if (openMasters.length === 0) setOpenLoading(true)
     setOpenError(null)
     api.getOpenWorldMasters()
       .then(({ masters }) => { if (!cancelled) setOpenMasters(masters) })
       .catch(err => { if (!cancelled) setOpenError(err?.message || "Failed to load Open World") })
       .finally(() => { if (!cancelled) setOpenLoading(false) })
     return () => { cancelled = true }
-  }, [worldMode])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [worldMode, openWorldChangeAt])
 
   // Map OpenWorldMaster → Agent so AgentWorld3D can render them unchanged.
   // Server-derived status drives the same idle/working/offline rendering as My World.

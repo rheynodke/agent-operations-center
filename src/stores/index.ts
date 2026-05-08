@@ -464,6 +464,19 @@ export const useWsStore = create<WsState>((set) => ({
   setStatus: (status) => set({ status }),
 }))
 
+// ─── Open World Store ─────────────────────────────────────────────────────────
+// Tracks the last time the master-agent roster (Open World view) changed.
+// Bumped by useWebSocket on `open-world:changed` so any component watching
+// `lastChangeAt` (currently AgentWorldView) refetches the master list live.
+interface OpenWorldState {
+  lastChangeAt: number
+  bump: () => void
+}
+export const useOpenWorldStore = create<OpenWorldState>((set) => ({
+  lastChangeAt: 0,
+  bump: () => set({ lastChangeAt: Date.now() }),
+}))
+
 // ─── Session Live Events Store ────────────────────────────────────────────────
 // Receives individual parsed events streamed via WebSocket as they're written to JSONL.
 // The SessionDetailModal subscribes to this for true real-time event rendering.

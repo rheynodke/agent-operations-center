@@ -591,6 +591,19 @@ module.exports = function roomsRouter(deps) {
         console.warn(`[api/agents/delete] HQ membership remove failed: ${e.message}`);
       }
     }
+    // If the deleted agent was a master, the Open World roster shrunk —
+    // notify viewers so the agent vanishes live without reload.
+    if (profileBefore?.is_master && typeof broadcast === 'function') {
+      try {
+        broadcast({
+          type: 'open-world:changed',
+          payload: { reason: 'deleted', agentId, ownerUserId: Number(req.user.userId) },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.warn(`[api/agents/delete] open-world broadcast failed: ${e.message}`);
+      }
+    }
     console.log(`[api/agents] Deleted agent "${agentId}"`);
     res.json({ ok: true });
   } catch (err) {

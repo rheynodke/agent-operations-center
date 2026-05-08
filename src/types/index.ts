@@ -843,6 +843,8 @@ export type WsEventType =
   | "onboarding:phase"
   // Processing indicators (per-room agent thinking state)
   | "processing_end"
+  // Open World — master agent roster changed (someone provisioned / deleted a master)
+  | "open-world:changed"
 
 export interface WsMessage {
   type: WsEventType

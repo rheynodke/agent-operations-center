@@ -181,6 +181,19 @@ module.exports = function onboardingRouter(deps) {
       console.warn(`[onboarding/master] HQ room creation failed (non-fatal): ${e.message}`);
     }
     emitPhase(userId, 'done', { agentId: result.agentId });
+    // Broadcast Open World roster change so any logged-in user currently viewing
+    // the Open World tab sees the new master spawn live.
+    if (typeof broadcast === 'function') {
+      try {
+        broadcast({
+          type: 'open-world:changed',
+          payload: { reason: 'provisioned', agentId: result.agentId, ownerUserId: Number(userId) },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.warn(`[onboarding/master] open-world broadcast failed: ${e.message}`);
+      }
+    }
     res.status(201).json({ ...result, profileSaved: true, masterLinked: true, gatewayRestarted });
     } // end runOnboarding
   });
