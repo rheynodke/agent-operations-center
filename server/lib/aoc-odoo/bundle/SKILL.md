@@ -1,6 +1,6 @@
 ---
 name: aoc-odoo
-description: "Built-in AOC skill — full odoocli operator toolkit for any Odoo instance assigned as a connection. Covers authentication, model discovery, CRUD, business method execution, functional debugging, and UI/view inspection (XML views, QWeb reports, actions, menus). Use whenever the user asks about Odoo data, wants to operate on records, debug issues, trigger workflows, or inspect views and reports."
+description: "Built-in AOC skill — full odoocli operator toolkit for any Odoo instance assigned as a connection. Covers auth, model discovery, CRUD, business methods, debugging, view inspection. PRE-FLIGHT EVERY SESSION before any Odoo call: (1) run odoo-list.sh and MATCH each connection's `description`/`name` to the user's intent — for timesheet/task/project queries pick a connection whose name or description mentions task/timesheet/project (e.g. 'My Tasks and Timesheet'); if NO assigned connection matches, STOP and ask user to assign one (do not brute-force). (2) run odoo-whoami.sh <conn> to resolve current user (uid, tz, employee_id) — NEVER guess login from chat username. (3) For module intents (timesheet, task, project, sales, HR, accounting, manufacture, inventory), READ playbooks/<module>.md FIRST — it has copy-paste commands and curated pitfalls. The only helper scripts that exist are odoo-list.sh, odoo.sh, odoo-whoami.sh — do not invent others. Use whenever the user asks about Odoo data."
 type: built-in
 ---
 
@@ -195,6 +195,35 @@ odoo.sh staging record search sale.order --domain "[('state','=','draft')]" --co
 odoo.sh prod    debug access sale.order
 odoo.sh staging debug access sale.order
 ```
+
+---
+
+## Functional Playbooks
+
+For module-specific operational flows (timesheet, sales, HR, etc.), follow
+the playbook in `playbooks/<file>.md` **before** running raw odoocli commands.
+Playbooks define the standard scoping rule, copy-pasteable commands, and
+known pitfalls for that module.
+
+### Pre-flight (mandatory for ANY playbook)
+1. `odoo-list.sh`            → confirm a connection is assigned + grab metadata
+2. `odoo-whoami.sh <conn>`   → resolve current Odoo user (uid, tz, employee_id)
+3. Read the matching playbook → follow its scoping rule + commands
+
+### Available playbooks
+
+| Module(s) | When to load (trigger phrases) | File |
+|---|---|---|
+| Project / Task / Timesheet | "timesheet", "jam kerja", "log time", "task ku/saya", "project ku/saya", "tugas saya", "my tasks", "my project", "logged hours" | `playbooks/project-task-timesheet.md` |
+
+> If a request matches a trigger phrase, you **MUST** read the playbook
+> first. Do not rely on memory — playbooks evolve with new pitfalls.
+
+For modules without a playbook yet, fall back to `references/workflows.md`
+and announce to the user: "Belum ada playbook khusus untuk modul ini —
+saya pakai pola umum, silakan koreksi kalau ada flow standar."
+
+See `playbooks/README.md` for the playbook structure and how to add new ones.
 
 ---
 

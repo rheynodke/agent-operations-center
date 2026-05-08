@@ -314,8 +314,8 @@ function ConnectionCard({
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">{getTypeLabel(conn.type)}</p>
           {detail && <p className="text-[11px] text-muted-foreground/60 font-mono mt-1 truncate">{detail}</p>}
-          {(conn.type === "website" || conn.type === "github" || conn.type === "odoocli") && meta.description && (
-            <p className="text-[11px] text-muted-foreground/50 mt-1 line-clamp-2 leading-relaxed">{meta.description}</p>
+          {meta.description && (
+            <p className="text-[11px] text-muted-foreground/50 mt-1 line-clamp-2 leading-relaxed">{(meta.description as string)}</p>
           )}
           {assignedAgents && assignedAgents.length > 0 && (
             <div className="flex items-center gap-1 mt-1.5 flex-wrap">
@@ -750,16 +750,19 @@ interface ConnFormState {
   // BigQuery
   projectId: string
   datasets: string
+  bqDescription: string
   // PostgreSQL
   host: string
   port: string
   database: string
   username: string
   sslMode: string
+  pgDescription: string
   // SSH
   sshHost: string
   sshPort: string
   sshUser: string
+  sshDescription: string
   // Website
   url: string
   loginUrl: string
@@ -782,6 +785,7 @@ interface ConnFormState {
   // Google Workspace
   gwsPreset: 'prd-writer' | 'sheets-analyst' | 'full-workspace' | 'custom'
   gwsCustomScopes: string
+  gwsDescription: string
   // MCP
   mcpPreset: McpPreset
   mcpTransport: McpTransport
@@ -800,13 +804,13 @@ interface ConnFormState {
 
 const emptyForm: ConnFormState = {
   name: "", type: "bigquery", credentials: "",
-  projectId: "", datasets: "",
-  host: "", port: "5432", database: "", username: "", sslMode: "",
-  sshHost: "", sshPort: "22", sshUser: "root",
+  projectId: "", datasets: "", bqDescription: "",
+  host: "", port: "5432", database: "", username: "", sslMode: "", pgDescription: "",
+  sshHost: "", sshPort: "22", sshUser: "root", sshDescription: "",
   url: "", loginUrl: "", authType: "basic", authUsername: "", siteDescription: "",
   githubMode: "remote", repoOwner: "", repoName: "", branch: "main", localPath: "", ghDescription: "",
   odooUrl: "", odooDb: "", odooUsername: "", odooAuthType: "password", odooDescription: "",
-  gwsPreset: "full-workspace", gwsCustomScopes: "",
+  gwsPreset: "full-workspace", gwsCustomScopes: "", gwsDescription: "",
   mcpPreset: "filesystem",
   mcpTransport: "stdio",
   mcpCommand: "npx",
@@ -849,14 +853,17 @@ function ConnectionDialog({
         credentials: "", // never sent back from server
         projectId: m.projectId || "",
         datasets: (m.datasets || []).join(", "),
+        bqDescription: m.description || "",
         host: m.host || "",
         port: String(m.port || "5432"),
         database: m.database || "",
         username: m.username || "",
         sslMode: m.sslMode || "",
+        pgDescription: m.description || "",
         sshHost: m.sshHost || "",
         sshPort: String(m.sshPort || "22"),
         sshUser: m.sshUser || "root",
+        sshDescription: m.description || "",
         url: m.url || "",
         loginUrl: m.loginUrl || "",
         authType: m.authType || "basic",
@@ -875,6 +882,7 @@ function ConnectionDialog({
         odooDescription: m.description || "",
         gwsPreset: ((m as Partial<GoogleWorkspaceMetadata>).preset as ConnFormState['gwsPreset']) || "full-workspace",
         gwsCustomScopes: ((m as Partial<GoogleWorkspaceMetadata>).customScopes || []).join(", "),
+        gwsDescription: m.description || "",
         mcpPreset: (m.preset as McpPreset) || "custom",
         mcpTransport: (m.transport as McpTransport) || "stdio",
         mcpCommand: (m.command as string) || "",
@@ -906,6 +914,7 @@ function ConnectionDialog({
       return {
         projectId: form.projectId,
         datasets: form.datasets.split(",").map(s => s.trim()).filter(Boolean),
+        description: form.bqDescription || undefined,
       }
     }
     if (form.type === "postgres") {
@@ -913,12 +922,14 @@ function ConnectionDialog({
         host: form.host, port: Number(form.port) || 5432,
         database: form.database, username: form.username,
         sslMode: form.sslMode || undefined,
+        description: form.pgDescription || undefined,
       }
     }
     if (form.type === "ssh") {
       return {
         sshHost: form.sshHost, sshPort: Number(form.sshPort) || 22,
         sshUser: form.sshUser,
+        description: form.sshDescription || undefined,
       }
     }
     if (form.type === "website") {
@@ -961,6 +972,7 @@ function ConnectionDialog({
       if (form.gwsPreset === 'custom') {
         meta.customScopes = form.gwsCustomScopes.split(",").map(s => s.trim()).filter(Boolean)
       }
+      if (form.gwsDescription) meta.description = form.gwsDescription
       return meta
     }
     if (form.type === "mcp") {
@@ -1208,6 +1220,13 @@ function ConnectionDialog({
                   <p className="text-[10px] text-muted-foreground/50">Credentials stored. Leave blank to keep current.</p>
                 )}
               </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <textarea value={f.bqDescription} onChange={e => set("bqDescription", e.target.value)}
+                  placeholder="Jelaskan dataset ini — data apa yang tersedia (sales, finance, ops), retention period, schema convention yang penting untuk agent."
+                  rows={3} className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+                <p className="text-[10px] text-muted-foreground/50">Context ini diberikan ke agent saat analysis dan dispatch</p>
+              </div>
             </>
           )}
 
@@ -1245,6 +1264,13 @@ function ConnectionDialog({
                   <p className="text-[10px] text-muted-foreground/50">Password stored. Leave blank to keep current.</p>
                 )}
               </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <textarea value={f.pgDescription} onChange={e => set("pgDescription", e.target.value)}
+                  placeholder="Jelaskan database ini — schema/tabel yang relevan, data domain (CRM, billing, analytics), read-only / read-write, hal yang harus agent hindari."
+                  rows={3} className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+                <p className="text-[10px] text-muted-foreground/50">Context ini diberikan ke agent saat analysis dan dispatch</p>
+              </div>
             </>
           )}
 
@@ -1275,6 +1301,13 @@ function ConnectionDialog({
                 {editConn?.hasCredentials && !f.credentials && (
                   <p className="text-[10px] text-muted-foreground/50">Key stored. Leave blank to keep current.</p>
                 )}
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <textarea value={f.sshDescription} onChange={e => set("sshDescription", e.target.value)}
+                  placeholder="Jelaskan VPS ini — peran (web server / db server / staging), service yang berjalan, path penting (mis. /var/www, /opt/app), batas operasi yang aman."
+                  rows={3} className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+                <p className="text-[10px] text-muted-foreground/50">Context ini diberikan ke agent saat analysis dan dispatch</p>
               </div>
             </>
           )}
@@ -1493,6 +1526,13 @@ function ConnectionDialog({
                   />
                 </div>
               )}
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <textarea value={f.gwsDescription} onChange={e => set("gwsDescription", e.target.value)}
+                  placeholder="Jelaskan akun Google ini — Drive folder utama, Sheets template yang sering dipakai, dokumen rujukan, kapan agent harus akses."
+                  rows={3} className="flex w-full rounded-md px-3 py-2 text-xs bg-input text-foreground placeholder:text-muted-foreground border border-border/50 outline-none focus:border-primary/60 focus:ring-0 transition-colors resize-none" />
+                <p className="text-[10px] text-muted-foreground/50">Context ini diberikan ke agent saat analysis dan dispatch</p>
+              </div>
               {editConn ? (
                 <p className="text-[11px] text-muted-foreground/70">
                   Use the Re-authenticate button on the card to re-link this account.

@@ -184,6 +184,7 @@ module.exports = function mcpAgentsRouter(deps) {
         out.projectId = meta.projectId || null;
         out.datasets = meta.datasets || [];
         out.serviceAccountJson = c.credentials || null;
+        out.description = meta.description || null;
         out.hint = 'Write service account JSON to a temp file, activate with gcloud auth, then use bq CLI.';
       } else if (c.type === 'postgres') {
         out.host = meta.host || 'localhost';
@@ -192,12 +193,14 @@ module.exports = function mcpAgentsRouter(deps) {
         out.username = meta.username || 'postgres';
         out.password = c.credentials || null;
         out.sslMode = meta.sslMode || null;
+        out.description = meta.description || null;
         out.hint = 'Connect via psql or any PostgreSQL client with these credentials.';
       } else if (c.type === 'ssh') {
         out.host = meta.sshHost || null;
         out.port = meta.sshPort || 22;
         out.user = meta.sshUser || 'root';
         out.privateKey = c.credentials || null;
+        out.description = meta.description || null;
         out.hint = 'Write private key to a temp file (chmod 600), use ssh -i to connect.';
       } else if (c.type === 'website') {
         out.url = meta.url || null;
@@ -242,6 +245,7 @@ module.exports = function mcpAgentsRouter(deps) {
         out.preset = meta.preset || null;
         out.scopes = meta.scopes || [];
         out.authState = meta.authState || 'unknown';
+        out.description = meta.description || null;
         out.hint = 'Use gws-call.sh <connection-name> <service> <method> [json-body] to call Google APIs. Credentials are handled automatically.';
       } else if (c.type === 'mcp') {
         out.preset = meta.preset || 'custom';
@@ -254,6 +258,7 @@ module.exports = function mcpAgentsRouter(deps) {
         }
         out.tools = (meta.tools || []).map(t => ({ name: t.name, description: t.description || '' }));
         out.toolsDiscoveredAt = meta.toolsDiscoveredAt || null;
+        out.description = meta.description || null;
         out.hint = `Use mcp-call.sh "${c.name}" <tool-name> '<json-args>' — credentials are handled automatically.`;
       }
 

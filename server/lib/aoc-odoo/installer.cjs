@@ -21,7 +21,7 @@ const crypto = require('crypto');
 const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
 
 const SKILL_SLUG     = 'aoc-odoo';
-const BUNDLE_VERSION = '1.1.0'; // 1.1.0: agent-scoped (odoo-list.sh → /api/agent/connections; odoo.sh passes ?agentId)
+const BUNDLE_VERSION = '1.2.1'; // 1.2.1: surface playbook directive in skill description, add multi-conn/future-Time-Off pitfalls, add "last timesheet" intent
 const BUNDLE_DIR     = path.join(__dirname, 'bundle');
 
 function skillRoot() {

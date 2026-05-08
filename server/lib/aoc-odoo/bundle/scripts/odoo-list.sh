@@ -54,7 +54,7 @@ fi
 
 # /api/agent/connections returns { connections: [{name, type, ...}] } where
 # odoocli entries carry hint/odoocli fields. Project to a stable shape.
-ODOO=$(echo "$RESP" | jq '[.connections[]? | select(.type == "odoocli") | {name, type, hint}]')
+ODOO=$(echo "$RESP" | jq '[.connections[]? | select(.type == "odoocli") | {name, type, hint, description, odooUrl, odooDb, odooUsername}]')
 COUNT=$(echo "$ODOO" | jq 'length')
 
 if [ "$COUNT" = "0" ]; then
