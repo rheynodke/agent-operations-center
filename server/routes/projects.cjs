@@ -7,6 +7,7 @@
  */
 'use strict';
 
+const path = require('node:path');
 const { parseOwnerParam, checkCronAccess } = require('../helpers/access-control.cjs');
 const { gatewayForReq } = require('../helpers/gateway-context.cjs');
 

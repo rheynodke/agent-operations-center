@@ -2514,7 +2514,9 @@ export function AgentWorld3D({ agents, agentStates, selectedAgentId }: AgentWorl
       {/* Fill light — cooler, lower (Claw3D playbook) */}
       <directionalLight position={[-30, 30, 40]} intensity={0.4} color="#7090ff" />
       {/* Soft IBL reflections — the "smoothness" lever */}
-      <Environment preset="city" />
+      {/* Self-hosted HDR from public/hdr/ — drei's preset="city" hits raw.githack.com
+          which is now Cloudflare-403 and blocked by our CSP connect-src anyway. */}
+      <Environment files="/hdr/potsdamer_platz_1k.hdr" />
 
       {/* ── Atmospheric enhancements ── */}
       <FloatingParticles theme={theme} />

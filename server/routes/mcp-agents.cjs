@@ -8,6 +8,10 @@
  */
 'use strict';
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
 module.exports = function mcpAgentsRouter(deps) {
   const { db, parsers, mcpPool, composio, syncBuiltinsForAgent, restartGateway } = deps;
   const router = require('express').Router();
@@ -176,6 +180,23 @@ module.exports = function mcpAgentsRouter(deps) {
     const ownerHint = Number(req.user?.userId) || db.getAgentOwner(agentId);
     if (ownerHint == null) return res.status(400).json({ connections: [], error: 'Cannot resolve agent owner' });
     const conns = db.getAgentConnectionsRaw(agentId, ownerHint);
+    // Forensic log: when result is unexpectedly empty/small, capture caller
+    // identity + raw assignment table state so we can correlate transient
+    // post-restart visibility gaps to specific request/response pairs.
+    // (Diagnostic — keep until the root cause of intermittent "missing
+    // connections" reports is conclusively identified.)
+    try {
+      const expectedIds = db.getAgentConnectionIds
+        ? db.getAgentConnectionIds(agentId, ownerHint)
+        : [];
+      if (conns.length < expectedIds.length || conns.length === 0) {
+        console.warn(
+          `[api/agent/connections] short result agentId=${agentId} ownerHint=${ownerHint} ` +
+          `userId=${req.user?.userId ?? '?'} kind=${req.user?.role ?? '?'} ` +
+          `conns=${conns.length} expectedIds=${expectedIds.length}`,
+        );
+      }
+    } catch (_) { /* never let diagnostics break the response */ }
     const result = conns.map(c => {
       const meta = c.metadata || {};
       const out = { name: c.name, type: c.type };

@@ -25,9 +25,12 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # Auto-load .env
 ENV_FILE="$ROOT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
+  # Direct source — process substitution `source <(grep ...)` is unreliable on
+  # macOS bash 3.2 (drops vars on script-level use), use straight sourcing.
+  # The .env file is plain KEY=VALUE so it's safe to source as bash.
   set -o allexport
   # shellcheck disable=SC1090
-  source <(grep -E '^[A-Z_][A-Z_0-9]*=.+' "$ENV_FILE" | grep -v '^#')
+  source "$ENV_FILE"
   set +o allexport
 fi
 
@@ -39,6 +42,25 @@ PORT_RANGE_END=19999
 ADMIN_GW_PORT="${GATEWAY_PORT:-18789}"
 ADMIN_LAUNCHD_LABEL="${OPENCLAW_LAUNCHD_LABEL:-ai.openclaw.gateway}"
 ADMIN_RESTART_TIMEOUT_SECS=20
+
+# AOC dashboard server (drives the gateway orchestrator). When AOC is alive,
+# gw.sh defers user-gateway lifecycle (start/stop/restart) to it via API
+# instead of writing SQLite out-of-band — sql.js holds state in memory, so
+# direct DB writes are invisible until next AOC restart and trigger
+# onChildExit respawn races that spawn duplicate gateways.
+AOC_HOST="${AOC_HOST:-http://localhost:18800}"
+aoc_alive() {
+  curl -sf -m 2 -o /dev/null "$AOC_HOST/api/health" 2>/dev/null \
+    || curl -sf -m 2 -o /dev/null "$AOC_HOST/" 2>/dev/null
+}
+aoc_ops() {
+  # POST /api/ops/gateway/<uid>/<action>. Returns non-zero on HTTP error.
+  local uid="$1" action="$2"
+  [[ -n "${DASHBOARD_TOKEN:-}" ]] || { echo "DASHBOARD_TOKEN not set in .env" >&2; return 78; }
+  curl -sf -m 30 -X POST \
+    -H "Authorization: Bearer $DASHBOARD_TOKEN" \
+    "$AOC_HOST/api/ops/gateway/$uid/$action"
+}
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -375,6 +397,16 @@ do_stop() {
   IFS=$'\t' read -r username db_pid <<< "$row"
   echo -n "  [uid=$uid] $username: stopping … "
 
+  # Prefer AOC API: orchestrator updates its in-memory children Map +
+  # in-memory DB atomically, so onChildExit won't race-respawn the gateway.
+  if aoc_alive; then
+    if aoc_ops "$uid" "stop" >/dev/null; then
+      echo -e "${GRN}OK${R} ${D}(via AOC API)${R}"
+      return
+    fi
+    warn "AOC API stop failed, falling back to direct kill"
+  fi
+
   if [[ -z "$db_pid" || "$db_pid" == "" ]]; then
     echo -e "${D}already stopped${R}"
     return
@@ -402,7 +434,6 @@ do_stop() {
 do_start() {
   local uid="$1"
   [[ "$uid" -eq 1 ]] && { do_admin_start; return; }
-  [[ -x "$OPENCLAW_BIN" ]] || die "OPENCLAW_BIN not executable: '$OPENCLAW_BIN' (set OPENCLAW_BIN env or install openclaw on PATH)"
 
   local row
   row=$(sql "SELECT username, gateway_pid, gateway_port FROM users WHERE id = $uid;")
@@ -417,6 +448,20 @@ do_start() {
   fi
 
   echo -n "  [uid=$uid] $username: starting … "
+
+  # Prefer AOC API: orchestrator handles spawn idempotently and ensures the
+  # in-memory children Map is populated, so subsequent onChildExit calls
+  # respect user intent and the lifecycle stays consistent.
+  if aoc_alive; then
+    local resp
+    if resp=$(aoc_ops "$uid" "start" 2>&1); then
+      echo -e "${GRN}OK${R} ${D}(via AOC API: $resp)${R}"
+      return
+    fi
+    warn "AOC API start failed ($resp), falling back to direct spawn"
+  fi
+
+  [[ -x "$OPENCLAW_BIN" ]] || die "OPENCLAW_BIN not executable: '$OPENCLAW_BIN' (set OPENCLAW_BIN env or install openclaw on PATH)"
 
   local home
   home=$(user_home "$uid")
@@ -527,6 +572,20 @@ cmd_restart() {
       if [[ "$uid" -eq 1 ]]; then
         # Admin gateway: atomic kickstart -k via launchd (single-call restart).
         do_admin_restart || true
+      elif aoc_alive; then
+        # Atomic restart via AOC API — orchestrator's restartGateway holds the
+        # per-user lock across stop+spawn, so no other caller can interleave.
+        local row resp
+        row=$(sql "SELECT username FROM users WHERE id = $uid;")
+        local username="${row:-uid=$uid}"
+        echo -n "  [uid=$uid] $username: restarting … "
+        if resp=$(aoc_ops "$uid" "restart" 2>&1); then
+          echo -e "${GRN}OK${R} ${D}(via AOC API: $resp)${R}"
+        else
+          warn "AOC API restart failed ($resp), falling back to stop+start"
+          do_stop "$uid"
+          do_start "$uid"
+        fi
       else
         do_stop "$uid"
         do_start "$uid"

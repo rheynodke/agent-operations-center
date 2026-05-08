@@ -8,7 +8,7 @@
 'use strict';
 
 module.exports = function agentsRouter(deps) {
-  const { db, parsers, vSave } = deps;
+  const { db, parsers, vSave, syncBuiltinsForAgent } = deps;
   const router = require('express').Router();
 
 // ─── Agent Workspace Browser (read-only file manager) ───────────────────────

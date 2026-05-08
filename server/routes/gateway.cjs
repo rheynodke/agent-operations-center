@@ -247,6 +247,72 @@ module.exports = function gatewayRouter(deps) {
     }
   });
 
+  // ─── Ops-token endpoints (host-level managers like scripts/gw.sh) ──────────
+  // These accept the cluster DASHBOARD_TOKEN directly so the host gateway
+  // manager can drive lifecycle via the orchestrator (single source of truth)
+  // instead of writing the SQLite file out-of-band — which the in-memory sql.js
+  // copy doesn't observe, leading to onChildExit respawning a "stopped" gateway.
+  function requireOpsToken(req, res, next) {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const expected = process.env.DASHBOARD_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ error: 'Ops token required (DASHBOARD_TOKEN)' });
+    }
+    next();
+  }
+
+  router.post('/ops/gateway/:id/stop', requireOpsToken, async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    if (targetId === 1) {
+      return res.status(400).json({ error: 'Admin gateway is external' });
+    }
+    try {
+      await orchestrator.stopGateway(targetId);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(`[ops/gateway/${targetId}/stop]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/ops/gateway/:id/start', requireOpsToken, async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    if (targetId === 1) {
+      return res.status(400).json({ error: 'Admin gateway is external' });
+    }
+    try {
+      const out = await orchestrator.spawnGateway(targetId);
+      res.json({ ok: true, port: out.port, pid: out.pid });
+    } catch (err) {
+      console.error(`[ops/gateway/${targetId}/start]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/ops/gateway/:id/restart', requireOpsToken, async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    if (targetId === 1) {
+      return res.status(400).json({ error: 'Admin gateway is external' });
+    }
+    try {
+      const out = await orchestrator.restartGateway(targetId);
+      res.json({ ok: true, port: out.port, pid: out.pid });
+    } catch (err) {
+      console.error(`[ops/gateway/${targetId}/restart]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   router.post('/admin/users/:id/gateway/stop', db.authMiddleware, db.requireAdmin, async (req, res) => {
     const targetId = Number(req.params.id);
     if (!Number.isInteger(targetId) || targetId <= 0) {

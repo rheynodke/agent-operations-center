@@ -810,6 +810,12 @@ async function stopGatewayLocked(userId, opts = {}) {
   const entry = children.get(userId);
   children.delete(userId);
   if (entry) {
+    // Signal the whole process group, not just the parent. spawn() uses
+    // detached:true (line 586) so openclaw is its own group leader and the
+    // openclaw-gateway grandchild that actually polls Telegram inherits the
+    // same group. Killing only the parent left grandchildren orphaned to
+    // launchd, where they kept polling and triggering 409 conflicts.
+    try { process.kill(-entry.child.pid, 'SIGTERM'); } catch (_) {}
     try { process.kill(entry.child.pid, 'SIGTERM'); } catch (_) {}
     const deadline = Date.now() + (opts.killTimeoutMs ?? 10_000);
     while (Date.now() < deadline) {
@@ -818,6 +824,7 @@ async function stopGatewayLocked(userId, opts = {}) {
       if (!alive) break;
       await new Promise(r => setTimeout(r, 100));
     }
+    try { process.kill(-entry.child.pid, 'SIGKILL'); } catch (_) {}
     try { process.kill(entry.child.pid, 'SIGKILL'); } catch (_) {}
   }
 
@@ -876,6 +883,21 @@ function onChildExit(userId, code, signal) {
   // Remove the crashed entry before respawn so allocatePort doesn't block on stale port
   children.delete(userId);
   setTimeout(async () => {
+    // Honor user intent: if DB state was flipped to 'stopped' or 'error'
+    // (typically by an out-of-band manager like scripts/gw.sh that kills the
+    // PID then UPDATEs the row), do NOT respawn — the user explicitly asked
+    // for the gateway to be down. Without this guard, onChildExit re-spawned
+    // every gw.sh stop into a fresh process, which racing with the operator's
+    // own restart attempts produced multiple gateway pairs per user and
+    // triggered Telegram 409 polling-conflict storms.
+    try {
+      const cur = db.getGatewayState(userId);
+      if (cur?.state === 'stopped' || cur?.state === 'error') {
+        console.log(`[gw:user-${userId}] exit observed but DB state=${cur.state} — not respawning (user intent)`);
+        return;
+      }
+    } catch (_) { /* if DB read fails, fall through and let respawn try */ }
+
     try {
       await spawnGateway(userId);
       // Preserve retry count in the new entry

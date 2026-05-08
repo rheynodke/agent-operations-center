@@ -16,9 +16,15 @@ set -euo pipefail
 # Source AOC env (AOC_TOKEN, AOC_URL, AOC_AGENT_ID) in canonical order.
 [ -f "${HOME}/.openclaw/.aoc_env" ] && source "${HOME}/.openclaw/.aoc_env" 2>/dev/null || true
 [ -f "${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" ] && source "${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
-[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env" 2>/dev/null || true
-[ -f "${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" ] && source "${OPENCLAW_WORKSPACE:-.}/.aoc_agent_env" 2>/dev/null || true
-[ -f "${OPENCLAW_STATE_DIR:-/dev/null}/workspace/.aoc_agent_env" ] && source "${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" 2>/dev/null || true
+# PWD wins: a leaked OPENCLAW_WORKSPACE/OPENCLAW_STATE_DIR pointing at another
+# agent's workspace would otherwise overwrite this agent's identity.
+if [ -f "$PWD/.aoc_agent_env" ]; then
+  source "$PWD/.aoc_agent_env" 2>/dev/null || true
+elif [ -n "${OPENCLAW_WORKSPACE:-}" ] && [ -f "${OPENCLAW_WORKSPACE}/.aoc_agent_env" ]; then
+  source "${OPENCLAW_WORKSPACE}/.aoc_agent_env" 2>/dev/null || true
+elif [ -n "${OPENCLAW_STATE_DIR:-}" ] && [ -f "${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ]; then
+  source "${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" 2>/dev/null || true
+fi
 
 if [ $# -lt 1 ]; then
   echo "[odoo.sh] usage: odoo.sh <connection-name-or-id> <odoocli-subcommand> [args...]" >&2

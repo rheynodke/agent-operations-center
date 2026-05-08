@@ -263,7 +263,12 @@ app.use('/api', require('./routes/rooms.cjs')({
 }));
 
 // ─── Agents (extracted to routes/agents.cjs, Step 8b) ──────────────────────
-app.use('/api', require('./routes/agents.cjs')({ db, parsers, vSave }));
+// syncBuiltinsForAgent is hoistable (function declaration) but defined further
+// down — passed via thunk so the closure resolves at call time.
+app.use('/api', require('./routes/agents.cjs')({
+  db, parsers, vSave,
+  syncBuiltinsForAgent: (agentId) => syncBuiltinsForAgent(agentId),
+}));
 
 // ─── Browser Harness (extracted to routes/browser-harness.cjs, Step 6c) ────
 app.use('/api', require('./routes/browser-harness.cjs')({ db, parsers }));
