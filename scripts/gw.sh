@@ -9,9 +9,10 @@
 #   ./scripts/gw.sh                          # list all gateway statuses
 #   ./scripts/gw.sh list                     # same
 #   ./scripts/gw.sh status  [userId]         # detailed status for one user
-#   ./scripts/gw.sh start   <userId|all>     # start gateway
-#   ./scripts/gw.sh stop    <userId|all>     # stop gateway (SIGTERM → SIGKILL)
-#   ./scripts/gw.sh restart <userId|all>     # stop + start
+#   ./scripts/gw.sh start   <userId|all>     # start gateway (uid=1: launchctl kickstart)
+#   ./scripts/gw.sh stop    <userId|all>     # stop gateway (uid=1: SIGTERM via launchctl;
+#                                            # launchd KeepAlive will respawn — use restart for clean cycle)
+#   ./scripts/gw.sh restart <userId|all>     # restart (uid=1: atomic launchctl kickstart -k)
 #   ./scripts/gw.sh logs    <userId>         # tail gateway log
 #   ./scripts/gw.sh orphans                  # find orphan gateway processes
 # =============================================================================
@@ -32,10 +33,12 @@ fi
 
 DB_PATH="${AOC_DB_PATH:-$ROOT_DIR/data/aoc.db}"
 OPENCLAW_BASE="${OPENCLAW_HOME:-$HOME/.openclaw}"
-OPENCLAW_BIN="${OPENCLAW_BIN:-/opt/homebrew/bin/openclaw}"
+OPENCLAW_BIN="${OPENCLAW_BIN:-$(command -v openclaw 2>/dev/null || echo /opt/homebrew/bin/openclaw)}"
 PORT_RANGE_START=19000
 PORT_RANGE_END=19999
 ADMIN_GW_PORT="${GATEWAY_PORT:-18789}"
+ADMIN_LAUNCHD_LABEL="${OPENCLAW_LAUNCHD_LABEL:-ai.openclaw.gateway}"
+ADMIN_RESTART_TIMEOUT_SECS=20
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -274,10 +277,96 @@ cmd_status() {
   echo
 }
 
+# ── Admin gateway (uid=1) helpers ─────────────────────────────────────────────
+
+admin_launchd_target() { echo "gui/$UID/$ADMIN_LAUNCHD_LABEL"; }
+
+admin_launchd_loaded() {
+  launchctl print "$(admin_launchd_target)" >/dev/null 2>&1
+}
+
+# Atomic restart via launchd: stop + start in one call. Waits for port to come back.
+do_admin_restart() {
+  echo -n "  [uid=1] admin (launchd: $ADMIN_LAUNCHD_LABEL): "
+  if ! admin_launchd_loaded; then
+    echo -e "${RED}launchd label not loaded for uid $UID${R}"
+    echo -e "  ${D}Tip: launchctl bootstrap gui/$UID ~/Library/LaunchAgents/$ADMIN_LAUNCHD_LABEL.plist${R}"
+    return 1
+  fi
+  echo -n "kickstart … "
+  if ! launchctl kickstart -k "$(admin_launchd_target)" 2>/dev/null; then
+    echo -e "${RED}FAILED${R}"
+    return 1
+  fi
+  # Wait for the admin port to listen again (launchd may take a moment).
+  local waited=0 max=$((ADMIN_RESTART_TIMEOUT_SECS * 10))
+  # First wait briefly for port to drop, then for it to come back.
+  while port_open "$ADMIN_GW_PORT" && [[ $waited -lt 30 ]]; do
+    sleep 0.1; ((waited++))
+  done
+  waited=0
+  while ! port_open "$ADMIN_GW_PORT" && [[ $waited -lt $max ]]; do
+    sleep 0.1; ((waited++))
+  done
+  if port_open "$ADMIN_GW_PORT"; then
+    echo -e "${GRN}OK${R} (port $ADMIN_GW_PORT listening)"
+  else
+    echo -e "${YEL}kickstart issued but port $ADMIN_GW_PORT not listening yet${R}"
+    echo -e "  ${D}Check log: tail -30 $OPENCLAW_BASE/logs/gateway.log${R}"
+    return 1
+  fi
+}
+
+# Send TERM to admin gateway via launchctl. Note: launchd KeepAlive will respawn
+# the process — useful as a "soft restart" but cannot truly hold the gateway
+# down without `launchctl bootout`.
+do_admin_stop() {
+  echo -n "  [uid=1] admin (launchd: $ADMIN_LAUNCHD_LABEL): "
+  if ! admin_launchd_loaded; then
+    echo -e "${YEL}not loaded — nothing to stop${R}"
+    return 0
+  fi
+  if launchctl kill TERM "$(admin_launchd_target)" 2>/dev/null; then
+    echo -e "${GRN}sent SIGTERM${R} ${D}(launchd KeepAlive will respawn — use 'restart' for clean cycle)${R}"
+  else
+    echo -e "${RED}launchctl kill failed${R}"
+    return 1
+  fi
+}
+
+# Ensure admin gateway is running. If launchd label is loaded, KeepAlive should
+# already do this; we just verify the port and kickstart if missing.
+do_admin_start() {
+  echo -n "  [uid=1] admin (launchd: $ADMIN_LAUNCHD_LABEL): "
+  if port_open "$ADMIN_GW_PORT"; then
+    echo -e "${GRN}already running${R} (port $ADMIN_GW_PORT)"
+    return 0
+  fi
+  if ! admin_launchd_loaded; then
+    echo -e "${RED}launchd label not loaded${R}"
+    return 1
+  fi
+  if launchctl kickstart "$(admin_launchd_target)" 2>/dev/null; then
+    local waited=0 max=$((ADMIN_RESTART_TIMEOUT_SECS * 10))
+    while ! port_open "$ADMIN_GW_PORT" && [[ $waited -lt $max ]]; do
+      sleep 0.1; ((waited++))
+    done
+    if port_open "$ADMIN_GW_PORT"; then
+      echo -e "${GRN}OK${R} (port $ADMIN_GW_PORT listening)"
+    else
+      echo -e "${YEL}kickstart issued, port not yet listening${R}"
+      return 1
+    fi
+  else
+    echo -e "${RED}launchctl kickstart failed${R}"
+    return 1
+  fi
+}
+
 # ── Stop ──────────────────────────────────────────────────────────────────────
 do_stop() {
   local uid="$1"
-  [[ "$uid" -eq 1 ]] && { warn "uid=1 (admin) uses external gateway — stop it via systemctl/launchctl instead"; return; }
+  [[ "$uid" -eq 1 ]] && { do_admin_stop; return; }
 
   local row
   row=$(sql "SELECT username, gateway_pid FROM users WHERE id = $uid;")
@@ -312,7 +401,8 @@ do_stop() {
 # ── Start ─────────────────────────────────────────────────────────────────────
 do_start() {
   local uid="$1"
-  [[ "$uid" -eq 1 ]] && { warn "uid=1 (admin) uses external gateway — start it via systemctl/launchctl instead"; return; }
+  [[ "$uid" -eq 1 ]] && { do_admin_start; return; }
+  [[ -x "$OPENCLAW_BIN" ]] || die "OPENCLAW_BIN not executable: '$OPENCLAW_BIN' (set OPENCLAW_BIN env or install openclaw on PATH)"
 
   local row
   row=$(sql "SELECT username, gateway_pid, gateway_port FROM users WHERE id = $uid;")
@@ -434,8 +524,13 @@ cmd_restart() {
   info "Restarting gateway(s) for target='$target'"
   while IFS= read -r uid; do
     if [[ -n "$uid" ]]; then
-      do_stop "$uid"
-      do_start "$uid"
+      if [[ "$uid" -eq 1 ]]; then
+        # Admin gateway: atomic kickstart -k via launchd (single-call restart).
+        do_admin_restart || true
+      else
+        do_stop "$uid"
+        do_start "$uid"
+      fi
     fi
   done < <(resolve_uids "$target")
   ok "Done"
@@ -491,9 +586,13 @@ usage() {
   echo -e "  ${CYN}gw.sh status  <uid>${R}            Detailed status for one user"
   echo -e "  ${CYN}gw.sh start   <uid|user|all>${R}   Start gateway"
   echo -e "  ${CYN}gw.sh stop    <uid|user|all>${R}   Stop gateway"
-  echo -e "  ${CYN}gw.sh restart <uid|user|all>${R}   Restart gateway"
+  echo -e "  ${CYN}gw.sh restart <uid|user|all>${R}   Restart gateway (admin uid=1 via launchctl kickstart -k)"
   echo -e "  ${CYN}gw.sh logs    <uid>${R}            Tail gateway log"
   echo -e "  ${CYN}gw.sh orphans${R}                  Find untracked gateway processes"
+  echo
+  echo -e "  ${D}Admin (uid=1) is managed by launchd label '$ADMIN_LAUNCHD_LABEL'.${R}"
+  echo -e "  ${D}Override with OPENCLAW_LAUNCHD_LABEL or OPENCLAW_BIN env vars.${R}"
+  echo -e "  ${D}Resolved openclaw bin: ${OPENCLAW_BIN:-<not found>}${R}"
   echo
 }
 
