@@ -3,8 +3,13 @@ import { motion } from "framer-motion"
 import { useAgentStore, useLiveFeedStore, useThemeStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
-import type { Agent } from "@/types"
+import type { Agent, OpenWorldMaster } from "@/types"
 import { AgentWorld3D } from "./AgentWorld3D"
+import type * as React from "react"
+import { api } from "@/lib/api"
+import { computeAgentLevel } from "@/lib/agentLeveling"
+import { chatApi, type GatewayMessage } from "@/lib/chat-api"
+import { useNavigate } from "react-router-dom"
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -691,24 +696,8 @@ function StatsBar({
           </div>
         )}
       </div>
-      {/* Legend */}
-      <div className="flex items-center gap-4">
-        {[
-          { color: "#a855f7", label: "Processing", pulse: true },
-          { color: "#22c55e", label: "Working",    pulse: false },
-          { color: "#64748b", label: "Idle",       pulse: false },
-        ].map(({ color, label, pulse }) => (
-          <div key={label} className="flex items-center gap-1.5">
-            <motion.span
-              className="w-1.5 h-1.5 rounded-full inline-block"
-              style={{ background: color }}
-              animate={pulse ? { scale: [1, 1.5, 1] } : {}}
-              transition={pulse ? { repeat: Infinity, duration: 0.9 } : undefined}
-            />
-            <span className="text-[11px] text-muted-foreground">{label}</span>
-          </div>
-        ))}
-      </div>
+      {/* Right-side legend removed — the top pill bar already shows per-agent status dots,
+          and the World toggle now occupies this space. */}
     </div>
   )
 }
@@ -727,8 +716,59 @@ export function AgentWorldView() {
     return () => obs.disconnect()
   }, [])
 
-  const agents      = useAgentStore(s => s.agents)
+  const myAgents    = useAgentStore(s => s.agents)
   const feedEntries = useLiveFeedStore(s => s.entries)
+
+  // World mode toggle: My World (own agents) vs Open World (all users' masters).
+  const [worldMode, setWorldMode] = useState<"my" | "open">("my")
+  const [openMasters, setOpenMasters] = useState<OpenWorldMaster[]>([])
+  const [openLoading, setOpenLoading] = useState(false)
+  const [openError, setOpenError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (worldMode !== "open") return
+    let cancelled = false
+    setOpenLoading(true)
+    setOpenError(null)
+    api.getOpenWorldMasters()
+      .then(({ masters }) => { if (!cancelled) setOpenMasters(masters) })
+      .catch(err => { if (!cancelled) setOpenError(err?.message || "Failed to load Open World") })
+      .finally(() => { if (!cancelled) setOpenLoading(false) })
+    return () => { cancelled = true }
+  }, [worldMode])
+
+  // Map OpenWorldMaster → Agent so AgentWorld3D can render them unchanged.
+  // Server-derived status drives the same idle/working/offline rendering as My World.
+  const openWorldAgents = useMemo<Agent[]>(() => openMasters.map(m => {
+    // server status → AgentStatus (used by getWorldState below)
+    //   active → "active"  (renders as working)
+    //   idle   → "idle"
+    //   offline → "terminated" (renders as offline)
+    const agentStatus: Agent["status"] =
+      m.status === "active" ? "active" :
+      m.status === "idle"   ? "idle"   :
+      "terminated"
+    return {
+      id: m.id,
+      name: m.name,
+      emoji: "🤖",
+      description: m.description || `Master agent of ${m.ownerDisplayName}`,
+      status: agentStatus,
+      type: "gateway",
+      color: m.color,
+      avatarPresetId: m.avatarPresetId,
+      role: m.role,
+      isMaster: true,
+      provisionedBy: m.ownerUserId,
+      lastActive: m.lastActiveAt,
+      createdAt: m.provisionedAt || undefined,
+      // Server now aggregates these per-master so leveling matches My World.
+      sessionCount: m.sessionCount,
+      totalTokens: m.totalTokens,
+    }
+  }), [openMasters])
+
+  const agents = worldMode === "open" ? openWorldAgents : myAgents
 
   const [processingIds, setProcessingIds] = useState<Set<string>>(new Set())
 
@@ -763,6 +803,195 @@ export function AgentWorldView() {
   const theme = useThemeStore(s => s.theme)
   const isLight = theme === "light"
 
+  // ── Glassmorphism style helper ────────────────────────────────────────────
+  const glass = useCallback((opts: { strong?: boolean; padded?: boolean } = {}) => {
+    const { strong = false } = opts
+    return {
+      background: isLight
+        ? `rgba(255, 255, 255, ${strong ? 0.72 : 0.55})`
+        : `rgba(20, 22, 30, ${strong ? 0.72 : 0.55})`,
+      backdropFilter: "blur(22px) saturate(180%)",
+      WebkitBackdropFilter: "blur(22px) saturate(180%)",
+      border: `1px solid ${isLight ? "rgba(255, 255, 255, 0.4)" : "rgba(255, 255, 255, 0.08)"}`,
+      boxShadow: isLight
+        ? "0 1px 0 rgba(255,255,255,0.6) inset, 0 8px 32px rgba(40, 60, 100, 0.12)"
+        : "0 1px 0 rgba(255,255,255,0.06) inset, 0 8px 32px rgba(0, 0, 0, 0.55)",
+    } as React.CSSProperties
+  }, [isLight])
+
+  // ── Pill bar selection + chat popover state ───────────────────────────────
+  type ChatBubble = { id: string; role: "user" | "assistant"; text: string; ts: number; pending?: boolean }
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatDraft, setChatDraft] = useState("")
+  const [chatSending, setChatSending] = useState(false)
+  const [chatError, setChatError] = useState<string | null>(null)
+  const [chatSessionKey, setChatSessionKey] = useState<string | null>(null)
+  const [chatMessages, setChatMessages] = useState<ChatBubble[]>([])
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+
+  const selectedAgent = useMemo(
+    () => agents.find(a => a.id === selectedAgentId) || null,
+    [agents, selectedAgentId]
+  )
+  const selectedAgentState = useMemo<WorldState | null>(() => {
+    if (!selectedAgentId) return null
+    const idx = agents.findIndex(a => a.id === selectedAgentId)
+    return idx >= 0 ? (agentStates[idx] as WorldState) : null
+  }, [selectedAgentId, agents, agentStates])
+  // Open World masters belong to other users → cannot send via this user's gateway.
+  const isCrossTenant = useMemo(() => {
+    if (!selectedAgent || worldMode !== "open") return false
+    const m = openMasters.find(x => x.id === selectedAgent.id)
+    return !!m && !m.isMine
+  }, [selectedAgent, worldMode, openMasters])
+
+  // Convert a raw GatewayMessage into a flat bubble (user/assistant text only).
+  // Tool calls, thinking blocks, and system messages are filtered out for the
+  // popover UX — Open Full Chat shows everything.
+  const toBubble = useCallback((m: GatewayMessage, idx: number): ChatBubble | null => {
+    if (m.role !== "user" && m.role !== "assistant") return null
+    let text = ""
+    if (typeof m.content === "string") text = m.content
+    else if (Array.isArray(m.content)) {
+      text = m.content
+        .filter((b: { type?: string }) => b.type === "text")
+        .map((b: { text?: string }) => b.text || "")
+        .join("\n")
+    } else if (m.text) text = m.text
+    if (!text.trim()) return null
+    return {
+      id: m.id || `m-${idx}-${m.timestamp || 0}`,
+      role: m.role,
+      text: text.trim(),
+      ts: m.timestamp || Date.now(),
+    }
+  }, [])
+
+  // Reset selection + chat when the agent list changes (e.g. mode toggle).
+  useEffect(() => {
+    setSelectedAgentId(null)
+    setChatOpen(false)
+    setChatDraft("")
+    setChatError(null)
+    setChatSessionKey(null)
+    setChatMessages([])
+  }, [worldMode])
+
+  // Reset chat thread when switching agents.
+  useEffect(() => {
+    setChatSessionKey(null)
+    setChatMessages([])
+    setChatError(null)
+  }, [selectedAgentId])
+
+  // When chat is open + an own-agent is selected, ensure session exists and load history.
+  useEffect(() => {
+    if (!chatOpen || !selectedAgent || isCrossTenant) return
+    let cancelled = false
+    setChatHistoryLoading(true)
+    setChatError(null)
+    ;(async () => {
+      try {
+        const sessRes = await chatApi.createSession(selectedAgent.id)
+        const key = sessRes.sessionKey || sessRes.key || sessRes.sessionId
+        if (!key) throw new Error("No session key returned")
+        if (cancelled) return
+        setChatSessionKey(key)
+        const histRes = await chatApi.getHistory(key, { maxChars: 40000 })
+        if (cancelled) return
+        const bubbles = (histRes.messages || [])
+          .map(toBubble)
+          .filter((b): b is ChatBubble => b != null)
+        setChatMessages(bubbles)
+      } catch (e) {
+        if (!cancelled) setChatError((e as Error).message || "Failed to load chat")
+      } finally {
+        if (!cancelled) setChatHistoryLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [chatOpen, selectedAgent, isCrossTenant, toBubble])
+
+  // Poll for new messages every 3s while chat is open with an active session.
+  // Merge strategy: server history is truth, but ANY local bubble (id prefixed
+  // with "local-") that hasn't yet appeared in server history is preserved so
+  // the user's message stays on screen continuously — even after we've marked
+  // the local bubble non-pending. Match by role+text within a 60s window.
+  useEffect(() => {
+    if (!chatOpen || !chatSessionKey || isCrossTenant) return
+    const id = setInterval(async () => {
+      try {
+        const res = await chatApi.getHistory(chatSessionKey, { maxChars: 40000 })
+        const bubbles = (res.messages || [])
+          .map(toBubble)
+          .filter((b): b is ChatBubble => b != null)
+        setChatMessages(prev => {
+          const localUnconfirmed = prev.filter(p =>
+            p.id.startsWith("local-") &&
+            !bubbles.some(b =>
+              b.role === p.role &&
+              b.text === p.text &&
+              Math.abs((b.ts || 0) - p.ts) < 60_000
+            )
+          )
+          // Preserve order: server bubbles first (chronological from server),
+          // then any unconfirmed local bubbles appended at the end (newest).
+          return [...bubbles, ...localUnconfirmed]
+        })
+      } catch { /* ignore transient poll errors */ }
+    }, 3000)
+    return () => clearInterval(id)
+  }, [chatOpen, chatSessionKey, isCrossTenant, toBubble])
+
+  // Auto-scroll to bottom when messages or send state changes.
+  useEffect(() => {
+    if (!chatScrollRef.current) return
+    chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
+  }, [chatMessages, chatSending, chatHistoryLoading])
+
+  const handlePillClick = useCallback((agentId: string) => {
+    setSelectedAgentId(prev => prev === agentId ? null : agentId)
+    setChatError(null)
+  }, [])
+
+  const handleSendChat = useCallback(async () => {
+    if (!selectedAgent || isCrossTenant || !chatDraft.trim()) return
+    const text = chatDraft.trim()
+    setChatSending(true)
+    setChatError(null)
+    // Optimistic local bubble
+    const optimistic: ChatBubble = {
+      id: `local-${Date.now()}`,
+      role: "user",
+      text,
+      ts: Date.now(),
+      pending: true,
+    }
+    setChatMessages(prev => [...prev, optimistic])
+    setChatDraft("")
+    try {
+      let key = chatSessionKey
+      if (!key) {
+        const sessRes = await chatApi.createSession(selectedAgent.id)
+        key = sessRes.sessionKey || sessRes.key || sessRes.sessionId || null
+        if (!key) throw new Error("No session key returned")
+        setChatSessionKey(key)
+      }
+      await chatApi.sendMessage(key, text, selectedAgent.id)
+      // Mark optimistic bubble as confirmed; the next poll will replace it with server-truth.
+      setChatMessages(prev => prev.map(m => m.id === optimistic.id ? { ...m, pending: false } : m))
+    } catch (e) {
+      setChatError((e as Error).message || "Failed to send")
+      // Drop the optimistic bubble on error.
+      setChatMessages(prev => prev.filter(m => m.id !== optimistic.id))
+    } finally {
+      setChatSending(false)
+    }
+  }, [selectedAgent, isCrossTenant, chatDraft, chatSessionKey])
+
   return (
     <div
       className="relative w-full"
@@ -795,10 +1024,439 @@ export function AgentWorldView() {
         />
       </div>
 
+      {/* ── Top control row: World toggle (right) — aligned with StatsBar row ── */}
+      <div
+        className="absolute z-20 flex items-center gap-2"
+        style={{ top: 10, right: 14, pointerEvents: "auto" }}
+      >
+        <div
+          className="flex items-center rounded-full"
+          style={{ ...glass({ strong: true }), padding: 2 }}
+        >
+          {([
+            { key: "my", label: "My World" },
+            { key: "open", label: "Open World" },
+          ] as const).map(opt => {
+            const active = worldMode === opt.key
+            return (
+              <button
+                key={opt.key}
+                onClick={() => setWorldMode(opt.key)}
+                className="text-[11px] font-medium px-3 py-1 rounded-full transition-all"
+                style={{
+                  background: active ? "var(--primary)" : "transparent",
+                  color: active ? "var(--primary-foreground)" : "var(--muted-foreground)",
+                  boxShadow: active
+                    ? "0 4px 14px rgba(124, 58, 237, 0.35), 0 1px 0 rgba(255,255,255,0.18) inset"
+                    : "none",
+                }}
+              >
+                {opt.label}
+              </button>
+            )
+          })}
+        </div>
+        {worldMode === "open" && (openLoading || openError) && (
+          <div
+            className="text-[10px] px-2 py-1 rounded-full"
+            style={{
+              ...glass({ strong: true }),
+              color: openError ? "#fca5a5" : "var(--muted-foreground)",
+            }}
+          >
+            {openError ? "Failed" : "Loading…"}
+          </div>
+        )}
+      </div>
+
+      {/* ── Top agent pill bar (glass, dense, with edge-fade for overflow) ── */}
+      {agents.length > 0 && (
+        <div
+          className="absolute z-15 flex justify-center"
+          style={{ top: 46, left: 0, right: 0, pointerEvents: "auto" }}
+        >
+          <div
+            className="relative rounded-full"
+            style={{
+              ...glass({ strong: true }),
+              padding: 4,
+              maxWidth: "min(78%, 920px)",
+            }}
+          >
+            {/* edge-fade masks for horizontal overflow (purely cosmetic, pointer-events none) */}
+            <div
+              className="absolute top-0 bottom-0 left-0 rounded-l-full pointer-events-none"
+              style={{
+                width: 24,
+                background: `linear-gradient(90deg, ${isLight ? "rgba(255,255,255,0.6)" : "rgba(20,22,30,0.6)"} 0%, transparent 100%)`,
+                zIndex: 1,
+              }}
+            />
+            <div
+              className="absolute top-0 bottom-0 right-0 rounded-r-full pointer-events-none"
+              style={{
+                width: 24,
+                background: `linear-gradient(270deg, ${isLight ? "rgba(255,255,255,0.6)" : "rgba(20,22,30,0.6)"} 0%, transparent 100%)`,
+                zIndex: 1,
+              }}
+            />
+            <div
+              className="flex items-center gap-1 overflow-x-auto"
+              style={{
+                scrollbarWidth: "none",
+                msOverflowStyle: "none",
+                paddingLeft: 6,
+                paddingRight: 6,
+              }}
+            >
+              {agents.map((a, i) => {
+                const ws = agentStates[i]
+                // Status tick: green = online (working/idle), yellow = processing, red = offline.
+                // Idle is "online but not working" — we still treat it as green online.
+                const dotColor =
+                  ws === "processing" ? "#facc15" :        // yellow
+                  ws === "offline"    ? "#ef4444" :        // red
+                  "#22c55e"                                 // green (working + idle)
+                const isSelected = a.id === selectedAgentId
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => handlePillClick(a.id)}
+                    className="flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap transition-all"
+                    style={{
+                      background: isSelected
+                        ? "var(--primary)"
+                        : (isLight ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.06)"),
+                      color: isSelected ? "var(--primary-foreground)" : "var(--foreground)",
+                      border: isSelected
+                        ? "1px solid rgba(255,255,255,0.2)"
+                        : `1px solid ${isLight ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.06)"}`,
+                      boxShadow: isSelected
+                        ? "0 4px 14px rgba(124, 58, 237, 0.35), 0 1px 0 rgba(255,255,255,0.18) inset"
+                        : "0 1px 0 rgba(255,255,255,0.08) inset",
+                      flex: "0 0 auto",
+                      maxWidth: 140,
+                    }}
+                    title={a.description || a.name}
+                  >
+                    {/* Avatar bubble with status-coloured outer ring (pulses on processing) */}
+                    <span
+                      className={`relative flex items-center justify-center rounded-full shrink-0 ${ws === "processing" ? "animate-pulse" : ""}`}
+                      style={{
+                        width: 18, height: 18,
+                        background: dotColor,
+                        padding: 1,
+                        boxShadow: `0 0 4px ${dotColor}`,
+                      }}
+                    >
+                      <span className="rounded-full overflow-hidden flex items-center justify-center" style={{ width: 16, height: 16, background: a.color || "var(--muted)" }}>
+                        <AgentAvatar avatarPresetId={a.avatarPresetId} emoji={a.emoji} size="w-4 h-4" />
+                      </span>
+                    </span>
+                    <span className="truncate">{a.name}</span>
+                    {/* Level pill — tier-coloured (consistent across selected + idle) */}
+                    {(() => {
+                      const lvl = computeAgentLevel(a)
+                      const lighten = (hex: string): string => {
+                        const m = hex.replace('#', '')
+                        const lc = (c: number) => Math.min(255, Math.round(c + (255 - c) * 0.35))
+                        const r = lc(parseInt(m.slice(0, 2), 16))
+                        const g = lc(parseInt(m.slice(2, 4), 16))
+                        const b = lc(parseInt(m.slice(4, 6), 16))
+                        return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+                      }
+                      const grad = `linear-gradient(135deg, ${lighten(lvl.tier.color)} 0%, ${lvl.tier.color} 100%)`
+                      return (
+                        <span
+                          className="text-[9px] font-extrabold rounded-full shrink-0"
+                          style={{
+                            padding: "1px 5px",
+                            background: grad,
+                            color: "#0f0a1a",
+                            letterSpacing: 0.4,
+                            // Inset highlight + ring so the badge stays legible against
+                            // the primary-coloured chip background when selected.
+                            boxShadow: isSelected
+                              ? "0 0 0 1.5px rgba(255,255,255,0.5), 0 0 0 1px rgba(255,255,255,0.25) inset"
+                              : "0 0 0 1px rgba(255,255,255,0.18) inset",
+                          }}
+                          title={`${lvl.tier.label} · L${lvl.level}`}
+                        >
+                          L{lvl.level}
+                        </span>
+                      )
+                    })()}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── 3D canvas fills 100% of container ── */}
       <div ref={sceneRef} className="w-full h-full">
-        <AgentWorld3D agents={agents} agentStates={agentStates as any} deskXPcts={deskXPcts} />
+        <AgentWorld3D
+          agents={agents}
+          agentStates={agentStates as any}
+          deskXPcts={deskXPcts}
+          selectedAgentId={selectedAgentId}
+        />
       </div>
+
+      {/* ── Floating CHAT button (glass + primary glow) ── */}
+      <button
+        onClick={() => setChatOpen(o => !o)}
+        className="absolute bottom-6 right-6 z-30 flex items-center gap-2 px-5 py-3 rounded-full text-xs font-semibold tracking-wide transition-transform hover:scale-105"
+        style={{
+          background: chatOpen
+            ? (isLight ? "rgba(255,255,255,0.72)" : "rgba(20,22,30,0.72)")
+            : "var(--primary)",
+          color: chatOpen ? "var(--foreground)" : "var(--primary-foreground)",
+          backdropFilter: chatOpen ? "blur(22px) saturate(180%)" : undefined,
+          WebkitBackdropFilter: chatOpen ? "blur(22px) saturate(180%)" : undefined,
+          border: `1px solid ${chatOpen
+            ? (isLight ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.08)")
+            : "rgba(255,255,255,0.18)"}`,
+          boxShadow: chatOpen
+            ? "0 8px 32px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.1) inset"
+            : "0 8px 32px rgba(124, 58, 237, 0.45), 0 1px 0 rgba(255,255,255,0.2) inset",
+          pointerEvents: "auto",
+        }}
+      >
+        <span style={{
+          width: 8, height: 8, borderRadius: "50%",
+          background: "currentColor",
+          opacity: 0.85,
+          boxShadow: "0 0 6px currentColor",
+        }} />
+        {chatOpen ? "CLOSE CHAT" : "CHAT"}
+      </button>
+
+      {/* ── Floating bubble chat popover (glass) ── */}
+      {chatOpen && (
+        <div
+          className="absolute bottom-24 right-6 z-30 rounded-2xl overflow-hidden flex flex-col"
+          style={{
+            width: 380,
+            height: 520,
+            ...glass({ strong: true }),
+            // override box-shadow with deeper drop for popover
+            boxShadow: isLight
+              ? "0 1px 0 rgba(255,255,255,0.6) inset, 0 24px 64px rgba(40, 60, 100, 0.22)"
+              : "0 1px 0 rgba(255,255,255,0.06) inset, 0 24px 64px rgba(0, 0, 0, 0.7)",
+            pointerEvents: "auto",
+          }}
+        >
+          {/* Header */}
+          <div
+            className="flex items-center gap-3 px-4 py-3"
+            style={{ borderBottom: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}` }}
+          >
+            {selectedAgent ? (
+              <>
+                <div
+                  className="rounded-full flex items-center justify-center overflow-hidden shrink-0"
+                  style={{
+                    width: 38, height: 38,
+                    background: selectedAgent.color || "var(--primary)",
+                    boxShadow: "0 0 0 2px rgba(255,255,255,0.1), 0 4px 12px rgba(0,0,0,0.25)",
+                  }}
+                >
+                  <AgentAvatar
+                    avatarPresetId={selectedAgent.avatarPresetId}
+                    emoji={selectedAgent.emoji}
+                    size="w-9 h-9"
+                  />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold truncate" style={{ color: "var(--foreground)" }}>
+                    {selectedAgent.name}
+                  </div>
+                  {(() => {
+                    // Map worldState → tick color + label.
+                    const ws = selectedAgentState
+                    const tick =
+                      ws === "processing" ? { color: "#facc15", label: "Processing", pulse: true } :
+                      ws === "offline"    ? { color: "#ef4444", label: "Offline",    pulse: false } :
+                      ws === "working"    ? { color: "#22c55e", label: "Online",     pulse: false } :
+                      ws === "idle"       ? { color: "#22c55e", label: "Online · idle", pulse: false } :
+                                            { color: "#94a3b8", label: "—",          pulse: false }
+                    return (
+                      <div className="flex items-center gap-1.5 text-[11px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                        <span
+                          className={`inline-block rounded-full ${tick.pulse ? "animate-pulse" : ""}`}
+                          style={{
+                            width: 8, height: 8,
+                            background: tick.color,
+                            boxShadow: `0 0 6px ${tick.color}`,
+                          }}
+                        />
+                        <span>{selectedAgent.role || "Agent"} · {tick.label}</span>
+                      </div>
+                    )
+                  })()}
+                </div>
+              </>
+            ) : (
+              <div className="text-sm flex-1" style={{ color: "var(--muted-foreground)" }}>
+                Pick an agent from the top bar to start chatting
+              </div>
+            )}
+            <button
+              onClick={() => setChatOpen(false)}
+              className="text-base rounded-full hover:bg-white/10"
+              style={{ color: "var(--muted-foreground)", width: 28, height: 28, lineHeight: "28px", textAlign: "center" }}
+              aria-label="Close chat"
+            >✕</button>
+          </div>
+
+          {/* Body */}
+          {selectedAgent ? (
+            <>
+              {/* Cross-tenant banner (Open World other-user master) */}
+              {isCrossTenant && (
+                <div
+                  className="text-[11px] px-3 py-2 mx-3 mt-3 rounded-lg"
+                  style={{
+                    background: isLight ? "rgba(245, 158, 11, 0.15)" : "rgba(245, 158, 11, 0.14)",
+                    color: isLight ? "#b45309" : "#fcd34d",
+                    border: `1px solid ${isLight ? "rgba(245, 158, 11, 0.35)" : "rgba(245, 158, 11, 0.28)"}`,
+                  }}
+                >
+                  View only — this is another user's master agent. Cross-tenant messaging is coming soon.
+                </div>
+              )}
+
+              {/* Messages */}
+              <div
+                ref={chatScrollRef}
+                className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2"
+              >
+                {chatHistoryLoading && chatMessages.length === 0 && (
+                  <div className="text-[11px] text-center py-4" style={{ color: "var(--muted-foreground)" }}>
+                    Loading conversation…
+                  </div>
+                )}
+                {!chatHistoryLoading && chatMessages.length === 0 && !isCrossTenant && (
+                  <div className="text-[11px] text-center py-4" style={{ color: "var(--muted-foreground)" }}>
+                    No messages yet. Say hi 👋
+                  </div>
+                )}
+                {chatMessages.map(m => (
+                  <div
+                    key={m.id}
+                    className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                  >
+                    <div
+                      className="rounded-2xl px-3 py-2 text-xs leading-relaxed"
+                      style={{
+                        maxWidth: "78%",
+                        background: m.role === "user"
+                          ? "var(--primary)"
+                          : (isLight ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.06)"),
+                        color: m.role === "user"
+                          ? "var(--primary-foreground)"
+                          : "var(--foreground)",
+                        border: m.role === "user"
+                          ? "1px solid rgba(255,255,255,0.18)"
+                          : `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}`,
+                        borderBottomRightRadius: m.role === "user" ? 6 : 18,
+                        borderBottomLeftRadius:  m.role === "user" ? 18 : 6,
+                        boxShadow: m.role === "user"
+                          ? "0 4px 14px rgba(124, 58, 237, 0.25), 0 1px 0 rgba(255,255,255,0.18) inset"
+                          : "0 1px 0 rgba(255,255,255,0.08) inset",
+                        opacity: m.pending ? 0.7 : 1,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {m.text}
+                    </div>
+                  </div>
+                ))}
+                {chatError && (
+                  <div className="text-[11px] text-center py-2" style={{ color: "#ef4444" }}>
+                    {chatError}
+                  </div>
+                )}
+              </div>
+
+              {/* Composer */}
+              {!isCrossTenant && (
+                <div
+                  className="px-3 py-3 flex items-end gap-2"
+                  style={{ borderTop: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}` }}
+                >
+                  <textarea
+                    value={chatDraft}
+                    onChange={e => setChatDraft(e.target.value)}
+                    placeholder={`Message ${selectedAgent.name}…`}
+                    rows={1}
+                    disabled={chatSending}
+                    className="flex-1 resize-none rounded-2xl text-xs px-3 py-2"
+                    style={{
+                      background: isLight ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.05)",
+                      color: "var(--foreground)",
+                      border: `1px solid ${isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)"}`,
+                      outline: "none",
+                      maxHeight: 100,
+                      minHeight: 36,
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault()
+                        handleSendChat()
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={handleSendChat}
+                    disabled={chatSending || !chatDraft.trim()}
+                    className="text-xs font-medium px-3 py-2 rounded-full transition-all"
+                    style={{
+                      background: chatSending || !chatDraft.trim()
+                        ? (isLight ? "rgba(0,0,0,0.05)" : "rgba(255,255,255,0.06)")
+                        : "var(--primary)",
+                      color: chatSending || !chatDraft.trim()
+                        ? "var(--muted-foreground)"
+                        : "var(--primary-foreground)",
+                      cursor: chatSending || !chatDraft.trim() ? "not-allowed" : "pointer",
+                      boxShadow: chatSending || !chatDraft.trim()
+                        ? "none"
+                        : "0 4px 14px rgba(124, 58, 237, 0.35), 0 1px 0 rgba(255,255,255,0.18) inset",
+                      minWidth: 56,
+                    }}
+                  >
+                    {chatSending ? "…" : "Send"}
+                  </button>
+                </div>
+              )}
+
+              {/* Footer link */}
+              <div
+                className="px-4 py-2 text-[10px] flex justify-end"
+                style={{
+                  borderTop: `1px solid ${isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.04)"}`,
+                  color: "var(--muted-foreground)",
+                }}
+              >
+                <button
+                  onClick={() => navigate(`/chat?agent=${encodeURIComponent(selectedAgent.id)}`)}
+                  className="hover:underline"
+                  style={{ color: "var(--muted-foreground)" }}
+                >
+                  Open full chat →
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center px-6 text-center text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              Click an agent chip at the top to open their thread.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

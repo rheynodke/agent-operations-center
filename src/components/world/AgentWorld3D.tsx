@@ -1,10 +1,26 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from "react"
-import { Canvas, useFrame } from "@react-three/fiber"
-import { OrthographicCamera, Grid, Box, Cylinder, Sphere, OrbitControls, Text, Html } from "@react-three/drei"
+import { Canvas, useFrame, useThree } from "@react-three/fiber"
+import { OrthographicCamera, Grid, Box, Cylinder, Sphere, OrbitControls, Text, Html, Environment } from "@react-three/drei"
 import * as THREE from "three"
 import type { Agent } from "@/types"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 import { useThemeStore, useSessionStore } from "@/stores"
+import { computeAgentLevel, type AgentTier } from "@/lib/agentLeveling"
+
+// Build a CSS linear-gradient string for a tier-coloured level pill.
+// Brightens the base hex by ~30% on the high end so the pill reads as a
+// luminous chip, regardless of which tier hue we get.
+function tierGradient(hex: string): string {
+  const m = hex.replace('#', '')
+  const r = parseInt(m.slice(0, 2), 16)
+  const g = parseInt(m.slice(2, 4), 16)
+  const b = parseInt(m.slice(4, 6), 16)
+  const lighten = (c: number) => Math.min(255, Math.round(c + (255 - c) * 0.35))
+  const lr = lighten(r), lg = lighten(g), lb = lighten(b)
+  const lightHex = `#${lr.toString(16).padStart(2, '0')}${lg.toString(16).padStart(2, '0')}${lb.toString(16).padStart(2, '0')}`
+  return `linear-gradient(135deg, ${lightHex} 0%, ${hex} 100%)`
+}
+import { AgentAvatar } from "@/components/agents/AgentAvatar"
 
 // ── THEME PALETTES ────────────────────────────────────────────────────────────
 type ThemeMode = "dark" | "light"
@@ -41,12 +57,59 @@ const SCENE_THEME = {
   },
 } as const
 
+// ── DASHBOARD THEME TOKEN BRIDGE ─────────────────────────────────────────────
+// Reads the dashboard's CSS variables (defined in src/index.css) and exposes
+// them as plain hex strings the 3D materials can consume. Recomputes when the
+// theme mode flips (dark/light). The fallback `|| '#888'` keeps the scene
+// rendering even if a token is missing during HMR.
+export type SceneTokens = {
+  wall: string
+  wallTrim: string
+  floor: string
+  floorAccent: string
+  accent: string
+  accentSoft: string
+  foreground: string
+  ambient: string
+  canvasBg: string
+}
+
+function useThemeTokens(): SceneTokens {
+  const mode = useThemeStore(s => s.theme)
+  return useMemo(() => {
+    if (typeof window === 'undefined') {
+      return {
+        wall: '#1f2020', wallTrim: '#131313', floor: '#191a1a', floorAccent: '#2a2b2b',
+        accent: '#d0bcff', accentSoft: '#5516be', foreground: '#e7e5e4',
+        ambient: '#acabaa', canvasBg: '#0e0e0e',
+      }
+    }
+    const cs = getComputedStyle(document.documentElement)
+    const v = (k: string) => (cs.getPropertyValue(k).trim() || '#888')
+    return {
+      wall:        v('--surface-low'),       // darker — recedes
+      wallTrim:    v('--card'),
+      floor:       v('--surface-bright'),    // lighter — catches light, distinct from wall
+      floorAccent: v('--surface-highest'),   // wood-grain plank line tone
+      accent:      v('--primary'),
+      accentSoft:  v('--accent'),
+      foreground:  v('--foreground'),
+      ambient:     v('--muted-foreground'),
+      canvasBg:    v('--background'),
+    }
+    // mode is intentionally a dep: when theme toggles, CSS vars change and
+    // we need the memo to invalidate even though we don't read mode itself.
+  }, [mode])
+}
+
 type WorldState = "processing" | "working" | "idle" | "offline"
 
 interface AgentWorld3DProps {
   agents: Agent[]
   agentStates: WorldState[]
   deskXPcts: number[]
+  /** Optional — if set, camera glides to this agent and a highlight ring renders under them. */
+  selectedAgentId?: string | null
 }
 
 // ── NAVIGATION HIGHWAY NODES (verified clear of all furniture) ──────────────
@@ -93,6 +156,15 @@ const WAYPOINTS: Waypoint[] = [
   { via: [],      dest: [ -4,  4], facing: 0 },   // 4 units south of hologram centre
   { via: [HL],    dest: [ -8, 12], facing: 0 },
   { via: [HC],    dest: [  6, 10], facing: 0 },
+
+  // ── LOUNGE 2 ─ new sofa cluster centre [-2,0,17] + armchair [-5,0,14] ────
+  // Sofa front edge at z=16.2; armchair extent x=[-6, -4] z=[13.2, 14.8].
+  { via: [HC],    dest: [-2, 11], facing: 0 },             // south of sofa, facing camera
+  { via: [HC],    dest: [-7,  7], facing: -Math.PI / 4 },  // south-west of armchair, angled
+
+  // ── MEETING NOOK ─ rug centre [4,0,4], chairs at z=2.4 and z=5.6 ─────────
+  { via: [HC],    dest: [ 4, 0.5], facing: Math.PI },      // south of nook, facing north into it
+  { via: [HC, [6, 4]], dest: [7, 4], facing: -Math.PI / 2 }, // east of nook, facing west into it
 ]
 
 // ── Shared agent position registry + movement constants ──────────────────────
@@ -198,6 +270,7 @@ function Plant({ position }: { position: [number, number, number] }) {
 }
 
 function CoffeeCounter() {
+  const tokens = useThemeTokens()
   // Upscale coffee bar against left wall
   return (
     <group position={[-25, 0, -5]}>
@@ -264,7 +337,7 @@ function CoffeeCounter() {
         </Box>
         {/* Screen */}
         <Box args={[1.4, 1.0, 0.1]} position={[0, 2.8, 1.02]}>
-          <meshStandardMaterial color="#0ea5e9" emissive="#0ea5e9" emissiveIntensity={1.2} toneMapped={false} />
+          <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={0.7} toneMapped={false} />
         </Box>
         {/* Steam wand */}
         <Cylinder args={[0.06, 0.06, 1.5]} position={[1.0, 1.5, 0.9]} rotation={[0.4, 0, 0.3]} castShadow>
@@ -323,6 +396,7 @@ function CoffeeCounter() {
 }
 
 function ArcadeArea() {
+  const tokens = useThemeTokens()
   return (
     <group position={[-28, 0, -30]}>
       {/* Floor carpet */}
@@ -369,7 +443,7 @@ function ArcadeArea() {
 
       {/* Floor edge strip */}
       <Box args={[18, 0.06, 0.15]} position={[9, 0.08, 13]}>
-        <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={2.5} toneMapped={false} />
+        <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={1.2} toneMapped={false} />
       </Box>
 
       {/* Holographic floor grid */}
@@ -540,7 +614,7 @@ function ArcadeArea() {
       {/* Zone lights */}
       <pointLight position={[9, 5, 5]} intensity={2.5} distance={22} color="#a855f7" />
       <pointLight position={[9, 3, 12]} intensity={1.5} distance={15} color="#ec4899" />
-      <pointLight position={[9, 7, 2]} intensity={1.0} distance={20} color="#06b6d4" />
+      <pointLight position={[9, 7, 2]} intensity={1.0} distance={20} color={tokens.accent} />
 
     </group>
   )
@@ -616,6 +690,7 @@ function ZoneLabel({
 }
 
 function HologramMeetingTable() {
+  const tokens = useThemeTokens()
   return (
     <group position={[16, 0, 20]}>
       {/* Circular rug */}
@@ -632,13 +707,13 @@ function HologramMeetingTable() {
       </Cylinder>
       {/* Hologram emitter on table */}
       <Cylinder args={[0.7, 0.8, 0.15]} position={[0, 1.42, 0]}>
-        <meshStandardMaterial color="#0ea5e9" emissive="#0ea5e9" emissiveIntensity={2} toneMapped={false} />
+        <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={1.0} toneMapped={false} />
       </Cylinder>
       {/* Hologram Globe */}
       <Sphere args={[1.2]} position={[0, 3.2, 0]}>
-        <meshStandardMaterial color="#38bdf8" emissive="#38bdf8" emissiveIntensity={0.8} wireframe transparent opacity={0.7} toneMapped={false} />
+        <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={0.8} wireframe transparent opacity={0.7} toneMapped={false} />
       </Sphere>
-      <pointLight position={[0, 3, 0]} intensity={1.5} distance={12} color="#38bdf8" decay={2} />
+      <pointLight position={[0, 3, 0]} intensity={1.5} distance={12} color={tokens.accent} decay={2} />
       {/* Chairs */}
       {[0, Math.PI / 2, Math.PI, Math.PI * 1.5].map((rot, i) => (
         <group key={i} rotation={[0, rot, 0]}>
@@ -701,38 +776,9 @@ function FloatingParticles({ theme }: { theme: ThemeMode }) {
 
 // ── CityBackdrop ──────────────────────────────────────────────────────────────
 // Glowing city-window panels on back + left walls, plus neon "AGENT HQ" sign
-function CityBackdrop({ theme }: { theme: ThemeMode }) {
-  const windows = useMemo(() => {
-    const wins: { x: number; y: number; w: number; h: number; col: string; int: number }[] = []
-    // Back wall windows  (z = -29.5)
-    const cols = ["#38bdf8","#818cf8","#c084fc","#f472b6","#34d399","#fb923c"]
-    for (let i = 0; i < 22; i++) {
-      wins.push({
-        x: -26 + i * 2.6, y: 3 + Math.random() * 6,
-        w: 1.2 + Math.random() * 1.6, h: 0.9 + Math.random() * 3.5,
-        col: cols[i % cols.length],
-        int: 0.4 + Math.random() * 0.9,
-      })
-    }
-    return wins
-  }, [])
-
-  const sideWins = useMemo(() => {
-    const wins: { z: number; y: number; w: number; h: number; col: string; int: number }[] = []
-    const cols = ["#38bdf8","#818cf8","#c084fc","#fb923c"]
-    for (let i = 0; i < 12; i++) {
-      wins.push({
-        z: -26 + i * 4.6, y: 4 + Math.random() * 5,
-        w: 1.0 + Math.random() * 2.0, h: 1.0 + Math.random() * 3.0,
-        col: cols[i % cols.length],
-        int: 0.3 + Math.random() * 0.8,
-      })
-    }
-    return wins
-  }, [])
-
-  const wallCol = theme === "dark" ? "#0c1220" : "#e8edf5"
-  const wallEmi = theme === "dark" ? "#0c1220" : "#dde5f0"
+function CityBackdrop({ theme: _theme }: { theme: ThemeMode }) {
+  const tokens = useThemeTokens()
+  const wallCol = tokens.wall
 
   return (
     <group>
@@ -740,46 +786,20 @@ function CityBackdrop({ theme }: { theme: ThemeMode }) {
       <Box args={[58, 12, 0.3]} position={[0, 6, -29.6]}>
         <meshStandardMaterial color={wallCol} roughness={0.9} />
       </Box>
-      {/* ── City window panels on back wall ── */}
-      {windows.map((w, i) => (
-        <Box key={i} args={[w.w, w.h, 0.2]} position={[w.x, w.y, -29.45]}>
-          <meshStandardMaterial
-            color={w.col} emissive={w.col} emissiveIntensity={w.int}
-            toneMapped={false} transparent opacity={0.85}
-          />
-        </Box>
-      ))}
 
       {/* ── Left wall skin ── */}
       <Box args={[0.3, 12, 58]} position={[-29.6, 6, 0]}>
         <meshStandardMaterial color={wallCol} roughness={0.9} />
       </Box>
-      {/* ── City window panels on left wall ── */}
-      {sideWins.map((w, i) => (
-        <Box key={i} args={[0.2, w.h, w.w]} position={[-29.45, w.y, w.z]}>
-          <meshStandardMaterial
-            color={w.col} emissive={w.col} emissiveIntensity={w.int}
-            toneMapped={false} transparent opacity={0.85}
-          />
-        </Box>
-      ))}
 
-      {/* ── Neon "AGENT HQ" sign on back wall ── */}
+      {/* ── "AGENT HQ" wordmark on back wall — minimalist, no backplate/glow ── */}
       <group position={[-8, 10.2, -29.3]}>
-        {/* Sign backplate */}
-        <Box args={[12, 1.8, 0.15]}>
-          <meshStandardMaterial color="#070d1a" />
-        </Box>
         <Text
           position={[0, 0, 0.12]}
           fontSize={1.1} letterSpacing={0.12}
-          color="#06b6d4" anchorX="center" anchorY="middle"
-          outlineWidth={0.04} outlineColor="#0e7490"
+          color={tokens.accent} anchorX="center" anchorY="middle"
+          outlineWidth={0.02} outlineColor={tokens.accentSoft}
         >AGENT HQ</Text>
-        {/* Glow strip below sign */}
-        <Box args={[12, 0.12, 0.1]} position={[0, -1.0, 0.1]}>
-          <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={3} toneMapped={false} />
-        </Box>
       </group>
     </group>
   )
@@ -844,6 +864,7 @@ function CeilingLights({ theme }: { theme: ThemeMode }) {
 // ── HologramSphere ────────────────────────────────────────────────────────────
 // Rotating orbital ring display in the open lobby area — like a network globe
 function HologramSphere({ theme }: { theme: ThemeMode }) {
+  const tokens = useThemeTokens()
   const groupRef  = useRef<THREE.Group>(null)
   const ring1Ref  = useRef<THREE.Mesh>(null)
   const ring2Ref  = useRef<THREE.Mesh>(null)
@@ -882,15 +903,15 @@ function HologramSphere({ theme }: { theme: ThemeMode }) {
       {/* Base ring glow */}
       <mesh ref={baseRef} position={[0, 0.26, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <torusGeometry args={[0.75, 0.06, 8, 32]} />
-        <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={2} toneMapped={false} />
+        <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={1.0} toneMapped={false} />
       </mesh>
 
       {/* Rotating orbital group */}
       <group ref={groupRef} position={[0, 4, 0]}>
-        {/* Orbit ring 1 — cyan horizontal */}
+        {/* Orbit ring 1 — primary horizontal */}
         <mesh ref={ring1Ref}>
           <torusGeometry args={[1.8, 0.055, 8, 40]} />
-          <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={2.5} toneMapped={false} transparent opacity={0.85} />
+          <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={1.2} toneMapped={false} transparent opacity={0.85} />
         </mesh>
         {/* Orbit ring 2 — violet tilted */}
         <mesh ref={ring2Ref} rotation={[Math.PI / 3, 0, 0]}>
@@ -906,7 +927,7 @@ function HologramSphere({ theme }: { theme: ThemeMode }) {
         <mesh ref={coreRef}>
           <sphereGeometry args={[1.05, 12, 12]} />
           <meshStandardMaterial
-            color="#06b6d4" emissive="#0284c7" emissiveIntensity={0.35}
+            color={tokens.accent} emissive={tokens.accentSoft} emissiveIntensity={0.35}
             wireframe transparent opacity={0.45} toneMapped={false}
           />
         </mesh>
@@ -916,7 +937,7 @@ function HologramSphere({ theme }: { theme: ThemeMode }) {
       <mesh ref={beamRef} position={[0, 5, 0]}>
         <cylinderGeometry args={[0.06, 1.6, 10, 16, 1, true]} />
         <meshStandardMaterial
-          color="#06b6d4" emissive="#06b6d4" emissiveIntensity={0.2}
+          color={tokens.accent} emissive={tokens.accent} emissiveIntensity={0.2}
           side={THREE.BackSide} transparent opacity={0.05} toneMapped={false}
         />
       </mesh>
@@ -924,46 +945,199 @@ function HologramSphere({ theme }: { theme: ThemeMode }) {
   )
 }
 
-function SceneRoom({ theme = "dark" }: { theme?: ThemeMode }) {
+// ── LOUNGE SOFA CLUSTER + MEETING NOOK ──────────────────────────────────────
+// Procedural box geometry, palette-bound to dashboard tokens. Soft furniture
+// to fill the open floor zone next to the workspace booth and turn the
+// existing hologram pedestal into a proper meeting nook.
+function MeetingNookFurniture({ tokens }: { tokens: SceneTokens }) {
+  return (
+    <group>
+      {/* ── Sofa cluster anchor rug ───────────────────────────────────────── */}
+      {/* Spans the sofa+coffee-table+armchair zone so the cluster reads as a  */}
+      {/* defined lounge pocket, not floating on the open floor.               */}
+      <Box args={[10, 0.04, 7]} position={[-3, 0.022, 15]} receiveShadow>
+        <meshStandardMaterial color={tokens.wallTrim} roughness={0.95} transparent opacity={0.55} />
+      </Box>
 
+      {/* ── Sofa cluster, centred near [-2, 0, 16] ────────────────────────── */}
+      {/* Long sofa, facing south */}
+      <group position={[-2, 0, 17]}>
+        <Box args={[5, 0.6, 1.6]} position={[0, 0.6, 0]} castShadow receiveShadow>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+        <Box args={[5, 1.4, 0.4]} position={[0, 1.5, 0.6]} castShadow>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+        <Box args={[4.6, 0.2, 1.3]} position={[0, 1.0, -0.05]}>
+          <meshStandardMaterial color={tokens.floorAccent} roughness={0.85} />
+        </Box>
+        <Box args={[0.3, 1.1, 1.6]} position={[-2.5, 1.1, 0]}>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+        <Box args={[0.3, 1.1, 1.6]} position={[2.5, 1.1, 0]}>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+      </group>
+      {/* Coffee table in front of sofa */}
+      <group position={[-2, 0, 14]}>
+        <Box args={[1.8, 0.4, 1.1]} position={[0, 0.4, 0]} castShadow receiveShadow>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.5} />
+        </Box>
+        {[[-0.8, -0.45], [0.8, -0.45], [-0.8, 0.45], [0.8, 0.45]].map(([lx, lz], i) => (
+          <Box key={i} args={[0.1, 0.4, 0.1]} position={[lx, 0.2, lz]}>
+            <meshStandardMaterial color={tokens.foreground} roughness={0.5} />
+          </Box>
+        ))}
+      </group>
+      {/* Single armchair, slight angle, west of coffee table */}
+      <group position={[-5, 0, 14]} rotation={[0, Math.PI / 5, 0]}>
+        <Box args={[1.6, 0.6, 1.5]} position={[0, 0.6, 0]} castShadow>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+        <Box args={[1.6, 1.2, 0.3]} position={[0, 1.4, 0.55]}>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+        <Box args={[0.25, 0.9, 1.5]} position={[-0.7, 1.0, 0]}>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+        <Box args={[0.25, 0.9, 1.5]} position={[0.7, 1.0, 0]}>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+        </Box>
+      </group>
+
+      {/* ── Two potted plants flanking the sofa cluster ───────────────────── */}
+      {[[-7, 18], [3, 18]].map(([px, pz]) => (
+        <group key={`plant-${px}-${pz}`} position={[px, 0, pz]}>
+          <Cylinder args={[0.45, 0.35, 0.7, 16]} position={[0, 0.35, 0]} castShadow>
+            <meshStandardMaterial color={tokens.wallTrim} roughness={0.6} />
+          </Cylinder>
+          <Cylinder args={[0.42, 0.42, 0.05, 16]} position={[0, 0.72, 0]}>
+            <meshStandardMaterial color="#3a2a1f" roughness={1} />
+          </Cylinder>
+          <Sphere args={[0.6, 16, 12]} position={[0, 1.3, 0]} castShadow>
+            <meshStandardMaterial color="#7a9b6e" roughness={0.85} />
+          </Sphere>
+          <Sphere args={[0.45, 12, 10]} position={[0.25, 1.55, -0.1]} castShadow>
+            <meshStandardMaterial color="#8aab7c" roughness={0.85} />
+          </Sphere>
+          <Sphere args={[0.4, 12, 10]} position={[-0.3, 1.6, 0.1]} castShadow>
+            <meshStandardMaterial color="#6b8c5e" roughness={0.85} />
+          </Sphere>
+        </group>
+      ))}
+
+      {/* ── Framed art row on back wall (lounge side, not blocked by platform) */}
+      {[
+        { x: -22, w: 3.0, h: 2.2 },
+        { x: -16, w: 3.0, h: 2.2 },
+        { x: -10, w: 3.0, h: 2.2 },
+        { x:  -4, w: 3.0, h: 2.2 },
+      ].map((art, i) => (
+        <group key={`art-${i}`} position={[art.x, 6.5, -29.2]}>
+          <Box args={[art.w + 0.2, art.h + 0.2, 0.1]} position={[0, 0, 0]}>
+            <meshStandardMaterial color={tokens.wallTrim} roughness={0.5} />
+          </Box>
+          <Box args={[art.w, art.h, 0.05]} position={[0, 0, 0.06]}>
+            <meshStandardMaterial color={tokens.accentSoft} emissive={tokens.accentSoft} emissiveIntensity={0.05} roughness={0.6} />
+          </Box>
+        </group>
+      ))}
+
+      {/* ── Meeting nook anchor rug (circular) ────────────────────────────── */}
+      {/* Defines the nook as an intentional zone with a soft floor mat.       */}
+      <Cylinder args={[2.4, 2.4, 0.04, 32]} position={[4, 0.022, 4]} receiveShadow>
+        <meshStandardMaterial color={tokens.accentSoft} roughness={0.95} transparent opacity={0.35} />
+      </Cylinder>
+
+      {/* ── Meeting nook: round table + 2 chairs adjacent to hologram pedestal */}
+      {/* Hologram lives near [0, 0, 8]. Place table at [4, 0, 4] — south-east */}
+      {/* of hologram, 4 units clear, on transit floor.                        */}
+      <group position={[4, 0, 4]}>
+        <Cylinder args={[1.1, 1.1, 0.1, 24]} position={[0, 0.95, 0]} castShadow receiveShadow>
+          <meshStandardMaterial color={tokens.wallTrim} roughness={0.5} />
+        </Cylinder>
+        <Cylinder args={[0.15, 0.25, 0.95, 12]} position={[0, 0.475, 0]}>
+          <meshStandardMaterial color={tokens.foreground} roughness={0.5} />
+        </Cylinder>
+        <Cylinder args={[0.5, 0.5, 0.08, 16]} position={[0, 0.04, 0]}>
+          <meshStandardMaterial color={tokens.foreground} roughness={0.5} />
+        </Cylinder>
+        {([[0, -1.6, 0], [0, 1.6, Math.PI]] as Array<[number, number, number]>).map(([cx, cz, rot], i) => (
+          <group key={`chair-${i}`} position={[cx, 0, cz]} rotation={[0, rot, 0]}>
+            <Box args={[0.9, 0.12, 0.9]} position={[0, 0.55, 0]} castShadow>
+              <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+            </Box>
+            <Box args={[0.9, 0.9, 0.1]} position={[0, 1.05, -0.4]}>
+              <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
+            </Box>
+            {[[-0.4, -0.4], [0.4, -0.4], [-0.4, 0.4], [0.4, 0.4]].map(([lx, lz], j) => (
+              <Box key={j} args={[0.06, 0.55, 0.06]} position={[lx, 0.275, lz]}>
+                <meshStandardMaterial color={tokens.foreground} roughness={0.5} />
+              </Box>
+            ))}
+          </group>
+        ))}
+      </group>
+    </group>
+  )
+}
+
+function SceneRoom({ theme = "dark" }: { theme?: ThemeMode }) {
   const t = SCENE_THEME[theme]
+  const tokens = useThemeTokens()
   return (
     <group>
       {/* ==================== FLOOR ==================== */}
-      {/* Main floor slab */}
-      <Box args={[60, 1, 60]} position={[0, -0.5, 0]} receiveShadow>
-        <meshStandardMaterial color={t.floorColor} roughness={0.6} />
-      </Box>
-      {/* Main floor grid */}
+      {/* Main floor slab — subdivided plane with Lambert shading for soft matte feel */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[60, 60, 24, 14]} />
+        <meshLambertMaterial color={tokens.floor} />
+      </mesh>
+      {/* Wood-grain plank divisions — subtle horizontal strips, opacity 0.15 */}
+      {[-26, -22, -18, -14, -10, -6, -2, 2, 6, 10, 14, 18, 22, 26].map((zPos) => (
+        <Box key={`plank-${zPos}`} args={[60, 0.002, 0.04]} position={[0, 0.005, zPos]}>
+          <meshBasicMaterial color={tokens.floorAccent} transparent opacity={0.15} />
+        </Box>
+      ))}
+      {/* Main floor grid — kept as a faint guide overlay (lower opacity than before) */}
       <Grid
-        position={[0, 0.01, 0]}
+        position={[0, 0.011, 0]}
         args={[60, 60]}
         cellSize={2}
-        cellThickness={1}
+        cellThickness={0.6}
         cellColor={t.gridCell}
         sectionSize={10}
-        sectionThickness={1.5}
+        sectionThickness={1}
         sectionColor={t.gridSection}
         fadeDistance={80}
+        fadeStrength={2}
       />
 
       {/* ===================== WALLS ===================== */}
       {/* Left wall (at x = -30) */}
       <Box args={[1, 12, 60]} position={[-30, 6, 0]} receiveShadow>
-        <meshStandardMaterial color={t.wallColor} roughness={0.4} />
+        <meshStandardMaterial color={tokens.wall} roughness={0.55} />
       </Box>
       {/* Back wall (at z = -30) */}
       <Box args={[60, 12, 1]} position={[0, 6, -30]} receiveShadow>
-        <meshStandardMaterial color={t.wallColor} roughness={0.4} />
+        <meshStandardMaterial color={tokens.wall} roughness={0.55} />
+      </Box>
+      {/* Wall trim molding — top edge of left wall */}
+      <Box args={[0.4, 0.25, 60]} position={[-29.8, 11.9, 0]}>
+        <meshStandardMaterial color={tokens.wallTrim} roughness={0.5} />
+      </Box>
+      {/* Wall trim molding — top edge of back wall */}
+      <Box args={[60, 0.25, 0.4]} position={[0, 11.9, -29.8]}>
+        <meshStandardMaterial color={tokens.wallTrim} roughness={0.5} />
       </Box>
 
-      {/* Skirter LED Left Wall */}
+      {/* Skirter LED Left Wall — dashboard accent (purple) */}
       <Box args={[0.2, 0.3, 60]} position={[-29.4, 0.3, 0]}>
-        <meshStandardMaterial color={t.skirterColor} emissive={t.skirterColor} emissiveIntensity={t.skirterIntensity} toneMapped={false} />
+        <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={0.6} toneMapped={false} />
       </Box>
-      {/* Skirter LED Back Wall */}
+      {/* Skirter LED Back Wall — dashboard accent (purple) */}
       <Box args={[60, 0.3, 0.2]} position={[0, 0.3, -29.4]}>
-        <meshStandardMaterial color={t.skirterColor} emissive={t.skirterColor} emissiveIntensity={t.skirterIntensity} toneMapped={false} />
+        <meshStandardMaterial color={tokens.accent} emissive={tokens.accent} emissiveIntensity={0.6} toneMapped={false} />
       </Box>
 
       {/* ============= WORKSPACE RAISED PLATFORM ============= */}
@@ -1002,6 +1176,9 @@ function SceneRoom({ theme = "dark" }: { theme?: ThemeMode }) {
       {/* 2 zone fills replace 6 pendant pointLights */}
       <pointLight position={[15, 7, -16]} intensity={1.2} distance={22} color="#fef3c7" />
       <pointLight position={[15, 7, -6]} intensity={1.0} distance={22} color="#fef3c7" />
+
+      {/* New procedural lounge furniture (token-bound) */}
+      <MeetingNookFurniture tokens={tokens} />
 
       {/* ============= BREAK / LOUNGE ZONE ============= */}
       {/* Lounge rug — centered between both sofas */}
@@ -1165,18 +1342,22 @@ function StatusSign({ position, state }: { position: [number, number, number], s
 
 // ── Agent hover profile card (rendered as HTML in 3D space) ──────────────────
 function AgentProfileCard({ agent, state, color }: { agent: Agent; state: WorldState; color: string }) {
+  const tokens = useThemeTokens()
   const preset = AVATAR_PRESETS.find(p => p.id === agent.avatarPresetId) ?? null
   const accentColor = preset?.color ?? color
 
-  // ── Derive stats from the already-loaded sessions store ──────────────────
+  // ── Derive stats — prefer the Agent's lifetime totals so this card stays in
+  //    lockstep with the nametag + pill bar (which read those same fields).
+  //    Fall back to summing the in-memory session store only if the Agent
+  //    object hasn't been hydrated with totals yet.
   const sessions = useSessionStore(s => s.sessions)
   const agentSessions = useMemo(
     () => sessions.filter(s => s.agentId === agent.id),
     [sessions, agent.id]
   )
-  const sessionCount  = agentSessions.length
-  const totalCost     = agentSessions.reduce((sum, s) => sum + (s.totalCost ?? 0), 0)
-  const totalTokens   = agentSessions.reduce((sum, s) => sum + (s.totalTokens ?? 0), 0)
+  const sessionCount  = agent.sessionCount ?? agentSessions.length
+  const totalCost     = agent.totalCost ?? agentSessions.reduce((sum, s) => sum + (s.totalCost ?? 0), 0)
+  const totalTokens   = agent.totalTokens ?? agentSessions.reduce((sum, s) => sum + (s.totalTokens ?? 0), 0)
   const totalTokensK  = totalTokens > 0 ? `${(totalTokens / 1000).toFixed(1)}k` : "—"
 
   const statusMeta: Record<WorldState, { label: string; bg: string; dot: string }> = {
@@ -1191,13 +1372,16 @@ function AgentProfileCard({ agent, state, color }: { agent: Agent; state: WorldS
   const fmtCost = (n: number) => n === 0 ? "—" : `$${n.toFixed(4)}`
   const fmtNum  = (n: number) => n === 0 ? "—" : n.toLocaleString()
 
-  // Composite EXP: 50% from sessions (cap 200), 50% from tokens (cap 2M)
-  const sessionScore = Math.min(50, (sessionCount / 200) * 50)
-  const tokenScore   = Math.min(50, (totalTokens / 2_000_000) * 50)
-  const expPct       = Math.round(sessionScore + tokenScore)
-  const expLevel     = Math.max(1, Math.ceil(expPct / 10))
-  const sessionPct   = Math.round(sessionScore * 2)
-  const tokenPct     = Math.round(tokenScore   * 2)
+  // Shared leveling formula (memory + session + age)
+  const lvl = computeAgentLevel({
+    sessionCount,
+    totalTokens,
+    createdAt: agent.createdAt,
+  })
+  const expLevel = lvl.level
+  const expPct   = lvl.pct
+  const sessionPct = Math.min(100, Math.round(lvl.breakdown.session / 1.5))
+  const tokenPct   = Math.min(100, Math.round(lvl.breakdown.memory / 1.5))
 
   return (
     <div style={{
@@ -1338,7 +1522,7 @@ function AgentProfileCard({ agent, state, color }: { agent: Agent; state: WorldS
                 borderRadius: 3, padding: "1px 5px", letterSpacing: 0.4,
               }}>L{expLevel}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                <span style={{ width: 6, height: 6, borderRadius: 1, background: "#22d3ee", display: "inline-block" }} />
+                <span style={{ width: 6, height: 6, borderRadius: 1, background: tokens.accent, display: "inline-block" }} />
                 <span style={{ fontSize: 8, color: "#64748b" }}>Sessions</span>
                 <span style={{ width: 6, height: 6, borderRadius: 1, background: accentColor, display: "inline-block", marginLeft: 4 }} />
                 <span style={{ fontSize: 8, color: "#64748b" }}>Tokens</span>
@@ -1356,8 +1540,8 @@ function AgentProfileCard({ agent, state, color }: { agent: Agent; state: WorldS
             <div style={{
               height: "100%",
               width: `${sessionPct / 2}%`,
-              background: "linear-gradient(90deg, #0891b2, #22d3ee)",
-              boxShadow: "0 0 6px #22d3ee88",
+              background: `linear-gradient(90deg, ${tokens.accentSoft}, ${tokens.accent})`,
+              boxShadow: `0 0 6px ${tokens.accent}88`,
               borderRadius: "3px 0 0 3px",
               transition: "width 0.4s ease",
             }} />
@@ -1427,6 +1611,152 @@ function WorkingAura({ color, processing }: { color: string; processing: boolean
   )
 }
 
+// ── Tiered LevelAura ────────────────────────────────────────────────────────
+// Renders progressively richer visuals around an agent based on their level
+// tier. T1 (L1-19) renders nothing; T2 adds a subtle ring; T3+ animate; T4+
+// add a vertical light beam; T5+ add orbital particles; T6 (L100) is the most
+// pronounced. The aura sits at the agent's feet and follows them via the
+// parent group transform.
+function LevelAura({ tier }: { tier: AgentTier }) {
+  const ringRef    = useRef<THREE.Mesh>(null)
+  const orbitsRef  = useRef<THREE.Group>(null)
+  const beamRef    = useRef<THREE.Mesh>(null)
+
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime
+    if (tier.animated && ringRef.current) {
+      ringRef.current.scale.setScalar(1 + Math.sin(t * 1.6) * 0.06)
+    }
+    if (tier.particles && orbitsRef.current) {
+      orbitsRef.current.rotation.y = t * 0.6
+    }
+    if (tier.beam && beamRef.current) {
+      const m = beamRef.current.material as THREE.MeshBasicMaterial
+      m.opacity = 0.10 + Math.sin(t * 1.2) * 0.04
+    }
+  })
+
+  if (tier.index === 1) return null
+
+  return (
+    <group>
+      {/* Ground ring */}
+      <mesh ref={ringRef} position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.95, 1.15, 48]} />
+        <meshBasicMaterial
+          color={tier.color}
+          transparent
+          opacity={Math.min(1, 0.45 + tier.intensity * 0.4)}
+          toneMapped={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      {/* Soft inner glow disc — stronger for higher tiers */}
+      <mesh position={[0, 0.035, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0, 0.95, 48]} />
+        <meshBasicMaterial
+          color={tier.color}
+          transparent
+          opacity={0.06 + tier.intensity * 0.08}
+          toneMapped={false}
+        />
+      </mesh>
+      {/* Vertical light beam — Master tier and above */}
+      {tier.beam && (
+        <mesh ref={beamRef} position={[0, 4, 0]}>
+          <cylinderGeometry args={[0.08, 0.7, 8, 16, 1, true]} />
+          <meshBasicMaterial
+            color={tier.color}
+            transparent
+            opacity={0.12}
+            toneMapped={false}
+            side={THREE.BackSide}
+          />
+        </mesh>
+      )}
+      {/* Orbital particles — Legend / Mythic tiers */}
+      {tier.particles && (
+        <group ref={orbitsRef} position={[0, 1.2, 0]}>
+          {[0, 1, 2, 3, 4].map(i => {
+            const angle = (i / 5) * Math.PI * 2
+            return (
+              <mesh key={i} position={[Math.cos(angle) * 1.3, Math.sin(i * 1.7) * 0.25, Math.sin(angle) * 1.3]}>
+                <sphereGeometry args={[0.06, 8, 6]} />
+                <meshBasicMaterial color={tier.color} transparent opacity={0.9} toneMapped={false} />
+              </mesh>
+            )
+          })}
+        </group>
+      )}
+    </group>
+  )
+}
+
+// Floating nametag above each agent's head — glass background, level pill,
+// avatar preset thumbnail. Renders inside an `<Html>` so we get real CSS.
+function AgentNameTag({ agent }: { agent: Agent }) {
+  const lvl = useMemo(() => computeAgentLevel({
+    sessionCount: agent.sessionCount,
+    totalTokens: agent.totalTokens,
+    createdAt: agent.createdAt,
+  }), [agent.sessionCount, agent.totalTokens, agent.createdAt])
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "3px 8px 3px 3px",
+        borderRadius: 999,
+        background: "rgba(20, 22, 30, 0.62)",
+        backdropFilter: "blur(14px) saturate(180%)",
+        WebkitBackdropFilter: "blur(14px) saturate(180%)",
+        border: "1px solid rgba(255, 255, 255, 0.1)",
+        boxShadow: "0 1px 0 rgba(255,255,255,0.08) inset, 0 6px 18px rgba(0,0,0,0.45)",
+        whiteSpace: "nowrap",
+        fontFamily: "Inter, system-ui, sans-serif",
+      }}
+    >
+      {/* Avatar preset thumbnail */}
+      <span
+        style={{
+          width: 22, height: 22,
+          borderRadius: 999,
+          overflow: "hidden",
+          background: agent.color || "#6366f1",
+          flexShrink: 0,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 0 0 1px rgba(255,255,255,0.18)",
+        }}
+      >
+        <AgentAvatar avatarPresetId={agent.avatarPresetId} emoji={agent.emoji} size="w-5 h-5" />
+      </span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: "#f1f5f9", letterSpacing: 0.1 }}>
+        {agent.name}
+      </span>
+      {/* Level pill — coloured by tier */}
+      <span
+        style={{
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: 0.4,
+          padding: "2px 7px",
+          borderRadius: 999,
+          background: tierGradient(lvl.tier.color),
+          color: "#0f0a1a",
+          textShadow: "0 1px 0 rgba(255,255,255,0.25)",
+          boxShadow: `0 0 0 1px rgba(255,255,255,0.18) inset, 0 2px 6px ${lvl.tier.color}66`,
+        }}
+        title={`${lvl.tier.label} · XP ${lvl.xp.toLocaleString()}${lvl.level < 100 ? ` · ${lvl.pct}% to L${lvl.level + 1}` : " · MAX"} · age ${Math.floor(lvl.ageDays)}d · sessions ${agent.sessionCount || 0} · tokens ${(agent.totalTokens || 0).toLocaleString()}`}
+      >
+        L{lvl.level}
+      </span>
+    </div>
+  )
+}
+
 function AgentAvatar3D({
   agent,
   state,
@@ -1438,6 +1768,7 @@ function AgentAvatar3D({
   deskPos: [number, number, number]
   color: string
 }) {
+  const tokens = useThemeTokens()
   // ── Unique per-agent hash for deterministic initial spread ──────────────
   const agentIdHash = useMemo(() =>
     agent.id.split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) & 0xffff, 0)
@@ -1724,10 +2055,20 @@ function AgentAvatar3D({
     return [wp.dest[0], 0, wp.dest[1]]
   })
 
-  const auraColor = state === "processing" ? "#fb923c" : "#22d3ee"
+  const auraColor = state === "processing" ? "#fb923c" : tokens.accent
+
+  // Compute level once per agent (cheap; no allocations in useFrame).
+  const lvl = useMemo(() => computeAgentLevel({
+    sessionCount: agent.sessionCount,
+    totalTokens:  agent.totalTokens,
+    createdAt:    agent.createdAt,
+  }), [agent.sessionCount, agent.totalTokens, agent.createdAt])
 
   return (
     <group ref={groupRef} position={initPos}>
+      {/* Tier-based level aura — always-on, scales with level (T2-T6) */}
+      <LevelAura tier={lvl.tier} />
+
       {/* Working / processing floor aura */}
       {(state === "working" || state === "processing") && (
         <WorkingAura color={auraColor} processing={state === "processing"} />
@@ -1952,20 +2293,18 @@ function AgentAvatar3D({
         </Sphere>
       </group>
 
-      {/* Nametag */}
-      <Text
-        position={[0, 3.80, 0]}
-        rotation={[-Math.PI / 4.5, 0, 0]}
-        fontSize={0.45}
-        color="#1e293b"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.05}
-        outlineColor="#ffffff"
-        fontWeight="bold"
+      {/* Nametag — HTML overlay with name + level pill (glass).
+          NOTE: no `distanceFactor` — that prop scales by perspective distance and
+          balloons wildly under our OrthographicCamera. Plain Html renders the
+          overlay at a fixed CSS pixel size, anchored to the world position. */}
+      <Html
+        position={[0, 3.95, 0]}
+        center
+        zIndexRange={[10, 50]}
+        style={{ pointerEvents: "none", userSelect: "none" }}
       >
-        {agent.name}
-      </Text>
+        <AgentNameTag agent={agent} />
+      </Html>
 
       {/* Hover profile card */}
       {hovered && (
@@ -1991,22 +2330,140 @@ function AgentAvatar3D({
 }
 
 
-// Workstation slot grid: 3 cols × 3 rows on the raised platform
-const DESK_SLOTS: [number, number, number][] = [
-  [8, 0.62, -22],
-  [15, 0.62, -22],
-  [22, 0.62, -22],
-  [8, 0.62, -14],
-  [15, 0.62, -14],
-  [22, 0.62, -14],
-  [8, 0.62, -6],
-  [15, 0.62, -6],
-  [22, 0.62, -6],
-]
+// Workstation slot grid is now generated dynamically — see `computeDeskSlots`
+// below. Platform bounds: x ∈ [2, 28] (width 26), z ∈ [-28, -2] (depth 26).
+// y = 0.62 sits desks on top of the elevated platform slab.
+const PLATFORM_BOUNDS = { x0: 2, x1: 28, z0: -28, z1: -2, y: 0.62 } as const
 
-export function AgentWorld3D({ agents, agentStates }: AgentWorld3DProps) {
+// Generate uniformly-spaced desk slots inside the workspace platform for any
+// agent count. Picks a roughly-square grid (cols × rows) that fits N agents;
+// caller maps each agent index → slot. For N > 36 the grid still produces N
+// slots but desks get cramped — at that point the room itself should grow.
+function computeDeskSlots(agentCount: number): [number, number, number][] {
+  const N = Math.max(1, agentCount)
+  const cols = Math.max(1, Math.ceil(Math.sqrt(N)))
+  const rows = Math.max(1, Math.ceil(N / cols))
+  const w = PLATFORM_BOUNDS.x1 - PLATFORM_BOUNDS.x0
+  const d = PLATFORM_BOUNDS.z1 - PLATFORM_BOUNDS.z0
+  const xStep = w / (cols + 1)
+  const zStep = d / (rows + 1)
+  const slots: [number, number, number][] = []
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (slots.length >= N) break
+      const x = PLATFORM_BOUNDS.x0 + (c + 1) * xStep
+      const z = PLATFORM_BOUNDS.z0 + (r + 1) * zStep
+      slots.push([x, PLATFORM_BOUNDS.y, z])
+    }
+  }
+  return slots
+}
+
+// ── First-mount camera zoom settle ──────────────────────────────────────────
+// Lerps zoom from `targetZoom * startScale` down to `targetZoom` over `durationMs`
+// on first mount, so users notice the visual refresh without a jarring snap.
+function CameraSettle({ targetZoom, startScale = 1.1, durationMs = 600 }: {
+  targetZoom: number
+  startScale?: number
+  durationMs?: number
+}) {
+  const startTimeRef = useRef<number | null>(null)
+  useFrame((state) => {
+    const cam = state.camera as THREE.OrthographicCamera
+    if (startTimeRef.current === null) startTimeRef.current = state.clock.getElapsedTime()
+    const elapsed = (state.clock.getElapsedTime() - startTimeRef.current) * 1000
+    if (elapsed >= durationMs) return
+    const t = Math.min(1, elapsed / durationMs)
+    const eased = 1 - Math.pow(1 - t, 3)
+    const startZoom = targetZoom * startScale
+    cam.zoom = startZoom + (targetZoom - startZoom) * eased
+    cam.updateProjectionMatrix()
+  })
+  return null
+}
+
+// ── Camera focus on selected agent ──────────────────────────────────────────
+// While `selectedAgentId` is set, smoothly lerps OrbitControls.target toward
+// that agent's live world position (read from AGENT_WORLD_POSITIONS each frame).
+// User can still pan — the lerp only runs while a selection exists; releasing
+// (clicking the chip again to deselect) leaves the camera where it is.
+function CameraFocus({ selectedAgentId }: { selectedAgentId: string | null | undefined }) {
+  const { controls } = useThree() as { controls: { target: THREE.Vector3; update?: () => void } | null }
+  useFrame((_, delta) => {
+    if (!selectedAgentId || !controls) return
+    const pos = AGENT_WORLD_POSITIONS.get(selectedAgentId)
+    if (!pos) return
+    const [tx, tz] = pos
+    const target = controls.target
+    if (!target) return
+    const lerp = Math.min(1, delta * 4) // ~250ms half-life
+    target.x = THREE.MathUtils.lerp(target.x, tx, lerp)
+    target.z = THREE.MathUtils.lerp(target.z, tz, lerp)
+    target.y = THREE.MathUtils.lerp(target.y, 1, lerp)
+    if (typeof controls.update === "function") controls.update()
+  })
+  return null
+}
+
+// ── Selection highlight ring ────────────────────────────────────────────────
+// Animated glowing ring that follows the selected agent's live position, plus
+// a vertical light beam to make them visually unambiguous in a crowded scene.
+function SelectionHighlight({
+  selectedAgentId,
+  accentColor,
+}: {
+  selectedAgentId: string | null | undefined
+  accentColor: string
+}) {
+  const groupRef = useRef<THREE.Group>(null)
+  const ringRef  = useRef<THREE.Mesh>(null)
+  const visible = !!selectedAgentId
+  useFrame(({ clock }) => {
+    if (!groupRef.current || !ringRef.current) return
+    if (!visible) {
+      // Park off-scene so it doesn't render visibly when nothing selected.
+      groupRef.current.visible = false
+      return
+    }
+    const pos = selectedAgentId ? AGENT_WORLD_POSITIONS.get(selectedAgentId) : null
+    if (!pos) {
+      groupRef.current.visible = false
+      return
+    }
+    groupRef.current.visible = true
+    const [x, z] = pos
+    groupRef.current.position.x = x
+    groupRef.current.position.z = z
+    // Pulse ring scale for a subtle "you are here" effect
+    const pulse = 1 + Math.sin(clock.elapsedTime * 2.4) * 0.06
+    ringRef.current.scale.set(pulse, pulse, 1)
+  })
+  return (
+    <group ref={groupRef} visible={false}>
+      {/* Flat ring on the floor */}
+      <mesh ref={ringRef} position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.85, 1.05, 48]} />
+        <meshBasicMaterial color={accentColor} transparent opacity={0.85} toneMapped={false} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Soft inner disc for extra glow */}
+      <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0, 0.85, 48]} />
+        <meshBasicMaterial color={accentColor} transparent opacity={0.12} toneMapped={false} />
+      </mesh>
+      {/* Vertical beam — clearer in dense scenes */}
+      <mesh position={[0, 4, 0]}>
+        <cylinderGeometry args={[0.08, 0.6, 8, 16, 1, true]} />
+        <meshBasicMaterial color={accentColor} transparent opacity={0.18} toneMapped={false} side={THREE.BackSide} />
+      </mesh>
+    </group>
+  )
+}
+
+export function AgentWorld3D({ agents, agentStates, selectedAgentId }: AgentWorld3DProps) {
   const theme = useThemeStore(s => s.theme)
   const t     = SCENE_THEME[theme]
+  const tokens = useThemeTokens()
+  const deskSlots = useMemo(() => computeDeskSlots(agents.length), [agents.length])
   return (
     <Canvas
       shadows
@@ -2024,7 +2481,9 @@ export function AgentWorld3D({ agents, agentStates }: AgentWorld3DProps) {
         near={-400}
         far={500}
       />
+      <CameraSettle targetZoom={14} />
       <OrbitControls
+        makeDefault
         target={[-2, 1, 2]}
         enableDamping
         dampingFactor={0.05}
@@ -2032,15 +2491,17 @@ export function AgentWorld3D({ agents, agentStates }: AgentWorld3DProps) {
         minZoom={8}
         maxZoom={28}
       />
+      <CameraFocus selectedAgentId={selectedAgentId} />
+      <SelectionHighlight selectedAgentId={selectedAgentId} accentColor={tokens.accent} />
 
       {/* ============== LIGHTING ============== */}
-      <ambientLight intensity={t.ambientIntensity} color={t.ambientColor} />
+      <ambientLight intensity={0.7} color={tokens.ambient} />
 
-      {/* Main sun */}
+      {/* Main sun — softer than before */}
       <directionalLight
         position={[40, 70, -20]}
-        intensity={t.sunIntensity}
-        color={t.sunColor}
+        intensity={1.1}
+        color="#f6f1e6"
         castShadow
         shadow-mapSize-width={1024}
         shadow-mapSize-height={1024}
@@ -2050,8 +2511,10 @@ export function AgentWorld3D({ agents, agentStates }: AgentWorld3DProps) {
         shadow-camera-top={65}
         shadow-camera-bottom={-65}
       />
-      {/* Fill light */}
-      <directionalLight position={[-30, 30, 40]} intensity={t.fillIntensity} color={t.fillColor} />
+      {/* Fill light — cooler, lower (Claw3D playbook) */}
+      <directionalLight position={[-30, 30, 40]} intensity={0.4} color="#7090ff" />
+      {/* Soft IBL reflections — the "smoothness" lever */}
+      <Environment preset="city" />
 
       {/* ── Atmospheric enhancements ── */}
       <FloatingParticles theme={theme} />
@@ -2061,10 +2524,10 @@ export function AgentWorld3D({ agents, agentStates }: AgentWorld3DProps) {
 
       <SceneRoom theme={theme} />
 
-      {/* Workstations + Avatar + Status Signs */}
+      {/* Workstations + Avatar + Status Signs — desk slots auto-scale to agent count */}
       {agents.map((agent, i) => {
         const ws = agentStates[i]
-        const slot = DESK_SLOTS[i % DESK_SLOTS.length]
+        const slot = deskSlots[i]
         return (
           <group key={agent.id}>
             <Workstation3D

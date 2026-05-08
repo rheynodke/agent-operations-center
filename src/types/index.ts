@@ -86,6 +86,30 @@ export interface Agent {
   isMaster?: boolean
 }
 
+// Public-safe master shape returned by GET /api/master/world.
+// Used by Agent World "Open World" mode to render every user's master in one scene.
+export interface OpenWorldMaster {
+  id: string
+  name: string
+  description: string | null
+  role: string | null
+  color: string | null
+  avatarPresetId: string | null
+  ownerDisplayName: string
+  ownerUserId: number
+  isMine: boolean
+  isMaster: true
+  status: "active" | "idle" | "offline"
+  gatewayUp: boolean
+  lastActiveAt: string | null
+  provisionedAt: string | null
+  /** Aggregate session count for this master (server-aggregated). Used so
+   *  Open World leveling matches My World leveling for the same agent. */
+  sessionCount: number
+  /** Total tokens across all sessions of this master. */
+  totalTokens: number
+}
+
 // ─── Agent Channel Management Types ─────────────────────────────────────────
 
 export interface AgentChannelTelegram {

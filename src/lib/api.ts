@@ -1,6 +1,6 @@
 import { useAuthStore } from "@/stores"
 import { useViewAsStore } from "@/stores/useViewAsStore"
-import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, AgentCapabilities, ProjectWorkspaceMode, ValidatePathResult, FetchBranchesResult, CreateProjectExtendedPayload, FsBrowseResult, MissionRoom, MissionMessage, Artifact, ArtifactVersion } from "@/types"
+import type { AuthStatus, AuthResponse, SkillInfo, AgentTool, SkillScript, GlobalSkillInfo, GlobalToolInfo, ProvisionAgentOpts, ProvisionResult, AgentProfile, AgentChannelsResult, ChannelBinding, Task, TaskStatus, TaskPriority, TaskActivity, Project, ProjectIntegration, Connection, ConnectionFeatureFlags, AgentCapabilities, ProjectWorkspaceMode, ValidatePathResult, FetchBranchesResult, CreateProjectExtendedPayload, FsBrowseResult, MissionRoom, MissionMessage, Artifact, ArtifactVersion, OpenWorldMaster } from "@/types"
 
 export interface SkillFileNode {
   name: string
@@ -152,6 +152,11 @@ export const api = {
       "/onboarding/master",
       { method: "POST", body: JSON.stringify(body) }
     ),
+
+  // Open World — list all master agents across users (public-safe view)
+  getOpenWorldMasters: () =>
+    request<{ masters: OpenWorldMaster[] }>("/master/world"),
+
   deleteAgent: (id: string) =>
     request<{ ok: boolean }>(`/agents/${id}`, { method: "DELETE" }),
   getAgentProfile: (id: string) =>
