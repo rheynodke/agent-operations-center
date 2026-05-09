@@ -5,6 +5,7 @@ import type { Agent, Session, Task, TaskStatus, TaskPriority, CronJob, GatewayRo
 export * from "./useThemeStore"
 export { useProjectStore } from './useProjectStore'
 export { useRoomStore } from './useRoomStore'
+export { useFeedbackStore } from './useFeedbackStore'
 
 // ─── Auth Store ───────────────────────────────────────────────────────────────
 interface AuthState {

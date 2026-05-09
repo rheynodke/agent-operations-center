@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState, useMemo } from "react"
 import { useSearchParams } from "react-router-dom"
 import { useChatStore, gatewayMessagesToGroups, stripUserMetadataEnvelope, type ChatMessageGroup } from "@/stores/useChatStore"
 import { useAutoScroll } from "@/hooks/useAutoScroll"
-import { useAgentStore, useRoomStore } from "@/stores"
+import { useAgentStore, useRoomStore, useFeedbackStore } from "@/stores"
 import { api } from "@/lib/api"
 import { chatApi, type ChatSession } from "@/lib/chat-api"
 import { ChatMessage } from "@/components/chat/ChatMessage"
@@ -679,6 +679,13 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Hydrate feedback ratings for this session so <FeedbackThumbs> shows the
+  // existing 👍/👎 state on each agent message. Deduped + cached in store.
+  const loadFeedbackForSession = useFeedbackStore((s) => s.loadForSession)
+  useEffect(() => {
+    if (sessionKey) void loadFeedbackForSession(sessionKey)
+  }, [sessionKey, loadFeedbackForSession])
+
   // Load history + subscribe for real-time events
   const reloadHistory = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -855,6 +862,8 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
                 agentAvatarPresetId={agent?.avatarPresetId}
                 agentEmoji={agent?.emoji}
                 isLast={i === msgs.length - 1}
+                sessionId={sessionKey}
+                agentId={agentId}
               />
             ))
           )}

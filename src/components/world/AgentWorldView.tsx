@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback, type ReactNode } from "react"
 import { motion } from "framer-motion"
-import { useAgentStore, useLiveFeedStore, useThemeStore, useOpenWorldStore } from "@/stores"
+import { useAgentStore, useLiveFeedStore, useThemeStore, useOpenWorldStore, useFeedbackStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { AVATAR_PRESETS } from "@/lib/avatarPresets"
 import type { Agent, OpenWorldMaster } from "@/types"
@@ -11,6 +11,7 @@ import { computeAgentLevel } from "@/lib/agentLeveling"
 import { chatApi, type ChatOutputFile } from "@/lib/chat-api"
 import { useChatStore, gatewayMessagesToGroups, isSystemInjectedUserMessage, type ChatMessageGroup } from "@/stores/useChatStore"
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer"
+import { FeedbackThumbs } from "@/components/feedback/FeedbackThumbs"
 import { useNavigate } from "react-router-dom"
 
 // ── Floating-pill chat session persistence ────────────────────────────────────
@@ -1134,6 +1135,13 @@ export function AgentWorldView() {
     setChatError(null)
   }, [selectedAgentId])
 
+  // Hydrate feedback ratings for the resolved pill session so <FeedbackThumbs>
+  // shows existing 👍/👎 state. Deduped + cached by useFeedbackStore.
+  const loadFeedbackForSession = useFeedbackStore((s) => s.loadForSession)
+  useEffect(() => {
+    if (chatSessionKey) void loadFeedbackForSession(chatSessionKey)
+  }, [chatSessionKey, loadFeedbackForSession])
+
   // When chat is open + an own-agent is selected, resolve a session key for
   // the floating chat. Resolution order ("stay on this conversation" policy):
   //   1. Pinned: read `localStorage[PILL_SESSION_LS_KEY(agentId)]`. If that
@@ -1717,7 +1725,7 @@ export function AgentWorldView() {
             {chatMessages.map(m => (
               <div
                 key={m.id}
-                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
               >
                 <div
                   className={`pill-chat-bubble rounded-2xl px-3 py-2 text-xs leading-relaxed ${m.role === "user" ? "is-user" : "is-assistant"}`}
@@ -1750,6 +1758,16 @@ export function AgentWorldView() {
                     <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
                   )}
                 </div>
+                {/* Feedback thumbs for assistant bubbles — only when fully
+                    streamed AND we have both a resolved session + agent. */}
+                {m.role === "assistant" && !m.pending && m.text !== "…" && chatSessionKey && selectedAgent && (
+                  <FeedbackThumbs
+                    messageId={m.id}
+                    sessionId={chatSessionKey}
+                    agentId={selectedAgent.id}
+                    className="mt-1 ml-1 opacity-60 hover:opacity-100 transition-opacity"
+                  />
+                )}
               </div>
             ))}
             {chatError && (

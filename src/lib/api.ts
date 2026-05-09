@@ -1147,6 +1147,41 @@ export const api = {
     }),
   deactivateAnnouncement: (id: number) =>
     request<{ ok: boolean; announcement: Announcement }>(`/admin/announcements/${id}/deactivate`, { method: 'POST' }),
+
+  // ── feedback / satisfaction (Phase 2) ──────────────────────────────────────
+  recordMessageRating: (input: {
+    messageId: string
+    sessionId: string
+    agentId: string
+    rating: 'positive' | 'negative'
+    reason?: string
+  }) =>
+    request<{ ok: true }>('/feedback/message', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  getMessageRatings: (params: { sessionId?: string; agentId?: string }) => {
+    const query = new URLSearchParams()
+    if (params.sessionId) query.set('sessionId', params.sessionId)
+    if (params.agentId) query.set('agentId', params.agentId)
+    return request<{ ratings: MessageRating[] }>(`/feedback/messages?${query.toString()}`)
+  },
+}
+
+// ── feedback / satisfaction (Phase 2) ────────────────────────────────────────
+
+export interface MessageRating {
+  id: number
+  messageId: string
+  sessionId: string
+  agentId: string
+  ownerId: number
+  channel: 'dashboard' | 'telegram' | 'whatsapp' | 'discord' | 'reflection'
+  source: 'button' | 'reaction' | 'nl_correction'
+  rating: 'positive' | 'negative'
+  reason: string | null
+  raterExternalId: string
+  createdAt: number
 }
 
 export interface Announcement {

@@ -4,6 +4,7 @@ import { ThinkingBlock } from "./ThinkingBlock"
 import { ToolCallBlock } from "./ToolCallBlock"
 import { MarkdownRenderer } from "./MarkdownRenderer"
 import { AuthenticatedImage } from "@/components/ui/AuthenticatedImage"
+import { FeedbackThumbs } from "@/components/feedback/FeedbackThumbs"
 import { cn } from "@/lib/utils"
 import { Brain, Loader2, User, PenLine } from "lucide-react"
 import type { ChatMessageGroup } from "@/stores/useChatStore"
@@ -15,6 +16,10 @@ interface Props {
   agentAvatarPresetId?: string | null
   agentEmoji?: string
   isLast?: boolean
+  /** Session key for the conversation; required to render feedback thumbs. */
+  sessionId?: string
+  /** Agent id this message belongs to; required to render feedback thumbs. */
+  agentId?: string
 }
 
 function formatTime(ts?: number): string {
@@ -91,6 +96,8 @@ function AgentMessage({
   agentName,
   agentAvatarPresetId,
   agentEmoji,
+  sessionId,
+  agentId,
 }: Props) {
   const phase = group.phase
   const hasThinking = !!group.thinkingText
@@ -198,6 +205,19 @@ function AgentMessage({
         {hasResponse && group.responseDone && group.timestamp && (
           <span className="text-[10px] text-muted-foreground/40 px-1 -mt-1">{formatTime(group.timestamp)}</span>
         )}
+
+        {/* Feedback thumbs — only after the response is fully done, and only
+            when the surface passed both sessionId and agentId. The messageId
+            uses the group id (which mirrors the underlying JSONL message id
+            once history is reloaded post-run). */}
+        {hasResponse && group.responseDone && group.id && sessionId && agentId && (
+          <FeedbackThumbs
+            messageId={group.id}
+            sessionId={sessionId}
+            agentId={agentId}
+            className="mt-1 opacity-60 hover:opacity-100 transition-opacity"
+          />
+        )}
       </div>
     </div>
   )
@@ -247,7 +267,7 @@ function PhasePill({ color, icon, label }: { color: "violet" | "muted" | "emeral
   )
 }
 
-export function ChatMessage({ group, agentName, agentAvatarPresetId, agentEmoji, isLast }: Props) {
+export function ChatMessage({ group, agentName, agentAvatarPresetId, agentEmoji, isLast, sessionId, agentId }: Props) {
   if (group.role === "user") {
     return <UserMessage text={group.userText ?? ""} images={group.userImages} timestamp={group.timestamp} />
   }
@@ -258,6 +278,8 @@ export function ChatMessage({ group, agentName, agentAvatarPresetId, agentEmoji,
       agentAvatarPresetId={agentAvatarPresetId}
       agentEmoji={agentEmoji}
       isLast={isLast}
+      sessionId={sessionId}
+      agentId={agentId}
     />
   )
 }
