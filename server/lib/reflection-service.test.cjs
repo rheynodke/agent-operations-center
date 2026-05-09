@@ -325,3 +325,25 @@ test('createReflectionQueue rejects when full', async () => {
     /queue full/
   );
 });
+
+test('evaluateSkip extracts text from array content (regression: bug found in pipeline test)', () => {
+  // Real assistant messages come as content arrays; without text extraction
+  // the token estimate falls back to '[object Object]' string-coercion which
+  // is way below MIN_TRANSCRIPT_TOKEN_ESTIMATE, causing false too_short skips.
+  const messages = [];
+  for (let i = 0; i < 12; i++) {
+    messages.push({
+      id: 'm' + i,
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: i % 2 === 0
+        ? ('user message ' + i + ' ').repeat(50)
+        : [
+            { type: 'thinking', text: 'should be ignored' },
+            { type: 'text', text: ('substantive assistant reply ' + i + ' ').repeat(50) },
+          ],
+    });
+  }
+  const ratings = [{ messageId: 'm5', source: 'button', rating: 'positive' }];
+  const res = evaluateSkip({ messages, ratings });
+  assert.equal(res.skip, false, 'array content with substantive text must not skip');
+});

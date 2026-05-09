@@ -25,7 +25,14 @@ function evaluateSkip({ messages, ratings }) {
     return { skip: true, reason: 'skipped_too_short' };
   }
 
-  const totalText = messages.map(m => (m.content || '')).join('\n');
+  // Extract text from each message — handles both plain strings AND
+  // structured content arrays (assistant replies typically come as
+  // [{type:'text',text:...}, {type:'tool_use',...}, ...]). Without
+  // _extractTextFromContent the array would coerce to "[object Object]"
+  // and the token estimate would be far below the threshold for real
+  // sessions, causing false skips. _extractTextFromContent is a hoisted
+  // function declaration, so the forward reference here is safe.
+  const totalText = messages.map(m => _extractTextFromContent(m.content)).join('\n');
   if (estimateTokens(totalText) < MIN_TRANSCRIPT_TOKEN_ESTIMATE) {
     return { skip: true, reason: 'skipped_too_short' };
   }
