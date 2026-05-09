@@ -1405,4 +1405,6 @@ module.exports = {
   ...require('./db/gateway-state.cjs'),
   // Admin announcements + per-user read receipts — extracted to ./db/announcements.cjs
   ...require('./db/announcements.cjs'),
+  // Satisfaction — feedback ratings, session summaries, daily rollups
+  ...require('./db/satisfaction.cjs'),
 };

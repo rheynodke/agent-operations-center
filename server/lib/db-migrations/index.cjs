@@ -31,6 +31,7 @@ const MIGRATIONS = [
   require('./0002-connection-shares.cjs'),
   require('./0003-connection-shared-flag.cjs'),
   require('./0004-announcements.cjs'),
+  require('./0005-satisfaction-tables.cjs'),
 ];
 
 function ensureMigrationsTable(db) {
