@@ -325,6 +325,10 @@ app.use('/api', require('./routes/chat.cjs')({ db, parsers, gatewayProxy, loadAl
 app.use('/api', require('./routes/role-templates.cjs')({ db, parsers }));
 app.use('/api', require('./routes/announcements.cjs')({ db }));
 
+// ─── Routes: Satisfaction feedback (Phase 1 self-learning) ─────────────────
+const feedbackRouter = require('./routes/feedback.cjs');
+app.use('/api', feedbackRouter({ db }));
+
 // ─── Serve Vite build in prod ─────────────────────────────────────────────────
 const distDir = path.join(__dirname, '..', 'dist');
 app.use(express.static(distDir, { etag: false }));
@@ -671,6 +675,14 @@ async function sweepPendingTasks() {
 // ─── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   await db.initDatabase();
+
+  // Satisfaction daily rollup — runs immediately + every interval (default 1h).
+  const { startBackgroundRollup, stopBackgroundRollup } = require('./lib/satisfaction-rollup.cjs');
+  startBackgroundRollup({
+    intervalMs: Number(process.env.SATISFACTION_ROLLUP_INTERVAL_MS) || 3_600_000,
+  });
+  process.once('SIGTERM', () => { stopBackgroundRollup(); });
+  process.once('SIGINT',  () => { stopBackgroundRollup(); });
 
   // Idempotent backfill: assign admin user 1 a master_agent_id if their main agent exists
   try { onboardingRouter.runMasterBackfill(); } catch (e) { console.warn('[onboarding] backfill error:', e.message); }

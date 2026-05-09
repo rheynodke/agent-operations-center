@@ -39,6 +39,11 @@ const googleConnections = require('./connections/google-workspace.cjs');
 const googleHealthCron = require('./cron/google-health.cjs');
 const roomArtifacts = require('./room-artifacts.cjs');
 const roomContext = require('./room-context.cjs');
+const reflectionService    = require('./reflection-service.cjs');
+const reflectionPrompts    = require('./reflection-prompts.cjs');
+const lessonsWriter        = require('./lessons-writer.cjs');
+const satisfactionRollup   = require('./satisfaction-rollup.cjs');
+const llmProviders         = require('./llm-providers/index.cjs');
 
 const { readJsonSafe, OPENCLAW_HOME } = config;
 const { parseRoutes, getChannelsConfig } = require('./routing.cjs');
@@ -278,4 +283,22 @@ module.exports = {
   clearContext:             roomContext.clearContext,
   getAgentRoomState:        roomContext.getAgentRoomState,
   setAgentRoomState:        roomContext.setAgentRoomState,
+
+  // satisfaction (Phase 1)
+  reflectSession: reflectionService.reflectSession,
+  evaluateSkip: reflectionService.evaluateSkip,
+  compressTranscript: reflectionService.compressTranscript,
+  parseAndValidateOutput: reflectionService.parseAndValidateOutput,
+  createReflectionQueue: reflectionService.createReflectionQueue,
+  REFLECTION_PROMPT_VERSION: reflectionPrompts.REFLECTION_PROMPT_VERSION,
+  buildReflectionPrompt: reflectionPrompts.buildPrompt,
+  writeLessonsForSession: lessonsWriter.writeLessonsForSession,
+  renderLessonsFile: lessonsWriter.renderLessonsFile,
+  resolveVerbatim: lessonsWriter.resolveVerbatim,
+  rollupForDay: satisfactionRollup.rollupForDay,
+  rollupAllAgents: satisfactionRollup.rollupAllAgents,
+  startSatisfactionRollup: satisfactionRollup.startBackgroundRollup,
+  stopSatisfactionRollup: satisfactionRollup.stopBackgroundRollup,
+  getLLMProvider: llmProviders.getProvider,
+  listLLMProviders: llmProviders.listProviders,
 };
