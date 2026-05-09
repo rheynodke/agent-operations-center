@@ -46,6 +46,63 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
+// Outputs the chat panel knows how to render inline. Anything else (.pdf,
+// .xlsx, .docx, images, archives, …) is download-only — the iframe-in-pill
+// trick we'd need for those formats would either require external viewers,
+// untrusted blob URLs, or office-suite plugins, none of which fit here.
+type PreviewKind = "markdown" | "html" | "json" | "csv" | "text"
+function classifyForPreview(ext: string): PreviewKind | null {
+  switch (ext.toLowerCase()) {
+    case ".md":
+    case ".markdown":
+      return "markdown"
+    case ".html":
+    case ".htm":
+      return "html"
+    case ".json":
+      return "json"
+    case ".csv":
+      return "csv"
+    case ".txt":
+    case ".log":
+      return "text"
+    default:
+      return null
+  }
+}
+// Hard cap on inline preview size so a 50 MB CSV doesn't lock the panel.
+const PREVIEW_MAX_BYTES = 512 * 1024
+// Cap row count for CSV preview — wider tables stay readable; deeper ones
+// are cropped with a "first N rows shown" notice.
+const CSV_PREVIEW_MAX_ROWS = 200
+
+// Tiny CSV parser tolerant of double-quoted cells with embedded commas /
+// newlines. Doesn't try to be RFC-perfect — just enough to render an agent's
+// machine-emitted CSV without surprises. Returns rows of strings.
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = []
+  let cur: string[] = []
+  let cell = ""
+  let inQuotes = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++ }
+        else inQuotes = false
+      } else cell += ch
+    } else {
+      if (ch === '"') inQuotes = true
+      else if (ch === ",") { cur.push(cell); cell = "" }
+      else if (ch === "\n") { cur.push(cell); rows.push(cur); cur = []; cell = "" }
+      else if (ch === "\r") { /* ignore — newline normalisation */ }
+      else cell += ch
+    }
+  }
+  if (cell.length > 0 || cur.length > 0) { cur.push(cell); rows.push(cur) }
+  return rows
+}
+
 // ── Pill ↔ side-panel layout toggle ──────────────────────────────────────────
 // "pill" = the original 380×520 floating popover at bottom-right.
 // "panel" = a full-height right-side dock with a draggable left edge so the
@@ -915,6 +972,16 @@ export function AgentWorldView() {
   const [outputsLoading, setOutputsLoading] = useState(false)
   const [outputsError, setOutputsError] = useState<string | null>(null)
   const [outputsTruncated, setOutputsTruncated] = useState(false)
+
+  // Inline preview state. `preview.file` is the entry being previewed; the
+  // content is fetched as text on demand (binary types never reach this
+  // path — they get download-only treatment).
+  const [preview, setPreview] = useState<
+    | { file: ChatOutputFile; kind: PreviewKind; content: string; truncated: boolean }
+    | null
+  >(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const navigate = useNavigate()
 
   // Layout toggle (pill vs side-panel) + draggable panel width. Both persist
@@ -1184,6 +1251,14 @@ export function AgentWorldView() {
     refreshOutputs()
   }, [chatTab, chatSessionKey, refreshOutputs])
 
+  // Drop any open preview when switching tabs or sessions — stale content
+  // would otherwise hang there until the user manually closed it.
+  useEffect(() => {
+    setPreview(null)
+    setPreviewError(null)
+    setPreviewLoading(false)
+  }, [chatTab, chatSessionKey])
+
   // Refresh outputs when the agent just FINISHED a turn — that's when new
   // artifacts typically land on disk. Tracks the running→idle transition so
   // we don't re-fetch on every isAgentRunning toggle.
@@ -1199,33 +1274,96 @@ export function AgentWorldView() {
     }
   }, [isAgentRunning, chatTab, refreshOutputs])
 
-  // Click handler for an output entry — fetches the file with auth and pops
-  // a download (or in-tab navigation for previewable types). We intentionally
-  // do NOT just `<a href>` it because the API is bearer-gated and exposing
-  // the JWT in the URL bar is gross.
-  const openOutput = useCallback(async (file: ChatOutputFile, opts: { download?: boolean } = {}) => {
+  // Trigger a real file download via a temporary `<a download>`. Bearer-
+  // authed fetch first → object URL → click → revoke. Avoids leaking the
+  // JWT into the browser URL bar.
+  const downloadOutput = useCallback(async (file: ChatOutputFile) => {
     if (!chatSessionKey) return
+    setOutputsError(null)
     try {
       const blob = await chatApi.fetchOutputBlob(chatSessionKey, file.relPath)
       const url = URL.createObjectURL(blob)
-      if (opts.download) {
-        const a = document.createElement("a")
-        a.href = url
-        a.download = file.name
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-      } else {
-        // Open in a new tab; previewable types (md, txt, image, pdf) render
-        // natively. Browser frees the object URL when the tab unloads.
-        window.open(url, "_blank", "noopener,noreferrer")
-      }
-      // Revoke after a beat so an in-tab open has time to load.
+      const a = document.createElement("a")
+      a.href = url
+      a.download = file.name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch (e) {
-      setOutputsError((e as Error).message || "Failed to fetch file")
+      setOutputsError((e as Error).message || "Failed to download file")
     }
   }, [chatSessionKey])
+
+  // Open an inline preview for text-y formats (md, json, csv, txt, log).
+  // HTML is special-cased: the chat panel/pill is too narrow to render a
+  // designed page comfortably, so we pop HTML out into a real browser tab
+  // (the file streams from the server with the actual `text/html` MIME, so
+  // the browser renders it natively). Binary formats — pdf, xlsx, docx,
+  // images — never reach this path; the row hides the Preview button and
+  // the row click falls back to download.
+  const previewOutput = useCallback(async (file: ChatOutputFile) => {
+    if (!chatSessionKey) return
+    const kind = classifyForPreview(file.ext)
+    if (!kind) { void downloadOutput(file); return }
+    setOutputsError(null)
+
+    // HTML → fetch with auth, hand to a new tab via blob URL. Avoids leaking
+    // the bearer token in the address bar AND respects the file's real
+    // content-type so the page renders instead of being treated as text.
+    if (kind === "html") {
+      try {
+        const blob = await chatApi.fetchOutputBlob(chatSessionKey, file.relPath)
+        // Force `text/html` even if the server returned octet-stream for
+        // some pathological MIME mapping; otherwise the new tab would
+        // download instead of render.
+        const htmlBlob = blob.type.startsWith("text/html") ? blob : new Blob([blob], { type: "text/html" })
+        const url = URL.createObjectURL(htmlBlob)
+        // `noopener` so the popped page can't reach back into our window.
+        const win = window.open(url, "_blank", "noopener,noreferrer")
+        // If popup was blocked, fall back to inline iframe rather than
+        // silently failing — better degraded UX than nothing.
+        if (!win) {
+          URL.revokeObjectURL(url)
+          setPreview(null)
+          setPreviewLoading(true)
+          try {
+            const text = await htmlBlob.text()
+            setPreview({ file, kind: "html", content: text, truncated: blob.size > PREVIEW_MAX_BYTES })
+          } finally {
+            setPreviewLoading(false)
+          }
+          return
+        }
+        // Revoke after the new tab has had time to load — same TTL we use
+        // for downloads. Browser keeps the doc once it's parsed.
+        setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      } catch (e) {
+        setOutputsError((e as Error).message || "Failed to open HTML preview")
+      }
+      return
+    }
+
+    setPreview(null)
+    setPreviewError(null)
+    setPreviewLoading(true)
+    try {
+      const blob = await chatApi.fetchOutputBlob(chatSessionKey, file.relPath)
+      // Cap text we read so a runaway file can't pin the main thread.
+      const sliced = blob.size > PREVIEW_MAX_BYTES ? blob.slice(0, PREVIEW_MAX_BYTES) : blob
+      const text = await sliced.text()
+      setPreview({
+        file,
+        kind,
+        content: text,
+        truncated: blob.size > PREVIEW_MAX_BYTES,
+      })
+    } catch (e) {
+      setPreviewError((e as Error).message || "Failed to load preview")
+    } finally {
+      setPreviewLoading(false)
+    }
+  }, [chatSessionKey, downloadOutput])
 
   // Drop the pinned session and start a fresh one on demand. Used by the
   // pill's "reset" button — the only way the floating chat ever switches
@@ -1692,7 +1830,9 @@ export function AgentWorldView() {
           )}
 
           {chatTab === "outputs" && (
-            <div className="flex-1 overflow-y-auto px-3 py-3">
+            // `relative` so the inline preview overlay (`absolute inset-0`)
+            // positions against THIS container, not the panel root.
+            <div className="flex-1 overflow-y-auto px-3 py-3 relative">
               {/* Header row: refresh + truncated hint */}
               <div className="flex items-center justify-between mb-2">
                 <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
@@ -1735,49 +1875,268 @@ export function AgentWorldView() {
                 </div>
               )}
 
-              {/* File list */}
+              {/* File list. Each row has an icon-only Download button on the
+                  right; previewable rows also surface a Preview button. The
+                  bare row click does the natural thing per type: open inline
+                  preview for text (md/html/json/csv/txt/log), trigger
+                  download for binary (pdf/xlsx/docx/anything else). */}
               <div className="flex flex-col gap-1">
-                {outputs.map((f) => (
-                  <button
-                    key={f.relPath}
-                    onClick={() => openOutput(f)}
-                    onContextMenu={(e) => { e.preventDefault(); openOutput(f, { download: true }) }}
-                    className="text-left rounded-lg px-3 py-2 hover:bg-white/5 transition-colors"
-                    style={{
-                      background: isLight ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.03)",
-                      border: `1px solid ${
-                        f.outOfConvention
-                          ? (isLight ? "rgba(245, 158, 11, 0.35)" : "rgba(245, 158, 11, 0.25)")
-                          : (isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)")
-                      }`,
-                    }}
-                    title={`${f.relPath}\nClick to open · right-click to download`}
-                  >
-                    <div className="flex items-baseline justify-between gap-2 min-w-0">
-                      <div className="text-[12px] font-medium truncate" style={{ color: "var(--foreground)" }}>
-                        {f.name}
+                {outputs.map((f) => {
+                  const kind = classifyForPreview(f.ext)
+                  const previewable = kind != null
+                  return (
+                    <div
+                      key={f.relPath}
+                      className="rounded-lg px-3 py-2 transition-colors"
+                      style={{
+                        background: isLight ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.03)",
+                        border: `1px solid ${
+                          f.outOfConvention
+                            ? (isLight ? "rgba(245, 158, 11, 0.35)" : "rgba(245, 158, 11, 0.25)")
+                            : (isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)")
+                        }`,
+                      }}
+                    >
+                      <div className="flex items-start gap-2 min-w-0">
+                        <button
+                          onClick={() => previewable ? previewOutput(f) : downloadOutput(f)}
+                          className="flex-1 text-left min-w-0"
+                          title={previewable ? "Open preview" : "Download (no inline preview for this format)"}
+                        >
+                          <div className="flex items-baseline justify-between gap-2 min-w-0">
+                            <div className="text-[12px] font-medium truncate" style={{ color: "var(--foreground)" }}>
+                              {f.name}
+                            </div>
+                            <div className="text-[10px] shrink-0" style={{ color: "var(--muted-foreground)" }}>
+                              {formatFileSize(f.size)}
+                            </div>
+                          </div>
+                          <div className="text-[10px] truncate mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+                            {f.relPath}
+                          </div>
+                          <div className="text-[10px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+                            {new Date(f.mtime).toLocaleString()} · {f.mimeType}
+                            {f.outOfConvention && (
+                              <span style={{ color: isLight ? "#b45309" : "#fcd34d" }}> · ⚠ out of convention</span>
+                            )}
+                          </div>
+                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {previewable && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); previewOutput(f) }}
+                              className="text-[10px] px-2 py-1 rounded-full hover:bg-white/10"
+                              style={{
+                                color: "var(--muted-foreground)",
+                                border: `1px solid ${isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)"}`,
+                              }}
+                              title="Preview inline"
+                            >👁</button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); downloadOutput(f) }}
+                            className="text-[10px] px-2 py-1 rounded-full hover:bg-white/10"
+                            style={{
+                              color: "var(--muted-foreground)",
+                              border: `1px solid ${isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)"}`,
+                            }}
+                            title="Download"
+                          >⬇</button>
+                        </div>
                       </div>
-                      <div className="text-[10px] shrink-0" style={{ color: "var(--muted-foreground)" }}>
-                        {formatFileSize(f.size)}
-                      </div>
                     </div>
-                    <div className="text-[10px] truncate mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-                      {f.relPath}
-                    </div>
-                    <div className="text-[10px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-                      {new Date(f.mtime).toLocaleString()} · {f.mimeType}
-                      {f.outOfConvention && (
-                        <span style={{ color: isLight ? "#b45309" : "#fcd34d" }}> · ⚠ out of convention</span>
-                      )}
-                    </div>
-                  </button>
-                ))}
+                  )
+                })}
                 {!outputsLoading && outputs.length === 0 && !outputsError && (
                   <div className="text-[11px] text-center py-6" style={{ color: "var(--muted-foreground)" }}>
                     Files the agent writes during this session show up here.
                   </div>
                 )}
               </div>
+
+              {/* ── Inline preview overlay ─────────────────────────────────
+                  Sits on top of the file list so the user keeps the panel's
+                  position/scroll context. Click outside (the backdrop) or
+                  the close button dismisses. */}
+              {(preview || previewLoading || previewError) && (
+                <div
+                  className="absolute inset-0 flex flex-col"
+                  style={{
+                    background: isLight ? "rgba(245, 247, 252, 0.96)" : "rgba(15, 23, 42, 0.96)",
+                    backdropFilter: "blur(8px)",
+                    WebkitBackdropFilter: "blur(8px)",
+                    zIndex: 5,
+                  }}
+                  onClick={(e) => {
+                    // Only the backdrop closes; clicks inside the body bubble up here too,
+                    // so guard with currentTarget identity check.
+                    if (e.target === e.currentTarget) {
+                      setPreview(null); setPreviewError(null)
+                    }
+                  }}
+                >
+                  {/* Preview header: filename + download + close */}
+                  <div
+                    className="flex items-center gap-2 px-3 py-2"
+                    style={{
+                      borderBottom: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}`,
+                    }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12px] font-medium truncate" style={{ color: "var(--foreground)" }}>
+                        {preview?.file.name ?? "Loading…"}
+                      </div>
+                      {preview && (
+                        <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                          {preview.file.relPath} · {formatFileSize(preview.file.size)}
+                          {preview.truncated && ` · preview truncated to ${formatFileSize(PREVIEW_MAX_BYTES)}`}
+                        </div>
+                      )}
+                    </div>
+                    {preview && (
+                      <button
+                        onClick={() => downloadOutput(preview.file)}
+                        className="text-[10px] px-2 py-1 rounded-full hover:bg-white/10"
+                        style={{
+                          color: "var(--muted-foreground)",
+                          border: `1px solid ${isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)"}`,
+                        }}
+                        title="Download original"
+                      >⬇ Download</button>
+                    )}
+                    <button
+                      onClick={() => { setPreview(null); setPreviewError(null) }}
+                      className="text-base rounded-full hover:bg-white/10"
+                      style={{
+                        color: "var(--muted-foreground)",
+                        width: 28, height: 28, lineHeight: "28px", textAlign: "center",
+                      }}
+                      aria-label="Close preview"
+                    >✕</button>
+                  </div>
+
+                  {/* Preview body — renderer per type. */}
+                  <div className="flex-1 overflow-auto px-3 py-3 min-h-0">
+                    {previewLoading && (
+                      <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                        Loading preview…
+                      </div>
+                    )}
+                    {previewError && (
+                      <div className="text-[11px]" style={{ color: "#ef4444" }}>{previewError}</div>
+                    )}
+                    {preview && preview.kind === "markdown" && (
+                      // Reuse the same renderer the chat thread uses so tables /
+                      // code blocks behave identically.
+                      <div className="pill-md text-xs">
+                        <MarkdownRenderer content={preview.content} />
+                      </div>
+                    )}
+                    {preview && preview.kind === "html" && (
+                      // Sandboxed iframe — the agent's HTML can include scripts
+                      // and external resources; we strip both so a malicious
+                      // artifact can't pop modals or beacon out. `allow-same-origin`
+                      // is intentionally OFF.
+                      <iframe
+                        title={preview.file.name}
+                        sandbox=""
+                        srcDoc={preview.content}
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          minHeight: 260,
+                          border: "none",
+                          background: "white",
+                          borderRadius: 6,
+                        }}
+                      />
+                    )}
+                    {preview && preview.kind === "json" && (
+                      // Try to pretty-print; fall back to raw text if the file
+                      // isn't valid JSON (agents do occasionally emit
+                      // jsonl-with-trailing-newline or hand-edited drafts).
+                      <pre
+                        className="text-[11px] leading-relaxed whitespace-pre-wrap"
+                        style={{
+                          color: "var(--foreground)",
+                          background: isLight ? "rgba(0,0,0,0.03)" : "rgba(255,255,255,0.03)",
+                          padding: 10,
+                          borderRadius: 6,
+                          overflowX: "auto",
+                        }}
+                      >{(() => {
+                        try { return JSON.stringify(JSON.parse(preview.content), null, 2) }
+                        catch { return preview.content }
+                      })()}</pre>
+                    )}
+                    {preview && preview.kind === "csv" && (() => {
+                      const rows = parseCsv(preview.content)
+                      const shown = rows.slice(0, CSV_PREVIEW_MAX_ROWS)
+                      const hidden = rows.length - shown.length
+                      const head = shown[0] ?? []
+                      const body = shown.slice(1)
+                      return (
+                        <div className="text-[11px]" style={{ color: "var(--foreground)" }}>
+                          <div className="overflow-x-auto" style={{ scrollbarWidth: "thin" }}>
+                            <table style={{ borderCollapse: "collapse", minWidth: "100%" }}>
+                              <thead>
+                                <tr>
+                                  {head.map((cell, i) => (
+                                    <th
+                                      key={i}
+                                      style={{
+                                        textAlign: "left",
+                                        padding: "4px 8px",
+                                        whiteSpace: "nowrap",
+                                        background: isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.05)",
+                                        border: `1px solid ${isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)"}`,
+                                        fontWeight: 600,
+                                      }}
+                                    >{cell}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {body.map((row, ri) => (
+                                  <tr key={ri}>
+                                    {row.map((cell, ci) => (
+                                      <td
+                                        key={ci}
+                                        style={{
+                                          padding: "4px 8px",
+                                          whiteSpace: "nowrap",
+                                          border: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}`,
+                                        }}
+                                      >{cell}</td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          {hidden > 0 && (
+                            <div className="text-[10px] mt-2" style={{ color: "var(--muted-foreground)" }}>
+                              First {CSV_PREVIEW_MAX_ROWS} of {rows.length} rows shown — download for the full file.
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+                    {preview && preview.kind === "text" && (
+                      <pre
+                        className="text-[11px] leading-relaxed whitespace-pre-wrap"
+                        style={{
+                          color: "var(--foreground)",
+                          background: isLight ? "rgba(0,0,0,0.03)" : "rgba(255,255,255,0.03)",
+                          padding: 10,
+                          borderRadius: 6,
+                          overflowX: "auto",
+                        }}
+                      >{preview.content}</pre>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </>
