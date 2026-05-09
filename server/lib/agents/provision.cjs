@@ -789,6 +789,16 @@ function provisionAgentLocked(opts, userId, home, configPath) {
   // 5. Create agent state directory
   ensureDir(agentStatePath);
 
+  // Pre-link shared QMD model cache so first qmd query won't re-download GGUFs
+  // for this agent. agentStatePath is `<agentsDir>/<id>/agent`; the qmd home
+  // lives at `<agentsDir>/<id>/qmd/`, so we pass the parent.
+  try {
+    const { linkSharedQmdModelsForAgent } = require('../gateway-orchestrator.cjs');
+    linkSharedQmdModelsForAgent(path.dirname(agentStatePath));
+  } catch (e) {
+    console.warn(`[provision] linkSharedQmdModels failed: ${e.message}`);
+  }
+
   console.log(`[provision] Agent "${id}" ("${name}") provisioned successfully`);
   console.log(`[provision]   Workspace: ${workspacePath}`);
   console.log(`[provision]   Bindings: ${addedBindings.map(b => `${b.channel}/${b.accountId}`).join(', ')}`);

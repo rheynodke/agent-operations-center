@@ -7,8 +7,42 @@ const WebSocket = require('ws');
 const { EventEmitter } = require('events');
 
 const db = require('./db.cjs');
-const { getUserHome, SHARED_SKILLS, SHARED_SCRIPTS, SHARED_PROVIDERS } = require('./config.cjs');
+const { getUserHome, SHARED_SKILLS, SHARED_SCRIPTS, SHARED_PROVIDERS, OPENCLAW_BASE } = require('./config.cjs');
 const { withUserLock } = require('./locks.cjs');
+
+// Shared QMD model cache. Each agent's `<qmd-home>/xdg-cache/qmd/models/` is
+// a symlink to this dir, so all tenants share the ~2GB GGUF download instead
+// of re-downloading per agent. See linkSharedQmdModels* below.
+const SHARED_QMD_MODELS = path.join(OPENCLAW_BASE, 'shared', 'qmd-models');
+
+function linkSharedQmdModelsForAgent(agentDir) {
+  const linkPath = path.join(agentDir, 'qmd', 'xdg-cache', 'qmd', 'models');
+  try {
+    const lst = fs.lstatSync(linkPath);
+    if (lst.isSymbolicLink()) return;
+    if (lst.isDirectory()) return; // populated dir — leave alone, don't risk losing files
+  } catch (e) {
+    if (e.code !== 'ENOENT') return;
+  }
+  try { fs.mkdirSync(SHARED_QMD_MODELS, { recursive: true }); } catch (_) {}
+  fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+  try { fs.symlinkSync(SHARED_QMD_MODELS, linkPath, 'dir'); }
+  catch (e) { if (e.code !== 'EEXIST') throw e; }
+}
+
+function linkSharedQmdModelsForUser(userHome) {
+  const agentsRoot = path.join(userHome, 'agents');
+  // Always pre-link the implicit `main` agent (gateway lazy-creates it on first
+  // qmd init, and we want the models dir to already be a symlink by then).
+  linkSharedQmdModelsForAgent(path.join(agentsRoot, 'main'));
+  let entries;
+  try { entries = fs.readdirSync(agentsRoot, { withFileTypes: true }); }
+  catch { return; }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    linkSharedQmdModelsForAgent(path.join(agentsRoot, ent.name));
+  }
+}
 
 const orchestratorEvents = new EventEmitter();
 orchestratorEvents.setMaxListeners(50);
@@ -408,11 +442,13 @@ function ensureUserHome(userId, userHome) {
     let inheritedDefaults = {};
     let inheritedTools = {};
     let inheritedApprovals = {};
+    let inheritedMemory = null;
     try {
       const adminCfg = JSON.parse(fs.readFileSync(path.join(require('./config.cjs').OPENCLAW_BASE, 'openclaw.json'), 'utf8'));
       inheritedDefaults = { ...(adminCfg?.agents?.defaults || {}) };
       inheritedTools = adminCfg?.tools ? JSON.parse(JSON.stringify(adminCfg.tools)) : {};
       inheritedApprovals = adminCfg?.approvals ? JSON.parse(JSON.stringify(adminCfg.approvals)) : {};
+      inheritedMemory = adminCfg?.memory ? JSON.parse(JSON.stringify(adminCfg.memory)) : null;
     } catch (_) { /* admin config missing — leave defaults empty */ }
 
     // Rewrite admin-scoped paths to per-user paths so we don't leak admin's
@@ -436,6 +472,7 @@ function ensureUserHome(userId, userHome) {
         auth: { mode: 'token' },
       },
     };
+    if (inheritedMemory) cfg.memory = inheritedMemory;
     // Inline shared providers — OpenClaw rejects $include paths outside the config
     // root (security check, follows symlinks too). Inlining keeps everything inside
     // the per-user dir. Re-inline on admin provider rotation by re-running provision.
@@ -553,6 +590,9 @@ async function spawnGatewayLocked(userId) {
   const token = generateToken();
   const userHome = getUserHome(userId);
   ensureUserHome(userId, userHome);
+  // Pre-link shared QMD models so first-search doesn't re-download per agent.
+  try { linkSharedQmdModelsForUser(userHome); }
+  catch (e) { console.warn(`[orchestrator] linkSharedQmdModels failed uid=${userId}: ${e.message}`); }
 
   const openclawBin = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
   const logFile = path.join(userHome, 'logs', 'gateway.log');
@@ -1068,6 +1108,8 @@ async function gracefulShutdown() {
 }
 
 module.exports = {
+  linkSharedQmdModelsForAgent,
+  linkSharedQmdModelsForUser,
   spawnGateway, stopGateway, restartGateway,
   getGatewayState, listGateways, getRunningToken,
   cleanupOrphans, gracefulShutdown, findAocManagedOrphanPids,
