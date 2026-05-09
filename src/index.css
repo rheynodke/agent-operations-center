@@ -377,3 +377,72 @@
   40%  { transform: scale(1);   opacity: 1; filter: blur(0); }
   100% { transform: scale(1.15); opacity: 0.9; filter: blur(0); }
 }
+
+/* ─── Floating-pill chat markdown overrides ─────────────────────────────────
+   Scoped via `.pill-md` so the shared MarkdownRenderer keeps its full styling
+   on ChatPage and only shrinks for the AgentWorld pill (which is a narrow,
+   semi-transparent floating panel where the renderer's default heading sizes,
+   table widths, and code-block padding would blow out the layout).
+
+   The floating bubble's wrapper sets `min-width: 0` so this scroll container
+   actually clamps to the pill width — a flex/grid child needs that to allow
+   `overflow-x-auto` to kick in instead of letting the table push the bubble
+   out to its intrinsic content size. */
+.pill-md > :first-child { margin-top: 0 !important; }
+.pill-md > :last-child  { margin-bottom: 0 !important; }
+.pill-md p { margin: 0.25rem 0; }
+.pill-md ul, .pill-md ol { margin: 0.25rem 0; padding-left: 1.25rem; }
+.pill-md li { margin: 0.1rem 0; }
+.pill-md h1, .pill-md h2, .pill-md h3, .pill-md h4 {
+  margin: 0.5rem 0 0.25rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.pill-md h1 { font-size: 1rem; }
+.pill-md h2 { font-size: 0.9375rem; }
+.pill-md h3 { font-size: 0.875rem; }
+.pill-md h4 { font-size: 0.8125rem; }
+.pill-md pre { margin: 0.25rem 0; }
+.pill-md pre, .pill-md code {
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+.pill-md blockquote {
+  margin: 0.25rem 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid currentColor;
+  opacity: 0.85;
+}
+.pill-md hr { margin: 0.5rem 0; opacity: 0.4; }
+
+/* Tables — the renderer wraps `<table>` in a `div.overflow-x-auto`. We need
+   that wrapper's flex/grid parents to allow shrinking, hence `min-width:0`
+   on the bubble + this rule that resets browser table-min-content quirks. */
+.pill-md .overflow-x-auto {
+  max-width: 100%;
+  /* A subtle scrollbar so the user notices wider tables can scroll. */
+  scrollbar-width: thin;
+}
+.pill-md table { border-collapse: collapse; }
+.pill-md th, .pill-md td {
+  white-space: nowrap;        /* keep cells unwrapped — scroll horizontally instead */
+  padding: 0.25rem 0.5rem;
+  font-size: 0.7rem;
+  border: 1px solid hsl(var(--border) / 0.5);
+}
+.pill-md thead th {
+  background: hsl(var(--muted) / 0.4);
+  font-weight: 600;
+}
+/* Tables inside a USER bubble (rare, but possible if user pastes markdown):
+   keep them readable on the colored background. */
+.pill-chat-bubble.is-user .pill-md th,
+.pill-chat-bubble.is-user .pill-md td {
+  border-color: rgba(255,255,255,0.25);
+}
+.pill-chat-bubble.is-user .pill-md thead th {
+  background: rgba(255,255,255,0.15);
+}
+/* Ensure links contrast on both bubble backgrounds. */
+.pill-chat-bubble.is-assistant .pill-md a { color: hsl(var(--primary)); text-decoration: underline; }
+.pill-chat-bubble.is-user .pill-md a { color: inherit; text-decoration: underline; }

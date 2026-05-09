@@ -7,12 +7,59 @@
  */
 'use strict';
 
+const fs = require('node:fs');
 const { gatewayForReq } = require('../helpers/gateway-context.cjs');
+const outputsLib = require('../lib/outputs.cjs');
 
 module.exports = function chatRouter(deps) {
   const { db, parsers, loadAllJSONLMessagesForTask } = deps;
   const router = require('express').Router();
   const path = require('path');
+
+  // Resolve the agent + session-start cutoff for a chat sessionKey. Used by
+  // the outputs endpoints to scope file listings to "produced during this
+  // chat". Session start time = first event timestamp in the JSONL when
+  // available, else the file's ctime, else null (meaning "no cutoff").
+  function resolveChatSessionContext(sessionKey) {
+    if (!sessionKey || typeof sessionKey !== 'string') return null;
+    const parts = sessionKey.split(':');
+    if (parts.length < 4 || parts[0] !== 'agent') return null;
+    const agentId = parts[1];
+    const sessionId = parts[parts.length - 1];
+    if (!agentId || !sessionId) return null;
+    const workspace = outputsLib.getAgentWorkspacePath(agentId);
+    if (!workspace) return null;
+    // Sessions live as siblings of `workspace/`: `<home>/agents/<agentId>/sessions/<id>.jsonl`.
+    const home = path.dirname(workspace);
+    const jsonl = path.join(home, 'agents', agentId, 'sessions', `${sessionId}.jsonl`);
+    let sinceMs = null;
+    try {
+      const stat = fs.statSync(jsonl);
+      // Try first event for accuracy; fall back to ctime.
+      try {
+        // Read just the first ~1KB — enough for the session header line.
+        const buf = Buffer.alloc(1024);
+        const fd = fs.openSync(jsonl, 'r');
+        try { fs.readSync(fd, buf, 0, buf.length, 0); }
+        finally { fs.closeSync(fd); }
+        const firstLine = buf.toString('utf8').split('\n', 1)[0];
+        const evt = firstLine ? JSON.parse(firstLine) : null;
+        const ts = evt?.timestamp;
+        const parsed = ts ? Date.parse(ts) : NaN;
+        if (Number.isFinite(parsed)) sinceMs = parsed;
+      } catch { /* fall through to ctime */ }
+      if (sinceMs == null) sinceMs = stat.birthtime?.getTime?.() || stat.ctime.getTime();
+    } catch {
+      // No JSONL yet (newly-created session) — leave sinceMs null so the API
+      // returns everything currently in outputs/.
+    }
+    return { agentId, sessionId, sinceMs };
+  }
+
+  // Authorization gate: only the agent's owner may inspect their outputs.
+  function ensureChatOutputsAccess(req, agentId) {
+    return db.userOwnsAgent(req, agentId);
+  }
 
 // ─── Chat API (Gateway WebSocket Proxy) ──────────────────────────────────────
 
@@ -274,6 +321,64 @@ module.exports = function chatRouter(deps) {
   }
 });
 
+
+  // ─── Chat-session outputs (artifacts produced during this conversation) ──
+  // List files produced during a chat session. Walks `<workspace>/outputs/`
+  // recursively (the convention) plus, transitionally, files written outside
+  // it by older agents (flagged outOfConvention=true so the UI can hint).
+  router.get('/chat/outputs', db.authMiddleware, (req, res) => {
+    try {
+      const sessionKey = String(req.query.sessionKey || '');
+      if (!sessionKey) return res.status(400).json({ error: 'sessionKey query param required' });
+      const ctx = resolveChatSessionContext(sessionKey);
+      if (!ctx) return res.status(400).json({ error: 'invalid sessionKey' });
+      if (!ensureChatOutputsAccess(req, ctx.agentId)) {
+        return res.status(403).json({ error: 'You can only view outputs for agents you own' });
+      }
+      const result = outputsLib.listChatOutputs(ctx.agentId, { sinceMs: ctx.sinceMs });
+      res.json({
+        agentId: ctx.agentId,
+        sessionId: ctx.sessionId,
+        sinceMs: ctx.sinceMs,
+        outputsRoot: result.outputsRoot,
+        files: result.files,
+        truncated: result.truncated,
+      });
+    } catch (err) {
+      console.error('[api/chat/outputs]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Stream a single output file's bytes. Used by the chat panel's Outputs
+  // tab to download/preview an artifact. Path is workspace-relative; the
+  // resolver refuses any traversal outside the workspace.
+  router.get('/chat/outputs/file', db.authMiddleware, (req, res) => {
+    try {
+      const sessionKey = String(req.query.sessionKey || '');
+      const relPath = String(req.query.path || '');
+      if (!sessionKey || !relPath) {
+        return res.status(400).json({ error: 'sessionKey and path query params are required' });
+      }
+      const ctx = resolveChatSessionContext(sessionKey);
+      if (!ctx) return res.status(400).json({ error: 'invalid sessionKey' });
+      if (!ensureChatOutputsAccess(req, ctx.agentId)) {
+        return res.status(403).json({ error: 'You can only view outputs for agents you own' });
+      }
+      const file = outputsLib.resolveChatOutputFile(ctx.agentId, relPath);
+      if (!file) return res.status(404).json({ error: 'file not found' });
+      // Inline preview by default (UI shows in a viewer/iframe). Clients that
+      // want a download can set `?download=1` to force the disposition.
+      const dispo = req.query.download === '1' ? 'attachment' : 'inline';
+      res.setHeader('Content-Type', file.mimeType);
+      res.setHeader('Content-Disposition', `${dispo}; filename="${path.basename(file.filename)}"`);
+      res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+      fs.createReadStream(file.absPath).pipe(res);
+    } catch (err) {
+      console.error('[api/chat/outputs/file]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   return router;
 };

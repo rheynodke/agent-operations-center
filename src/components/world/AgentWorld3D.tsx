@@ -952,60 +952,16 @@ function HologramSphere({ theme }: { theme: ThemeMode }) {
 function MeetingNookFurniture({ tokens }: { tokens: SceneTokens }) {
   return (
     <group>
-      {/* ── Sofa cluster anchor rug ───────────────────────────────────────── */}
-      {/* Spans the sofa+coffee-table+armchair zone so the cluster reads as a  */}
-      {/* defined lounge pocket, not floating on the open floor.               */}
-      <Box args={[10, 0.04, 7]} position={[-3, 0.022, 15]} receiveShadow>
-        <meshStandardMaterial color={tokens.wallTrim} roughness={0.95} transparent opacity={0.55} />
-      </Box>
+      {/* ── Lounge sofa cluster (sofa + coffee table + armchair) REMOVED ──── */}
+      {/* Removed at user request — the dark `wallTrim`-coloured cluster read */}
+      {/* as a heavy black mass in the centre of the floor and crowded the   */}
+      {/* scene. Floor, plants, and the meeting nook stay; if a soft seating */}
+      {/* pocket is wanted again, restore the geometry from git history       */}
+      {/* (tag-search: "Sofa cluster anchor rug"). Pathfinding nav nodes that */}
+      {/* referenced sofa bounds are now flying through empty space — they   */}
+      {/* still resolve as valid waypoints on the open floor.                 */}
 
-      {/* ── Sofa cluster, centred near [-2, 0, 16] ────────────────────────── */}
-      {/* Long sofa, facing south */}
-      <group position={[-2, 0, 17]}>
-        <Box args={[5, 0.6, 1.6]} position={[0, 0.6, 0]} castShadow receiveShadow>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-        <Box args={[5, 1.4, 0.4]} position={[0, 1.5, 0.6]} castShadow>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-        <Box args={[4.6, 0.2, 1.3]} position={[0, 1.0, -0.05]}>
-          <meshStandardMaterial color={tokens.floorAccent} roughness={0.85} />
-        </Box>
-        <Box args={[0.3, 1.1, 1.6]} position={[-2.5, 1.1, 0]}>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-        <Box args={[0.3, 1.1, 1.6]} position={[2.5, 1.1, 0]}>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-      </group>
-      {/* Coffee table in front of sofa */}
-      <group position={[-2, 0, 14]}>
-        <Box args={[1.8, 0.4, 1.1]} position={[0, 0.4, 0]} castShadow receiveShadow>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.5} />
-        </Box>
-        {[[-0.8, -0.45], [0.8, -0.45], [-0.8, 0.45], [0.8, 0.45]].map(([lx, lz], i) => (
-          <Box key={i} args={[0.1, 0.4, 0.1]} position={[lx, 0.2, lz]}>
-            <meshStandardMaterial color={tokens.foreground} roughness={0.5} />
-          </Box>
-        ))}
-      </group>
-      {/* Single armchair, slight angle, west of coffee table */}
-      <group position={[-5, 0, 14]} rotation={[0, Math.PI / 5, 0]}>
-        <Box args={[1.6, 0.6, 1.5]} position={[0, 0.6, 0]} castShadow>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-        <Box args={[1.6, 1.2, 0.3]} position={[0, 1.4, 0.55]}>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-        <Box args={[0.25, 0.9, 1.5]} position={[-0.7, 1.0, 0]}>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-        <Box args={[0.25, 0.9, 1.5]} position={[0.7, 1.0, 0]}>
-          <meshStandardMaterial color={tokens.wallTrim} roughness={0.7} />
-        </Box>
-      </group>
-
-      {/* ── Two potted plants flanking the sofa cluster ───────────────────── */}
+      {/* ── Two potted plants flanking the (former) sofa cluster ──────────── */}
       {[[-7, 18], [3, 18]].map(([px, pz]) => (
         <group key={`plant-${px}-${pz}`} position={[px, 0, pz]}>
           <Cylinder args={[0.45, 0.35, 0.7, 16]} position={[0, 0.35, 0]} castShadow>

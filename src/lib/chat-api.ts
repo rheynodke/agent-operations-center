@@ -47,6 +47,54 @@ export const chatApi = {
       method: "POST",
       body: JSON.stringify({ sessionKey }),
     }),
+
+  // List artifacts produced during this chat session. Server walks the
+  // agent's `<workspace>/outputs/` recursively and surfaces legacy paths
+  // (files written outside the convention during the same time window).
+  getOutputs: (sessionKey: string) =>
+    request<{
+      agentId: string
+      sessionId: string
+      sinceMs: number | null
+      outputsRoot: string
+      truncated: boolean
+      files: ChatOutputFile[]
+    }>(`/chat/outputs?sessionKey=${encodeURIComponent(sessionKey)}`),
+
+  // Build the URL for streaming a single output file. The server is
+  // auth-gated, so callers must fetch with the auth header — we return a
+  // fully-qualified path the caller can fetch + blob for download/preview.
+  outputFileUrl: (sessionKey: string, relPath: string, opts?: { download?: boolean }) =>
+    `${BASE}/chat/outputs/file?sessionKey=${encodeURIComponent(sessionKey)}` +
+    `&path=${encodeURIComponent(relPath)}` +
+    (opts?.download ? "&download=1" : ""),
+
+  // Convenience: fetch a file as a Blob with the auth header attached, so
+  // the caller can pipe it into a download / preview without leaking the
+  // bearer token in the URL bar.
+  fetchOutputBlob: async (sessionKey: string, relPath: string): Promise<Blob> => {
+    const token = useAuthStore.getState().token
+    const url = `${BASE}/chat/outputs/file?sessionKey=${encodeURIComponent(sessionKey)}&path=${encodeURIComponent(relPath)}`
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (res.status === 401) { useAuthStore.getState().clearAuth(); throw new Error("Unauthorized") }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.blob()
+  },
+}
+
+export interface ChatOutputFile {
+  relPath: string
+  name: string
+  size: number
+  mtime: string
+  mtimeMs: number
+  mimeType: string
+  ext: string
+  isText: boolean
+  source: "outputs" | "legacy"
+  outOfConvention: boolean
 }
 
 export interface ChatSession {

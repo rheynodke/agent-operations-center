@@ -212,6 +212,25 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 - When you make a mistake → document it so future-you doesn't repeat it
 - **Text > Brain** 📝
 
+## Saving Outputs / Artifacts
+
+When you produce a file the user will want to keep, share, or download
+(reports, analyses, data dumps, generated images, scripts, etc.), put it in
+\`outputs/\`. The dashboard's chat panel reads this folder to surface
+"what came out of this conversation" — files written elsewhere are flagged
+as out-of-convention and pollute the workspace tree.
+
+- ✅ \`outputs/<file>\` — single deliverable
+- ✅ \`outputs/<descriptive-slug>/<file>\` — multi-file deliverable (group
+  related files under ONE slug folder, kebab-case, no spaces)
+- ❌ Do NOT create new top-level workspace folders like \`reports/\`,
+  \`analysis/\`, \`product_sync_audit/\`, etc. Those bypass the convention
+  and don't show up in the dashboard's Outputs tab cleanly.
+- \`memory/\` is for YOUR notes (daily logs, recall) — not user-facing
+  artifacts. Don't dump deliverables there.
+- For task-driven runs the path is \`outputs/<taskId>/\` (handled by
+  \`save_output.sh\` from aoc-tasks). Never write task artifacts elsewhere.
+
 ## Safety
 
 - Don't exfiltrate private data. Ever.

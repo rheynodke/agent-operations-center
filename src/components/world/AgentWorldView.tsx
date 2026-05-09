@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from "react"
+import { useEffect, useRef, useState, useMemo, useCallback, type ReactNode } from "react"
 import { motion } from "framer-motion"
 import { useAgentStore, useLiveFeedStore, useThemeStore, useOpenWorldStore } from "@/stores"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -8,8 +8,72 @@ import { AgentWorld3D } from "./AgentWorld3D"
 import type * as React from "react"
 import { api } from "@/lib/api"
 import { computeAgentLevel } from "@/lib/agentLeveling"
-import { chatApi, type GatewayMessage } from "@/lib/chat-api"
+import { chatApi, type ChatOutputFile } from "@/lib/chat-api"
+import { useChatStore, gatewayMessagesToGroups, isSystemInjectedUserMessage, type ChatMessageGroup } from "@/stores/useChatStore"
+import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer"
 import { useNavigate } from "react-router-dom"
+
+// ── Floating-pill chat session persistence ────────────────────────────────────
+// We persist the resolved sessionKey per agent so reopening the pill always
+// continues the same conversation, even when:
+//   - a heartbeat run created a fresher session for the same agent (its
+//     `updatedAt` would otherwise win the "latest" sort), or
+//   - any other side process bumped a non-DM session.
+// Cleared explicitly by the user via the pill's "reset" button.
+const PILL_SESSION_LS_KEY = (agentId: string) => `aw:pillChatSession:${agentId}`
+function loadPinnedSessionKey(agentId: string): string | null {
+  try { return localStorage.getItem(PILL_SESSION_LS_KEY(agentId)) } catch { return null }
+}
+function savePinnedSessionKey(agentId: string, key: string) {
+  try { localStorage.setItem(PILL_SESSION_LS_KEY(agentId), key) } catch { /* quota / privacy mode */ }
+}
+function clearPinnedSessionKey(agentId: string) {
+  try { localStorage.removeItem(PILL_SESSION_LS_KEY(agentId)) } catch { /* ignore */ }
+}
+// Heartbeat session keys end with ":heartbeat" (e.g. `agent:migi:main:heartbeat`).
+// Heartbeat runs every minute or so → updatedAt is nearly always the freshest,
+// which is why the previous "pick latest" policy kept overwriting the user's
+// real conversation.
+function isHeartbeatSessionKey(key: string): boolean {
+  return /:heartbeat$/.test(key)
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "?"
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+// ── Pill ↔ side-panel layout toggle ──────────────────────────────────────────
+// "pill" = the original 380×520 floating popover at bottom-right.
+// "panel" = a full-height right-side dock with a draggable left edge so the
+// user can give chat more horizontal room (great for tables / code blocks).
+// Both choices persist across sessions; resetting localStorage falls back to
+// the original pill layout.
+type ChatLayout = "pill" | "panel"
+const CHAT_LAYOUT_LS_KEY = "aw:chatLayout"
+const CHAT_PANEL_WIDTH_LS_KEY = "aw:chatPanelWidth"
+const PANEL_MIN_WIDTH = 320
+const PANEL_DEFAULT_WIDTH = 460
+function loadChatLayout(): ChatLayout {
+  try { return (localStorage.getItem(CHAT_LAYOUT_LS_KEY) as ChatLayout) === "panel" ? "panel" : "pill" }
+  catch { return "pill" }
+}
+function saveChatLayout(v: ChatLayout) {
+  try { localStorage.setItem(CHAT_LAYOUT_LS_KEY, v) } catch { /* ignore */ }
+}
+function loadPanelWidth(): number {
+  try {
+    const raw = Number(localStorage.getItem(CHAT_PANEL_WIDTH_LS_KEY))
+    if (Number.isFinite(raw) && raw >= PANEL_MIN_WIDTH) return raw
+  } catch { /* ignore */ }
+  return PANEL_DEFAULT_WIDTH
+}
+function savePanelWidth(px: number) {
+  try { localStorage.setItem(CHAT_PANEL_WIDTH_LS_KEY, String(Math.round(px))) } catch { /* ignore */ }
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -829,6 +893,10 @@ export function AgentWorldView() {
   }, [isLight])
 
   // ── Pill bar selection + chat popover state ───────────────────────────────
+  // Bubble shape used by the floating pill chat. Built from the shared
+  // `useChatStore.messages[sessionKey]` so the WebSocket gateway events that
+  // power ChatPage also drive realtime updates here — no polling, no local
+  // truth that drifts from the canonical store.
   type ChatBubble = { id: string; role: "user" | "assistant"; text: string; ts: number; pending?: boolean }
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
@@ -836,10 +904,133 @@ export function AgentWorldView() {
   const [chatSending, setChatSending] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
   const [chatSessionKey, setChatSessionKey] = useState<string | null>(null)
-  const [chatMessages, setChatMessages] = useState<ChatBubble[]>([])
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
   const chatScrollRef = useRef<HTMLDivElement>(null)
+
+  // Tabbed surface inside the chat panel: "chat" (the message thread) and
+  // "outputs" (artifacts produced during this session, surfaced from the
+  // server's `/api/chat/outputs` endpoint).
+  const [chatTab, setChatTab] = useState<"chat" | "outputs">("chat")
+  const [outputs, setOutputs] = useState<ChatOutputFile[]>([])
+  const [outputsLoading, setOutputsLoading] = useState(false)
+  const [outputsError, setOutputsError] = useState<string | null>(null)
+  const [outputsTruncated, setOutputsTruncated] = useState(false)
   const navigate = useNavigate()
+
+  // Layout toggle (pill vs side-panel) + draggable panel width. Both persist
+  // across reloads via localStorage helpers above.
+  const [chatLayout, setChatLayout] = useState<ChatLayout>(() => loadChatLayout())
+  const [panelWidth, setPanelWidth] = useState<number>(() => loadPanelWidth())
+  const [panelDragging, setPanelDragging] = useState(false)
+  // Re-clamp on viewport resize so the panel never exceeds 70% of the window
+  // (a desktop user might shrink their window after dragging).
+  useEffect(() => {
+    if (chatLayout !== "panel") return
+    const onResize = () => {
+      setPanelWidth((w) => {
+        const max = Math.max(PANEL_MIN_WIDTH, Math.floor(window.innerWidth * 0.7))
+        return Math.min(w, max)
+      })
+    }
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [chatLayout])
+
+  // Drag handle on the panel's LEFT edge: mousedown sets dragging=true, then
+  // window-level mousemove updates width = (viewport.right - clientX). We use
+  // window listeners (not the handle's own onMouseMove) so the drag doesn't
+  // get lost when the cursor outruns the 4px-wide handle.
+  const startPanelResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setPanelDragging(true)
+  }, [])
+  useEffect(() => {
+    if (!panelDragging) return
+    const onMove = (ev: MouseEvent) => {
+      const max = Math.max(PANEL_MIN_WIDTH, Math.floor(window.innerWidth * 0.7))
+      const next = Math.min(max, Math.max(PANEL_MIN_WIDTH, window.innerWidth - ev.clientX))
+      setPanelWidth(next)
+    }
+    const onUp = () => {
+      setPanelDragging(false)
+      // Persist on release (don't thrash localStorage during the drag).
+      setPanelWidth((w) => { savePanelWidth(w); return w })
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+    // Lock the cursor + suppress text selection while dragging.
+    const prevCursor = document.body.style.cursor
+    const prevUserSelect = document.body.style.userSelect
+    document.body.style.cursor = "ew-resize"
+    document.body.style.userSelect = "none"
+    return () => {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = prevUserSelect
+    }
+  }, [panelDragging])
+
+  const toggleChatLayout = useCallback(() => {
+    setChatLayout((prev) => {
+      const next: ChatLayout = prev === "pill" ? "panel" : "pill"
+      saveChatLayout(next)
+      return next
+    })
+  }, [])
+
+  // Subscribe to the shared chat store. The WebSocket handler in
+  // `useWebSocket.ts` writes gateway events into `messages[sessionKey]` —
+  // selecting it here gives us realtime user echo + agent streaming updates
+  // for free, with the same dedup behavior as the full ChatPage.
+  const storeMessagesAll = useChatStore((s) => s.messages)
+  const storeGroups: ChatMessageGroup[] = useMemo(
+    () => (chatSessionKey ? (storeMessagesAll[chatSessionKey] ?? []) : []),
+    [chatSessionKey, storeMessagesAll],
+  )
+  const isAgentRunning = useChatStore((s) => (chatSessionKey ? !!s.agentRunning[chatSessionKey] : false))
+
+  // Project rich `ChatMessageGroup`s down to flat bubbles for the pill UI.
+  // Skip system-injected metadata frames (e.g. "Conversation info" envelopes)
+  // — those are noise for the lightweight floating chat. The Open Full Chat
+  // route still sees everything via ChatPage.
+  const chatMessages: ChatBubble[] = useMemo(() => {
+    const out: ChatBubble[] = []
+    for (const g of storeGroups) {
+      if (g.role === "user") {
+        const text = (g.userText || "").trim()
+        if (!text) continue
+        if (isSystemInjectedUserMessage(text)) continue
+        out.push({
+          id: g.id,
+          role: "user",
+          text,
+          ts: g.timestamp || Date.now(),
+          pending: g.isStreaming === true && !g.responseDone,
+        })
+      } else if (g.role === "agent") {
+        const text = (g.responseText || "").trim()
+        // Show the agent bubble as soon as the placeholder is appended so the
+        // user sees something happening (otherwise the pill chat looks dead
+        // for the entire thinking/tool phase, which can be 5-30s on real
+        // sessions). Once `responseText` streams in, this bubble's text is
+        // updated in place by the WS handler — same group id, no re-mount,
+        // no flicker. Skip only if the run is FULLY DONE with no text (a
+        // legitimate empty assistant turn, e.g. tool-only) so we don't leave
+        // a permanent ellipsis bubble in history.
+        const isStreamingPlaceholder = g.isStreaming === true && !g.responseDone
+        if (!text && !isStreamingPlaceholder) continue
+        out.push({
+          id: g.id,
+          role: "assistant",
+          text: text || "…",
+          ts: g.timestamp || Date.now(),
+          pending: isStreamingPlaceholder,
+        })
+      }
+    }
+    return out
+  }, [storeGroups])
 
   const selectedAgent = useMemo(
     () => agents.find(a => a.id === selectedAgentId) || null,
@@ -857,46 +1048,38 @@ export function AgentWorldView() {
     return !!m && !m.isMine
   }, [selectedAgent, worldMode, openMasters])
 
-  // Convert a raw GatewayMessage into a flat bubble (user/assistant text only).
-  // Tool calls, thinking blocks, and system messages are filtered out for the
-  // popover UX — Open Full Chat shows everything.
-  const toBubble = useCallback((m: GatewayMessage, idx: number): ChatBubble | null => {
-    if (m.role !== "user" && m.role !== "assistant") return null
-    let text = ""
-    if (typeof m.content === "string") text = m.content
-    else if (Array.isArray(m.content)) {
-      text = m.content
-        .filter((b: { type?: string }) => b.type === "text")
-        .map((b: { text?: string }) => b.text || "")
-        .join("\n")
-    } else if (m.text) text = m.text
-    if (!text.trim()) return null
-    return {
-      id: m.id || `m-${idx}-${m.timestamp || 0}`,
-      role: m.role,
-      text: text.trim(),
-      ts: m.timestamp || Date.now(),
-    }
-  }, [])
-
   // Reset selection + chat when the agent list changes (e.g. mode toggle).
+  // We only reset the local UI scaffolding here — the shared chat store keeps
+  // history per sessionKey, so reopening the same agent later reuses the live
+  // gateway-fed messages with no flicker.
   useEffect(() => {
     setSelectedAgentId(null)
     setChatOpen(false)
     setChatDraft("")
     setChatError(null)
     setChatSessionKey(null)
-    setChatMessages([])
   }, [worldMode])
 
-  // Reset chat thread when switching agents.
+  // Reset session key when switching agents — the new agent's session will be
+  // resolved on chat open.
   useEffect(() => {
     setChatSessionKey(null)
-    setChatMessages([])
     setChatError(null)
   }, [selectedAgentId])
 
-  // When chat is open + an own-agent is selected, ensure session exists and load history.
+  // When chat is open + an own-agent is selected, resolve a session key for
+  // the floating chat. Resolution order ("stay on this conversation" policy):
+  //   1. Pinned: read `localStorage[PILL_SESSION_LS_KEY(agentId)]`. If that
+  //      key still exists in the agent's session list AND isn't a heartbeat
+  //      session, reuse it. This is the path taken on every reopen so the
+  //      pill never silently switches to a heartbeat-bumped session or any
+  //      other "freshest by updatedAt" winner.
+  //   2. Latest non-heartbeat DM: filter heartbeat keys out of the list, pick
+  //      the freshest remaining. Used the first time we see this agent, or
+  //      after the user explicitly resets.
+  //   3. Create new: only when (1) and (2) yield nothing.
+  // Whichever branch wins, the resolved key is written back to localStorage
+  // so subsequent opens skip straight to (1).
   useEffect(() => {
     if (!chatOpen || !selectedAgent || isCrossTenant) return
     let cancelled = false
@@ -904,17 +1087,55 @@ export function AgentWorldView() {
     setChatError(null)
     ;(async () => {
       try {
-        const sessRes = await chatApi.createSession(selectedAgent.id)
-        const key = sessRes.sessionKey || sessRes.key || sessRes.sessionId
-        if (!key) throw new Error("No session key returned")
+        let key: string | null = null
+        const pinned = loadPinnedSessionKey(selectedAgent.id)
+        let serverKeys: Set<string> | null = null
+        try {
+          const listRes = await chatApi.getSessions(selectedAgent.id)
+          const dmSessions = (listRes.sessions || [])
+            .filter((s) => {
+              const sAgentId = s.agentId
+              if (sAgentId && sAgentId !== selectedAgent.id) return false
+              const sKey = s.sessionKey || s.key || ""
+              return !!sKey && !isHeartbeatSessionKey(sKey)
+            })
+          serverKeys = new Set(dmSessions.map((s) => s.sessionKey || s.key || ""))
+          // 1. Pinned key still valid?
+          if (pinned && serverKeys.has(pinned) && !isHeartbeatSessionKey(pinned)) {
+            key = pinned
+          } else {
+            // 2. Latest non-heartbeat DM.
+            dmSessions.sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
+            const fresh = dmSessions[0]
+            if (fresh) key = fresh.sessionKey || fresh.key || null
+          }
+        } catch {
+          // List failure is non-fatal. If a pinned key exists from a prior
+          // successful session, trust it — gateway will reject if truly gone.
+          if (pinned && !isHeartbeatSessionKey(pinned)) key = pinned
+        }
+        // 3. Nothing found → create.
+        if (!key) {
+          const sessRes = await chatApi.createSession(selectedAgent.id)
+          key = sessRes.sessionKey || sessRes.key || sessRes.sessionId || null
+          if (!key) throw new Error("No session key returned")
+        }
         if (cancelled) return
         setChatSessionKey(key)
-        const histRes = await chatApi.getHistory(key, { maxChars: 40000 })
-        if (cancelled) return
-        const bubbles = (histRes.messages || [])
-          .map(toBubble)
-          .filter((b): b is ChatBubble => b != null)
-        setChatMessages(bubbles)
+        savePinnedSessionKey(selectedAgent.id, key)
+        // Subscribe so the gateway-ws starts streaming events for this key.
+        // Idempotent on the server side.
+        chatApi.subscribe(key).catch(() => {})
+        // Only load history from API if the store doesn't already have it —
+        // otherwise we'd race with live WS updates and clobber streaming
+        // bubbles. The full ChatPage uses the same gating pattern.
+        const existing = useChatStore.getState().messages[key]
+        if (!existing || existing.length === 0) {
+          const histRes = await chatApi.getHistory(key, { maxChars: 40000 })
+          if (cancelled) return
+          const groups = gatewayMessagesToGroups(histRes.messages || [])
+          useChatStore.getState().setMessages(key, groups)
+        }
       } catch (e) {
         if (!cancelled) setChatError((e as Error).message || "Failed to load chat")
       } finally {
@@ -922,38 +1143,7 @@ export function AgentWorldView() {
       }
     })()
     return () => { cancelled = true }
-  }, [chatOpen, selectedAgent, isCrossTenant, toBubble])
-
-  // Poll for new messages every 3s while chat is open with an active session.
-  // Merge strategy: server history is truth, but ANY local bubble (id prefixed
-  // with "local-") that hasn't yet appeared in server history is preserved so
-  // the user's message stays on screen continuously — even after we've marked
-  // the local bubble non-pending. Match by role+text within a 60s window.
-  useEffect(() => {
-    if (!chatOpen || !chatSessionKey || isCrossTenant) return
-    const id = setInterval(async () => {
-      try {
-        const res = await chatApi.getHistory(chatSessionKey, { maxChars: 40000 })
-        const bubbles = (res.messages || [])
-          .map(toBubble)
-          .filter((b): b is ChatBubble => b != null)
-        setChatMessages(prev => {
-          const localUnconfirmed = prev.filter(p =>
-            p.id.startsWith("local-") &&
-            !bubbles.some(b =>
-              b.role === p.role &&
-              b.text === p.text &&
-              Math.abs((b.ts || 0) - p.ts) < 60_000
-            )
-          )
-          // Preserve order: server bubbles first (chronological from server),
-          // then any unconfirmed local bubbles appended at the end (newest).
-          return [...bubbles, ...localUnconfirmed]
-        })
-      } catch { /* ignore transient poll errors */ }
-    }, 3000)
-    return () => clearInterval(id)
-  }, [chatOpen, chatSessionKey, isCrossTenant, toBubble])
+  }, [chatOpen, selectedAgent, isCrossTenant])
 
   // Auto-scroll to bottom when messages or send state changes.
   useEffect(() => {
@@ -966,54 +1156,667 @@ export function AgentWorldView() {
     setChatError(null)
   }, [])
 
+  // Fetch the artifact list for the active session. Cheap to call — server
+  // walks `<workspace>/outputs/` (capped at 200 files) plus any legacy
+  // top-level dir an older agent run might have used. We expose this both
+  // for tab opening and for the post-run auto-refresh below.
+  const refreshOutputs = useCallback(async () => {
+    if (!chatSessionKey) { setOutputs([]); return }
+    setOutputsLoading(true)
+    setOutputsError(null)
+    try {
+      const res = await chatApi.getOutputs(chatSessionKey)
+      setOutputs(res.files || [])
+      setOutputsTruncated(!!res.truncated)
+    } catch (e) {
+      setOutputsError((e as Error).message || "Failed to load outputs")
+    } finally {
+      setOutputsLoading(false)
+    }
+  }, [chatSessionKey])
+
+  // Auto-fetch when the user opens the Outputs tab AND when the session key
+  // changes (different session = different artifact set). Don't poll — we
+  // refresh again on agent-done below, which covers the "agent just wrote a
+  // file" case without a constant-polling tax.
+  useEffect(() => {
+    if (chatTab !== "outputs") return
+    refreshOutputs()
+  }, [chatTab, chatSessionKey, refreshOutputs])
+
+  // Refresh outputs when the agent just FINISHED a turn — that's when new
+  // artifacts typically land on disk. Tracks the running→idle transition so
+  // we don't re-fetch on every isAgentRunning toggle.
+  const wasAgentRunning = useRef(false)
+  useEffect(() => {
+    const prev = wasAgentRunning.current
+    wasAgentRunning.current = isAgentRunning
+    if (prev && !isAgentRunning && chatTab === "outputs") {
+      // Slight delay so the file system has settled (some agents write the
+      // file as one of the last steps, after the lifecycle event).
+      const t = setTimeout(refreshOutputs, 1200)
+      return () => clearTimeout(t)
+    }
+  }, [isAgentRunning, chatTab, refreshOutputs])
+
+  // Click handler for an output entry — fetches the file with auth and pops
+  // a download (or in-tab navigation for previewable types). We intentionally
+  // do NOT just `<a href>` it because the API is bearer-gated and exposing
+  // the JWT in the URL bar is gross.
+  const openOutput = useCallback(async (file: ChatOutputFile, opts: { download?: boolean } = {}) => {
+    if (!chatSessionKey) return
+    try {
+      const blob = await chatApi.fetchOutputBlob(chatSessionKey, file.relPath)
+      const url = URL.createObjectURL(blob)
+      if (opts.download) {
+        const a = document.createElement("a")
+        a.href = url
+        a.download = file.name
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+      } else {
+        // Open in a new tab; previewable types (md, txt, image, pdf) render
+        // natively. Browser frees the object URL when the tab unloads.
+        window.open(url, "_blank", "noopener,noreferrer")
+      }
+      // Revoke after a beat so an in-tab open has time to load.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (e) {
+      setOutputsError((e as Error).message || "Failed to fetch file")
+    }
+  }, [chatSessionKey])
+
+  // Drop the pinned session and start a fresh one on demand. Used by the
+  // pill's "reset" button — the only way the floating chat ever switches
+  // away from its current conversation.
+  const handleResetChat = useCallback(async () => {
+    if (!selectedAgent || isCrossTenant) return
+    setChatError(null)
+    setChatSending(true)
+    const oldKey = chatSessionKey
+    try {
+      clearPinnedSessionKey(selectedAgent.id)
+      const sessRes = await chatApi.createSession(selectedAgent.id)
+      const newKey = sessRes.sessionKey || sessRes.key || sessRes.sessionId || null
+      if (!newKey) throw new Error("No session key returned")
+      // Clear the old bucket from the store so we don't keep stale streams
+      // around. The new session has no history yet → empty array is correct.
+      if (oldKey && oldKey !== newKey) {
+        useChatStore.getState().setMessages(oldKey, [])
+      }
+      useChatStore.getState().setMessages(newKey, [])
+      useChatStore.getState().setAgentRunning(newKey, false)
+      setChatSessionKey(newKey)
+      savePinnedSessionKey(selectedAgent.id, newKey)
+      chatApi.subscribe(newKey).catch(() => {})
+    } catch (e) {
+      setChatError((e as Error).message || "Failed to reset chat")
+    } finally {
+      setChatSending(false)
+    }
+  }, [selectedAgent, isCrossTenant, chatSessionKey])
+
   const handleSendChat = useCallback(async () => {
     if (!selectedAgent || isCrossTenant || !chatDraft.trim()) return
     const text = chatDraft.trim()
     setChatSending(true)
     setChatError(null)
-    // Optimistic local bubble
-    const optimistic: ChatBubble = {
-      id: `local-${Date.now()}`,
-      role: "user",
-      text,
-      ts: Date.now(),
-      pending: true,
-    }
-    setChatMessages(prev => [...prev, optimistic])
     setChatDraft("")
+
+    // Mirror ChatPage.handleSend: write user + agent placeholder into the
+    // shared store, mark agent as running, mark this text as "sent" so the
+    // gateway WS echo of our own user message gets suppressed. The WS
+    // handler will fill in `responseText` for the agent group as the model
+    // streams, and flip `isStreaming` / `responseDone` when the run ends.
+    const store = useChatStore.getState()
     try {
       let key = chatSessionKey
       if (!key) {
-        const sessRes = await chatApi.createSession(selectedAgent.id)
-        key = sessRes.sessionKey || sessRes.key || sessRes.sessionId || null
-        if (!key) throw new Error("No session key returned")
+        // Same resolution policy as the open-chat effect above: pinned →
+        // latest non-heartbeat DM → create. Covers the case where the user
+        // types and presses send before the async session-resolve effect
+        // has populated `chatSessionKey`.
+        const pinned = loadPinnedSessionKey(selectedAgent.id)
+        try {
+          const listRes = await chatApi.getSessions(selectedAgent.id)
+          const dmSessions = (listRes.sessions || [])
+            .filter((s) => {
+              if (s.agentId && s.agentId !== selectedAgent.id) return false
+              const sKey = s.sessionKey || s.key || ""
+              return !!sKey && !isHeartbeatSessionKey(sKey)
+            })
+          const serverKeys = new Set(dmSessions.map((s) => s.sessionKey || s.key || ""))
+          if (pinned && serverKeys.has(pinned) && !isHeartbeatSessionKey(pinned)) {
+            key = pinned
+          } else {
+            dmSessions.sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
+            const fresh = dmSessions[0]
+            if (fresh) key = fresh.sessionKey || fresh.key || null
+          }
+        } catch {
+          if (pinned && !isHeartbeatSessionKey(pinned)) key = pinned
+        }
+        if (!key) {
+          const sessRes = await chatApi.createSession(selectedAgent.id)
+          key = sessRes.sessionKey || sessRes.key || sessRes.sessionId || null
+          if (!key) throw new Error("No session key returned")
+        }
         setChatSessionKey(key)
+        savePinnedSessionKey(selectedAgent.id, key)
+        chatApi.subscribe(key).catch(() => {})
       }
+      // Refuse double-send while a run is still in flight on this session.
+      if (store.agentRunning[key]) {
+        setChatSending(false)
+        return
+      }
+      store.markSent(key, text)
+      const userMsg: ChatMessageGroup = {
+        id: `user-${Math.random().toString(36).slice(2, 10)}`,
+        role: "user",
+        userText: text,
+        timestamp: Date.now(),
+      }
+      store.appendMessage(key, userMsg)
+      const agentMsg: ChatMessageGroup = {
+        id: `agent-${Math.random().toString(36).slice(2, 10)}`,
+        role: "agent",
+        agentId: selectedAgent.id,
+        toolCalls: [],
+        isStreaming: true,
+        responseDone: false,
+        timestamp: Date.now(),
+      }
+      store.appendMessage(key, agentMsg)
+      store.setAgentRunning(key, true)
+
       await chatApi.sendMessage(key, text, selectedAgent.id)
-      // Mark optimistic bubble as confirmed; the next poll will replace it with server-truth.
-      setChatMessages(prev => prev.map(m => m.id === optimistic.id ? { ...m, pending: false } : m))
+      // Auto-clear the markSent flag after 10s in case the WS echo never
+      // arrived — same safety net ChatPage uses.
+      setTimeout(() => useChatStore.getState().clearSent(key as string, text), 10_000)
     } catch (e) {
       setChatError((e as Error).message || "Failed to send")
-      // Drop the optimistic bubble on error.
-      setChatMessages(prev => prev.filter(m => m.id !== optimistic.id))
+      // Surface the error inside the agent placeholder bubble + stop the
+      // running indicator. Don't yank the user bubble — the user wants to
+      // see what they tried to send (matches ChatPage behaviour).
+      const key = chatSessionKey
+      if (key) {
+        useChatStore.getState().clearSent(key, text)
+        useChatStore.getState().updateLastAgentMessage(key, (m) => ({
+          ...m,
+          responseText: `❌ Failed to send: ${(e as Error).message || "Unknown error"}`,
+          responseDone: true,
+          isStreaming: false,
+        }))
+        useChatStore.getState().setAgentRunning(key, false)
+      }
     } finally {
       setChatSending(false)
     }
   }, [selectedAgent, isCrossTenant, chatDraft, chatSessionKey])
 
+  // When the docked side panel is active we lay scene + panel out as flex
+  // siblings so chat takes real horizontal space (instead of overlaying the
+  // 3D world). Pill mode keeps the original single-container layout.
+  const isSidePanelMode = chatOpen && chatLayout === "panel"
+  const sceneShellShadow = isLight
+    ? "0 0 0 1px rgba(100,140,200,0.35), 0 8px 40px rgba(80,120,200,0.12)"
+    : "0 0 0 1px rgba(30,60,160,0.4), 0 0 40px rgba(0,0,255,0.05), 0 12px 60px rgba(0,0,0,0.8)"
+
+  // Chat surface JSX, defined once and rendered into either the pill overlay
+  // (inside the scene shell) or the docked sibling wrapper (outside the
+  // scene shell). The container's positioning / size is mode-aware: pill =
+  // absolute bottom-right; panel = relative+full so it fills the docked
+  // wrapper that lives next to the scene as a flex sibling.
+  const chatPanelEl: ReactNode = chatOpen ? (
+    <div
+      className={
+        chatLayout === "panel"
+          ? "relative w-full h-full overflow-hidden flex flex-col"
+          : "absolute bottom-24 right-6 z-30 rounded-2xl overflow-hidden flex flex-col"
+      }
+      style={{
+        width: chatLayout === "panel" ? "100%" : 380,
+        height: chatLayout === "panel" ? "100%" : 520,
+        borderRadius: chatLayout === "panel" ? 12 : 16,
+        ...glass({ strong: true }),
+        boxShadow: isLight
+          ? "0 1px 0 rgba(255,255,255,0.6) inset, 0 24px 64px rgba(40, 60, 100, 0.22)"
+          : "0 1px 0 rgba(255,255,255,0.06) inset, 0 24px 64px rgba(0, 0, 0, 0.7)",
+        pointerEvents: "auto",
+      }}
+    >
+      {/* Resize handle — only in panel mode. Window-level mousemove takes
+          over while dragging (see useEffect above) so the cursor can outrun
+          this strip. */}
+      {chatLayout === "panel" && (
+        <div
+          onMouseDown={startPanelResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat panel"
+          style={{
+            position: "absolute",
+            top: 0, bottom: 0, left: 0,
+            width: 6,
+            cursor: "ew-resize",
+            background: panelDragging
+              ? "linear-gradient(90deg, hsl(var(--primary) / 0.5), transparent)"
+              : "transparent",
+            zIndex: 40,
+            transition: "background 0.15s",
+          }}
+          onMouseEnter={(e) => {
+            if (!panelDragging) {
+              (e.currentTarget as HTMLDivElement).style.background =
+                "linear-gradient(90deg, hsl(var(--primary) / 0.25), transparent)"
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!panelDragging) {
+              (e.currentTarget as HTMLDivElement).style.background = "transparent"
+            }
+          }}
+        />
+      )}
+      {/* Header */}
+      <div
+        className="flex items-center gap-3 px-4 py-3"
+        style={{ borderBottom: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}` }}
+      >
+        {selectedAgent ? (
+          <>
+            <div
+              className="rounded-full flex items-center justify-center overflow-hidden shrink-0"
+              style={{
+                width: 38, height: 38,
+                background: selectedAgent.color || "var(--primary)",
+                boxShadow: "0 0 0 2px rgba(255,255,255,0.1), 0 4px 12px rgba(0,0,0,0.25)",
+              }}
+            >
+              <AgentAvatar
+                avatarPresetId={selectedAgent.avatarPresetId}
+                emoji={selectedAgent.emoji}
+                size="w-9 h-9"
+              />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold truncate" style={{ color: "var(--foreground)" }}>
+                {selectedAgent.name}
+              </div>
+              {(() => {
+                const ws = selectedAgentState
+                const tick =
+                  ws === "processing" ? { color: "#facc15", label: "Processing", pulse: true } :
+                  ws === "offline"    ? { color: "#ef4444", label: "Offline",    pulse: false } :
+                  ws === "working"    ? { color: "#22c55e", label: "Online",     pulse: false } :
+                  ws === "idle"       ? { color: "#22c55e", label: "Online · idle", pulse: false } :
+                                        { color: "#94a3b8", label: "—",          pulse: false }
+                return (
+                  <div className="flex items-center gap-1.5 text-[11px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                    <span
+                      className={`inline-block rounded-full ${tick.pulse ? "animate-pulse" : ""}`}
+                      style={{
+                        width: 8, height: 8,
+                        background: tick.color,
+                        boxShadow: `0 0 6px ${tick.color}`,
+                      }}
+                    />
+                    <span>{selectedAgent.role || "Agent"} · {tick.label}</span>
+                  </div>
+                )
+              })()}
+            </div>
+          </>
+        ) : (
+          <div className="text-sm flex-1" style={{ color: "var(--muted-foreground)" }}>
+            Pick an agent from the top bar to start chatting
+          </div>
+        )}
+        <button
+          onClick={toggleChatLayout}
+          className="text-sm rounded-full hover:bg-white/10"
+          style={{
+            color: "var(--muted-foreground)",
+            width: 28, height: 28, lineHeight: "28px", textAlign: "center",
+          }}
+          aria-label={chatLayout === "panel" ? "Switch to floating chat" : "Dock chat to right side"}
+          title={chatLayout === "panel" ? "Switch to floating pill" : "Dock to right side"}
+        >
+          {chatLayout === "panel" ? "⊟" : "⊡"}
+        </button>
+        {selectedAgent && !isCrossTenant && (
+          <button
+            onClick={handleResetChat}
+            disabled={chatSending || isAgentRunning}
+            className="text-sm rounded-full hover:bg-white/10 transition-opacity"
+            style={{
+              color: "var(--muted-foreground)",
+              width: 28, height: 28, lineHeight: "28px", textAlign: "center",
+              opacity: chatSending || isAgentRunning ? 0.4 : 1,
+              cursor: chatSending || isAgentRunning ? "not-allowed" : "pointer",
+            }}
+            aria-label="Reset chat (start a new session)"
+            title="Start a new session"
+          >↻</button>
+        )}
+        <button
+          onClick={() => setChatOpen(false)}
+          className="text-base rounded-full hover:bg-white/10"
+          style={{ color: "var(--muted-foreground)", width: 28, height: 28, lineHeight: "28px", textAlign: "center" }}
+          aria-label="Close chat"
+        >✕</button>
+      </div>
+
+      {/* Body */}
+      {selectedAgent ? (
+        <>
+          {isCrossTenant && (
+            <div
+              className="text-[11px] px-3 py-2 mx-3 mt-3 rounded-lg"
+              style={{
+                background: isLight ? "rgba(245, 158, 11, 0.15)" : "rgba(245, 158, 11, 0.14)",
+                color: isLight ? "#b45309" : "#fcd34d",
+                border: `1px solid ${isLight ? "rgba(245, 158, 11, 0.35)" : "rgba(245, 158, 11, 0.28)"}`,
+              }}
+            >
+              View only — this is another user's master agent. Cross-tenant messaging is coming soon.
+            </div>
+          )}
+
+          {/* Tab strip — Chat / Outputs. Hidden for cross-tenant agents (no
+              outputs route there yet). The Outputs count is intentionally
+              unlabeled when zero so the tab doesn't shout an empty number. */}
+          {!isCrossTenant && (
+            <div className="px-3 pt-3 flex gap-1">
+              {(["chat", "outputs"] as const).map((tab) => {
+                const active = chatTab === tab
+                const label = tab === "chat"
+                  ? "Chat"
+                  : `Outputs${outputs.length > 0 ? ` · ${outputs.length}` : ""}`
+                return (
+                  <button
+                    key={tab}
+                    onClick={() => setChatTab(tab)}
+                    className="text-[11px] font-medium px-3 py-1 rounded-full transition-all"
+                    style={{
+                      background: active
+                        ? "var(--primary)"
+                        : (isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.05)"),
+                      color: active
+                        ? "var(--primary-foreground)"
+                        : "var(--muted-foreground)",
+                      border: active
+                        ? "1px solid rgba(255,255,255,0.18)"
+                        : `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}`,
+                    }}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {chatTab === "chat" && (
+          <>
+          {/* Messages */}
+          <div
+            ref={chatScrollRef}
+            className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2"
+          >
+            {chatHistoryLoading && chatMessages.length === 0 && (
+              <div className="text-[11px] text-center py-4" style={{ color: "var(--muted-foreground)" }}>
+                Loading conversation…
+              </div>
+            )}
+            {!chatHistoryLoading && chatMessages.length === 0 && !isCrossTenant && (
+              <div className="text-[11px] text-center py-4" style={{ color: "var(--muted-foreground)" }}>
+                No messages yet. Say hi 👋
+              </div>
+            )}
+            {chatMessages.map(m => (
+              <div
+                key={m.id}
+                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <div
+                  className={`pill-chat-bubble rounded-2xl px-3 py-2 text-xs leading-relaxed ${m.role === "user" ? "is-user" : "is-assistant"}`}
+                  style={{
+                    maxWidth: m.role === "user" ? "78%" : "92%",
+                    minWidth: 0,
+                    background: m.role === "user"
+                      ? "var(--primary)"
+                      : (isLight ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.06)"),
+                    color: m.role === "user"
+                      ? "var(--primary-foreground)"
+                      : "var(--foreground)",
+                    border: m.role === "user"
+                      ? "1px solid rgba(255,255,255,0.18)"
+                      : `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}`,
+                    borderBottomRightRadius: m.role === "user" ? 6 : 18,
+                    borderBottomLeftRadius:  m.role === "user" ? 18 : 6,
+                    boxShadow: m.role === "user"
+                      ? "0 4px 14px rgba(124, 58, 237, 0.25), 0 1px 0 rgba(255,255,255,0.18) inset"
+                      : "0 1px 0 rgba(255,255,255,0.08) inset",
+                    opacity: m.pending ? 0.7 : 1,
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {m.role === "assistant" && m.text !== "…" ? (
+                    <div className="pill-md text-xs">
+                      <MarkdownRenderer content={m.text} />
+                    </div>
+                  ) : (
+                    <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {chatError && (
+              <div className="text-[11px] text-center py-2" style={{ color: "#ef4444" }}>
+                {chatError}
+              </div>
+            )}
+          </div>
+
+          {/* Composer */}
+          {!isCrossTenant && (
+            <div
+              className="px-3 py-3 flex items-end gap-2"
+              style={{ borderTop: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}` }}
+            >
+              <textarea
+                value={chatDraft}
+                onChange={e => setChatDraft(e.target.value)}
+                placeholder={isAgentRunning ? `${selectedAgent.name} is thinking…` : `Message ${selectedAgent.name}…`}
+                rows={1}
+                disabled={chatSending || isAgentRunning}
+                className="flex-1 resize-none rounded-2xl text-xs px-3 py-2"
+                style={{
+                  background: isLight ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.05)",
+                  color: "var(--foreground)",
+                  border: `1px solid ${isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)"}`,
+                  outline: "none",
+                  maxHeight: 100,
+                  minHeight: 36,
+                }}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault()
+                    handleSendChat()
+                  }
+                }}
+              />
+              <button
+                onClick={handleSendChat}
+                disabled={chatSending || isAgentRunning || !chatDraft.trim()}
+                className="text-xs font-medium px-3 py-2 rounded-full transition-all"
+                style={{
+                  background: chatSending || isAgentRunning || !chatDraft.trim()
+                    ? (isLight ? "rgba(0,0,0,0.05)" : "rgba(255,255,255,0.06)")
+                    : "var(--primary)",
+                  color: chatSending || isAgentRunning || !chatDraft.trim()
+                    ? "var(--muted-foreground)"
+                    : "var(--primary-foreground)",
+                  cursor: chatSending || isAgentRunning || !chatDraft.trim() ? "not-allowed" : "pointer",
+                  boxShadow: chatSending || isAgentRunning || !chatDraft.trim()
+                    ? "none"
+                    : "0 4px 14px rgba(124, 58, 237, 0.35), 0 1px 0 rgba(255,255,255,0.18) inset",
+                  minWidth: 56,
+                }}
+              >
+                {chatSending || isAgentRunning ? "…" : "Send"}
+              </button>
+            </div>
+          )}
+
+          {/* Footer link */}
+          <div
+            className="px-4 py-2 text-[10px] flex justify-end"
+            style={{
+              borderTop: `1px solid ${isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.04)"}`,
+              color: "var(--muted-foreground)",
+            }}
+          >
+            <button
+              onClick={() => navigate(`/chat?agent=${encodeURIComponent(selectedAgent.id)}`)}
+              className="hover:underline"
+              style={{ color: "var(--muted-foreground)" }}
+            >
+              Open full chat →
+            </button>
+          </div>
+          </>
+          )}
+
+          {chatTab === "outputs" && (
+            <div className="flex-1 overflow-y-auto px-3 py-3">
+              {/* Header row: refresh + truncated hint */}
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                  {outputsLoading
+                    ? "Loading…"
+                    : outputs.length === 0
+                      ? "No artifacts yet"
+                      : `${outputs.length} file${outputs.length === 1 ? "" : "s"}`}
+                  {outputsTruncated && " (capped at 200)"}
+                </div>
+                <button
+                  onClick={refreshOutputs}
+                  disabled={outputsLoading}
+                  className="text-[11px] hover:underline"
+                  style={{ color: "var(--muted-foreground)" }}
+                  title="Refresh outputs list"
+                >↻ Refresh</button>
+              </div>
+
+              {outputsError && (
+                <div className="text-[11px] mb-2" style={{ color: "#ef4444" }}>{outputsError}</div>
+              )}
+
+              {/* "Out of convention" banner — surfaces the agents-misbehaving
+                  case so the user (and the agent next session) knows it's a
+                  pollution problem to fix in AGENTS.md, not a missing-file
+                  one. Only renders when at least one legacy file is in view. */}
+              {outputs.some((f) => f.outOfConvention) && (
+                <div
+                  className="text-[10px] px-2 py-1.5 mb-2 rounded-md"
+                  style={{
+                    background: isLight ? "rgba(245, 158, 11, 0.12)" : "rgba(245, 158, 11, 0.10)",
+                    color: isLight ? "#b45309" : "#fcd34d",
+                    border: `1px solid ${isLight ? "rgba(245, 158, 11, 0.3)" : "rgba(245, 158, 11, 0.25)"}`,
+                  }}
+                >
+                  Some files were saved outside <code>outputs/</code>. The agent
+                  should write artifacts under that folder going forward (see
+                  AGENTS.md → "Saving Outputs").
+                </div>
+              )}
+
+              {/* File list */}
+              <div className="flex flex-col gap-1">
+                {outputs.map((f) => (
+                  <button
+                    key={f.relPath}
+                    onClick={() => openOutput(f)}
+                    onContextMenu={(e) => { e.preventDefault(); openOutput(f, { download: true }) }}
+                    className="text-left rounded-lg px-3 py-2 hover:bg-white/5 transition-colors"
+                    style={{
+                      background: isLight ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.03)",
+                      border: `1px solid ${
+                        f.outOfConvention
+                          ? (isLight ? "rgba(245, 158, 11, 0.35)" : "rgba(245, 158, 11, 0.25)")
+                          : (isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)")
+                      }`,
+                    }}
+                    title={`${f.relPath}\nClick to open · right-click to download`}
+                  >
+                    <div className="flex items-baseline justify-between gap-2 min-w-0">
+                      <div className="text-[12px] font-medium truncate" style={{ color: "var(--foreground)" }}>
+                        {f.name}
+                      </div>
+                      <div className="text-[10px] shrink-0" style={{ color: "var(--muted-foreground)" }}>
+                        {formatFileSize(f.size)}
+                      </div>
+                    </div>
+                    <div className="text-[10px] truncate mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+                      {f.relPath}
+                    </div>
+                    <div className="text-[10px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+                      {new Date(f.mtime).toLocaleString()} · {f.mimeType}
+                      {f.outOfConvention && (
+                        <span style={{ color: isLight ? "#b45309" : "#fcd34d" }}> · ⚠ out of convention</span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+                {!outputsLoading && outputs.length === 0 && !outputsError && (
+                  <div className="text-[11px] text-center py-6" style={{ color: "var(--muted-foreground)" }}>
+                    Files the agent writes during this session show up here.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="flex-1 flex items-center justify-center px-6 text-center text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          Click an agent chip at the top to open their thread.
+        </div>
+      )}
+    </div>
+  ) : null
+
   return (
     <div
-      className="relative w-full"
+      className={isSidePanelMode ? "flex w-full" : "relative w-full"}
       style={{
         height: "calc(100vh - 104px)",
         minHeight: 500,
-        borderRadius: 12,
-        overflow: "hidden",
-        boxShadow: isLight
-          ? "0 0 0 1px rgba(100,140,200,0.35), 0 8px 40px rgba(80,120,200,0.12)"
-          : "0 0 0 1px rgba(30,60,160,0.4), 0 0 40px rgba(0,0,255,0.05), 0 12px 60px rgba(0,0,0,0.8)",
+        gap: isSidePanelMode ? 8 : 0,
+        // Pill-mode keeps the rounded-shadowed shell on the root itself; in
+        // panel mode the shell moves to the inner scene wrapper (so the side
+        // panel can sit OUTSIDE that shell as its own framed dock).
+        borderRadius: isSidePanelMode ? undefined : 12,
+        overflow: isSidePanelMode ? undefined : "hidden",
+        boxShadow: isSidePanelMode ? undefined : sceneShellShadow,
       }}
     >
+      {/* ── Scene shell — contains everything except the docked side panel.
+            In pill mode this is effectively the same as the old root (the
+            wrapper above is a no-op flex). In panel mode this is `flex-1` so
+            the scene takes the remaining horizontal room next to the dock. */}
+      <div
+        className={isSidePanelMode ? "relative flex-1 min-w-0" : "relative w-full h-full"}
+        style={isSidePanelMode ? {
+          height: "100%",
+          borderRadius: 12,
+          overflow: "hidden",
+          boxShadow: sceneShellShadow,
+        } : undefined}
+      >
       {/* ── Stats bar — frosted overlay at top ── */}
       <div
         className="absolute top-0 left-0 right-0 z-10"
@@ -1242,230 +2045,27 @@ export function AgentWorldView() {
         {chatOpen ? "CLOSE CHAT" : "CHAT"}
       </button>
 
-      {/* ── Floating bubble chat popover (glass) ── */}
-      {chatOpen && (
+      {/* In pill mode the chat surface lives INSIDE the scene shell as an
+          overlay; in panel mode it's hoisted to a flex sibling below so the
+          3D world actually shrinks horizontally next to the dock. */}
+      {chatLayout === "pill" && chatPanelEl}
+      </div>
+      {/* ── Side dock — chat as a flex sibling, OUTSIDE the scene shell ── */}
+      {isSidePanelMode && (
         <div
-          className="absolute bottom-24 right-6 z-30 rounded-2xl overflow-hidden flex flex-col"
+          className="relative shrink-0"
           style={{
-            width: 380,
-            height: 520,
-            ...glass({ strong: true }),
-            // override box-shadow with deeper drop for popover
-            boxShadow: isLight
-              ? "0 1px 0 rgba(255,255,255,0.6) inset, 0 24px 64px rgba(40, 60, 100, 0.22)"
-              : "0 1px 0 rgba(255,255,255,0.06) inset, 0 24px 64px rgba(0, 0, 0, 0.7)",
-            pointerEvents: "auto",
+            width: panelWidth,
+            height: "100%",
+            borderRadius: 12,
+            overflow: "hidden",
+            boxShadow: sceneShellShadow,
           }}
         >
-          {/* Header */}
-          <div
-            className="flex items-center gap-3 px-4 py-3"
-            style={{ borderBottom: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}` }}
-          >
-            {selectedAgent ? (
-              <>
-                <div
-                  className="rounded-full flex items-center justify-center overflow-hidden shrink-0"
-                  style={{
-                    width: 38, height: 38,
-                    background: selectedAgent.color || "var(--primary)",
-                    boxShadow: "0 0 0 2px rgba(255,255,255,0.1), 0 4px 12px rgba(0,0,0,0.25)",
-                  }}
-                >
-                  <AgentAvatar
-                    avatarPresetId={selectedAgent.avatarPresetId}
-                    emoji={selectedAgent.emoji}
-                    size="w-9 h-9"
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-semibold truncate" style={{ color: "var(--foreground)" }}>
-                    {selectedAgent.name}
-                  </div>
-                  {(() => {
-                    // Map worldState → tick color + label.
-                    const ws = selectedAgentState
-                    const tick =
-                      ws === "processing" ? { color: "#facc15", label: "Processing", pulse: true } :
-                      ws === "offline"    ? { color: "#ef4444", label: "Offline",    pulse: false } :
-                      ws === "working"    ? { color: "#22c55e", label: "Online",     pulse: false } :
-                      ws === "idle"       ? { color: "#22c55e", label: "Online · idle", pulse: false } :
-                                            { color: "#94a3b8", label: "—",          pulse: false }
-                    return (
-                      <div className="flex items-center gap-1.5 text-[11px] truncate" style={{ color: "var(--muted-foreground)" }}>
-                        <span
-                          className={`inline-block rounded-full ${tick.pulse ? "animate-pulse" : ""}`}
-                          style={{
-                            width: 8, height: 8,
-                            background: tick.color,
-                            boxShadow: `0 0 6px ${tick.color}`,
-                          }}
-                        />
-                        <span>{selectedAgent.role || "Agent"} · {tick.label}</span>
-                      </div>
-                    )
-                  })()}
-                </div>
-              </>
-            ) : (
-              <div className="text-sm flex-1" style={{ color: "var(--muted-foreground)" }}>
-                Pick an agent from the top bar to start chatting
-              </div>
-            )}
-            <button
-              onClick={() => setChatOpen(false)}
-              className="text-base rounded-full hover:bg-white/10"
-              style={{ color: "var(--muted-foreground)", width: 28, height: 28, lineHeight: "28px", textAlign: "center" }}
-              aria-label="Close chat"
-            >✕</button>
-          </div>
-
-          {/* Body */}
-          {selectedAgent ? (
-            <>
-              {/* Cross-tenant banner (Open World other-user master) */}
-              {isCrossTenant && (
-                <div
-                  className="text-[11px] px-3 py-2 mx-3 mt-3 rounded-lg"
-                  style={{
-                    background: isLight ? "rgba(245, 158, 11, 0.15)" : "rgba(245, 158, 11, 0.14)",
-                    color: isLight ? "#b45309" : "#fcd34d",
-                    border: `1px solid ${isLight ? "rgba(245, 158, 11, 0.35)" : "rgba(245, 158, 11, 0.28)"}`,
-                  }}
-                >
-                  View only — this is another user's master agent. Cross-tenant messaging is coming soon.
-                </div>
-              )}
-
-              {/* Messages */}
-              <div
-                ref={chatScrollRef}
-                className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2"
-              >
-                {chatHistoryLoading && chatMessages.length === 0 && (
-                  <div className="text-[11px] text-center py-4" style={{ color: "var(--muted-foreground)" }}>
-                    Loading conversation…
-                  </div>
-                )}
-                {!chatHistoryLoading && chatMessages.length === 0 && !isCrossTenant && (
-                  <div className="text-[11px] text-center py-4" style={{ color: "var(--muted-foreground)" }}>
-                    No messages yet. Say hi 👋
-                  </div>
-                )}
-                {chatMessages.map(m => (
-                  <div
-                    key={m.id}
-                    className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-                  >
-                    <div
-                      className="rounded-2xl px-3 py-2 text-xs leading-relaxed"
-                      style={{
-                        maxWidth: "78%",
-                        background: m.role === "user"
-                          ? "var(--primary)"
-                          : (isLight ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.06)"),
-                        color: m.role === "user"
-                          ? "var(--primary-foreground)"
-                          : "var(--foreground)",
-                        border: m.role === "user"
-                          ? "1px solid rgba(255,255,255,0.18)"
-                          : `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}`,
-                        borderBottomRightRadius: m.role === "user" ? 6 : 18,
-                        borderBottomLeftRadius:  m.role === "user" ? 18 : 6,
-                        boxShadow: m.role === "user"
-                          ? "0 4px 14px rgba(124, 58, 237, 0.25), 0 1px 0 rgba(255,255,255,0.18) inset"
-                          : "0 1px 0 rgba(255,255,255,0.08) inset",
-                        opacity: m.pending ? 0.7 : 1,
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {m.text}
-                    </div>
-                  </div>
-                ))}
-                {chatError && (
-                  <div className="text-[11px] text-center py-2" style={{ color: "#ef4444" }}>
-                    {chatError}
-                  </div>
-                )}
-              </div>
-
-              {/* Composer */}
-              {!isCrossTenant && (
-                <div
-                  className="px-3 py-3 flex items-end gap-2"
-                  style={{ borderTop: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}` }}
-                >
-                  <textarea
-                    value={chatDraft}
-                    onChange={e => setChatDraft(e.target.value)}
-                    placeholder={`Message ${selectedAgent.name}…`}
-                    rows={1}
-                    disabled={chatSending}
-                    className="flex-1 resize-none rounded-2xl text-xs px-3 py-2"
-                    style={{
-                      background: isLight ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.05)",
-                      color: "var(--foreground)",
-                      border: `1px solid ${isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)"}`,
-                      outline: "none",
-                      maxHeight: 100,
-                      minHeight: 36,
-                    }}
-                    onKeyDown={e => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault()
-                        handleSendChat()
-                      }
-                    }}
-                  />
-                  <button
-                    onClick={handleSendChat}
-                    disabled={chatSending || !chatDraft.trim()}
-                    className="text-xs font-medium px-3 py-2 rounded-full transition-all"
-                    style={{
-                      background: chatSending || !chatDraft.trim()
-                        ? (isLight ? "rgba(0,0,0,0.05)" : "rgba(255,255,255,0.06)")
-                        : "var(--primary)",
-                      color: chatSending || !chatDraft.trim()
-                        ? "var(--muted-foreground)"
-                        : "var(--primary-foreground)",
-                      cursor: chatSending || !chatDraft.trim() ? "not-allowed" : "pointer",
-                      boxShadow: chatSending || !chatDraft.trim()
-                        ? "none"
-                        : "0 4px 14px rgba(124, 58, 237, 0.35), 0 1px 0 rgba(255,255,255,0.18) inset",
-                      minWidth: 56,
-                    }}
-                  >
-                    {chatSending ? "…" : "Send"}
-                  </button>
-                </div>
-              )}
-
-              {/* Footer link */}
-              <div
-                className="px-4 py-2 text-[10px] flex justify-end"
-                style={{
-                  borderTop: `1px solid ${isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.04)"}`,
-                  color: "var(--muted-foreground)",
-                }}
-              >
-                <button
-                  onClick={() => navigate(`/chat?agent=${encodeURIComponent(selectedAgent.id)}`)}
-                  className="hover:underline"
-                  style={{ color: "var(--muted-foreground)" }}
-                >
-                  Open full chat →
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center px-6 text-center text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-              Click an agent chip at the top to open their thread.
-            </div>
-          )}
+          {chatPanelEl}
         </div>
       )}
+
     </div>
   )
 }
