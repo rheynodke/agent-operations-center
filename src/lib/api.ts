@@ -1166,6 +1166,53 @@ export const api = {
     if (params.agentId) query.set('agentId', params.agentId)
     return request<{ ratings: MessageRating[] }>(`/feedback/messages?${query.toString()}`)
   },
+  getAgentSatisfactionMetrics: (agentId: string, range: '24h' | '7d' | '30d' = '7d', channel: 'all' | 'dashboard' | 'telegram' | 'discord' | 'whatsapp' = 'all') => {
+    const query = new URLSearchParams({ range, channel })
+    return request<{
+      agentId: string
+      ownerId: number
+      range: string
+      channel: string
+      metrics: Array<{
+        day: string
+        positive: number
+        negative: number
+        total: number
+        score: number
+      }>
+    }>(`/satisfaction/agent/${encodeURIComponent(agentId)}/metrics?${query.toString()}`)
+  },
+  getAgentFlaggedMessages: (agentId: string, limit = 20) => {
+    return request<{ agentId: string; flagged: MessageRating[] }>(
+      `/satisfaction/agent/${encodeURIComponent(agentId)}/flagged-messages?limit=${limit}`
+    )
+  },
+  triggerReflection: (input: { sessionId: string; agentId: string }) =>
+    request<{
+      ok: boolean
+      status: string
+      summary?: {
+        sessionId: string
+        agentId: string
+        messageCount: number
+        endorsedCount: number
+        flaggedCount: number
+        presumedGoodCount: number
+        hallucinationRate: number
+        endorsementRate: number
+        reflectionStatus: string
+        reflectionSkipReason: string | null
+        lessonsExtracted: number
+        examplesCaptured: number
+        promptVersion: string
+        reflectionAt: number
+        durationMs: number
+      }
+      llmStats?: { inputTokens: number; outputTokens: number; modelUsed: string; latencyMs: number } | null
+    }>('/feedback/internal/reflect', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
 }
 
 // ── feedback / satisfaction (Phase 2) ────────────────────────────────────────

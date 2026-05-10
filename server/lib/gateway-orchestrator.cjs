@@ -443,12 +443,20 @@ function ensureUserHome(userId, userHome) {
     let inheritedTools = {};
     let inheritedApprovals = {};
     let inheritedMemory = null;
+    let inheritedPluginEntries = null;
     try {
       const adminCfg = JSON.parse(fs.readFileSync(path.join(require('./config.cjs').OPENCLAW_BASE, 'openclaw.json'), 'utf8'));
       inheritedDefaults = { ...(adminCfg?.agents?.defaults || {}) };
       inheritedTools = adminCfg?.tools ? JSON.parse(JSON.stringify(adminCfg.tools)) : {};
       inheritedApprovals = adminCfg?.approvals ? JSON.parse(JSON.stringify(adminCfg.approvals)) : {};
       inheritedMemory = adminCfg?.memory ? JSON.parse(JSON.stringify(adminCfg.memory)) : null;
+      // Inherit plugin entries (incl. API keys for brave, openai, anthropic, etc.)
+      // so per-tenant tools.web.search and other plugin-backed features work out
+      // of the box. Without this, tools.web.search.provider="brave" fails with
+      // missing_brave_api_key on first call.
+      inheritedPluginEntries = adminCfg?.plugins?.entries
+        ? JSON.parse(JSON.stringify(adminCfg.plugins.entries))
+        : null;
     } catch (_) { /* admin config missing — leave defaults empty */ }
 
     // Rewrite admin-scoped paths to per-user paths so we don't leak admin's
@@ -473,6 +481,7 @@ function ensureUserHome(userId, userHome) {
       },
     };
     if (inheritedMemory) cfg.memory = inheritedMemory;
+    if (inheritedPluginEntries) cfg.plugins = { entries: inheritedPluginEntries };
     // Inline shared providers — OpenClaw rejects $include paths outside the config
     // root (security check, follows symlinks too). Inlining keeps everything inside
     // the per-user dir. Re-inline on admin provider rotation by re-running provision.

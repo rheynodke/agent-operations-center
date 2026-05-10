@@ -153,21 +153,61 @@ module.exports = function feedbackRouter(deps) {
     });
   });
 
-  // POST /api/feedback/internal/reflect — admin-only manual trigger.
+  // POST /api/feedback/internal/reflect — manual trigger by admin OR agent owner.
   // Phase 1 entry point. Phase 5 replaces with OpenClaw session_end webhook.
+  // Body: { sessionId, agentId, mockLlm? } — server derives ownerId, workspace,
+  // jsonlPath from agentId so the UI doesn't have to know filesystem layout.
   router.post('/feedback/internal/reflect', db.authMiddleware, async (req, res) => {
     if (!ensureAuth(req, res)) return;
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'admin only' });
-    }
-    const { sessionId, agentId, ownerId, workspace, jsonlPath, mockLlm } = req.body || {};
-    if (!sessionId || !agentId || !ownerId || !workspace || !jsonlPath) {
-      return res.status(400).json({ error: 'sessionId, agentId, ownerId, workspace, jsonlPath required' });
+    const { sessionId, agentId, mockLlm } = req.body || {};
+    if (!sessionId || !agentId) {
+      return res.status(400).json({ error: 'sessionId, agentId required' });
     }
 
+    // Authorize: admin OR owner of this agent.
+    const { userOwnsAgent } = require('../lib/db/agent-profiles.cjs');
+    if (req.user.role !== 'admin' && !userOwnsAgent(req, agentId)) {
+      return res.status(403).json({ error: 'forbidden: not admin and not agent owner' });
+    }
+
+    // Derive ownerId, workspace, jsonlPath from agentId + sessionId.
+    const path = require('node:path');
     const fs = require('fs');
-    if (!fs.existsSync(jsonlPath)) {
-      return res.status(404).json({ error: 'jsonl not found' });
+    const ownerId = (typeof db.getAgentOwner === 'function' ? db.getAgentOwner(agentId) : null) ?? req.user.userId ?? 0;
+    const { getAgentWorkspacePath } = require('../lib/outputs.cjs');
+    const { getUserHome } = require('../lib/config.cjs');
+    const workspace = getAgentWorkspacePath(agentId);
+
+    // Resolve jsonl path. Dashboard session keys ("agent:<id>:<channel>:<uuid>")
+    // are mapped to the *real* jsonl filename inside `sessions.json` because the
+    // chat-key UUID and the gateway session UUID are independent. Bare UUIDs
+    // fall through to direct path resolution.
+    const home = ownerId === 1 ? require('../lib/config.cjs').OPENCLAW_BASE : getUserHome(ownerId);
+    const sessionsDir = path.join(home, 'agents', agentId, 'sessions');
+    let jsonlPath = null;
+    try {
+      const sessionsIndex = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'sessions.json'), 'utf8'));
+      const rec = sessionsIndex[sessionId];
+      if (rec?.sessionFile && fs.existsSync(rec.sessionFile)) {
+        jsonlPath = rec.sessionFile;
+      } else if (rec?.sessionId) {
+        const candidate = path.join(sessionsDir, `${rec.sessionId}.jsonl`);
+        if (fs.existsSync(candidate)) jsonlPath = candidate;
+      }
+    } catch (_) { /* index missing or unreadable — fall through */ }
+
+    if (!jsonlPath) {
+      const lastColon = sessionId.lastIndexOf(':');
+      const sessionUuid = lastColon >= 0 ? sessionId.slice(lastColon + 1) : sessionId;
+      if (!/^[a-zA-Z0-9._-]+$/.test(sessionUuid)) {
+        return res.status(400).json({ error: 'invalid sessionId — bad uuid segment' });
+      }
+      const candidate = path.join(sessionsDir, `${sessionUuid}.jsonl`);
+      if (fs.existsSync(candidate)) jsonlPath = candidate;
+    }
+
+    if (!jsonlPath) {
+      return res.status(404).json({ error: `jsonl not found for session ${sessionId}` });
     }
 
     const raw = fs.readFileSync(jsonlPath, 'utf8');

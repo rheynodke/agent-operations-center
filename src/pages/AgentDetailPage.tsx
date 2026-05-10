@@ -20,7 +20,9 @@ import {
   Code2, Trash2, Copy, Check, Download, ScrollText, ImagePlus,
   Link, Unlink, Send, AlertCircle, WifiOff, ChevronRight, Timer, History,
   Wand2, StopCircle, CornerDownLeft, LayoutTemplate, Plug, ShieldCheck, UserCheck,
+  ThumbsUp, ThumbsDown, BarChart3,
 } from "lucide-react"
+import type { MessageRating } from "@/lib/api"
 import { AvatarPicker } from "@/components/agents/AvatarPicker"
 import { WorkspaceBrowser } from "@/components/agents/WorkspaceBrowser"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
@@ -3988,7 +3990,7 @@ export function AgentDetailPage() {
   const [collapsedSkillGroups, setCollapsedSkillGroups] = useState<Set<string>>(new Set())
 
   // Main body tab
-  const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels' | 'connections' | 'schedules'>('files')
+  const [bodyTab, setBodyTab] = useState<'files' | 'skills' | 'channels' | 'connections' | 'schedules' | 'feedback'>('files')
   const [filesMode, setFilesMode] = useState<'curated' | 'browse'>('curated')
 
   // Live session monitoring
@@ -4407,6 +4409,7 @@ export function AgentDetailPage() {
                 { key: 'channels',    label: 'Channels',       icon: Link       },
                 { key: 'connections', label: 'Connections',    icon: Plug       },
                 { key: 'schedules',   label: 'Schedules',      icon: Timer      },
+                { key: 'feedback',    label: 'Feedback',       icon: BarChart3  },
               ] as const).map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}
@@ -4890,9 +4893,319 @@ export function AgentDetailPage() {
               </div>
             )}
 
+            {/* ═══ FEEDBACK TAB ═══ */}
+            {bodyTab === 'feedback' && id && (
+              <FeedbackTab agentId={id} />
+            )}
+
           </div>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+// ─── Feedback / Satisfaction Tab ────────────────────────────────────────────
+
+interface FeedbackTabProps {
+  agentId: string
+}
+
+type SatisfactionRange = '24h' | '7d' | '30d'
+
+function FeedbackTab({ agentId }: FeedbackTabProps) {
+  const [range, setRange] = useState<SatisfactionRange>('7d')
+  const [metrics, setMetrics] = useState<Array<{ day: string; positive: number; negative: number; total: number; score: number }>>([])
+  const [ratings, setRatings] = useState<MessageRating[]>([])
+  const [flagged, setFlagged] = useState<MessageRating[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [reflecting, setReflecting] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    Promise.all([
+      api.getAgentSatisfactionMetrics(agentId, range, 'all').catch((e) => {
+        console.error('[FeedbackTab] metrics fetch failed', e)
+        return { agentId, ownerId: 0, range, channel: 'all', metrics: [] }
+      }),
+      api.getMessageRatings({ agentId }).catch((e) => {
+        console.error('[FeedbackTab] ratings fetch failed', e)
+        return { ratings: [] }
+      }),
+      api.getAgentFlaggedMessages(agentId, 30).catch((e) => {
+        console.error('[FeedbackTab] flagged fetch failed', e)
+        return { agentId, flagged: [] }
+      }),
+    ]).then(([m, r, f]) => {
+      if (cancelled) return
+      setMetrics(m.metrics || [])
+      const sorted = [...(r.ratings || [])].sort((a, b) => b.createdAt - a.createdAt)
+      setRatings(sorted)
+      setFlagged(f.flagged || [])
+    }).catch((e) => {
+      if (!cancelled) setError((e as Error).message || 'Failed to load feedback')
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [agentId, range, refreshKey])
+
+  const totalPos = ratings.filter(r => r.rating === 'positive').length
+  const totalNeg = ratings.filter(r => r.rating === 'negative').length
+  const total = totalPos + totalNeg
+  const score = total > 0 ? Math.round((totalPos / total) * 100) : null
+
+  const channelCounts = ratings.reduce((acc, r) => {
+    acc[r.channel] = (acc[r.channel] || 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+
+  const handleReflect = async (sessionId: string) => {
+    setReflecting(sessionId)
+    try {
+      const res = await api.triggerReflection({ sessionId, agentId })
+      const s = res.summary
+      const skipped = res.status?.startsWith('skipped')
+      const lines: string[] = []
+      if (s) {
+        lines.push(`Messages: ${s.messageCount}  ·  Endorsed (👍): ${s.endorsedCount}  ·  Flagged (👎): ${s.flaggedCount}`)
+        lines.push(`Hallucination rate: ${(s.hallucinationRate * 100).toFixed(1)}%  ·  Endorsement rate: ${(s.endorsementRate * 100).toFixed(1)}%`)
+        if (skipped) {
+          lines.push('')
+          const reasonMap: Record<string, string> = {
+            skipped_too_short: 'Session terlalu pendek (< 5 pesan atau < ~500 tokens). LLM call di-skip.',
+            skipped_no_signal: 'Tidak ada feedback rating dan user follow-up minim. LLM call di-skip.',
+          }
+          lines.push(`Reason: ${reasonMap[s.reflectionSkipReason || ''] || s.reflectionSkipReason || s.reflectionStatus}`)
+        } else {
+          lines.push('')
+          lines.push(`Lessons extracted: ${s.lessonsExtracted}  ·  Examples captured: ${s.examplesCaptured}`)
+          if (s.lessonsExtracted > 0) {
+            lines.push('Lesson file written ke <workspace>/aoc-lessons/. QMD index dalam ≤5 menit.')
+          }
+        }
+        if (res.llmStats) {
+          lines.push('')
+          lines.push(`LLM: ${res.llmStats.modelUsed}  ·  in=${res.llmStats.inputTokens} / out=${res.llmStats.outputTokens} tok  ·  ${res.llmStats.latencyMs}ms`)
+        }
+      } else {
+        lines.push(`Status: ${res.status || (res.ok ? 'completed' : 'failed')}`)
+      }
+      void alertDialog({
+        title: skipped ? 'Reflection skipped' : (s?.lessonsExtracted ? 'Reflection complete' : 'Reflection ran (no lessons)'),
+        description: lines.join('\n'),
+        tone: skipped ? 'warn' : 'success',
+      })
+      // Refresh data so any new ratings (from reflection-recorded NL corrections) show up
+      setRefreshKey(k => k + 1)
+    } catch (e) {
+      void alertDialog({
+        title: 'Reflection failed',
+        description: (e as Error).message || String(e),
+        tone: 'error',
+      })
+    } finally {
+      setReflecting(null)
+    }
+  }
+
+  const formatTime = (ms: number) => {
+    const d = new Date(ms)
+    const now = Date.now()
+    const diff = now - ms
+    if (diff < 60_000) return 'just now'
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+    return d.toLocaleString()
+  }
+
+  const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n) + '…' : s
+
+  return (
+    <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4">
+      {/* Header / range filter */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="w-4 h-4 text-primary" />
+          <h2 className="text-sm font-bold text-foreground">Feedback &amp; Satisfaction</h2>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-0.5 rounded-lg bg-foreground/10 border border-border p-0.5">
+            {(['24h','7d','30d'] as const).map(r => (
+              <button
+                key={r}
+                onClick={() => setRange(r)}
+                className={cn("px-2.5 py-1 rounded text-[11px] font-bold transition-all",
+                  range === r ? "bg-primary/20 text-primary border border-primary/30" : "text-muted-foreground hover:text-foreground")}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => setRefreshKey(k => k + 1)}
+            disabled={loading}
+            className="p-1.5 rounded-lg hover:bg-foreground/5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+            title="Refresh"
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-[12px] text-red-500">
+          {error}
+        </div>
+      )}
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="rounded-lg border border-border bg-foreground/2 p-3">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Total</div>
+          <div className="text-2xl font-mono font-bold text-foreground mt-1">{total}</div>
+          <div className="text-[10px] text-muted-foreground/60 mt-0.5">all-time ratings</div>
+        </div>
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-500/80 flex items-center gap-1">
+            <ThumbsUp className="w-3 h-3" /> Positive
+          </div>
+          <div className="text-2xl font-mono font-bold text-emerald-500 mt-1">{totalPos}</div>
+        </div>
+        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-red-500/80 flex items-center gap-1">
+            <ThumbsDown className="w-3 h-3" /> Negative
+          </div>
+          <div className="text-2xl font-mono font-bold text-red-500 mt-1">{totalNeg}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-foreground/2 p-3">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Score</div>
+          <div className="text-2xl font-mono font-bold text-foreground mt-1">
+            {score !== null ? `${score}%` : '—'}
+          </div>
+          <div className="text-[10px] text-muted-foreground/60 mt-0.5">positive / total</div>
+        </div>
+      </div>
+
+      {/* Channel breakdown */}
+      {Object.keys(channelCounts).length > 0 && (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">Sources:</span>
+          {Object.entries(channelCounts).map(([ch, n]) => (
+            <span key={ch} className="px-2 py-0.5 rounded-full bg-foreground/5 border border-border font-mono">
+              {ch}: {n}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Daily metrics chart (range filter) */}
+      <div className="rounded-lg border border-border bg-foreground/1 p-3">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground mb-2">
+          Daily ({range}) — server-rolled
+        </div>
+        {metrics.length === 0 ? (
+          <div className="text-[12px] text-muted-foreground/60 italic py-4 text-center">
+            No daily rollup yet — server runs hourly. Wait for next tick or check ratings list below.
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {metrics.map(m => {
+              const pct = m.total > 0 ? (m.positive / m.total) * 100 : 0
+              return (
+                <div key={m.day} className="flex items-center gap-2 text-[11px]">
+                  <span className="font-mono text-muted-foreground w-20 shrink-0">{m.day}</span>
+                  <div className="flex-1 h-2 rounded-full bg-foreground/5 overflow-hidden">
+                    <div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className="font-mono text-emerald-500 w-8 text-right">{m.positive}</span>
+                  <span className="font-mono text-muted-foreground/40">/</span>
+                  <span className="font-mono text-red-500 w-8">{m.negative}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Flagged messages (negatives) */}
+      <div className="rounded-lg border border-border bg-foreground/1">
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+            <ThumbsDown className="w-3 h-3 text-red-500" /> Flagged ({flagged.length})
+          </div>
+        </div>
+        {flagged.length === 0 ? (
+          <div className="text-[12px] text-muted-foreground/60 italic py-6 text-center">
+            No negative ratings yet 🎉
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {flagged.map(r => (
+              <div key={r.id} className="p-3 hover:bg-foreground/2 group">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70 font-mono mb-1">
+                      <span className="px-1.5 py-px rounded bg-foreground/5 border border-border">{r.channel}</span>
+                      <span className="px-1.5 py-px rounded bg-foreground/5 border border-border">{r.source}</span>
+                      <span>{formatTime(r.createdAt)}</span>
+                    </div>
+                    {r.reason ? (
+                      <div className="text-[12px] text-foreground/90">{r.reason}</div>
+                    ) : (
+                      <div className="text-[11px] text-muted-foreground/50 italic">no reason given</div>
+                    )}
+                    <div className="text-[10px] text-muted-foreground/40 font-mono mt-1 truncate">
+                      msg={r.messageId} · sess={truncate(r.sessionId, 50)}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleReflect(r.sessionId)}
+                    disabled={reflecting === r.sessionId}
+                    className="px-2 py-1 text-[10px] font-bold rounded border border-border bg-foreground/5 hover:bg-primary/10 hover:border-primary/30 hover:text-primary transition-colors disabled:opacity-50 shrink-0"
+                    title="Trigger LLM reflection on this session"
+                  >
+                    {reflecting === r.sessionId ? <Loader2 className="w-3 h-3 animate-spin inline" /> : 'Reflect'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* All ratings (chronological) */}
+      <div className="rounded-lg border border-border bg-foreground/1">
+        <div className="px-3 py-2 border-b border-border text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+          Recent Ratings ({ratings.length})
+        </div>
+        {ratings.length === 0 ? (
+          <div className="text-[12px] text-muted-foreground/60 italic py-6 text-center">
+            No ratings yet. Click 👍/👎 on any assistant message to record.
+          </div>
+        ) : (
+          <div className="divide-y divide-border max-h-96 overflow-y-auto">
+            {ratings.map(r => (
+              <div key={r.id} className="px-3 py-2 flex items-center gap-2 text-[11px]">
+                {r.rating === 'positive' ? (
+                  <ThumbsUp className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                ) : (
+                  <ThumbsDown className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                )}
+                <span className="text-muted-foreground/60 font-mono w-16 shrink-0">{formatTime(r.createdAt)}</span>
+                <span className="px-1.5 py-px rounded bg-foreground/5 border border-border font-mono text-[10px]">{r.channel}/{r.source}</span>
+                <span className="text-foreground/70 truncate flex-1 min-w-0">
+                  {r.reason || <span className="text-muted-foreground/40 italic">—</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
