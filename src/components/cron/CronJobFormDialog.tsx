@@ -130,7 +130,7 @@ function Checkbox({
   )
 }
 
-// ─── Textarea ─────────────────────────────────────────────────────────────────
+// ─── Textarea (with optional fullscreen toggle) ───────────────────────────────
 
 function Textarea({
   value,
@@ -143,18 +143,90 @@ function Textarea({
   placeholder?: string
   rows?: number
 }) {
+  const [fullscreen, setFullscreen] = useState(false)
+  const [resizable, setResizable] = useState(false)
+
+  // Close fullscreen on Escape
+  useEffect(() => {
+    if (!fullscreen) return
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false) }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [fullscreen])
+
+  const sharedClass = cn(
+    "w-full rounded-lg bg-secondary border border-border px-3 py-2 text-sm text-foreground",
+    "placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary/50",
+    "font-mono",
+    resizable ? "resize-y" : "resize-none"
+  )
+
+  const toolbar = (
+    <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+      <span className="opacity-70">{value.length.toLocaleString()} chars</span>
+      <span className="flex-1" />
+      <button
+        type="button"
+        onClick={() => setResizable((r) => !r)}
+        title={resizable ? "Lock size" : "Allow resize"}
+        className="px-1.5 py-0.5 rounded hover:bg-muted/40 hover:text-foreground transition-colors"
+      >
+        {resizable ? "↕ Lock" : "↕ Resize"}
+      </button>
+      <button
+        type="button"
+        onClick={() => setFullscreen((f) => !f)}
+        title={fullscreen ? "Exit fullscreen (Esc)" : "Expand to fullscreen"}
+        className="px-1.5 py-0.5 rounded hover:bg-muted/40 hover:text-foreground transition-colors"
+      >
+        {fullscreen ? "⤓ Exit" : "⤢ Fullscreen"}
+      </button>
+    </div>
+  )
+
+  if (fullscreen) {
+    return (
+      <div className="fixed inset-0 z-[60] flex flex-col bg-background/95 backdrop-blur-sm p-6">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Task / Prompt</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">Press <kbd className="px-1.5 py-0.5 rounded bg-muted text-[10px]">Esc</kbd> or click <em>Done</em> to return.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFullscreen(false)}
+            className="px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:opacity-90"
+          >
+            Done
+          </button>
+        </div>
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          autoFocus
+          className={cn(
+            "flex-1 w-full rounded-lg bg-secondary border border-border px-4 py-3 text-sm text-foreground",
+            "placeholder:text-muted-foreground/60 resize-none focus:outline-none focus:ring-1 focus:ring-primary/50",
+            "font-mono leading-relaxed"
+          )}
+        />
+        <div className="mt-2">{toolbar}</div>
+      </div>
+    )
+  }
+
   return (
-    <textarea
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      rows={rows}
-      className={cn(
-        "w-full rounded-lg bg-secondary border border-border px-3 py-2 text-sm text-foreground",
-        "placeholder:text-muted-foreground/60 resize-none focus:outline-none focus:ring-1 focus:ring-primary/50",
-        "font-mono"
-      )}
-    />
+    <div className="space-y-1">
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={rows}
+        className={sharedClass}
+      />
+      {toolbar}
+    </div>
   )
 }
 
