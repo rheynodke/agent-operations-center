@@ -6,6 +6,7 @@ import { useAgentStore, useRoomStore, useFeedbackStore } from "@/stores"
 import { api } from "@/lib/api"
 import { chatApi, type ChatSession } from "@/lib/chat-api"
 import { ChatMessage } from "@/components/chat/ChatMessage"
+import { OutputsTrail } from "@/components/chat/OutputsTrail"
 import { AgentAvatar } from "@/components/agents/AgentAvatar"
 import { NewRoomDialog, RoomMain, RoomSidebar } from "@/components/mission-rooms/RoomComponents"
 import { alertDialog } from "@/lib/dialogs"
@@ -24,7 +25,31 @@ import {
   Clock,
   ImagePlus,
   X,
+  PanelRight,
 } from "lucide-react"
+
+// ── Outputs trail layout constants (persisted in localStorage) ──────────────
+const TRAIL_OPEN_LS_KEY = "aoc:chat:trail-open"
+const TRAIL_WIDTH_LS_KEY = "aoc:chat:trail-width"
+const TRAIL_MIN_WIDTH = 280
+const TRAIL_MAX_WIDTH = 720
+const TRAIL_DEFAULT_WIDTH = 360
+function loadTrailOpen(): boolean {
+  try { return localStorage.getItem(TRAIL_OPEN_LS_KEY) === "1" } catch { return false }
+}
+function saveTrailOpen(v: boolean): void {
+  try { localStorage.setItem(TRAIL_OPEN_LS_KEY, v ? "1" : "0") } catch { /* ignore */ }
+}
+function loadTrailWidth(): number {
+  try {
+    const raw = Number(localStorage.getItem(TRAIL_WIDTH_LS_KEY))
+    if (Number.isFinite(raw) && raw >= TRAIL_MIN_WIDTH && raw <= TRAIL_MAX_WIDTH) return raw
+  } catch { /* ignore */ }
+  return TRAIL_DEFAULT_WIDTH
+}
+function saveTrailWidth(px: number): void {
+  try { localStorage.setItem(TRAIL_WIDTH_LS_KEY, String(Math.round(px))) } catch { /* ignore */ }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -679,6 +704,29 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Right-side outputs trail (consistent with AgentWorld's chat side-panel)
+  const [trailOpen, setTrailOpen] = useState<boolean>(() => loadTrailOpen())
+  const [trailWidth, setTrailWidth] = useState<number>(() => loadTrailWidth())
+
+  const beginDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = trailWidth
+    function onMove(ev: MouseEvent) {
+      // Dragging the handle leftward grows the trail (which sits on the right)
+      const delta = startX - ev.clientX
+      const next = Math.max(TRAIL_MIN_WIDTH, Math.min(TRAIL_MAX_WIDTH, startW + delta))
+      setTrailWidth(next)
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+      setTrailWidth((w) => { saveTrailWidth(w); return w })
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+  }, [trailWidth])
+
   // Hydrate feedback ratings for this session so <FeedbackThumbs> shows the
   // existing 👍/👎 state on each agent message. Deduped + cached in store.
   const loadFeedbackForSession = useFeedbackStore((s) => s.loadForSession)
@@ -787,99 +835,139 @@ function ChatView({ sessionKey }: { sessionKey: string }) {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Chat header */}
-      <div className="flex items-center gap-3.5 px-3 md:px-6 py-4 border-b border-border bg-background/60 backdrop-blur-sm shrink-0">
-        {agent && (
-          <AgentAvatar
-            avatarPresetId={agent.avatarPresetId}
-            emoji={agent.emoji ?? "🤖"}
-            size="w-9 h-9"
-          />
-        )}
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-foreground leading-tight">{agent?.name ?? agentId}</p>
-          <p className="text-[11px] mt-0.5">
-            {isRunning ? (
-              <span className="text-amber-400/80 flex items-center gap-1.5">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                Responding…
-              </span>
-            ) : (
-              <span className={gatewayConnected ? "text-emerald-400/60" : "text-muted-foreground/40"}>
-                {gatewayConnected ? "Ready" : "Gateway offline"}
-              </span>
-            )}
-          </p>
-        </div>
-
-        {!gatewayConnected && (
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-destructive/8 border border-destructive/15 text-[11px] text-destructive/70">
-            <WifiOff className="w-3.5 h-3.5 shrink-0" />
-            Offline
-          </div>
-        )}
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto" ref={scrollRef}>
-        <div className="px-3 py-6 md:px-6 md:py-8 space-y-8">
-          {loading ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground/40">
-              <Loader2 className="w-7 h-7 animate-spin" />
-              <p className="text-sm">Loading conversation…</p>
-            </div>
-          ) : loadError ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-24">
-              <AlertTriangle className="w-8 h-8 text-destructive/40" />
-              <p className="text-sm text-muted-foreground/60">Failed to load history</p>
-              <p className="text-xs text-muted-foreground/40">{loadError}</p>
-            </div>
-          ) : msgs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
-              <AgentAvatar
-                avatarPresetId={agent?.avatarPresetId}
-                emoji={agent?.emoji ?? "🤖"}
-                size="w-20 h-20"
-              />
-              <div>
-                <p className="text-base font-bold text-foreground/80 mb-1">{agent?.name ?? "Agent"}</p>
-                <p className="text-sm text-muted-foreground/50 max-w-xs">
-                  {agent?.description ?? "Send a message to start the conversation."}
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/30 mt-2">
-                <Sparkles className="w-3 h-3" />
-                Thinking, tool calls & responses stream in real-time
-              </div>
-            </div>
-          ) : (
-            msgs.map((group, i) => (
-              <ChatMessage
-                key={group.id}
-                group={group}
-                agentName={agent?.name}
-                agentAvatarPresetId={agent?.avatarPresetId}
-                agentEmoji={agent?.emoji}
-                isLast={i === msgs.length - 1}
-                sessionId={sessionKey}
-                agentId={agentId}
-              />
-            ))
+    <div className="flex h-full min-w-0">
+      {/* Main chat column */}
+      <div className="flex flex-col h-full flex-1 min-w-0">
+        {/* Chat header */}
+        <div className="flex items-center gap-3.5 px-3 md:px-6 py-4 border-b border-border bg-background/60 backdrop-blur-sm shrink-0">
+          {agent && (
+            <AgentAvatar
+              avatarPresetId={agent.avatarPresetId}
+              emoji={agent.emoji ?? "🤖"}
+              size="w-9 h-9"
+            />
           )}
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-foreground leading-tight">{agent?.name ?? agentId}</p>
+            <p className="text-[11px] mt-0.5">
+              {isRunning ? (
+                <span className="text-amber-400/80 flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Responding…
+                </span>
+              ) : (
+                <span className={gatewayConnected ? "text-emerald-400/60" : "text-muted-foreground/40"}>
+                  {gatewayConnected ? "Ready" : "Gateway offline"}
+                </span>
+              )}
+            </p>
+          </div>
+
+          {!gatewayConnected && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-destructive/8 border border-destructive/15 text-[11px] text-destructive/70">
+              <WifiOff className="w-3.5 h-3.5 shrink-0" />
+              Offline
+            </div>
+          )}
+
+          {/* Outputs trail toggle — mirrors AgentWorld's pattern */}
+          <button
+            type="button"
+            onClick={() => { const next = !trailOpen; setTrailOpen(next); saveTrailOpen(next) }}
+            aria-pressed={trailOpen}
+            aria-label={trailOpen ? "Hide outputs panel" : "Show outputs panel"}
+            title={trailOpen ? "Hide outputs" : "Show outputs"}
+            className={cn(
+              "p-2 rounded-lg border transition-all",
+              trailOpen
+                ? "bg-primary/10 border-primary/30 text-primary"
+                : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            )}
+          >
+            <PanelRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto" ref={scrollRef}>
+          <div className="px-3 py-6 md:px-6 md:py-8 space-y-8">
+            {loading ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground/40">
+                <Loader2 className="w-7 h-7 animate-spin" />
+                <p className="text-sm">Loading conversation…</p>
+              </div>
+            ) : loadError ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-24">
+                <AlertTriangle className="w-8 h-8 text-destructive/40" />
+                <p className="text-sm text-muted-foreground/60">Failed to load history</p>
+                <p className="text-xs text-muted-foreground/40">{loadError}</p>
+              </div>
+            ) : msgs.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+                <AgentAvatar
+                  avatarPresetId={agent?.avatarPresetId}
+                  emoji={agent?.emoji ?? "🤖"}
+                  size="w-20 h-20"
+                />
+                <div>
+                  <p className="text-base font-bold text-foreground/80 mb-1">{agent?.name ?? "Agent"}</p>
+                  <p className="text-sm text-muted-foreground/50 max-w-xs">
+                    {agent?.description ?? "Send a message to start the conversation."}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/30 mt-2">
+                  <Sparkles className="w-3 h-3" />
+                  Thinking, tool calls & responses stream in real-time
+                </div>
+              </div>
+            ) : (
+              msgs.map((group, i) => (
+                <ChatMessage
+                  key={group.id}
+                  group={group}
+                  agentName={agent?.name}
+                  agentAvatarPresetId={agent?.avatarPresetId}
+                  agentEmoji={agent?.emoji}
+                  isLast={i === msgs.length - 1}
+                  sessionId={sessionKey}
+                  agentId={agentId}
+                />
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Input */}
+        <div className="shrink-0 bg-background/80 backdrop-blur-md">
+          <ChatInput
+            onSend={handleSend}
+            onAbort={handleAbort}
+            disabled={!gatewayConnected || !canWrite}
+            agentRunning={isRunning}
+            agentName={agent?.name}
+          />
         </div>
       </div>
 
-      {/* Input */}
-      <div className="shrink-0 bg-background/80 backdrop-blur-md">
-        <ChatInput
-          onSend={handleSend}
-          onAbort={handleAbort}
-          disabled={!gatewayConnected || !canWrite}
-          agentRunning={isRunning}
-          agentName={agent?.name}
-        />
-      </div>
+      {/* Right trail: drag handle + outputs panel */}
+      {trailOpen && (
+        <>
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={beginDrag}
+            className="w-1 cursor-col-resize bg-border hover:bg-primary/40 transition-colors hidden md:block shrink-0"
+            title="Drag to resize"
+          />
+          <div className="hidden md:flex relative shrink-0 h-full">
+            <OutputsTrail
+              sessionKey={sessionKey}
+              agentRunning={isRunning}
+              widthPx={trailWidth}
+            />
+          </div>
+        </>
+      )}
     </div>
   )
 }
