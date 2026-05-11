@@ -8,6 +8,9 @@ import { useAgentStore } from "@/stores"
 import { api } from "@/lib/api"
 import type { CronJob, CronJobKind, CronSessionType, CronDeliveryMode, CronThinking } from "@/types"
 import { cn } from "@/lib/utils"
+import { CronScheduleBuilder } from "./CronScheduleBuilder"
+import { IntervalPicker } from "./IntervalPicker"
+import { OneShotPicker } from "./OneShotPicker"
 
 // ─── Timezone list ────────────────────────────────────────────────────────────
 
@@ -32,7 +35,7 @@ const TIMEZONES = [
 
 function Label({ children, required }: { children: React.ReactNode; required?: boolean }) {
   return (
-    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+    <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1">
       {children}
       {required && <span className="text-destructive">*</span>}
     </label>
@@ -40,14 +43,29 @@ function Label({ children, required }: { children: React.ReactNode; required?: b
 }
 
 function FieldGroup({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("flex flex-col gap-1.5", className)}>{children}</div>
+  return <div className={cn("flex flex-col gap-1", className)}>{children}</div>
+}
+
+/** Row layout: small uppercase label on the left, control on the right. */
+function Row({
+  label, required, children, align = "center",
+}: { label: string; required?: boolean; children: React.ReactNode; align?: "center" | "start" }) {
+  return (
+    <div className={cn("flex gap-3", align === "start" ? "items-start" : "items-center")}>
+      <label className="w-20 shrink-0 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider pt-1.5">
+        {label} {required && <span className="text-destructive">*</span>}
+      </label>
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  )
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-xs font-semibold text-primary/70 uppercase tracking-widest mb-3 mt-5 first:mt-0">
-      {children}
-    </p>
+    <div className="flex items-center gap-2 mt-1 first:mt-0">
+      <span className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.14em]">{children}</span>
+      <span className="flex-1 h-px bg-border/60" />
+    </div>
   )
 }
 
@@ -63,14 +81,14 @@ function RadioGroup<T extends string>({
   options: { value: T; label: string; desc?: string }[]
 }) {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-1">
       {options.map((opt) => (
         <button
           key={opt.value}
           type="button"
           onClick={() => onChange(opt.value)}
           className={cn(
-            "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ghost-border",
+            "px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors border ghost-border",
             value === opt.value
               ? "bg-primary text-primary-foreground border-primary"
               : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-surface-high"
@@ -875,42 +893,40 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{isEdit ? "Edit Schedule" : "New Schedule"}</DialogTitle>
-          <DialogDescription>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader className="pb-1">
+          <DialogTitle className="text-base">{isEdit ? "Edit Schedule" : "New Schedule"}</DialogTitle>
+          <DialogDescription className="text-xs">
             {isEdit ? "Update cron job settings." : "Create a new automated scheduled task."}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
 
-          {/* ── Section 1: Identity ── */}
+          {/* ── Identity ── */}
           <SectionTitle>Identity</SectionTitle>
 
-          <FieldGroup>
-            <Label required>Name</Label>
+          <Row label="Name" required>
             <Input
               value={form.name}
               onChange={(e) => set("name", e.target.value)}
               placeholder="Morning brief"
+              className="h-8 text-sm"
             />
-          </FieldGroup>
+          </Row>
 
-          <FieldGroup>
-            <Label>Agent</Label>
+          <Row label="Agent">
             <AgentSelect
               value={form.agentId}
               onChange={(v) => set("agentId", v)}
               agents={agents}
             />
-          </FieldGroup>
+          </Row>
 
-          {/* ── Section 2: Schedule ── */}
+          {/* ── Schedule ── */}
           <SectionTitle>Schedule</SectionTitle>
 
-          <FieldGroup>
-            <Label>Type</Label>
+          <Row label="Type">
             <RadioGroup<CronJobKind>
               value={form.kind}
               onChange={(v) => set("kind", v)}
@@ -920,69 +936,53 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
                 { value: "at", label: "One-shot" },
               ]}
             />
-          </FieldGroup>
+          </Row>
 
           {form.kind === "cron" && (
             <>
-              <FieldGroup>
-                <Label required>Cron expression</Label>
-                <Input
+              <Row label="When" required align="start">
+                <CronScheduleBuilder
                   value={form.scheduleCron}
-                  onChange={(e) => set("scheduleCron", e.target.value)}
-                  placeholder="0 9 * * 1-5"
-                  className="font-mono"
+                  onChange={(c) => set("scheduleCron", c)}
+                  tzLabel={TIMEZONES.find((tz) => tz.value === form.tz)?.label.split(" — ")[0]}
                 />
-                <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1">
-                  <Info className="h-3 w-3" />
-                  5 fields: minute hour day month weekday &nbsp;·&nbsp; "0 9 * * 1-5" = weekdays at 9 AM
-                </p>
-              </FieldGroup>
-              <FieldGroup>
-                <Label>Timezone</Label>
+              </Row>
+              <Row label="Timezone">
                 <select
                   value={form.tz}
                   onChange={(e) => set("tz", e.target.value)}
-                  className="w-full rounded-lg bg-secondary border border-border px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full rounded-md bg-secondary border border-border px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 h-8"
                 >
                   {TIMEZONES.map((tz) => (
                     <option key={tz.value} value={tz.value}>{tz.label}</option>
                   ))}
                 </select>
-              </FieldGroup>
+              </Row>
             </>
           )}
 
           {form.kind === "every" && (
-            <FieldGroup>
-              <Label required>Interval</Label>
-              <Input
+            <Row label="Every" required>
+              <IntervalPicker
                 value={form.scheduleEvery}
-                onChange={(e) => set("scheduleEvery", e.target.value)}
-                placeholder="30m · 1h · 2d"
+                onChange={(v) => set("scheduleEvery", v)}
               />
-            </FieldGroup>
+            </Row>
           )}
 
           {form.kind === "at" && (
-            <FieldGroup>
-              <Label required>Run at</Label>
-              <Input
+            <Row label="Run" required>
+              <OneShotPicker
                 value={form.scheduleAt}
-                onChange={(e) => set("scheduleAt", e.target.value)}
-                placeholder="20m · 2026-04-10T09:00:00Z"
+                onChange={(v) => set("scheduleAt", v)}
               />
-              <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1">
-                <Info className="h-3 w-3" />
-                Relative (e.g. "20m") or ISO 8601 timestamp
-              </p>
-            </FieldGroup>
+            </Row>
           )}
 
-          {/* ── Section 3: Execution ── */}
+          {/* ── Execution ── */}
           <SectionTitle>Execution</SectionTitle>
 
-          <FieldGroup>
-            <Label>Session type</Label>
+          <Row label="Session">
             <RadioGroup<CronSessionType>
               value={form.session}
               onChange={(v) => set("session", v)}
@@ -993,23 +993,22 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
                 { value: "custom", label: "Custom ID" },
               ]}
             />
-          </FieldGroup>
+          </Row>
 
           {form.session === "custom" && (
-            <FieldGroup>
-              <Label required>Session ID</Label>
+            <Row label="Session ID" required>
               <Input
                 value={form.customSessionId}
                 onChange={(e) => set("customSessionId", e.target.value)}
                 placeholder="my-workflow"
+                className="h-8 text-sm"
               />
-            </FieldGroup>
+            </Row>
           )}
 
           {form.session === "isolated" && (
             <>
-              <FieldGroup>
-                <Label>Skills & Scripts <span className="text-muted-foreground/40 normal-case font-normal tracking-normal">— inject context into prompt</span></Label>
+              <Row label="Context" align="start">
                 <ContextInjector
                   agentId={form.agentId}
                   selectedSkills={form.selectedSkills}
@@ -1018,27 +1017,26 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
                   onScriptPathsChange={(v) => set("scriptPaths", v)}
                   contextPreview={contextPreview}
                 />
-              </FieldGroup>
+              </Row>
 
-              <FieldGroup>
-                <Label required>Task / Prompt</Label>
-                <Textarea
-                  value={form.message}
-                  onChange={(v) => set("message", v)}
-                  placeholder="Describe what the agent should do during this scheduled run."
-                  rows={3}
-                />
-                {contextPreview && (
-                  <p className="text-[11px] text-muted-foreground/50 flex items-center gap-1">
-                    <Wand2 className="h-3 w-3" />
-                    Context above will be prepended to this task when submitted
-                  </p>
-                )}
-              </FieldGroup>
+              <Row label="Task" required align="start">
+                <div className="space-y-1">
+                  <Textarea
+                    value={form.message}
+                    onChange={(v) => set("message", v)}
+                    placeholder="Describe what the agent should do during this scheduled run."
+                    rows={3}
+                  />
+                  {contextPreview && (
+                    <p className="text-[11px] text-muted-foreground/50 flex items-center gap-1">
+                      <Wand2 className="h-3 w-3" />
+                      Context above will be prepended to this task when submitted
+                    </p>
+                  )}
+                </div>
+              </Row>
 
-              {/* Delivery */}
-              <FieldGroup>
-                <Label>Delivery</Label>
+              <Row label="Delivery">
                 <RadioGroup<CronDeliveryMode>
                   value={form.deliveryMode}
                   onChange={(v) => set("deliveryMode", v)}
@@ -1048,55 +1046,56 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
                     { value: "webhook", label: "Webhook" },
                   ]}
                 />
-              </FieldGroup>
+              </Row>
 
               {form.deliveryMode === "announce" && (
-                <AnnounceSelector
-                  channels={deliveryChannels}
-                  selectedChannel={form.deliveryChannel}
-                  selectedAccount={form.deliveryChannel ? (form as FormState & { deliveryAccount?: string }).deliveryAccount || "" : ""}
-                  selectedTo={form.deliveryTo}
-                  agentId={form.agentId}
-                  onChannelChange={(ch) => setForm((f) => ({ ...f, deliveryChannel: ch, deliveryTo: "" }))}
-                  onAccountChange={(acc) => setForm((f) => ({ ...f, ...(f as unknown as Record<string,string>), deliveryAccount: acc, deliveryTo: "" } as unknown as FormState))}
-                  onToChange={(to) => set("deliveryTo", to)}
-                />
+                <Row label="" align="start">
+                  <AnnounceSelector
+                    channels={deliveryChannels}
+                    selectedChannel={form.deliveryChannel}
+                    selectedAccount={form.deliveryChannel ? (form as FormState & { deliveryAccount?: string }).deliveryAccount || "" : ""}
+                    selectedTo={form.deliveryTo}
+                    agentId={form.agentId}
+                    onChannelChange={(ch) => setForm((f) => ({ ...f, deliveryChannel: ch, deliveryTo: "" }))}
+                    onAccountChange={(acc) => setForm((f) => ({ ...f, ...(f as unknown as Record<string,string>), deliveryAccount: acc, deliveryTo: "" } as unknown as FormState))}
+                    onToChange={(to) => set("deliveryTo", to)}
+                  />
+                </Row>
               )}
 
               {form.deliveryMode === "webhook" && (
-                <FieldGroup>
-                  <Label required>Webhook URL</Label>
+                <Row label="Webhook" required>
                   <Input
                     value={form.deliveryWebhook}
                     onChange={(e) => set("deliveryWebhook", e.target.value)}
                     placeholder="https://…"
+                    className="h-8 text-sm"
                   />
-                </FieldGroup>
+                </Row>
               )}
 
               {/* Advanced toggle */}
               <button
                 type="button"
                 onClick={() => setShowAdvanced(!showAdvanced)}
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors self-start"
+                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors self-start ml-[88px]"
               >
                 {showAdvanced ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                 Advanced options
               </button>
 
               {showAdvanced && (
-                <div className="flex flex-col gap-3 p-3 rounded-xl bg-secondary/50 border border-border/40">
-                  <FieldGroup>
-                    <Label>Model override</Label>
+                <div className="flex flex-col gap-2 ml-[88px] p-2.5 rounded-lg bg-secondary/50 border border-border/40">
+                  <Row label="Model">
                     <Input
                       value={form.model}
                       onChange={(e) => set("model", e.target.value)}
                       placeholder="Leave blank for agent default"
+                      className="h-8 text-sm"
                     />
-                  </FieldGroup>
+                  </Row>
 
-                  <FieldGroup>
-                    <Label>Thinking</Label>
+                  <Row label="Thinking">
                     <RadioGroup<CronThinking>
                       value={form.thinking}
                       onChange={(v) => set("thinking", v)}
@@ -1106,32 +1105,37 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
                         { value: "high", label: "High" },
                       ]}
                     />
-                  </FieldGroup>
+                  </Row>
 
-                  <FieldGroup>
-                    <Label>Timeout (seconds)</Label>
-                    <Input
-                      type="number"
-                      value={form.timeoutSeconds}
-                      onChange={(e) => set("timeoutSeconds", e.target.value)}
-                      placeholder="300"
-                    />
-                  </FieldGroup>
-
-                  <div className="flex flex-col gap-2">
-                    <Checkbox
-                      checked={form.lightContext}
-                      onChange={(v) => set("lightContext", v)}
-                      label="Light context (skip workspace bootstrap)"
-                    />
-                    {form.kind === "at" && (
-                      <Checkbox
-                        checked={form.deleteAfterRun}
-                        onChange={(v) => set("deleteAfterRun", v)}
-                        label="Delete after run"
+                  <Row label="Timeout">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        value={form.timeoutSeconds}
+                        onChange={(e) => set("timeoutSeconds", e.target.value)}
+                        placeholder="300"
+                        className="h-8 w-24 text-sm"
                       />
-                    )}
-                  </div>
+                      <span className="text-xs text-muted-foreground">seconds</span>
+                    </div>
+                  </Row>
+
+                  <Row label="Options" align="start">
+                    <div className="flex flex-col gap-1.5">
+                      <Checkbox
+                        checked={form.lightContext}
+                        onChange={(v) => set("lightContext", v)}
+                        label="Light context (skip workspace bootstrap)"
+                      />
+                      {form.kind === "at" && (
+                        <Checkbox
+                          checked={form.deleteAfterRun}
+                          onChange={(v) => set("deleteAfterRun", v)}
+                          label="Delete after run"
+                        />
+                      )}
+                    </div>
+                  </Row>
                 </div>
               )}
             </>
@@ -1139,17 +1143,15 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
 
           {form.session === "main" && (
             <>
-              <FieldGroup>
-                <Label>System event text</Label>
+              <Row label="Event" align="start">
                 <Textarea
                   value={form.systemEvent}
                   onChange={(v) => set("systemEvent", v)}
                   placeholder="Reminder: check the calendar for upcoming events."
                   rows={2}
                 />
-              </FieldGroup>
-              <FieldGroup>
-                <Label>Wake mode</Label>
+              </Row>
+              <Row label="Wake">
                 <RadioGroup<"now" | "next-heartbeat">
                   value={form.wakeMode}
                   onChange={(v) => set("wakeMode", v)}
@@ -1158,7 +1160,7 @@ export function CronJobFormDialog({ open, onOpenChange, job, onSaved, defaultAge
                     { value: "next-heartbeat", label: "Next heartbeat" },
                   ]}
                 />
-              </FieldGroup>
+              </Row>
             </>
           )}
         </div>
