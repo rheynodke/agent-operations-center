@@ -845,6 +845,15 @@ export type WsEventType =
   | "processing_end"
   // Open World — master agent roster changed (someone provisioned / deleted a master)
   | "open-world:changed"
+  // Embed channel
+  | "embed:status_changed"
+  | "embed:message_in"
+  | "embed:message_out"
+  | "embed:dlp_redaction"
+  | "embed:tool_violation"
+  | "embed:budget_warning"
+  | "embed:budget_exhausted"
+  | "embed:token_leak_suspect"
 
 export interface WsMessage {
   type: WsEventType

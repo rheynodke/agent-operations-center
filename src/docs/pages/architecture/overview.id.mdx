@@ -1,0 +1,71 @@
+---
+title: Overview Sistem
+description: Arsitektur tingkat tinggi AOC Dashboard — apa yang dibangun, untuk siapa, dan bagaimana komponennya saling berhubungan.
+updated: 2026-05-10
+---
+
+# Overview Sistem
+
+AOC (Agent Operations Center) adalah dashboard web full-stack untuk memantau, mengelola, dan mengontrol agen-agen OpenClaw. Platform ini **multi-tenant by default** — setiap user mendapat filesystem terisolasi, gateway proses sendiri, dan satu Master Agent yang mengorkestrasi tim spesialisnya.
+
+<Callout type="info" title="Audiens halaman ini">
+Halaman ini ditujukan untuk developer dan admin yang ingin memahami struktur tinggi AOC sebelum menyelam ke komponen-komponen spesifik. Untuk panduan penggunaan, lihat <ConceptLink to="/docs/getting-started/welcome">Getting Started</ConceptLink>.
+</Callout>
+
+## Tiga proses
+
+<Mockup label="3-process architecture">
+  <MockupFlow>
+    <MockupBox emoji="🌐" title="Vite SPA" subtitle="Browser · React 19 · Zustand · RR v7" />
+    <MockupArrow label="WS + REST" />
+    <MockupBox emoji="⚙️" title="AOC API" subtitle="Express · Port 18800 · JWT · SQLite" variant="primary" />
+    <MockupArrow label="WS + RPC" />
+    <MockupBox emoji="🤖" title="Per-user Gateway" subtitle="OpenClaw proses · Port 19000-19999" />
+  </MockupFlow>
+  <div className="flex justify-center mt-3">
+    <MockupArrow direction="down" />
+  </div>
+  <div className="flex justify-center">
+    <MockupBox emoji="📁" title="~/.openclaw/" subtitle="Filesystem (source of truth, per-user)" variant="muted" className="max-w-md" />
+  </div>
+</Mockup>
+
+Tiga proses utama yang berjalan:
+
+1. **Vite SPA** di browser — UI React yang baca state dari Zustand stores, terhubung ke API + WebSocket.
+2. **AOC API** (Express, port `18800`) — JWT auth, RBAC, persisten ke SQLite di `data/aoc.db`, broadcast WebSocket events.
+3. **Gateway per-user** — proses OpenClaw terpisah per user, lazy-spawned ke port range `19000-19999`.
+
+## Multi-Tenant Foundation
+
+Setiap user mendapat:
+
+- **Filesystem terisolasi** di `~/.openclaw/users/<id>/.openclaw/` (admin pakai root `~/.openclaw/`).
+- **Gateway proses dedicated** dengan token sendiri, lifecycle dikelola `gateway-orchestrator.cjs`.
+- **Master Agent** (satu per user) yang dibikin saat onboarding.
+- **Skills + scripts shared** via symlink ke admin's home — install sekali, propagate ke semua user.
+
+Detail lengkap: <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink>.
+
+## Stack teknologi
+
+| Layer | Teknologi |
+|-------|-----------|
+| Frontend | React 19, TypeScript, Vite, Tailwind v4, Zustand, React Router v7 |
+| Backend | Node.js ≥20, Express 5 (CommonJS), JWT, SQLite via `sql.js` |
+| Real-time | WebSocket (`ws` library), chokidar file watchers |
+| Tooling | shadcn/ui, Radix primitives, Monaco Editor, Three.js (R3F) |
+
+## Bukan apa
+
+AOC bukan:
+
+- **Bukan AI runtime** — eksekusi agen ada di gateway OpenClaw, AOC cuma observe + control.
+- **Bukan source of truth untuk state agent** — semua state agent ada di `~/.openclaw/`. SQLite cuma menyimpan dashboard-only data (user accounts, agent profiles, projects, tasks, integrations).
+- **Bukan gateway untuk akses publik** — gateway eksternal admin di port `18789` di-manage systemd terpisah; gateway per-user hanya untuk request internal AOC.
+
+## Langkah selanjutnya
+
+- Mau memahami isolasi tenant? Baca <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink>.
+- Mau lihat alur data lengkap dari OpenClaw fs sampai UI? Lihat halaman Data Flow End-to-End (segera hadir).
+- Setup pertama kali? Mulai dari <ConceptLink to="/docs/operations/initial-setup">Initial Setup</ConceptLink>.

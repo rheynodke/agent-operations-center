@@ -38,6 +38,10 @@ import { RegisterPage } from "@/pages/RegisterPage"
 import { UserManagementPage } from "@/pages/UserManagementPage"
 import { AnnouncementsAdminPage } from "@/pages/AnnouncementsAdminPage"
 import OnboardingPage from "@/pages/OnboardingPage"
+import EmbedsListPage from "@/pages/EmbedsListPage"
+import EmbedNewWizard from "@/pages/EmbedNewWizard"
+import EmbedDetailPage from "@/pages/EmbedDetailPage"
+import { DocsPage } from "@/pages/DocsPage"
 import { useMasterStatus } from "@/hooks/useMasterStatus"
 
 function AdminOnly({ children }: { children: React.ReactNode }) {
@@ -50,7 +54,10 @@ function MasterGate({ children }: { children: React.ReactNode }) {
   const { hasMaster } = useMasterStatus()
   const user = useAuthStore((s) => s.user)
   const location = useLocation()
-  const allowed = location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/logout')
+  const allowed =
+    location.pathname.startsWith('/onboarding') ||
+    location.pathname.startsWith('/logout') ||
+    location.pathname.startsWith('/docs')
   // Admins are exempt — they manage the platform, they don't go through the
   // user master-onboarding wizard. Admin's master agent (when needed) is wired
   // by `runMasterBackfill()` on startup or set up manually via openclaw.json.
@@ -77,6 +84,8 @@ function DashboardShell() {
   useDataLoader()
   const location = useLocation()
   const isChatPage = location.pathname === "/chat"
+  const isDocsPage = location.pathname.startsWith("/docs")
+  const isFullHeightPage = isChatPage || isDocsPage
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-background">
@@ -86,7 +95,7 @@ function DashboardShell() {
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
-        <main className={isChatPage ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-3 md:p-6"}>
+        <main className={isFullHeightPage ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-3 md:p-6"}>
           <ErrorBoundary scope="route">
           <Routes>
             {/* Dashboard valid routes */}
@@ -120,6 +129,10 @@ function DashboardShell() {
             <Route path="/users" element={<AdminOnly><UserManagementPage /></AdminOnly>} />
             <Route path="/announcements" element={<AdminOnly><AnnouncementsAdminPage /></AdminOnly>} />
             <Route path="/chat" element={<ChatPage />} />
+            <Route path="/embeds" element={<EmbedsListPage />} />
+            <Route path="/embeds/new" element={<EmbedNewWizard />} />
+            <Route path="/embeds/:id" element={<EmbedDetailPage />} />
+            <Route path="/docs/*" element={<DocsPage />} />
             {/* If authenticated user goes to login or setup, redirect them to dashboard root */}
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/setup" element={<Navigate to="/" replace />} />

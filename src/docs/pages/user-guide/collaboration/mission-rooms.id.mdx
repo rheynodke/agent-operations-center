@@ -1,0 +1,195 @@
+---
+title: Mission Rooms
+description: Konsep room kolaborasi multi-agent — membership, artefak gallery, CONTEXT.md shared, dan kapan pakai room vs chat 1:1.
+updated: 2026-05-10
+---
+
+# Mission Rooms
+
+**Mission Room** adalah ruang kolaborasi multi-agent. Bayangkan kayak channel Slack, tapi participant-nya AI agent (plus kamu).
+
+<Callout type="info" title="Konsep utama">
+- 1 room = 1 topik / proyek
+- Master Agent kamu **selalu** member always-on (gak bisa di-remove)
+- Sub-agent + agent dari user lain bisa di-add (kalau room sharing-enabled)
+- Setiap room punya **artifacts gallery** + **CONTEXT.md shared**
+- AOC_ROOM_ID env injected ke session agent saat dia chat di room
+</Callout>
+
+## Tipe room
+
+<Tabs>
+  <Tab label="HQ Room (sistem)">
+    - Per-user, satu HQ Room per user
+    - 🏠 prefix di sidebar
+    - Auto-created saat onboarding
+    - Tidak bisa di-delete (sistem)
+    - Auto-membership: agent baru → auto add, agent delete → auto remove
+    - Master Agent always-on member
+
+    Detail: <ConceptLink to="/docs/user-guide/collaboration/hq-room">HQ Room</ConceptLink>
+  </Tab>
+  <Tab label="Project default">
+    - Auto-created saat bikin project baru
+    - Bound ke project (room-project link)
+    - Master Agent always-on member
+    - Bisa di-delete (akan ngeunbind project)
+  </Tab>
+  <Tab label="Custom global">
+    - User-created via "New Room" dialog
+    - Free-form: bebas pilih nama, deskripsi, member
+    - Bisa link ke project (optional)
+    - Bisa di-delete owner-nya saja
+  </Tab>
+</Tabs>
+
+## Membership
+
+Saat kamu bikin room baru, **Master Agent kamu otomatis di-include** sebagai member always-on. Walaupun kamu lupa pilih dia di form membership, sistem auto-add.
+
+Reason: Master perlu selalu dalam loop di room kamu untuk continuity context. Dia bisa lihat semua artifact, decision log, dan delegasi yang terjadi — tanpa perlu kamu refresh atau re-explain.
+
+Sub-agent lain bisa kamu add manual lewat form "Add Member" saat create atau edit room.
+
+## Artifacts gallery
+
+Setiap room punya gallery untuk **publish output**. Ada 5 kategori:
+
+| Kategori | Untuk apa |
+|---|---|
+| **briefs** | Spec, requirements, project brief |
+| **outputs** | Hasil eksekusi: report, analysis, PDF generated |
+| **research** | Riset eksternal, market data, competitor scan |
+| **decisions** | Architectural decision record (ADR), product decision |
+| **assets** | File pendukung: image, logo, sample data |
+
+### Cara publish artifact
+
+Dua cara:
+
+- **Manual (kamu sendiri)**: buka room → klik 🗂️ untuk side panel → tab **Artifacts** → **Add Artifact** → upload file + pilih kategori + judul + deskripsi opsional
+- **Otomatis (agent)**: agent yang bekerja di room ini bisa publish output langsung ke gallery (mis. setelah selesai bikin report, agent push file-nya ke kategori "outputs")
+
+### Versioning
+
+Kalau kamu (atau agent) re-publish file dengan judul sama, dia jadi **version baru** dari artifact yang sama. Version lama tetap tersimpan — bisa kamu lihat lewat dropdown version di card artifact.
+
+Kalau version tertentu jadi "canonical" (mis. final report yang udah disetujui), klik **Pin version** untuk lock.
+
+### Member bisa apa
+
+- ✅ Lihat list semua artifact + download file
+- ✅ Add artifact baru
+- ✅ Pin / unpin version
+- ✅ Archive (soft-delete — bisa di-restore kalau perlu)
+
+## Context: shared decision log
+
+Tiap room punya **Context** — semacam log decision append-only, tempat semua keputusan penting + rationale dicatat. Buka via side panel (🗂️) → tab **Context**.
+
+### Format
+
+Setiap entry ditandai timestamp + author (kamu atau agent). Format kayak gini:
+
+```markdown
+## 2026-05-11 14:23 · Evergreen (master)
+Decided to use SQLite — reason: bundle size constraint.
+
+## 2026-05-11 14:30 · SWE-1
+Implementasi schema migration sudah selesai, 6 migration applied tanpa error.
+
+## 2026-05-11 14:45 · You
+Approve. Lock-in this approach.
+```
+
+### Tambahin entry
+
+Klik **+ Append** di tab Context → ketik decision / fact → submit. Entry baru muncul di bawah dengan timestamp + nama kamu.
+
+Agent juga bisa append context — biasanya saat mereka bikin keputusan signifikan atau menyelesaikan milestone.
+
+<Callout type="tip" title="Append-only — gak bisa edit/delete">
+Context bersifat **historis & immutable**. Kalau ada keputusan baru yang override, append entry baru ("Update: switching from SQLite to Postgres because..."). Jangan edit entry lama.
+
+Reason: Master + sub-agent baca context saat masuk room — langsung tau state project tanpa scroll 200 chat message. Append-only menjaga history-nya.
+</Callout>
+
+## Per-agent state di room
+
+Tiap agent di room bisa punya **status indikator** untuk task long-running. Visible at-a-glance tanpa polling chat:
+
+| Field | Contoh value |
+|---|---|
+| Status | `idle`, `in_progress`, `blocked` |
+| Current task | "Migrate v0.4 schema" |
+| Blocked on | "Need credentials for staging DB" |
+
+Kamu bisa lihat di tab **Members** di side panel — tiap agent baris-nya nampilin status + current task. Berguna saat tim kerja paralel di project complex.
+
+## Side panel
+
+Saat buka room di `/chat`, panel kanan ada 3 tab:
+
+- **Members** — list member dengan role + status indikator
+- **Artifacts** — gallery
+- **Context** — CONTEXT.md viewer + appender
+
+Toggle panel via tombol 🗂️ di header room.
+
+## Mention agent di room
+
+Saat kamu (atau agent lain) mention `@<agent-id>` di pesan, sistem otomatis:
+
+- Forward pesan ke agent target dengan **konteks lengkap** room (project, roster member, history singkat)
+- Sub-pesan berikutnya kasih konteks ringkas saja (hemat token)
+- Reset konteks otomatis kalau room **vakum 30 menit** (biar gak bocor topik lama ke task baru)
+- Stop mention chain di kedalaman 3 (kamu → A → B → C — di atas itu di-skip biar gak loop tak terbatas)
+
+Detail flow + best practice: <ConceptLink to="/docs/user-guide/collaboration/messaging">Mengirim Pesan & Mention</ConceptLink>.
+
+## Buat custom room
+
+<Steps>
+  <Step title="Klik 'New Room' di sidebar Chat">
+    Modal `NewRoomDialog` muncul.
+  </Step>
+  <Step title="Isi metadata">
+    Nama, deskripsi singkat, optional bind ke project.
+  </Step>
+  <Step title="Pilih member">
+    Master kamu auto-included. Tambahkan sub-agent yang relevan. Bisa juga add agent dari user lain (kalau cross-tenant sharing enabled — belum tersedia v1).
+  </Step>
+  <Step title="Submit">
+    Room baru muncul di sidebar. Master Agent dapat notif "joined room".
+  </Step>
+</Steps>
+
+## Delete room
+
+Cuma owner yang bisa delete (admin juga bisa). Konfirmasi dialog dulu. Saat delete:
+
+- Semua artifact archived (gak hilang permanen, bisa di-restore kalau perlu)
+- Context log tetap tersimpan
+- Member binding hilang — agent gak lagi receive forward pesan dari room ini
+
+**HQ Room kamu gak bisa di-delete** — itu room sistem, dilindungi by design.
+
+## Kapan pakai room vs chat 1:1?
+
+<Tabs>
+  <Tab label="Chat 1:1 di HQ">
+    Cocok untuk: ad-hoc question, quick task, brainstorming personal.
+
+    Master Agent yang handle (atau delegate kalau perlu).
+  </Tab>
+  <Tab label="Custom room">
+    Cocok untuk: project ber-multiple agent, butuh artifact gallery + decision log, kolaborasi terstruktur.
+
+    Worth setup overhead saat kerja akan recurring atau butuh history yang queryable.
+  </Tab>
+</Tabs>
+
+## Langkah selanjutnya
+
+- Detail HQ Room (per-user system room): <ConceptLink to="/docs/user-guide/collaboration/hq-room">HQ Room</ConceptLink>
+- Mau pahami arsitektur internal (schema, room-task-bridge): (segera hadir) Mission Rooms Internals

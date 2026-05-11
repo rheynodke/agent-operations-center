@@ -1,0 +1,152 @@
+---
+title: Overview Connections
+description: Tempat simpan credential database, API, Google Workspace, dll — agent kamu pakai tanpa pernah lihat password mentah.
+updated: 2026-05-11
+---
+
+# Overview Connections
+
+**Connection** adalah cara aman buat kasih agent akses ke external resource — DB, BigQuery, Google Workspace, GitHub, Odoo, dll. Kamu setup sekali, agent pakai berulang kali tanpa pernah lihat credential mentahnya.
+
+<Callout type="tip" title="Kenapa pakai Connection?">
+- 🔒 **Credential terenkripsi** — gak pernah masuk ke chat, prompt, atau file agent
+- 🔄 **Bisa rotate** — ubah password di satu tempat, semua agent yang pakai langsung dapet update
+- 👥 **Bisa di-share** ke team — sekali setup, semua user bisa pakai (kalau kamu enable share)
+- 👀 **Audit jelas** — bisa lihat agent mana pakai connection mana
+</Callout>
+
+## Tipe connection
+
+8 jenis tersedia:
+
+<MockupGrid cols={2}>
+  <MockupBox iconSrc="/connections_icon/postgres.jpg" iconAlt="PostgreSQL" title="PostgreSQL" subtitle="Database relasional" />
+  <MockupBox iconSrc="/connections_icon/bigquery.svg" iconAlt="BigQuery" title="BigQuery" subtitle="Google data warehouse" />
+  <MockupBox iconSrc="/connections_icon/vps.png" iconAlt="SSH" title="SSH" subtitle="Remote server access" />
+  <MockupBox iconSrc="/connections_icon/website.png" iconAlt="Website" title="Website" subtitle="Generic HTTP / webhook" />
+  <MockupBox iconSrc="/connections_icon/github-black.png" iconSrcDark="/connections_icon/github-white.webp" iconAlt="GitHub" title="GitHub" subtitle="Repo, issue, PR" />
+  <MockupBox iconSrc="/connections_icon/odoo.webp" iconAlt="Odoo" title="Odoo" subtitle="ERP / business platform" />
+  <MockupBox iconSrc="/connections_icon/google.webp" iconAlt="Google Workspace" title="Google Workspace" subtitle="Sheets / Docs / Drive / Gmail / Calendar" />
+  <MockupBox iconSrc="/connections_icon/mcp.webp" iconAlt="MCP" title="MCP" subtitle="Model Context Protocol — Composio, custom" iconInvertOnDark />
+</MockupGrid>
+
+Untuk MCP, ada **12 preset cepat** yang bisa kamu pilih: filesystem, github, slack, postgres, brave-search, puppeteer, memory, mixpanel, context7, composio, http custom, sse custom.
+
+## Buka halaman Connections
+
+Sidebar kiri → **Connections** (icon 🔌). Atau langsung URL `/connections`.
+
+Layout:
+
+- **Search bar** untuk cari connection by name
+- **Filter chip per type** — toggle on/off
+- Tombol **+ New Connection** untuk bikin baru
+- List card per connection: nama, type icon, masked credential, status hijau/merah (test result terakhir), toggle share
+
+## Bikin connection baru
+
+<Steps>
+  <Step title="Klik '+ New Connection'">
+    Modal create muncul.
+  </Step>
+
+  <Step title="Pilih type">
+    Form berubah-ubah sesuai type yang kamu pilih. Contoh untuk **PostgreSQL**:
+
+    - **Name** — display name buat dirimu sendiri (mis. "Prod DB", "Analytics PG")
+    - **Host** — alamat server (mis. `db.example.com`)
+    - **Port** — biasanya `5432`
+    - **Database** — nama database
+    - **User** + **Password** — credential
+    - **SSL** — enable kalau server butuh
+
+    Untuk **Google Workspace**: pakai OAuth — klik "Connect", login ke Google, authorize. Token tersimpan.
+
+    Untuk **MCP**: pilih preset (mis. "filesystem"), atau "Custom" untuk URL HTTP / SSE manual.
+  </Step>
+
+  <Step title="Test connection">
+    Klik tombol **Test connection**. AOC coba real connect — hasilnya:
+
+    - ✅ **Healthy** — credential valid, server reachable
+    - ❌ **Error** — credential salah, server unreachable, atau permission kurang. Pesan error spesifik di-tampilin.
+
+    Kalau error, perbaiki dulu sebelum save.
+  </Step>
+
+  <Step title="Save">
+    Connection tersimpan di list. Default-nya **Private to you** (hanya kamu owner-nya yang bisa pakai).
+  </Step>
+</Steps>
+
+## Pakai connection di agent
+
+Connection tersimpan ≠ otomatis dipakai agent. Kamu harus **assign** dulu:
+
+<Steps>
+  <Step title="Buka Agent Detail">
+    `/agents/<id>` → tab **Connections**.
+  </Step>
+
+  <Step title="Centang connection yang relevan">
+    List semua connection yang kamu punya akses (private + shared). Centang yang mau di-bind ke agent ini.
+  </Step>
+
+  <Step title="Save">
+    Agent sekarang punya akses ke connection itu saat dia eksekusi task yang relevan (mis. query database, fetch sheets).
+
+    Agent pakai dengan bilang ke skill `aoc-connect`: "Query connection 'Prod DB' tabel users where..."
+  </Step>
+</Steps>
+
+## Sharing connection ke team
+
+Default: connection **private to you**. Cuma kamu (owner) + admin yang bisa pakai.
+
+Mau share ke seluruh team? Klik toggle **"Shared with the team"** di card connection.
+
+| State | Behavior |
+|---|---|
+| **Private to you** (default) | Hanya kamu + admin yang bisa assign ke agent |
+| **Shared with the team** | Semua user di instance bisa **assign** ke agent mereka. Tapi cuma kamu yang bisa edit, delete, atau test connection ini. |
+
+<Callout type="warning" title="Hati-hati: kalau toggle 'Shared' jadi 'Private'">
+Saat kamu un-share, **semua agent dari user lain** yang sudah pakai connection ini otomatis kehilangan akses. Task mereka yang butuh connection ini bakal fail.
+
+Sebelum un-share, cek dulu siapa yang pakai (lihat section "Siapa pakai" di bawah).
+</Callout>
+
+## Test connection (post-create)
+
+Setiap saat kamu mau verify connection masih jalan, klik tombol test di card. Berguna kalau:
+
+- Password baru di-rotate di backend
+- Server baru di-restart
+- Pengen yakin sebelum kasih ke agent
+
+## OAuth: re-auth saat token expired
+
+Untuk Google Workspace + Composio MCP, token bisa expired (Google biasanya 7 hari refresh). Card akan tampilin tombol **Reauth** kalau detect expired. Klik → login ulang → token baru tersimpan.
+
+## Siapa pakai connection ini?
+
+Klik connection card → ada section "Used by" yang nge-list agent + owner yang assign connection ini. Useful sebelum un-share atau delete.
+
+## Delete connection
+
+Klik 🗑 trash icon di card → konfirmasi. Connection hilang permanent. Semua assignment otomatis di-detach (agent kehilangan akses).
+
+**Tidak bisa di-undo**.
+
+## Yang belum tersedia
+
+- ❌ **Share ke user spesifik** — sharing cuma boolean (org-wide). Untuk per-user ACL, belum ada
+- ❌ **Bulk assign** ke banyak agent sekaligus dari halaman ini — harus per-agent via Agent Detail
+- ❌ **Folder / group** organization (mis. "Production", "Staging")
+- ❌ **Credential rotation history** — overwrite saja, gak ada log per-version
+- ❌ **Connection type lain** (Redis, MongoDB, Snowflake, etc.) — saat ini fix 8 types
+
+## Selanjutnya
+
+- Bikin connection pertama dengan ikutin Steps di atas
+- Assign ke agent: <ConceptLink to="/docs/user-guide/agents/detail-overview">Halaman Detail Agen</ConceptLink> tab Connections

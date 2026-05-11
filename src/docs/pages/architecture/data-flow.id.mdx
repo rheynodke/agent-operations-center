@@ -1,0 +1,170 @@
+---
+title: Data Flow End-to-End
+description: Bagaimana state mengalir dari OpenClaw filesystem (source of truth) sampai UI React, dan vice versa.
+updated: 2026-05-10
+---
+
+# Data Flow End-to-End
+
+AOC bukan source of truth untuk state agent — **OpenClaw filesystem per-user adalah otoritatif**. AOC hanya **observe + control** lewat dua layer: file watcher untuk read, gateway WebSocket untuk write.
+
+## Skema alur
+
+<Mockup label="3-tier data flow (read + write)">
+  <MockupFlow direction="vertical">
+    <MockupBox emoji="🌐" title="Vite SPA (Browser)" subtitle="React 19 · Zustand · React Router v7">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 mt-1.5">
+        <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">useChatStore</span>
+        <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">useAgentStore</span>
+        <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">useSessionStore</span>
+        <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">useTaskStore</span>
+        <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">useLiveFeedStore</span>
+        <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">useWsStore</span>
+      </div>
+    </MockupBox>
+
+    <div className="flex items-center justify-center gap-12 py-1">
+      <span className="text-xs text-muted-foreground">↓ /ws WebSocket (push events)</span>
+      <span className="text-xs text-muted-foreground">↑ POST /api/... (user actions)</span>
+    </div>
+
+    <MockupBox emoji="⚙️" title="AOC Backend (Express, port 18800)" subtitle="JWT auth · per-user scoping · SQLite via sql.js" variant="primary">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+        <div className="rounded-md bg-card border border-border p-2">
+          <p className="text-[11px] font-semibold">Watchers</p>
+          <p className="text-[10px] text-muted-foreground/80">chokidar fs events</p>
+        </div>
+        <div className="rounded-md bg-card border border-border p-2">
+          <p className="text-[11px] font-semibold">REST Routes</p>
+          <p className="text-[10px] text-muted-foreground/80">/api/* per-user scope</p>
+        </div>
+        <div className="rounded-md bg-card border border-border p-2">
+          <p className="text-[11px] font-semibold">GatewayPool (WS)</p>
+          <p className="text-[10px] text-muted-foreground/80">per-user gateway proxy</p>
+        </div>
+      </div>
+      <div className="mt-2 rounded-md bg-card border border-border p-2 text-center">
+        <p className="text-[11px] font-semibold">WebSocket broadcast layer</p>
+        <p className="text-[10px] text-muted-foreground/80">typed events via ws-events.cjs</p>
+      </div>
+    </MockupBox>
+
+    <div className="flex items-center justify-center gap-12 py-1">
+      <span className="text-xs text-muted-foreground">↓ chokidar watch (read)</span>
+      <span className="text-xs text-muted-foreground">↑ gateway RPC (write)</span>
+    </div>
+
+    <MockupBox emoji="📁" title="OpenClaw Filesystem (per-user, source of truth)" subtitle="~/.openclaw/users/<id>/.openclaw/" variant="muted">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 mt-1.5 text-[11px] font-mono">
+        <span><span className="text-muted-foreground">├─</span> openclaw.json — config</span>
+        <span><span className="text-muted-foreground">├─</span> workspace/ — Master</span>
+        <span><span className="text-muted-foreground">├─</span> workspaces/&lt;id&gt;/ — sub-agents</span>
+        <span><span className="text-muted-foreground">├─</span> sessions/*.jsonl — chat</span>
+        <span><span className="text-muted-foreground">├─</span> cron/jobs.json — schedules</span>
+        <span><span className="text-muted-foreground">└─</span> logs/gateway.log</span>
+      </div>
+    </MockupBox>
+  </MockupFlow>
+</Mockup>
+
+## Read direction: filesystem → UI
+
+<Steps>
+  <Step title="OpenClaw mutates filesystem">
+    Gateway proses tulis ke `<userHome>/sessions/<sessionId>.jsonl` setiap turn. Bisa juga `openclaw.json` (saat install skill, bind channel, dll), `cron/jobs.json` (saat user edit cron), dll.
+  </Step>
+  <Step title="Watchers detect change">
+    `server/lib/watchers.cjs` pakai chokidar untuk watch root per-user. Detect add/change/delete + emit event.
+  </Step>
+  <Step title="Parser + DB scoping">
+    Untuk session JSONL: parser baca JSONL line-by-line, ekstrak struktur message (text, tool calls, thinking), append ke `useChatStore` cache. Untuk config: parser baca `openclaw.json`, derive agents/channels list.
+
+    Scoping per-user via `parseScopeUserId(req)` pada REST handler — admin bisa impersonate via `?owner=<id>`.
+  </Step>
+  <Step title="Broadcast WS event">
+    `broadcast({ type: 'session:live-event', payload: {...} })` validate type via `assertEventType`. Sampai ke client lewat `/ws`.
+  </Step>
+  <Step title="Dispatch to Zustand">
+    `useWebSocket` hook (di `src/hooks/useWebSocket.ts`) listen ke WS, dispatch ke store yang relevan: chat events ke `useChatStore`, agent state ke `useAgentStore`, dll.
+  </Step>
+  <Step title="React re-render">
+    Component yang subscribe ke store re-render dengan state baru.
+  </Step>
+</Steps>
+
+## Write direction: user action → filesystem
+
+<Steps>
+  <Step title="User klik UI (mis. send chat)">
+    Component dispatch action → call `chatApi.sendMessage(sessionId, body)` di `src/lib/chat-api.ts`.
+  </Step>
+  <Step title="POST ke /api/chat/sessions/:id/messages">
+    Express route di `server/routes/chat.cjs` validate auth, scope ke userId.
+  </Step>
+  <Step title="Gateway pool routing">
+    `gatewayPool.forUser(uid)` lookup koneksi WS persistent ke gateway proses kamu. Kalau belum connect: lazy-connect via `orchestrator.getRunningToken(userId)` + `conn.connect({port, token})`.
+  </Step>
+  <Step title="Gateway eksekusi">
+    Gateway dapat RPC, runtime tulis ke JSONL session, eksekusi turn (bisa ada tool calls), return response stream.
+  </Step>
+  <Step title="Real-time stream balik">
+    Response chunk ke broadcast WS → frontend → render incremental.
+  </Step>
+</Steps>
+
+## Data ownership boundary
+
+Penting untuk pahami **siapa yang own data apa**:
+
+| Data | Source of Truth | Read | Write |
+|------|-----------------|------|-------|
+| Agent config | `<userHome>/openclaw.json` | Watcher + REST parser | Gateway RPC + REST PUT |
+| Session transcripts | `<userHome>/sessions/*.jsonl` | Watcher + JSONL poller | Gateway only |
+| Workspace files | `<userHome>/workspace*` | Workspace Browser API | Gateway + REST PUT |
+| Channel pairing | `<userHome>/credentials/*.json` | REST | Gateway (initiate) + REST (approve) |
+| Cron jobs | `<userHome>/cron/jobs.json` | REST parser | REST PUT (then gateway restart) |
+| User accounts | SQLite `users` | REST | REST mutation |
+| Agent profiles | SQLite `agent_profiles` | REST | REST mutation |
+| Mission rooms + artifacts | SQLite + `<OPENCLAW_HOME>/rooms/<id>/` | REST | REST mutation |
+| File versions | SQLite `file_versions` | REST | REST (dedupe SHA-256) |
+| Audit log | SQLite `audit_log` | REST (admin) | Auto on sensitive ops |
+
+**Rule of thumb**: kalau gateway/runtime butuh read it (mis. agent config, skill content) — itu di filesystem. Kalau dashboard-only (mis. user account, project board) — di SQLite.
+
+## Real-time event types
+
+WS event types pinned di `server/lib/ws-events.cjs` + matching `WsEventType` di `src/types/index.ts`. Beberapa yang paling kritis:
+
+- `session:live-event` — chat message stream chunk (text, tool call, thinking)
+- `processing_end` — turn selesai (cleanup state, hide loading indicator)
+- `skills:updated` — skill install/uninstall — refresh skill list
+- `agent:status_changed` — agent online/offline/processing
+- `gateway:state_changed` — gateway up/down (untuk UI status indicator)
+- `room:message` — pesan baru di mission room
+- `task:updated` — task status change
+
+`broadcast()` validate type runtime — typo throw (kalau `AOC_WS_STRICT=1`). Tambah event baru = update **dua file lockstep**: `ws-events.cjs` dan `src/types/index.ts`.
+
+## File watcher gotchas
+
+- **macOS FSEvents coalesce burst writes** — kalau ada 10 write cepet ke file sama, watcher mungkin cuma fire 1-2 event. Acceptable untuk session JSONL (parser idempotent), tapi untuk config kritis pakai REST endpoint reload.
+- **Symlink follow** — `<userHome>/skills/` symlink ke `~/.openclaw/skills/`. Watcher follow symlink default — install skill di admin's home akan trigger event di setiap user's watcher (intentional).
+- **JSONL fallback poller** — kalau gateway lifecycle event datang sebelum last message di JSONL, watcher mungkin miss. Ada poller fallback yang cek JSONL tail tiap 1s sebagai backup.
+
+## Persistence vs in-memory
+
+- **SQLite (`data/aoc.db`)** — debounced 250ms trailing. `db.persist()` schedule, `persistNow()` force-flush. `flushPendingPersist()` wired ke `beforeExit`/`SIGINT`/`SIGTERM` — gak kehilangan data saat restart.
+- **Filesystem** — synchronous via `fs.writeFileSync` di runtime gateway. Atomic via temp + rename pattern di banyak operasi.
+- **Zustand stores** — in-memory + selective `persist` middleware ke localStorage (mis. theme, docs lang). Default volatile.
+
+## Apa yang TIDAK termasuk
+
+- **Multi-region replication** — AOC single-instance, single-DB. Untuk HA, butuh setup lain di luar v1 scope.
+- **CDC (change data capture)** — gak ada. Listener pakai chokidar (filesystem) dan WS broadcast (in-process).
+- **Event sourcing** — SQLite snapshot model. Audit log append-only, tapi gak full event log.
+
+## Langkah selanjutnya
+
+- <ConceptLink to="/docs/architecture/gateway-orchestrator">Gateway Orchestrator</ConceptLink> — bagaimana gateway proses di-spawn + lifecycle
+- <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink> — kenapa ada per-user fs + scoping
+- <ConceptLink to="/docs/reference/sharp-edges">Sharp Edges</ConceptLink> — load-bearing constraints saat touch data layer

@@ -1030,12 +1030,23 @@ function getUserByUsername(username) {
 
 function getUserById(id) {
   if (!db) return null;
-  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login, master_agent_id, daily_token_quota, daily_token_used, daily_token_reset_at FROM users WHERE id = ?', [id]);
+  const result = db.exec('SELECT id, username, display_name, role, can_use_claude_terminal, created_at, last_login, master_agent_id, daily_token_quota, daily_token_used, daily_token_reset_at, dlp_encryption_key FROM users WHERE id = ?', [id]);
   if (result.length === 0 || result[0].values.length === 0) return null;
 
   const row = result[0].values[0];
   const cols = result[0].columns;
-  return Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+  const raw = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+  // Expose camelCase alias for DLP key so encryption module can read it
+  raw.dlpEncryptionKey = raw.dlp_encryption_key;
+  return raw;
+}
+
+function setUserDlpEncryptionKey(userId, sealedKey) {
+  if (!db) throw new Error('Database not initialized');
+  const stmt = db.prepare('UPDATE users SET dlp_encryption_key = ? WHERE id = ?');
+  stmt.run([sealedKey, Number(userId)]);
+  stmt.free();
+  persist();
 }
 
 // Token budget enforcement extracted to ./db/budget.cjs — re-exported via the
@@ -1369,6 +1380,7 @@ module.exports = {
   createGoogleUser,
   getUserByUsername,
   getUserById,
+  setUserDlpEncryptionKey,
   getUserByGoogleSub,
   getUserByEmail,
   linkGoogleIdentity,
@@ -1407,4 +1419,10 @@ module.exports = {
   ...require('./db/announcements.cjs'),
   // Satisfaction — feedback ratings, session summaries, daily rollups
   ...require('./db/satisfaction.cjs'),
+  // Embed channel — agent_embeds CRUD
+  ...require('./db/embeds.cjs'),
+  // Embed channel — embed_sessions CRUD
+  ...require('./db/embed-sessions.cjs'),
+  // Embed channel — embed_audit_log CRUD
+  ...require('./db/embed-audit.cjs'),
 };

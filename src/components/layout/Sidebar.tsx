@@ -11,8 +11,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   BookOpen,
+  BookText,
   IdCard,
   MessageSquare,
+  MessageCircle,
   Cable,
   Webhook,
   Plug,
@@ -52,6 +54,7 @@ const navGroups = [
     label: "Channels",
     items: [
       { to: "/routing", label: "Channel Routing", icon: Cable },
+      { to: "/embeds", label: "Embeds", icon: MessageCircle },
     ],
   },
   {
@@ -184,6 +187,22 @@ export function Sidebar() {
 
         {/* Bottom */}
         <div className="flex flex-col gap-0.5 mt-2 pt-3 border-t border-sidebar-border">
+          <NavLink
+            to="/docs"
+            title={sidebarCollapsed ? "Docs" : undefined}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-2.5 py-2 rounded-lg text-sm transition-all duration-150",
+                sidebarCollapsed ? "md:justify-center md:px-0 px-2.5" : "px-2.5",
+                isActive
+                  ? "bg-surface-high text-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+              )
+            }
+          >
+            <BookText className="h-4 w-4 shrink-0" />
+            {!sidebarCollapsed && <span>Docs</span>}
+          </NavLink>
           {isAdmin && (
             <NavLink
               to="/announcements"

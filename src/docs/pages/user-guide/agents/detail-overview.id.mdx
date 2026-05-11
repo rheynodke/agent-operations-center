@@ -1,0 +1,196 @@
+---
+title: Halaman Detail Agen
+description: Tour 6 tab di /agents/:id — Agent Files, Skills & Tools, Channels, Connections, Schedules, Feedback — plus Edit Configuration modal.
+updated: 2026-05-10
+---
+
+# Halaman Detail Agen
+
+URL: `/agents/<id>`. Pusat semua konfigurasi per-agent. Layout: header + 6 tab body.
+
+## Header
+
+<Mockup label="/agents/evergreen">
+  <div className="flex items-start gap-3 p-2">
+    <div className="w-12 h-12 rounded-xl overflow-hidden shrink-0">
+      <img src="/avatars/bot-emerald.png" alt="Evergreen" className="w-full h-full object-contain" draggable={false} />
+    </div>
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-2 flex-wrap">
+        <p className="text-base font-bold text-foreground">Evergreen</p>
+        <span className="text-xs font-mono text-muted-foreground">main</span>
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+          🧭 Master Orchestrator
+        </span>
+      </div>
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <StatusDot kind="success" />
+        <span className="text-xs text-muted-foreground">Active · Last activity: 3 mins ago</span>
+      </div>
+    </div>
+    <div className="flex items-center gap-1.5">
+      <MockupButton>⚙ Edit Config</MockupButton>
+      <MockupButton variant="ghost">⋯</MockupButton>
+    </div>
+  </div>
+</Mockup>
+
+- **Avatar + nama + ID** — visual identity
+- **Role badge** — kalau profile.role di-set (master-orchestrator, swe, pm, dll), badge muncul dengan emoji role-spesifik
+- **Status indicator** — sama seperti di list page (active/idle/processing/error)
+- **Tombol aksi**:
+  - ⚙ **Edit Configuration** — modal untuk edit metadata (lihat bawah)
+  - **Restart Gateway** — restart gateway proses kamu (untuk apply skill/binding changes)
+  - **⋯ Menu** — Delete agent, Export config, dll
+
+### Compact mode
+
+Toggle ikon di kanan header untuk **compact header** (~40px single-row). Persisted di `localStorage` `aoc.agent-detail.headerCompact`. Berguna kalau workspace kamu butuh ruang vertikal lebih.
+
+## 6 Tab Body
+
+<Mockup>
+  <MockupTabBar
+    active={0}
+    tabs={[
+      { label: "Agent Files", icon: "📂" },
+      { label: "Skills & Tools", icon: "✨" },
+      { label: "Channels", icon: "🔗", statusDot: "online" },
+      { label: "Connections", icon: "🔌" },
+      { label: "Schedules", icon: "⏱" },
+      { label: "Feedback", icon: "📊" },
+    ]}
+  />
+  <div className="px-4 py-5 text-center">
+    <p className="text-xs text-muted-foreground">
+      Klik tab untuk navigate. <span className="text-emerald-400">●</span> di Channels = gateway online.
+    </p>
+  </div>
+</Mockup>
+
+Tab bar di atas, content di bawah. Klik tab untuk switch.
+
+Tab **Channels** punya **lampu kecil** di sebelah label: 🟢 = agent online (siap respond di channel eksternal), ⚪ = lagi offline (agent perlu di-restart atau ada masalah).
+
+<Tabs>
+  <Tab label="Agent Files">
+    Dua sub-mode:
+
+    - **Curated** — editable allowlist: `IDENTITY.md`, `SOUL.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`. View + edit pakai Monaco editor. Auto-save dengan version history.
+    - **Browse** — file manager read-only via `WorkspaceBrowser`. Tree di kiri, preview kanan. Lazy-load. Cocok untuk explore output yang Master Agent generate (mis. report PDF, CSV).
+
+    Toggle mode di kanan atas tab.
+
+    <Callout type="info" title="Curated files = persona kontrak">
+      File-file ini adalah persona kontrak agent. Edit dengan hati-hati:
+      - **IDENTITY.md** — nama, gaya, satu-line peran
+      - **SOUL.md** — full persona prompt (paling impactful)
+      - **TOOLS.md** — list skill + cara pakai
+      - **AGENTS.md** — orchestration playbook (Master only — addendum auto-injected)
+      - **MEMORY.md** — long-term context yang agent inget
+    </Callout>
+  </Tab>
+
+  <Tab label="Skills & Tools">
+    3 sub-tab:
+
+    - **Skills** — list skill yang enabled, toggle on/off, install dari ClawHub atau marketplace, view skill code via Monaco
+    - **Tools** — bawaan OpenClaw (file ops, exec, web, dll). Override allow/deny per agent
+    - **Custom Tools** — loose scripts (legacy, sebagian besar sudah migrate ke skill bundle). Embed `SkillsTerminal` untuk debug/test tool calls
+
+    Plus **AI Assist Panel** untuk generate skill stub via Claude.
+  </Tab>
+
+  <Tab label="Channels">
+    Bind agent ke channel chat eksternal:
+
+    - **Telegram** — masukin bot token + account ID
+    - **WhatsApp** — QR login flow
+    - **Discord** — bot token + (optional) guild binding
+
+    Panel `PairingRequestsPanel` di bawah untuk approve DM pairing request yang sedang pending.
+
+    <Callout type="warning" title="Gateway restart wajib">
+      Setelah toggle channel binding, **wajib restart gateway** agar OpenClaw load binding baru. Tombol Restart di header agen.
+    </Callout>
+  </Tab>
+
+  <Tab label="Connections">
+    Assign external connection ke agent:
+
+    - **DB**: PostgreSQL, MySQL, BigQuery
+    - **Code**: SSH, GitHub
+    - **Cloud**: Google Workspace (Sheets, Docs, Drive, Gmail, Calendar)
+    - **Domain**: Odoo (via odoocli)
+    - **Web**: generic HTTP webhook
+    - **MCP**: MCP server (Composio, custom)
+
+    Search bar + filter chip per type + bulk select.
+
+    Connection yang **shared org-wide** muncul dengan icon 🌐 — kamu bisa assign ke agent kamu walaupun bukan owner.
+
+    Detail: (segera hadir) Connections Overview.
+  </Tab>
+
+  <Tab label="Schedules">
+    Embed `<CronPage filterAgentId={id} />` — list cron job yang assigned ke agent ini saja.
+
+    Aksi:
+    - **+ New Schedule** — bikin cron baru langsung bound ke agent ini
+    - **Toggle enable/disable** per job
+    - **Run Now** — trigger eksekusi langsung
+    - **View Runs** — modal history run dengan status + output
+
+    <Callout type="info" title="Gateway restart untuk activate">
+      Cron job baru / update tidak aktif sampai gateway restart. UI kasih affordance "Restart now?" setelah create/edit.
+    </Callout>
+
+    Detail: <ConceptLink to="/docs/user-guide/automation/schedules">Jadwal (Cron)</ConceptLink>.
+  </Tab>
+
+  <Tab label="Feedback">
+    Tab ke-6 (terbaru). Tampilin satisfaction metrics + ratings agent ini:
+
+    - **Satisfaction score** (CSAT-style) — ratio thumbs-up vs thumbs-down dari user di chat
+    - **Rating breakdown** — daily rollup chart (last 30 days)
+    - **Recent ratings** — list message yang di-rate user, plus konteks turn
+    - **Skip rate** — berapa banyak user skip respon agent (sinyal kualitas)
+
+    Useful untuk track apakah persona / soul tuning agent berhasil bikin user puas. Implementasi backed by `db/satisfaction.cjs` + WS event `satisfaction:rated`.
+  </Tab>
+</Tabs>
+
+## Edit Configuration Modal
+
+Klik tombol **⚙ Edit Config** di header. Modal `EditConfigModal` muncul:
+
+- **Display name** — bisa diubah. Kalau berubah, **slug ID** auto-recompute (kecuali Master, slug-nya di-protect karena banyak referensi).
+- **ADLC role dropdown** — pilih dari 9 role + master-orchestrator. Locked ke "master-orchestrator" kalau `profile.isMaster=true` — gak bisa diubah.
+- **Model** — pilih dari list model yang available di gateway kamu (read dari `openclaw.json` `models.list[]`).
+- **Persona description** — short description.
+- **Color** — palette swatch.
+- **Avatar preset** — 16 preset (matching onboarding wizard).
+
+<Callout type="danger" title="Rename = atomic cascade">
+Saat display name berubah dan slug auto-recompute beda dari sebelumnya:
+
+1. `openclaw.json` — agent entry key di-rename
+2. `channels.telegram.accounts` / `channels.whatsapp.accounts` — key matching old ID di-rename
+3. Semua binding `agentId` references di-update
+4. Filesystem: `<userHome>/agents/{id}/` + workspace dir di-rename
+5. SQLite `db.renameAgentProfile(oldId, newId)` di-call
+
+Frontend navigate ke `/agents/<newId>` setelah sukses. Atomic — kalau salah satu step fail, di-rollback.
+
+**Master Agent slug `main` di-protect** — tidak bisa di-rename karena banyak komponen lain reference literal `'main'` (legacy).
+</Callout>
+
+## Sidebar (Master Agent only)
+
+Saat profile.isMaster = true, header section badge "🧭 Master Orchestrator" muncul. Helper text di Edit Config: "This is your Master Agent — role is locked. The Master orchestrates your team and routes user intent to the right specialist."
+
+## Langkah selanjutnya
+
+- Eksplor sub-tab Channels untuk bind agent ke chat eksternal
+- Setup connection: (segera hadir) Connections Overview
+- Bikin schedule cron pertama: <ConceptLink to="/docs/user-guide/automation/schedules">Jadwal (Cron)</ConceptLink>

@@ -1,0 +1,112 @@
+---
+title: Overview Channel
+description: 3 channel chat eksternal yang bisa di-bind ke agent — Telegram, WhatsApp, Discord. Pattern, policy, dan pairing flow.
+updated: 2026-05-10
+---
+
+# Overview Channel
+
+Channel binding bikin agent kamu reachable lewat **chat app eksternal**, bukan cuma dashboard. Pesan masuk dari channel di-route ke agent target, agent reply lewat channel yang sama.
+
+<Callout type="info" title="4 channel didukung">
+AOC saat ini support **Telegram**, **WhatsApp**, **Discord**, dan **Embed Chat** (widget di website kamu — Phase 1 internal tool only, Phase 2 public coming). Channel lain (Slack, Teams, Line, dll) belum tersedia.
+</Callout>
+
+## Konsep dasar
+
+Setiap channel binding terdiri dari:
+
+- **Channel type** — telegram / whatsapp / discord
+- **Account ID** — identifier unik untuk credential set ini di per-user `openclaw.json` (default: `default`, biasanya = agent slug atau phone number)
+- **Credential** — bot token (Telegram/Discord) atau session (WhatsApp)
+- **Policy** — DM policy (pairing / allow / block), streaming mode, dan opsional group policy untuk Discord
+
+## Akses
+
+Buka **Agent Detail page** → tab **Channels**. Layout:
+
+<Mockup label="/agents/aira → Channels tab">
+  <MockupTabBar
+    active={2}
+    tabs={[
+      { label: "Agent Files", icon: "📂" },
+      { label: "Skills & Tools", icon: "✨" },
+      { label: "Channels", icon: "🔗", statusDot: "online" },
+      { label: "Connections", icon: "🔌" },
+      { label: "Schedules", icon: "⏱" },
+      { label: "Feedback", icon: "📊" },
+    ]}
+  />
+  <div className="px-4 py-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+    <MockupBox iconSrc="/telegram.webp" iconAlt="Telegram" title="Telegram" subtitle="Bot token + DM policy" variant="primary" />
+    <MockupBox iconSrc="/wa.png" iconAlt="WhatsApp" title="WhatsApp" subtitle="QR login + allow-list nomor HP" />
+    <MockupBox iconSrc="/discord.png" iconAlt="Discord" title="Discord" subtitle="Bot token + DM/group policy" />
+    <MockupBox emoji="🌐" title="Embed Chat" subtitle="Widget di website (Phase 1: internal tool only)" />
+  </div>
+</Mockup>
+
+3 card per channel **chat-app** (Telegram, WhatsApp, Discord) di Agent Detail tab Channels — tiap card tampilin status binding + tombol add / edit / hapus.
+
+**Embed Chat** beda flow: di-manage di halaman dedicated `/embeds` (sidebar **Embeds**), bukan per-agent di tab Channels. Satu agent bisa jadi backend untuk multiple embed.
+
+## DM Policy
+
+Mengontrol siapa yang boleh DM agent:
+
+| Policy | Behavior |
+|--------|----------|
+| **pairing** | User harus pairing dulu (DM bot, dapat kode, approve di dashboard atau auto-approve) sebelum bisa kirim pesan |
+| **allow** | Open — siapa pun yang DM bot bisa langsung interaksi |
+| **block** | Tertutup — DM ditolak. Cuma group / specific allow-list yang bisa kirim |
+
+## Streaming mode
+
+Mengontrol bagaimana response agent ditampilkan di channel:
+
+| Mode | Behavior |
+|------|----------|
+| **off** | Agent kirim final reply saja, satu pesan utuh |
+| **partial** | Agent edit pesan progressively saat generate (visible "typing") |
+| **full** | Stream raw chunk-by-chunk (paling responsif tapi noisy di channel) |
+
+## Pairing flow (DM)
+
+Untuk policy `pairing`:
+
+<Steps>
+  <Step title="User DM bot agent">
+    Kirim pesan apapun ke bot/account agent.
+  </Step>
+  <Step title="Bot reply dengan kode">
+    Kode 6-digit, valid 1 jam. User catat kode ini.
+  </Step>
+  <Step title="Approve di dashboard">
+    Buka **Agent Detail → Channels**. Bagian "Pairing Requests" tampilin pending request. Klik approve.
+
+    Alternatif: kalau kamu lagi onboarding wizard di step **Hubungkan**, wizard otomatis auto-approve first matching request — gak perlu klik manual.
+  </Step>
+  <Step title="User dapat akses">
+    Setelah di-approve, user otomatis masuk allow-list. Sekarang mereka bisa interaksi penuh dengan agent.
+  </Step>
+</Steps>
+
+## Status indicator
+
+Tab **Channels** punya status dot kecil di header tab:
+
+- 🟢 hijau — gateway running (channel binding aktif)
+- ⚪ abu-abu — gateway offline (channel inactive sampai gateway restart)
+
+## Apa yang TIDAK tersedia di v1
+
+- ❌ **Multi-account per type** — tiap agent cuma 1 Telegram + 1 WhatsApp + 1 Discord. Untuk multi-bot pattern, provision multiple agent
+- ❌ **Bulk binding** — gak bisa apply config channel ke banyak agent sekaligus
+- ❌ **Edit configuration JSON langsung** — semua channel setting lewat form per-card aja
+- ❌ **Channel selain Telegram/WA/Discord**
+
+## Langkah selanjutnya
+
+- Setup Telegram lengkap: <ConceptLink to="/docs/user-guide/channels/telegram">Setup Telegram</ConceptLink>
+- Setup WhatsApp dengan QR: <ConceptLink to="/docs/user-guide/channels/whatsapp">Setup WhatsApp</ConceptLink>
+- Setup Discord (DM + server): <ConceptLink to="/docs/user-guide/channels/discord">Setup Discord</ConceptLink>
+- Setup Embed Chat (widget website): <ConceptLink to="/docs/user-guide/channels/embed">Setup Embed Chat</ConceptLink>

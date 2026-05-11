@@ -1,0 +1,111 @@
+---
+title: Login & Setup
+description: Cara akses AOC pertama kali — dari first-run admin setup, register via invitation, sampai login harian.
+updated: 2026-05-10
+---
+
+# Login & Setup
+
+AOC punya tiga skenario akses awal:
+
+1. **First-run setup** (instance baru, belum ada user) — bikin admin account pertama
+2. **Register via invitation** (instance existing, kamu user baru) — redeem token invitation dari admin
+3. **Login harian** — username/email + password
+
+## 1. First-Run Setup
+
+Kalau ini instance AOC pertama kali (database fresh, belum ada user), browser akan auto-redirect ke `/setup`.
+
+<Steps>
+  <Step title="Buka instance AOC di browser">
+    Default `http://localhost:5173` (dev) atau URL production yang admin kasih.
+  </Step>
+  <Step title="Isi form admin awal">
+    Masukin email + password + confirm password. Akun ini otomatis dapat role **admin** dengan akses penuh.
+  </Step>
+  <Step title="Submit">
+    Setelah berhasil, kamu di-redirect ke `/login`. Login pakai credential yang baru dibuat.
+  </Step>
+  <Step title="Onboarding Master Agent">
+    Sebagai admin, kamu dilewati `<MasterGate>` (lihat <ConceptLink to="/docs/architecture/master-agent">Master Agent</ConceptLink> kenapa). Master agent admin di-bind ke `main` (dari `~/.openclaw/openclaw.json`).
+  </Step>
+</Steps>
+
+<Callout type="warning" title="Setup hanya muncul sekali">
+Begitu user pertama dibuat, route `/setup` otomatis disabled. Untuk reset (mis. kalau salah email), drop database `data/aoc.db` dan restart AOC server.
+</Callout>
+
+## 2. Register via Invitation
+
+User non-admin **wajib** redeem invitation token. Tidak ada self-register publik.
+
+<Steps>
+  <Step title="Admin buat invitation">
+    Admin buka `/users` → tab **Invitations** → "Create new invitation". Pilih default role (`user`), durasi expiry (default 24 jam), opsional note.
+  </Step>
+  <Step title="Admin share invitation link">
+    Sistem generate URL: `<AOC_URL>/register?token=<token>`. Admin kirim link ini via channel apa pun.
+  </Step>
+  <Step title="User redeem">
+    Buka link tersebut → form **Register**. Isi email + password + nama display. Submit.
+  </Step>
+  <Step title="Auto-login + onboarding">
+    Setelah register sukses, sistem auto-login + auto-spawn gateway proses kamu (port allocated dari range `19000-19999`). Lalu di-redirect ke `/onboarding` untuk bikin Master Agent.
+  </Step>
+</Steps>
+
+<Callout type="info" title="Token sekali pakai (default)">
+Invitation default `use_count=1` — sekali di-redeem langsung expired. Admin bisa revoke token aktif via UI kalau berubah pikiran.
+</Callout>
+
+## 3. Login Harian
+
+Setelah akun ada:
+
+<Steps>
+  <Step title="Buka /login">
+    Email + password.
+  </Step>
+  <Step title="Submit">
+    Sistem verify, return JWT, simpan ke `localStorage` sebagai `aoc.auth.token`.
+  </Step>
+  <Step title="Redirect">
+    - Sudah ada Master Agent → `/` (Overview)
+    - Belum ada Master Agent → `/onboarding`
+    - Admin tanpa Master → `/` (admin dilewati MasterGate)
+  </Step>
+</Steps>
+
+## Reset Password
+
+User lupa password:
+
+- **Self-service**: Belum tersedia di v1.
+- **Admin reset**: Admin buka `/users` → cari user → klik **Reset Password** → modal kasih password baru → user kasih tau ke user.
+
+## Logout
+
+Klik tombol logout di kanan atas TopBar (icon panah keluar). Akan clear JWT dari localStorage + redirect ke `/login`.
+
+<Callout type="tip" title="Session persistence">
+JWT default expired 30 hari. Kalau token kadaluarsa, browser auto-redirect ke `/login` di request berikutnya. Token juga di-revoke kalau admin reset password user yang bersangkutan.
+</Callout>
+
+## Troubleshooting
+
+**"Setup not available" padahal database kosong?**
+Cek apakah tabel `users` sudah ada (migration dijalankan saat AOC startup). Hapus `data/aoc.db` lalu restart server.
+
+**"Invalid invitation token"?**
+Token expired, sudah di-redeem, atau di-revoke. Minta admin generate token baru.
+
+**Login sukses tapi langsung ke `/onboarding` padahal sudah onboarded?**
+Cache `useMasterStatus` belum refresh. Hard refresh browser (Cmd/Ctrl + Shift + R). Kalau persist, cek di terminal admin: `db.getUserMasterAgentId(userId)` — pastikan return ID, bukan null.
+
+**Gateway gagal spawn setelah register?**
+Cek log server. Bisa karena port range habis (`AOC_MAX_GATEWAYS` cap default 50). Admin bisa stop gateway user lain via `./scripts/gw.sh stop <userId>` untuk free port.
+
+## Langkah selanjutnya
+
+- Sudah login? Lanjut ke <ConceptLink to="/docs/getting-started/onboarding-master">Onboarding Master Agent</ConceptLink>.
+- Mau pahami invitation system lebih dalam? Lihat <ConceptLink to="/docs/operations/user-management">Manajemen User & Invitation</ConceptLink>.

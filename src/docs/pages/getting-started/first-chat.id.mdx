@@ -1,0 +1,137 @@
+---
+title: Chat Pertama
+description: Cara kirim pesan pertamamu ke Master Agent dan apa yang terjadi di balik layar — session, dispatch, real-time stream.
+updated: 2026-05-10
+---
+
+# Chat Pertama
+
+Setelah <ConceptLink to="/docs/getting-started/onboarding-master">onboarding Master Agent</ConceptLink>, kamu siap chat. Page chat ada di `/chat`.
+
+## Buka room HQ kamu
+
+<Steps>
+  <Step title="Klik 'Chat' di sidebar">
+    Browser navigate ke `/chat`. Default-nya, **HQ Room** kamu yang ke-load — itu room sistem per-user yang otomatis dibuat saat onboarding, dengan Master Agent sebagai member always-on.
+  </Step>
+  <Step title="Lihat room sidebar di kiri">
+    Daftar semua room kamu. HQ ditandai dengan emoji 🏠 di prefix. Ini room privat, tidak bisa dihapus (sistem).
+  </Step>
+  <Step title="Kirim pesan pertama">
+    Ketik di input bawah: misal "Halo, kenalan dong, kamu siapa dan bisa bantu apa?". Tekan **Enter** atau klik tombol kirim.
+  </Step>
+</Steps>
+
+<Callout type="info" title="Apa yang terjadi di balik layar">
+1. Frontend POST ke `/api/chat/sessions` → backend bikin session di gateway proses kamu via `gatewayPool.forUser(uid).sessionsCreate(agentId)`.
+2. Pesanmu di-stream ke gateway via WebSocket.
+3. Gateway proses spawn Claude/OpenClaw runtime untuk Master Agent, eksekusi turn.
+4. Response (text / tool calls / thinking) di-stream balik via WebSocket → AOC backend → broadcast ke browser kamu → render di `useChatStore`.
+5. JSONL transcript ditulis ke `<userHome>/sessions/<sessionId>.jsonl` sebagai source of truth.
+</Callout>
+
+## Format pesan yang ditampilkan
+
+Master Agent bisa balas dalam beberapa format yang ditampilkan berbeda:
+
+<Tabs>
+  <Tab label="Teks biasa">
+    Paragraf normal dengan markdown rendering — bold, italic, list, code block, link semua di-render.
+  </Tab>
+  <Tab label="Thinking blocks">
+    Saat Master Agent "berpikir" (extended thinking enabled), kamu lihat box collapsed dengan label _"Thinking..."_ — klik untuk expand.
+  </Tab>
+  <Tab label="Tool calls">
+    Saat Master pakai tool (mis. baca file, eksekusi shell, web search), kamu lihat card dengan: nama tool, argumen, hasil eksekusi, durasi, dan status (success / error).
+  </Tab>
+  <Tab label="Delegations">
+    Master bisa delegate ke sub-agent via skill `aoc-master`. Kamu lihat card khusus dengan nama target agent + task yang di-delegate. Klik untuk lihat thread sub-session lengkap.
+  </Tab>
+</Tabs>
+
+## Mention agent lain
+
+Kalau kamu sudah punya sub-agent, mention mereka langsung di chat:
+
+```
+@swe-1 tolong bikin script untuk parsing CSV ini
+```
+
+Sistem akan:
+
+1. Detect `@<agent-id>` mention.
+2. Forward pesan ke sub-agent yang dimention via `room-task-bridge` hook.
+3. Sub-agent dapat session di room ini (keyed `agent:<id>:room:<roomId>:v<N>`).
+4. Reply sub-agent muncul sebagai message dari dia.
+
+<Callout type="warning" title="Delegation depth limited">
+Untuk hindari loop infinite (agent A mention agent B, B mention C, dst), sistem cap **MAX_DELEGATION_DEPTH = 3**. Setelah 3 hop, mention chain di-drop tanpa notifikasi.
+</Callout>
+
+## Session lifecycle
+
+Session di room punya behavior khusus:
+
+- **Persistent per agent per room** — keyed `agent:<agentId>:room:<roomId>:v<N>`.
+- **First message in session** kasih full context (project info, roster, hints).
+- **Subsequent messages** compact format `<authorName>: <message>`.
+- **Idle reset** — setelah 30 menit gak ada aktivitas, version counter (`v<N>`) bump → session baru di-spawn next message.
+
+Ini optimize biaya token: gateway gak load context besar tiap turn, tapi context tetep fresh secara periodic.
+
+## Stop processing
+
+Kalau Master Agent stuck atau kamu mau cancel turn:
+
+- Klik icon ⏹ **Stop** (muncul di samping input saat ada turn aktif).
+- Backend SIGTERM ke gateway, tandain turn sebagai cancelled.
+
+## Live feed
+
+Sambil chat, kamu bisa buka **Live Feed Panel** (icon ⚡ di TopBar atau sidebar — desktop only). Lihat real-time:
+
+- Tool calls yang lagi running
+- Result tool execution
+- System events (session start, processing end, dll)
+- Cost tracking per entry (token usage)
+
+Berguna kalau mau monitor agent kamu saat lagi run task panjang.
+
+## Buat room baru
+
+Untuk projek atau topik tertentu yang butuh kolaborasi multi-agent:
+
+<Steps>
+  <Step title="Klik 'New Room' di sidebar Chat">
+    Modal `NewRoomDialog` muncul.
+  </Step>
+  <Step title="Isi nama + deskripsi singkat">
+    Master Agent kamu otomatis jadi member (always-on). Tambahin sub-agent lain kalau perlu.
+  </Step>
+  <Step title="Bind ke project (opsional)">
+    Kalau room ini buat project tertentu, link ke project agar artifact + task otomatis ter-organize.
+  </Step>
+  <Step title="Submit">
+    Room baru muncul di sidebar. Klik untuk masuk.
+  </Step>
+</Steps>
+
+Detail mendalam: <ConceptLink to="/docs/user-guide/collaboration/mission-rooms">Mission Rooms</ConceptLink>.
+
+## Tips chat yang produktif
+
+<Callout type="tip" title="Master jalan solo saat tim kosong">
+Saat baru onboarding kamu cuma punya Master — dia **akan eksekusi task langsung** tanpa nolak atau bilang "saya butuh sub-agent". Master punya skill set lengkap (aoc-tasks, aoc-connections, aoc-room, browser-harness, dll) untuk handle most tasks sendiri.
+
+Provision sub-agent baru saat task **berulang** atau butuh **persona/expertise spesifik** — bukan dari awal. Detail di <ConceptLink to="/docs/architecture/master-agent">Master Agent</ConceptLink>.
+</Callout>
+
+- Jelaskan **konteks** di awal session (project, deadline, constraint) — Master bakal preserve di session memory.
+- Pakai mention `@<agent-id>` untuk delegate task spesifik ke spesialis.
+- Kalau task panjang (multi-day), bikin **Task Board** entry — supaya progress + sub-conversation tracked di kanban, bukan hilang di scroll chat.
+
+## Langkah selanjutnya
+
+- Mau pahami arsitektur Master Agent? Baca <ConceptLink to="/docs/architecture/master-agent">Master Agent</ConceptLink>.
+- Mau bikin sub-agent spesialis? Lihat (segera hadir) Membuat Sub-Agent.
+- Mau eksplor mission room collaboration? Lihat (segera hadir) Mission Rooms Overview.

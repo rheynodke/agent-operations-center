@@ -1,0 +1,71 @@
+---
+title: System Overview
+description: High-level architecture of AOC Dashboard — what it builds, for whom, and how its components fit together.
+updated: 2026-05-10
+---
+
+# System Overview
+
+AOC (Agent Operations Center) is a full-stack web dashboard for monitoring, managing, and controlling OpenClaw agents. The platform is **multi-tenant by default** — each user gets an isolated filesystem, a dedicated gateway process, and one Master Agent that orchestrates their specialist team.
+
+<Callout type="info" title="Who this page is for">
+This page targets developers and admins who want to understand the high-level structure of AOC before diving into specific components. For end-user how-tos, see <ConceptLink to="/docs/getting-started/welcome">Getting Started</ConceptLink>.
+</Callout>
+
+## Three processes
+
+<Mockup label="3-process architecture">
+  <MockupFlow>
+    <MockupBox emoji="🌐" title="Vite SPA" subtitle="Browser · React 19 · Zustand · RR v7" />
+    <MockupArrow label="WS + REST" />
+    <MockupBox emoji="⚙️" title="AOC API" subtitle="Express · Port 18800 · JWT · SQLite" variant="primary" />
+    <MockupArrow label="WS + RPC" />
+    <MockupBox emoji="🤖" title="Per-user Gateway" subtitle="OpenClaw process · Port 19000-19999" />
+  </MockupFlow>
+  <div className="flex justify-center mt-3">
+    <MockupArrow direction="down" />
+  </div>
+  <div className="flex justify-center">
+    <MockupBox emoji="📁" title="~/.openclaw/" subtitle="Filesystem (source of truth, per-user)" variant="muted" className="max-w-md" />
+  </div>
+</Mockup>
+
+Three main processes running together:
+
+1. **Vite SPA** in the browser — React UI reading state from Zustand stores, talking to API + WebSocket.
+2. **AOC API** (Express, port `18800`) — JWT auth, RBAC, persists to SQLite in `data/aoc.db`, broadcasts WebSocket events.
+3. **Per-user gateway** — separate OpenClaw process per user, lazy-spawned to port range `19000-19999`.
+
+## Multi-Tenant Foundation
+
+Every user gets:
+
+- **Isolated filesystem** at `~/.openclaw/users/<id>/.openclaw/` (admin uses root `~/.openclaw/`).
+- **Dedicated gateway process** with its own token, lifecycle managed by `gateway-orchestrator.cjs`.
+- **Master Agent** (one per user) created during onboarding.
+- **Shared skills + scripts** via symlink to admin's home — install once, propagate to all users.
+
+Full details: <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink>.
+
+## Tech stack
+
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 19, TypeScript, Vite, Tailwind v4, Zustand, React Router v7 |
+| Backend | Node.js ≥20, Express 5 (CommonJS), JWT, SQLite via `sql.js` |
+| Real-time | WebSocket (`ws` library), chokidar file watchers |
+| Tooling | shadcn/ui, Radix primitives, Monaco Editor, Three.js (R3F) |
+
+## What AOC is not
+
+AOC is **not**:
+
+- **Not an AI runtime** — agent execution happens in the OpenClaw gateway, AOC just observes and controls.
+- **Not the source of truth for agent state** — all agent state lives in `~/.openclaw/`. SQLite only holds dashboard-only data (user accounts, agent profiles, projects, tasks, integrations).
+- **Not a public-facing gateway** — admin's external gateway on port `18789` is systemd-managed separately; per-user gateways serve only internal AOC requests.
+
+## Next steps
+
+- Want to understand tenant isolation? Read <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink>.
+- Want to trace the full data flow? See the Data Flow End-to-End page (coming soon).
+- First-time setup? Start with <ConceptLink to="/docs/operations/initial-setup">Initial Setup</ConceptLink>.

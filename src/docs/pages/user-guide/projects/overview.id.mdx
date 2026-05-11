@@ -1,0 +1,158 @@
+---
+title: Overview Project
+description: Konsep Project di AOC — kontainer task board, default mission room, integrasi external (Sheets), dan ADLC stage Kanban.
+updated: 2026-05-10
+---
+
+# Overview Project
+
+**Project** di AOC adalah kontainer untuk task board + mission room kolaborasi. Setiap user otomatis dapat satu project default ("General") saat onboarding.
+
+## Apa yang Project punya
+
+| Komponen | Deskripsi |
+|---|---|
+| **Task Board** | Kanban tasks (status: open/in_progress/review/done/cancelled, priority: urgent/high/medium/low) |
+| **Default Mission Room** | Auto-created saat project dibikin, Master Agent always-on member |
+| **Plan tab** | ADLC phase board — discovery → design → architecture → impl → qa → docs → release → ops |
+| **Memory tab** | Shared memory (project-wide context) yang sub-agent bisa baca lewat skill `aoc-tasks/project_memory.sh` |
+| **Settings tab** | Project metadata, integrations (Google Sheets), webhooks |
+| **Integrations** | Currently `google_sheets` only — sync task ke spreadsheet |
+
+## Layout halaman `/projects/:id`
+
+5 tab utama:
+
+<Tabs>
+  <Tab label="Overview">
+    - Project stats (task count per status, recent activity)
+    - Description
+    - Quick action: open default mission room, view all tasks
+  </Tab>
+  <Tab label="Board">
+    Toggle 2 view:
+    - **Status Kanban** — kolom: Open · In Progress · Review · Done · Cancelled
+    - **Stage Kanban** — kolom ADLC phase (8 phases)
+
+    Drag task antar kolom. Click task untuk buka `TaskPanel` (detail + edit).
+  </Tab>
+  <Tab label="Plan">
+    ADLC phase tracker. Tiap phase punya:
+    - Status (not_started / in_progress / completed / blocked)
+    - Owner agent (kalau di-assign)
+    - Tasks yang masuk phase ini
+  </Tab>
+  <Tab label="Memory">
+    Shared project context. Append-only via skill `project_memory.sh`:
+    - **decisions** — ADR-style: "Pakai SQLite karena bundle constraint"
+    - **risks** — risk register
+    - **questions** — open questions / ambiguity
+    - **glossary** — domain term definitions
+
+    Persists across agent — semua sub-agent yang ber-tujuan kerjain project ini bisa baca.
+  </Tab>
+  <Tab label="Settings">
+    - Edit metadata (name, description, kind)
+    - Connect Google Sheets integration
+    - Configure webhook (planned)
+    - Branch project (clone untuk experimental)
+  </Tab>
+</Tabs>
+
+## Buat project baru
+
+<Steps>
+  <Step title="Klik 'New Project' di /projects">
+    `ProjectCreateWizard` muncul.
+  </Step>
+  <Step title="Isi metadata">
+    - **Name** — display name
+    - **Description** — singkat 1-2 kalimat
+    - **Kind** — `general` / `app-build` / `research` / `ops` (metadata, gak ngubah behavior)
+  </Step>
+  <Step title="(Optional) Setup integration">
+    Connect Google Sheets — pilih spreadsheet ID + mapping kolom (external_id, title, status, priority). Saat task di AOC update, auto-sync ke sheet.
+  </Step>
+  <Step title="Submit">
+    Project created. Auto-trigger:
+    - Default mission room dibikin (Master kamu always-on member)
+    - SQLite row `projects` + `mission_rooms`
+  </Step>
+</Steps>
+
+## "General" project default
+
+Setiap user dapat project **General** otomatis saat onboarding finish (`POST /api/onboarding/master`). Tidak bisa di-delete (similar HQ Room, ada flag system).
+
+Berfungsi sebagai catch-all untuk task yang gak warrants project terpisah.
+
+## Project memory (shared context)
+
+Sub-agent atau Master bisa append ke project memory via skill `aoc-tasks`:
+
+```bash
+project_memory.sh add decision "Pakai SQLite" "Postgres tambah ops cost yang gak justified"
+project_memory.sh add risk "Bundle size threshold" "Vite chunk warning >500KB"
+project_memory.sh add question "Apakah multi-tenant wajib?" "Need answer dari product"
+project_memory.sh add glossary "Master Agent" "Per-user orchestrator agent, immutable"
+```
+
+Read:
+```bash
+project_memory.sh list
+project_memory.sh search "SQLite"
+```
+
+Stored per-project di SQLite. Bisa di-export sebagai markdown.
+
+<Callout type="tip" title="Memory vs CONTEXT.md">
+- **Project memory** — terstruktur (kategori: decisions/risks/questions/glossary), per-project, queryable
+- **Room CONTEXT.md** — append-only narrative, per-room, chronological
+
+Keduanya komplementer. Pakai memory untuk **categorized facts** yang ingin di-reuse oleh agent. Pakai CONTEXT.md untuk **decision log timeline** yang kontekstual ke percakapan room.
+</Callout>
+
+## Integrations
+
+Currently 1 integration: **Google Sheets**.
+
+### Setup Google Sheets sync
+
+<Steps>
+  <Step title="Connect Google Workspace">
+    Di `/connections` → buat connection type "Google Workspace". Encrypted service account JSON.
+  </Step>
+  <Step title="Configure project integration">
+    Di project Settings → Integrations → "Add Google Sheets":
+    - Pilih connection
+    - Spreadsheet ID
+    - Sheet/tab name
+    - Mapping kolom (header → field): `external_id`, `title`, `status`, `priority`, `assigned_agent`
+  </Step>
+  <Step title="Trigger sync">
+    Saat task di AOC create/update, auto-push ke sheet. Manual trigger via "Sync now" button.
+
+    Status normalization: "to-do" → todo, "wip" → in_progress, dll (fuzzy match).
+  </Step>
+</Steps>
+
+## Branching project
+
+Tombol "Branch" di Settings — clone project ke namespace baru untuk experimental. Sumber project tetap utuh.
+
+Useful untuk: try alternative plan, A/B test approach, isolate failed experiment.
+
+## Delete project
+
+Owner saja (atau admin). Cascade:
+- Tasks di-archive (soft-delete, gak ikut hilang dari history)
+- Mission room default di-delete (kecuali pinned)
+- Integration sync stop
+- Project memory entries soft-delete
+
+**General project tidak bisa di-delete** — system flag.
+
+## Langkah selanjutnya
+
+- Mulai pakai task board: <ConceptLink to="/docs/user-guide/projects/task-board">Task Board</ConceptLink>
+- Setup mission room default lebih dalam: <ConceptLink to="/docs/user-guide/collaboration/mission-rooms">Mission Rooms</ConceptLink>

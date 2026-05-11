@@ -1,0 +1,218 @@
+---
+title: Master Agent
+description: Konsep, peran, provisioning, dan operating style Master Agent — termasuk kenapa "risk-aware via prompting" bukan "approval gates".
+updated: 2026-05-10
+---
+
+# Master Agent
+
+**Master Agent adalah satu agent default per user** yang berperan sebagai orchestrator. Dia router intent → spesialis (sub-agent), execute task ringan langsung, dan punya akses workspace lebih luas dari sub-agent biasa.
+
+<Callout type="info" title="Satu user = satu Master, immutable">
+Tidak bisa di-replace. Sekali onboarded, Master Agent kamu untuk selamanya — tapi nama, persona, dan skill-nya bisa di-edit kapan saja di Agent Detail page.
+</Callout>
+
+## Kenapa ada Master Agent
+
+Tanpa Master, user perlu manually decide tiap task: "ini buat siapa? PM, SWE, atau QA?". Itu friction. Dengan Master, user cukup ngomong intent → Master decide routing.
+
+Selain routing, Master juga berperan sebagai:
+
+- **Continuity** — context project, decision history, user preference. Kalau sub-agent fresh tiap session, Master inget cumulative.
+- **Multi-agent orchestration** — saat ada task butuh 2+ spesialis (mis. SWE bikin code, QA review), Master ngeraciknya.
+- **Risk-aware safety net** — Master punya operating style yang ngecek risk sebelum eksekusi action destructive.
+- **Solo executor saat tim kosong** — kalau kamu belum punya sub-agent, Master eksekusi task **langsung** tanpa delegasi. Lihat section di bawah.
+
+## Solo mode: saat belum ada sub-agent
+
+<Callout type="info" title="Master jalan solo by default">
+Saat onboarding selesai, kamu cuma punya **satu agent**: Master. Tidak ada tim. Master **tidak akan kebingungan** — dia langsung mengerjakan task sendiri pakai skill yang dia punya, bukan menolak atau bilang "saya butuh sub-agent dulu".
+</Callout>
+
+Master Agent dirancang sebagai **generalist orchestrator**, bukan dispatcher murni. Dia punya skill set lengkap:
+
+- `aoc-master` (orchestration toolkit) — useful saat ada tim, tapi gak harus dipakai
+- `browser-harness-odoo` — automation browser
+- `aoc-tasks` (task board)
+- `aoc-connections` (DB, web, MCP, GWS)
+- `aoc-room` (mission room collaboration)
+- `aoc-schedules` (cron)
+- `aoc-self` (author personal skill)
+- Plus skill default lainnya yang inherit dari `agents.defaults.skills`
+
+Jadi kalau kamu kasih task ke Master di state solo, alur logikanya:
+
+<Steps>
+  <Step title="Master assess intent + complexity">
+    "User minta apa? Berapa langkah? Butuh skill apa?"
+  </Step>
+  <Step title="Master cek roster (team-status.sh)">
+    Eksekusi `team-status.sh` (skill aoc-master) — kalau output kosong (tidak ada sub-agent), lanjut ke step 3 solo path.
+  </Step>
+  <Step title="Master eksekusi sendiri">
+    Pakai skill yang relevan (mis. `aoc-connect.sh` untuk query DB, `room-publish.sh` untuk publish artefak, dll). Lapor progress lewat chat. Selesaikan task dari awal sampai akhir.
+  </Step>
+  <Step title="Master suggest provisioning sub-agent (kalau perlu)">
+    Setelah selesai, kalau task ini repetitive atau butuh expertise spesifik, Master **boleh suggest** "Mau saya provision sub-agent SWE untuk task coding di masa depan?" — tapi keputusan tetap di kamu.
+  </Step>
+</Steps>
+
+## Saat sudah ada tim
+
+Begitu kamu provision sub-agent (mis. via wizard atau skill `provision.sh`), Master switch ke mode orchestrator:
+
+<Steps>
+  <Step title="Master assess intent">
+    Sama seperti solo mode.
+  </Step>
+  <Step title="Master cek roster + match role">
+    `team-status.sh` + `list-team-roles.sh`. Kalau ada sub-agent dengan role match (mis. ada SWE untuk task coding), prefer delegate.
+  </Step>
+  <Step title="Master delegate via aoc-master">
+    `delegate.sh <agent_id> "<task>"` — open/reuse session ke sub-agent, post task sebagai first turn. Master tetap monitor + summarize hasil ke user.
+  </Step>
+  <Step title="Master fallback solo kalau perlu">
+    Kalau gak ada sub-agent yang cocok, atau task simple yang gak worth delegate (mis. "list file di folder ini"), Master eksekusi sendiri. Solo mode tetap available.
+  </Step>
+</Steps>
+
+<Callout type="tip" title="Kapan provision sub-agent?">
+**Jangan rush provisioning sub-agent**. Master cukup powerful untuk most personal tasks. Provision sub-agent saat:
+
+- Task spesifik berulang (mis. weekly inventory report) — bikin agent dedicated dengan persona + skill yang tepat
+- Task butuh persona berbeda (mis. PM yang formal vs teknikal SWE yang santai)
+- Workspace task perlu di-isolate (sub-agent default `tools.fs.workspaceOnly: true` — gak bisa lihat file di luar workspace-nya)
+- Multi-agent flow (mis. PM bikin spec → SWE implement → QA test) — orchestrasi paralel
+
+Kalau cuma task ad-hoc satu kali, biarin Master handle solo.
+</Callout>
+
+## Schema state
+
+Backed by:
+
+| Tempat | Field |
+|--------|-------|
+| `users.master_agent_id` (TEXT, nullable) | ID Master Agent user. Partial unique constraint untuk hindari duplicate. |
+| `agent_profiles.is_master` (INT 0/1) | Flag pada profile. Partial unique index `WHERE is_master=1` per `provisioned_by`. |
+
+Penting: **Tidak disimpan di `openclaw.json`**. OpenClaw gateway reject unknown keys (`isMaster`, `adlcRole`) di `agents.list[]`. Semua flag custom AOC tracked di SQLite saja.
+
+## Path workspace
+
+Master Agent pakai **per-user GLOBAL workspace dir** — bukan sub-folder seperti sub-agent.
+
+```
+<userHome>/workspace/          ← Master Agent (singular global)
+<userHome>/workspaces/<id>/    ← sub-agent A
+<userHome>/workspaces/<id>/    ← sub-agent B
+...
+```
+
+Alasan:
+
+- Match admin's `main` agent layout (admin pakai `~/.openclaw/workspace/`).
+- Master sering perlu file shared yang gak natural di nest sub-folder.
+- Clear distinction: workspace tunggal = Master, nested = subagent.
+
+## Permissions: broad fs + no approval gates
+
+Master Agent punya:
+
+- `tools.fs.workspaceOnly: false` — bisa baca/tulis di mana saja di filesystem (di luar workspace).
+- `approvals.exec.enabled: false` — gak ada approval gate sebelum eksekusi command.
+
+Kelihatannya berbahaya — kenapa demikian?
+
+<Callout type="warning" title="Risk-aware via prompting layer, BUKAN gateway gates">
+Master Agent **secara prompting** dididik 3-tier behavior:
+
+- **Safe ops** (read file, list dir, query DB) — eksekusi langsung tanpa konfirmasi.
+- **Risky ops** (write file destructive, run migration, send external) — announce + 1 clarifying question.
+- **Hard-stop ops** (rm -rf, drop database, force-push to main) — refuse + surface ke user.
+
+Logic ini ada di `MASTER_AGENTS_ADDENDUM` yang di-inject ke `AGENTS.md` Master saat provisioning. **Jangan re-introduce gateway approval gates** — itu kontradiktif sama design intent (bikin Master flow break tiap interaksi minor).
+</Callout>
+
+## Provisioning special-cases
+
+`provisionAgent({ ..., isMaster: true })` di `server/lib/agents/provision.cjs` melakukan:
+
+<Steps>
+  <Step title="Resolve workspace path">
+    `path.join(home, 'workspace')` — singular, NOT `workspaces/<id>`.
+  </Step>
+  <Step title="Set tools.fs.workspaceOnly: false">
+    Broad fs access enabled.
+  </Step>
+  <Step title="Compose skill list">
+    `MASTER_EXTRA_SKILLS = ['aoc-master', 'browser-harness-odoo']` di-merge dengan `agents.defaults.skills`, dedup. Master always-on dapat aoc-master dan browser-harness toolkit.
+  </Step>
+  <Step title="Inject persona ke SOUL.md">
+    Master Agent persona addendum di-append setelah research-standard block. Includes: orchestration mindset, memory habits, communication style.
+  </Step>
+  <Step title="Inject orchestration playbook ke AGENTS.md">
+    `MASTER_AGENTS_ADDENDUM` — routing decision table + risk-aware operating style + 3-tier safety behavior.
+  </Step>
+  <Step title="Inject AOC skills table ke TOOLS.md">
+    Daftar built-in skill (aoc-master, aoc-tasks, aoc-connections, aoc-room, dll) dengan key entry points + pointer ke AGENTS.md orchestration section.
+  </Step>
+  <Step title="Persist ke SQLite + auto-create General project + restart gateway">
+    `db.markAgentProfileMaster(agentId)` + `db.setUserMasterAgent(userId, agentId)`. Auto-create project "General" + default mission room. Restart gateway untuk load skill + binding baru.
+  </Step>
+</Steps>
+
+## Skills khusus Master
+
+Master Agent punya skill `aoc-master` (master-only, auto-enabled). Toolkit orchestration:
+
+| Script | Fungsi |
+|--------|--------|
+| `team-status.sh` | List sub-agent kamu dengan role + last activity |
+| `delegate.sh <agent_id> "<task>"` | Open/reuse session ke sub-agent + post task sebagai first turn |
+| `list-team-roles.sh` | Quick `agent_id<TAB>role` lookup |
+| `provision.sh` | Scaffold sub-agent baru (id, name, role, emoji) |
+| `mission_room.sh` | Drive Task Board: create-task, update, comment, dispatch, approve, request-change, post to other rooms |
+
+Detail per script: <ConceptLink to="/docs/skills-reference/aoc-master">aoc-master skill reference</ConceptLink>.
+
+## Edit Master Agent
+
+Bisa edit Master kapan saja:
+
+- **Identity** (name, emoji, color, persona, deskripsi) — Agent Detail → tab Agent Files → IDENTITY.md atau modal Edit Configuration.
+- **Soul / persona** — Agent Detail → SOUL.md.
+- **AGENTS.md / TOOLS.md** — bisa edit, tapi addendum auto-injected akan re-applied saat gateway restart kalau hilang.
+- **Channels** — bind Telegram/WhatsApp/Discord di tab Channels.
+- **Skills** — toggle atau install skill tambahan.
+
+<Callout type="danger" title="Role dropdown locked ke 'master-orchestrator'">
+Modal Edit Configuration kalau profile.isMaster = true: ADLC role dropdown locked, tidak bisa diubah. Helper text: "This is your Master Agent — role is locked."
+
+Reason: Master semantically = orchestrator role. Bukan PM, bukan SWE — peran khusus. Kalau mau swap role-nya, kamu harus delete + re-onboard (tapi inget: ini destructive, sub-agent kamu juga keterkaitan ke Master ini).
+</Callout>
+
+## Master vs Sub-Agent
+
+| Aspek | Master | Sub-Agent |
+|-------|--------|-----------|
+| Jumlah per user | 1 (immutable) | N (boleh banyak) |
+| Workspace | `<userHome>/workspace/` | `<userHome>/workspaces/<id>/` |
+| `tools.fs.workspaceOnly` | `false` (broad) | `true` (workspace-only) |
+| `approvals.exec.enabled` | `false` (no gate) | inherit defaults (biasanya `false` juga) |
+| Auto-skills | `aoc-master` + `browser-harness-odoo` + defaults | defaults saja |
+| ADLC role | `master-orchestrator` (locked) | bebas (PM/SWE/QA/dll) |
+| Auto-membership di HQ Room | Ya, always-on | Yes, tapi bisa di-remove |
+| Auto-membership di project default room | Ya, always-on | Optional |
+
+## Apa yang TIDAK termasuk
+
+- **Multiple Master per user** — gak didukung. Kalau butuh "personality split", buat sub-agent dengan persona yang beda — Master bisa delegate ke mereka.
+- **Master sharing antar user** — Master strict per-user. Untuk kolaborasi cross-user, pakai Mission Room dengan agent dari berbagai owner.
+- **Demote sub-agent jadi Master** — gak ada flow ini. Master harus di-onboard via wizard, bukan di-promote dari existing agent.
+
+## Langkah selanjutnya
+
+- Mau pahami isolasi multi-tenant? Lihat <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink>.
+- Mau lihat alur data lengkap? <ConceptLink to="/docs/architecture/data-flow">Data Flow End-to-End</ConceptLink>.
+- Eksplor skill `aoc-master` lebih dalam? <ConceptLink to="/docs/skills-reference/aoc-master">aoc-master skill reference</ConceptLink>.

@@ -1,0 +1,128 @@
+---
+title: Setup WhatsApp
+description: Hubungkan agent kamu ke WhatsApp — chat agent kayak chat teman, lewat aplikasi WA yang sudah kamu pakai sehari-hari.
+updated: 2026-05-11
+---
+
+# Setup WhatsApp
+
+Setelah setup ini, kamu bisa **chat agent dari WhatsApp** — sama persis seperti chat teman. Setup-nya pakai QR code, mirip cara login WhatsApp Web.
+
+<Callout type="warning" title="Pastikan kamu paham resikonya">
+WhatsApp tidak menyediakan API resmi untuk personal use — AOC pakai cara yang sama dengan WhatsApp Web. Resikonya:
+
+- ⚠ HP yang scan QR harus tetep online & WhatsApp aktif. Kalau HP mati / WA force-close → agent putus dari WA.
+- ⚠ Meta (perusahaan WhatsApp) bisa block account kalau detect aktivitas yang dianggap spam — hindari kirim pesan masal atau aktivitas mencurigakan.
+- ⚠ Cocok untuk **personal / small team**, bukan untuk broadcast skala besar.
+
+Untuk broadcast besar, pertimbangkan pakai Telegram atau bot platform lain yang punya API resmi.
+</Callout>
+
+## Yang kamu butuhin
+
+- HP dengan WhatsApp aktif (HP ini akan keep session-nya)
+- Slot **Linked Devices** kosong di WhatsApp (max 4 per akun)
+
+## Langkah-langkah
+
+<Steps>
+  <Step title="Buka halaman agent kamu">
+    Di dashboard, klik agent yang mau di-bind ke WhatsApp → tab **Channels**.
+
+    Card "WhatsApp" muncul. Klik **+ Add WhatsApp**.
+  </Step>
+
+  <Step title="Pilih policy">
+    - **DM Policy**:
+      - **Pairing** (recommended) — user harus DM dulu, dapat kode, baru aktif. Anti spam.
+      - **Allow** — siapa pun yang chat bot langsung dapet respond
+      - **Block** — DM dimatikan
+
+    - **Allow-from** (opsional) — kalau mau strict: hanya nomor tertentu yang boleh chat. Format: nomor lengkap dengan `+` dan kode negara, comma-separated. Contoh: `+628111234567,+62812345678`. Kalau kosong = semua nomor boleh (sesuai policy di atas).
+
+    Klik **Save**.
+  </Step>
+
+  <Step title="Klik 'Login / Pair'">
+    Di card WhatsApp, sekarang muncul tombol **Login** atau **Pair**. Klik.
+
+    QR code muncul di card.
+  </Step>
+
+  <Step title="Scan QR pakai HP">
+    Buka WhatsApp di HP → masuk ke:
+
+    - Android: ⋮ menu kanan atas → **Linked Devices** → **Link a Device**
+    - iPhone: **Settings** → **Linked Devices** → **Link a Device**
+
+    Scan QR yang muncul di dashboard. Selesai dalam 1-2 detik.
+
+    <Callout type="tip" title="QR cepat expired">
+      QR code rotate cepat (~30 detik). Kalau kelamaan kelihatan kosong / expired, klik refresh button. Scan ulang — santai aja.
+    </Callout>
+  </Step>
+
+  <Step title="Tunggu connected">
+    Setelah scan, dashboard polling status setiap beberapa detik. Status berubah:
+
+    - **Waiting** — belum di-scan
+    - **Connected** ✅ — siap pakai
+    - **Error** — fail (QR expired, HP offline, atau timeout) — coba lagi
+
+    Kalau sukses, bagian QR hilang, status jadi green "Connected".
+  </Step>
+
+  <Step title="Test dari WA">
+    Kirim pesan ke nomor agent dari **HP lain** (bukan HP yang scan QR — itu phone owner-nya). Atau pakai feature WhatsApp "Message yourself".
+
+    - Kalau policy `pairing`: kamu dapat kode 6-digit dari bot. Approve di dashboard → Pairing Requests panel → done. Lanjut chat normal.
+    - Kalau policy `allow`: langsung respond.
+  </Step>
+</Steps>
+
+## Setelah terhubung
+
+- ✅ Chat agent lewat WhatsApp di HP, kayak chat teman biasa
+- ✅ Sticker / emoji bisa, tapi agent reply pakai text saja
+- ✅ Format pesan: agent bisa pakai `*bold*` dan `_italic_` (format WhatsApp standar)
+- ⚠ Multi-line / long message di-split otomatis sama WhatsApp (tidak masalah)
+
+## Edit / re-login
+
+- **Edit policy / allow-from** — klik ✎ pencil → ubah → save → restart.
+- **Re-login** (kalau session expired — biasanya setelah ~14 hari atau HP offline lama):
+  1. Klik tombol **Login** lagi
+  2. Scan QR baru
+  3. Wait connected
+
+## Kalau ada masalah
+
+**QR expired sebelum keburu scan**
+QR rotate cepat. Klik refresh untuk QR baru. Scan dalam 30 detik.
+
+**"Session conflict" error**
+HP yang kamu pakai sudah punya session WhatsApp Web aktif di device lain. Logout WhatsApp Web dari device lain dulu, atau pakai HP berbeda untuk scan.
+
+**Connected tapi pesan gak nyampe**
+- Pastikan HP yang scan **online + WhatsApp foreground** — kalau WA force-killed (kelarin app dari recent), session bisa drop sementara
+- Cek policy bukan `block`
+- Kalau pakai allow-from list, pastikan nomor sender ada di list
+
+**"Linked Devices full" di WhatsApp**
+WhatsApp limit 4 linked device per akun. Logout salah satu device lama dari Settings → Linked Devices → tap device → Log Out.
+
+**Connected tapi kemudian disconnect sendiri**
+HP offline / battery saver kill WA / signal jelek. Pastikan HP yang scan tetep aktif.
+
+## Yang belum bisa via WhatsApp
+
+- ❌ Bikin group baru lewat agent
+- ❌ Reply ke message spesifik (threading)
+- ❌ Voice message handling
+- ❌ Image / file dari user belum di-handle agent (cuma teks)
+- ❌ Multiple WhatsApp account per agent (1 agent = 1 nomor WA)
+
+## Selanjutnya
+
+- Mau channel kedua sekalian? <ConceptLink to="/docs/user-guide/channels/telegram">Setup Telegram</ConceptLink>
+- Mau pahami pairing flow dengan policy `pairing`? <ConceptLink to="/docs/user-guide/channels/overview">Overview Channel</ConceptLink>

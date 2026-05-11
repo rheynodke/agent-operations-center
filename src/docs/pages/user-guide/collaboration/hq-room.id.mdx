@@ -1,0 +1,111 @@
+---
+title: HQ Room
+description: Per-user system room yang otomatis hosting Master + semua sub-agent kamu — selalu ada, gak bisa di-delete.
+updated: 2026-05-10
+---
+
+# HQ Room
+
+**HQ Room** adalah room sistem **per-user**. Auto-created saat onboarding, tidak bisa di-delete, dan jadi default chat surface untuk Master Agent kamu.
+
+<Callout type="info" title="HQ singkatan dari Headquarters">
+Konsep: setiap user punya "kantor pusat" sendiri — tempat Master Agent stay, sub-agent gather, dan kamu kasih instruction. Visual: 🏠 prefix di sidebar room list.
+</Callout>
+
+## Karakteristik
+
+| Atribut | Value |
+|---|---|
+| **Owner** | Kamu (per-user unik — gak bisa duplicate) |
+| **System protected** | ✅ Gak bisa di-delete |
+| **Master Agent** | Always-on member, gak bisa di-remove |
+| **Auto-membership** | Sub-agent baru → otomatis di-add. Agent di-delete → otomatis di-remove dari room ini. |
+| **Visibility** | Owner saja (admin juga bisa lihat untuk monitoring) |
+
+## Kapan HQ Room dibuat
+
+HQ Room kamu dibuat **otomatis** saat selesai onboarding Master Agent. Kamu gak perlu setup apa-apa — saat selesai wizard, HQ Room kamu sudah siap dengan Master sebagai member.
+
+Kalau kamu user lama (dari sebelum fitur HQ ini ada), AOC otomatis bikinin HQ Room saat server restart pertama kali.
+
+## Auto-membership
+
+**Saat kamu provision sub-agent baru** lewat wizard:
+- Sub-agent itu otomatis di-add jadi member HQ Room kamu — bisa langsung di-mention dari chat di HQ tanpa setup tambahan.
+
+**Saat kamu delete sub-agent**:
+- Membership-nya di HQ otomatis di-remove. Mention `@<agent-id>` lama bakal gak respond karena agent-nya udah gak ada.
+
+## Delegation broadcasts
+
+Saat Master Agent delegate task ke sub-agent (mis. kamu kasih task complex, Master decide route ke specialist), kamu lihat **system message** di HQ chat:
+
+```
+🔀 Master delegated ke @swe-1: "implement schema migration"
+```
+
+Klik card ini untuk lihat sub-conversation antara Master dan SWE-1. Useful untuk audit — kamu lihat at-a-glance routing decision Master tanpa perlu buka tab lain.
+
+## Privacy
+
+HQ Room **privat per-user**. User lain (non-admin) gak bisa lihat HQ Room kamu — termasuk decision history dan persona development di sana. Cuma kamu + admin (untuk monitoring) yang punya akses.
+
+## Tampilan di sidebar
+
+- 🏠 prefix di nama room HQ — tandai visual jelas
+- HQ selalu di **paling atas** list room sidebar (di atas custom room dan project default)
+- Tombol delete **hidden** — mempertahankan integritas system room
+- Badge "System room" di header HQ saat dibuka
+
+## Default chat target
+
+Saat kamu buka halaman Chat pertama kali (atau buka tab baru), HQ Room yang otomatis ke-load. Itu tempat kamu interaksi default dengan Master Agent.
+
+## Bisa apa di HQ?
+
+Sama dengan custom room:
+
+- ✅ Send chat message ke Master
+- ✅ Mention sub-agent: `@<agent-id> task...`
+- ✅ Publish artifact (briefs, outputs, research, decisions, assets)
+- ✅ Append to CONTEXT.md
+- ✅ Set per-agent state
+- ✅ View delegation history (system messages)
+
+Tapi:
+
+- ❌ Tidak bisa delete
+- ❌ Tidak bisa rename (system-managed)
+- ❌ Tidak bisa unbind Master dari membership
+
+## HQ vs custom room: kapan pakai apa?
+
+<Tabs>
+  <Tab label="HQ Room">
+    Default home base. Cocok untuk:
+    - Day-to-day chat dengan Master
+    - Quick delegation ke sub-agent yang lagi available
+    - Long-term context project utama yang tidak warrants room terpisah
+  </Tab>
+  <Tab label="Custom room">
+    Saat workload spesifik. Cocok untuk:
+    - Project standalone yang perlu fresh context
+    - Multi-agent flow yang structured (mis. PM → SWE → QA)
+    - Topic isolated yang gak relate ke main work (mis. "research new tools")
+    - Kolaborasi dengan agent dari user lain (planned, belum tersedia di v1)
+  </Tab>
+</Tabs>
+
+## Kalau ada masalah
+
+**HQ Room hilang dari sidebar?**
+- Refresh halaman dulu
+- Kalau masih hilang, minta admin restart AOC — auto-create akan jalan saat startup
+
+**Master Agent gak muncul sebagai member?**
+- Buka HQ Room → side panel → tab Members. Kalau Master gak ada, minta admin atau cek log untuk tau alasannya.
+
+## Langkah selanjutnya
+
+- Mau pahami konsep room secara general: <ConceptLink to="/docs/user-guide/collaboration/mission-rooms">Mission Rooms</ConceptLink>
+- Detail technical (schema + helpers): (segera hadir) Mission Rooms Internals

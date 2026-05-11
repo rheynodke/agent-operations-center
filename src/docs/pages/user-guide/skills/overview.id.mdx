@@ -1,0 +1,161 @@
+---
+title: Overview Skills
+description: Konsep skill bundle, hierarki built-in vs user, resolution order, dan kapan pakai loose script vs full skill.
+updated: 2026-05-10
+---
+
+# Overview Skills
+
+**Skill** adalah unit kapabilitas terpaket. Bundle = `SKILL.md` + scripts. Agent enable skill → script-script di dalamnya available di PATH agent.
+
+<Callout type="info" title="Skill-as-unit philosophy">
+AOC core principle: unit kapabilitas adalah **Skill bundle**, BUKAN loose script. Agent enable skill → scripts ikut otomatis. Loose toggleable "custom tools" cuma escape hatch, bukan kontrak utama.
+</Callout>
+
+## 3 tier skill di AOC
+
+<Tabs>
+  <Tab label="1. AOC built-in (auto)">
+    Bundled + di-install otomatis. Tidak bisa di-disable kecuali edit `agents.defaults.skills`.
+
+    9 skills:
+    - `aoc-master` — orchestration toolkit (master-only)
+    - `aoc-tasks` — task board contract
+    - `aoc-connections` — credential-safe external access
+    - `aoc-room` — mission room collaboration
+    - `aoc-odoo` — odoocli operator
+    - `aoc-schedules` — cron management
+    - `aoc-self` — author personal skill
+    - `browser-harness-core` — Chrome CDP automation
+    - `browser-harness-odoo` — Odoo browser layer
+
+    Detail: <ConceptLink to="/docs/skills-reference/overview">Skills Reference</ConceptLink>
+  </Tab>
+  <Tab label="2. User skills (full CRUD)">
+    Install dari **ClawHub** (URL → bundle), **SkillsMP** (curated marketplace), atau bikin sendiri.
+
+    Manage di:
+    - **Skills page** (`/skills`) — global skill management, install untuk semua agent
+    - **Agent Detail → Skills tab** — per-agent toggle
+  </Tab>
+  <Tab label="3. Loose scripts (escape hatch)">
+    Single-file script di `~/.openclaw/scripts/` (shared) atau `<workspace>/scripts/` (per-agent).
+
+    Cuma untuk:
+    - Cron / orchestrator wiring (mis. `notify.sh`, `gdocs-export.sh`)
+    - One-off yang belum warrants full skill bundle
+
+    Toggleable per agent via `TOOLS.md` `<!-- custom-tool: name -->` block. Metadata di `.tools.json`.
+  </Tab>
+</Tabs>
+
+## Saat agent pakai skill
+
+Saat agent kamu eksekusi skill (mis. invoke `aoc-tasks` untuk update task status), AOC otomatis cari skill itu di **urutan prioritas** — yang ditemukan pertama yang dipakai. Untuk user biasa kamu gak perlu ribet — semua otomatis. Tapi tau urutannya berguna kalau kamu pernah override:
+
+1. **Agent workspace skill** (paling spesifik) — kalau agent ini punya skill custom-nya sendiri
+2. **Agent personal skill** — yang dia bikin sendiri lewat `aoc-self`
+3. **Global skill** (built-in atau user-installed) — yang berlaku untuk semua agent
+
+Practical impact: kalau kamu install skill global, semua agent kamu otomatis dapat. Kalau cuma satu agent yang perlu, install ke skill personal-nya saja.
+
+## Install skill dari URL (ClawHub)
+
+<Steps>
+  <Step title="Buka /skills atau Agent Detail → Skills tab">
+    Klik **+ Install Skill**.
+  </Step>
+  <Step title="Pilih ClawHub source">
+    Tab **From URL**. Paste GitHub raw URL atau direct link ke `SKILL.md` dari skill bundle.
+
+    Contoh:
+    ```
+    https://github.com/<org>/<repo>/raw/main/skill-bundle/SKILL.md
+    ```
+  </Step>
+  <Step title="Preview">
+    AOC fetch + parse SKILL.md → tampilkan: nama, deskripsi, scripts list, recommended permissions.
+  </Step>
+  <Step title="Pilih target install">
+    - **Global** (`~/.openclaw/skills/<slug>/`) — untuk semua user via symlink
+    - **Personal** (`<workspace>/.agents/skills/<slug>/`) — agent ini saja
+    - **Workspace** (`<workspace>/skills/<slug>/`) — same agent, lebih visible
+  </Step>
+  <Step title="Install + restart gateway">
+    Bundle di-write ke target. Reminder: gateway restart untuk skill tersedia di PATH.
+  </Step>
+</Steps>
+
+## Install skill dari marketplace (SkillsMP)
+
+Curated marketplace dengan skill yang sudah verified. Butuh API key (set di env `SKILLSMP_API_KEY`).
+
+<Steps>
+  <Step title="Buka /skills → tab 'Marketplace'">
+    Search bar + filter category.
+  </Step>
+  <Step title="Klik skill yang dipilih">
+    Preview detail, ratings, dependencies.
+  </Step>
+  <Step title="Pilih target + install">
+    Same flow seperti ClawHub.
+  </Step>
+</Steps>
+
+## Bikin skill personal (aoc-self)
+
+Master atau sub-agent bisa author skill **personal** (scope: agent saja) lewat skill `aoc-self`. Skill di-store di `<workspace>/.agents/skills/<slug>/` — invisible untuk agent lain.
+
+```bash
+# Scaffold skill baru
+agent-skill-create.sh --slug weekly-inventory \
+  --description "Generate inventory report dari BQ"
+
+# Tambah script
+agent-skill-add-script.sh weekly-inventory generate.sh < my-script.sh
+
+# List
+agent-skill-list.sh
+
+# Hapus
+agent-skill-remove.sh weekly-inventory --yes
+```
+
+<Callout type="tip" title="Use case aoc-self">
+Bagus untuk:
+- Workflow yang berulang dan sudah polished — bottle up jadi skill biar gak reasoning ulang setiap kali
+- Pipeline custom yang gak warrants full bundle (mis. parse output X format Y)
+- Personal preference yang gak relevan untuk agent lain
+</Callout>
+
+## Toggle skill per agent
+
+Di Agent Detail → Skills tab → switch on/off per skill. Ini mutate `openclaw.json` `agents.list[].skills[]`.
+
+<Callout type="warning" title="`agents.defaults.skills` = full override">
+OpenClaw treat explicit `skills: []` sebagai full override — gak ada merge dengan defaults. Pas provision sub-agent, `agents.defaults.skills` di-copy verbatim.
+
+Implication: kalau toggle off skill default di agent tertentu, dia skip skill itu permanent. Toggle on untuk re-include.
+</Callout>
+
+## Built-in skill auto-update
+
+AOC ngirim built-in skill (aoc-master, aoc-tasks, aoc-connections, dll) langsung di package-nya. Saat AOC ada update:
+
+- File-file built-in skill akan ter-update otomatis di restart
+- Skill kamu yang custom (yang kamu install via ClawHub atau bikin sendiri) **gak ter-overwrite** — aman.
+
+Yang perlu kamu lakuin: restart agent setelah AOC update biar skill terbaru ke-load.
+
+## Marketplace publish (belum tersedia)
+
+Untuk publish skill kamu sendiri ke marketplace SkillsMP — **belum tersedia di v1**. Sementara, kalau mau share skill ke orang lain:
+
+1. Push skill folder kamu ke GitHub repo public
+2. Share URL `SKILL.md` raw-nya
+3. Orang lain install lewat ClawHub URL
+
+## Langkah selanjutnya
+
+- Detail per built-in skill: <ConceptLink to="/docs/skills-reference/overview">Skills Reference Overview</ConceptLink>
+- Setup connection sebelum skill butuh: (segera hadir) Connections Overview

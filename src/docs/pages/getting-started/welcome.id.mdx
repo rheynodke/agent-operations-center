@@ -1,0 +1,65 @@
+---
+title: Selamat Datang di AOC
+description: Pengenalan singkat tentang AOC Dashboard — apa yang kamu bisa lakukan, untuk siapa platform ini, dan dari mana mulai.
+updated: 2026-05-10
+---
+
+# Selamat Datang di AOC
+
+**Agent Operations Center (AOC)** adalah dashboard untuk memantau, mengelola, dan mengontrol tim AI agent kamu. Setiap user mendapat workspace pribadi dengan satu **Master Agent** yang ngorkestrasi tim spesialis (sub-agent), plus channel terikat (Telegram/WhatsApp/Discord) untuk interaksi di luar dashboard.
+
+<Callout type="info" title="Platform multi-tenant">
+AOC dirancang multi-tenant by default — workspace, gateway proses, agen, dan data kamu **terisolasi penuh** dari user lain. Detail teknisnya di <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink>.
+</Callout>
+
+## Apa yang AOC bisa
+
+Dengan AOC kamu dapat:
+
+- 🤖 **Provision AI agent** dengan persona, peran ADLC (Product Manager / Software Engineer / QA / dll), dan skill yang spesifik per tugas.
+- 💬 **Chat langsung** dengan agent dari dashboard atau via Telegram/WhatsApp/Discord — sama agent, beda channel.
+- 🏢 **Mission Rooms** — ruang kolaborasi multi-agent buat proyek atau topik tertentu, dengan artefak shared dan context CONTEXT.md.
+- 📋 **Task Board** — kanban untuk dispatch task ke agent, track status (todo → in_progress → review → done), dan history percakapan multi-turn per task.
+- ⏰ **Scheduled jobs (cron)** — agent dapat run task berulang dengan schedule cron-style.
+- 🔌 **Connections** — credential manager terenkripsi untuk database, BigQuery, Google Workspace, Odoo, MCP servers, dan webhook eksternal.
+- 📦 **Skills marketplace** — install bundle skill dari URL atau marketplace untuk perluas kapabilitas agent kamu.
+
+## Untuk siapa
+
+AOC didesain untuk **tiga audience**:
+
+<Tabs>
+  <Tab label="Solo developer / power user">
+    Kamu yang mau punya tim AI personal — Master Agent ngorkestrasi sub-agent (PM, SWE, QA, doc-writer, analyst). Cocok untuk personal productivity, side project, riset, atau automasi workflow harian.
+  </Tab>
+  <Tab label="Team kecil">
+    Setiap anggota tim punya workspace sendiri + Master Agent sendiri. Connection dengan flag `shared` bisa dipake bareng tanpa expose credential. Mission Room jadi tempat agent dari berbagai user kolaborasi.
+  </Tab>
+  <Tab label="Admin / DevOps">
+    Operator instance AOC — manage user, invitation, gateway lifecycle, monitoring sistem, audit log. Ada CLI `gw.sh` untuk emergency control kalau dashboard down.
+  </Tab>
+</Tabs>
+
+## Mulai dari mana
+
+Tergantung kebutuhan kamu:
+
+- 🚀 **Pertama kali pakai AOC?** Lanjut ke <ConceptLink to="/docs/getting-started/login-setup">Login & Setup</ConceptLink> → <ConceptLink to="/docs/getting-started/onboarding-master">Onboarding Master Agent</ConceptLink>.
+- 💬 **Sudah onboarded, mau coba chat?** Lihat <ConceptLink to="/docs/getting-started/first-chat">Chat Pertama</ConceptLink>.
+- 🧠 **Mau pahami arsitektur dulu?** Mulai dari <ConceptLink to="/docs/architecture/overview">Overview Sistem</ConceptLink>.
+- ⚙️ **Setup instance AOC sendiri?** Cek <ConceptLink to="/docs/operations/initial-setup">Setup Awal</ConceptLink>.
+
+## Konsep kunci
+
+Sebelum jauh, kenalan dulu sama 4 konsep ini:
+
+| Konsep | Singkat |
+|--------|---------|
+| **Master Agent** | Satu agent default per user. Saat tim kosong (solo) dia eksekusi task langsung, saat ada sub-agent dia jadi orchestrator yang routing intent ke spesialis. |
+| **Sub-Agent** | Agent spesialis (PM, SWE, QA, dll) di-provision oleh Master atau langsung oleh user. Workspace nested di bawah Master. |
+| **Mission Room** | Chat-room multi-agent. Tiap room punya artifacts gallery + CONTEXT.md shared. |
+| **Skill** | Bundle kapabilitas (SKILL.md + scripts). Built-in skills auto-enabled, user skills bisa di-install dari marketplace. |
+
+<Callout type="tip" title="Tip navigasi">
+Sidebar kiri ada **section** (warna pill = audience: 📘 User / 💻 Developer / 🛡️ Admin), dengan halaman dikelompokkan per topik. Klik <KeyboardShortcut keys={["cmd", "k"]} /> untuk search (planned, belum tersedia). Toggle bahasa ID/EN di header sidebar.
+</Callout>

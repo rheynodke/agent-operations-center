@@ -1,0 +1,229 @@
+---
+title: Sharp Edges & Gotchas
+description: Konstrain load-bearing yang harus diketahui sebelum modifikasi multi-tenant code, gateway, skills, atau database.
+updated: 2026-05-10
+---
+
+# Sharp Edges & Gotchas
+
+Halaman ini katalog **konstrain load-bearing** yang ditemukan saat build platform multi-tenant + Master Agent. **Wajib baca sebelum modifikasi area-area ini** — banyak yang hasil dari incident, bukan preference.
+
+<Callout type="danger" title="Status: aktif & wajib">
+Konstrain di sini bukan preferensi — kalau dilanggar, kemungkinan:
+- Cross-tenant data leakage
+- Gateway crash atau orphan
+- Data inconsistency di SQLite
+- Skill resolution failure
+- Auth bypass
+
+Selalu reference halaman ini saat code review atau saat bingung kenapa pattern aneh tetap ada.
+</Callout>
+
+## Multi-Tenancy
+
+### OpenClaw reject unknown keys di `agents.list[]`
+
+Confirmed rejected: `isMaster`, `adlcRole`. **Track semua custom flag di SQLite saja** (`agent_profiles` columns), JANGAN di `openclaw.json`.
+
+Implication: kalau mau tambah field baru ke agent metadata (mis. `tier`, `cost_budget`), tambahkan kolom di `agent_profiles`, bukan inline di JSON.
+
+### `<userHome>/skills/` adalah symlink
+
+Symlink ke `~/.openclaw/skills/` admin's. Install bundle sekali di admin's home → propagate ke semua user via symlink.
+
+**Jangan**: install per-user (gak dibutuhkan, dan akan break expectation symlink-based propagation).
+
+### Composite PK untuk agent slug
+
+`agent_profiles` PK = `(agent_id, provisioned_by)`. **Dua user bisa punya agent slug sama** (mis. dua user sama-sama punya `support-bot`) sebagai dua row terpisah.
+
+Implication untuk accessor:
+
+- `db.getAgentProfile(agentId, ownerId)` — wajib lewatkan ownerId
+- `db.getAgentOwner(agentId)` — return null kalau ambigu, harus pass `ownerHint` (biasanya `req.user.userId`)
+- Sama untuk `setAgentConnections`, `deleteAgentProfile`, `markAgentProfileMaster`, `renameAgentProfile`
+
+### `requireAgentOwnership` set owner context
+
+Middleware membungkus handler dalam `withOwnerContext(userId, async () => handler())`. Per-tenant filesystem resolver (`detail.cjs`, `skills.cjs`, dll) baca current owner dari **AsyncLocalStorage**, bukan dari arg. Tanpa middleware, resolver fall back ke admin's home → cross-tenant leak.
+
+Service token (claim `kind='agent-service'`) skip context — mereka strict untuk agen sendiri saja.
+
+### Default scope = `'me'`, BUKAN `'all'`
+
+`/api/agents`, `/api/connections`, `/api/rooms`, `/api/projects` semua default ke caller's resources. Admin **harus** eksplisit pass `?owner=all` untuk lihat cross-tenant. Ini disengaja — hindari accidental leakage.
+
+Cross-tenant admin monitoring UI direncanakan tapi belum dibangun.
+
+### Mission room membership ≠ literal `'main'`
+
+Helper `normalizeMissionMembers(ids, masterAgentId?)` **selalu** prepend user's master agent ID. Itu BUKAN literal `'main'` (admin only). User lain punya master ID acak (UUID-prefixed).
+
+**Hindari**: hardcode `'main'`. Pakai `db.getUserMasterAgentId(userId)` atau `normalizeMissionMembers(ids, masterAgentId)`. Hardcode `'main'` akan leak admin's agent ke room user lain.
+
+### Master Agent pakai workspace global, bukan sub-folder
+
+`<userHome>/workspace/` — singular. Sub-agent: `<userHome>/workspaces/<id>/`.
+
+Provision logic: `isMaster ? path.join(home, 'workspace') : path.join(home, 'workspaces', id)`.
+
+Match admin's `main` agent layout. Jangan ubah jadi `workspaces/master` atau sejenis — bakal break expectation di banyak tempat.
+
+## Gateway
+
+### Non-interactive shell PATH
+
+`exec` tool spawn `zsh -c '<cmd>'` / `bash -c '<cmd>'` — non-interactive non-login shells **tidak source `~/.openclaw/.aoc_env`**. Bare command (`aoc-connect.sh`, `team-status.sh`) fail "command not found" tanpa PATH injection.
+
+Solution: orchestrator's `buildSkillsPathPrefix(userHome)` walk skill scripts dirs (user home + admin base + per-agent workspace) dan inject ke `childEnv.PATH` saat spawn.
+
+Admin's external gateway (systemd-managed): baca `~/.openclaw/.aoc_paths` (KEY=VALUE format, ditulis saat AOC startup) via `EnvironmentFile=`. File `.aoc_env` (shell script) tidak konsumsi-able systemd.
+
+**Implication**: skill baru (built-in atau agent-authored) butuh **gateway restart** untuk land on PATH.
+
+### `GatewayPool.forUser` tidak auto-connect
+
+Return objek koneksi tapi caller harus verify `conn.isConnected` + lazy-connect via `orchestrator.getRunningToken(userId)` + `conn.connect({port, token})`.
+
+Lihat `server/routes/master.cjs` untuk pattern.
+
+### macOS `ps -E` tidak ekspos env
+
+Untuk identify gateway orphan PID di macOS, pakai `lsof -p <pid> -i tcp -P -n -a -sTCP:LISTEN` map PID ke listening port. PID di range `19000-19999` classified sebagai AOC-managed.
+
+### Master permissions: broad fs + no approval gates, risk-aware via prompting
+
+`tools.fs.workspaceOnly: false` + `approvals.exec.enabled: false`. Risk-awareness lives di **prompting layer** (AGENTS.md → `MASTER_AGENTS_ADDENDUM`), BUKAN gateway approval gates.
+
+**Jangan** re-introduce gateway approval prompts thinking it's "safer" — itu break Master flow di setiap interaksi minor dan kontradiktif sama design intent.
+
+### `agents.defaults.skills` adalah source of truth
+
+OpenClaw treat explicit `skills: []` sebagai **full override** — gak ada merge dengan defaults. Provision read defaults saat provision time + write verbatim ke entry agent baru.
+
+Kalau tambah built-in skill baru: update admin's `agents.defaults.skills` + `ensureUserHome` propagate. Master dapat `MASTER_EXTRA_SKILLS` layered di atas (deduped).
+
+## Database
+
+### `db.persist()` debounced 250ms
+
+Trailing debounce. `persistNow()` synchronous flush. `flushPendingPersist()` wired ke `beforeExit`/`SIGINT`/`SIGTERM`.
+
+**Jangan** call `persist()` di tight read-after-write loop — call `persistNow()` kalau butuh durability sebelum next read. Routes umumnya gak perlu pikirin ini — debounce intentional untuk burst write (concurrent registration, mass update).
+
+### Schema migrations append-only
+
+`server/lib/db-migrations/NNNN-*.cjs`. Append entries ke `MIGRATIONS` array di `index.cjs` — **never reorder**. Migration harus idempotent (`IF NOT EXISTS`, check `PRAGMA` sebelum destructive rebuild).
+
+Runner record applied IDs di `schema_migrations` — only run sekali. Inline `ALTER TABLE` di `initDatabase()` adalah implicit "baseline v0"; semua schema change baru wajib lewat framework.
+
+### `db.cjs` split per domain
+
+Pattern: `db/_handle.cjs` hold sql.js handle + persist accessor. Domain modules `require('./_handle.cjs').getDb()` untuk read/write. `db.cjs` re-export via spread (`...require('./db/<name>.cjs')`).
+
+**Saat tambah DB code: bikin file baru di `db/<domain>.cjs`**, jangan grow `db.cjs`.
+
+## WebSocket
+
+### Event types pinned di dua file
+
+`server/lib/ws-events.cjs` (server) + `WsEventType` di `src/types/index.ts` (client). `broadcast()` validate via `assertEventType` — typo throw.
+
+**Tambah event baru = update DUA file lockstep**. `AOC_WS_STRICT=0` untuk log-instead-of-throw saat incremental adoption.
+
+## Auth & RBAC
+
+### Per-agent service tokens
+
+Sprint 2 addition. Tiap agent baru dapat JWT minted at provision time (claim: `kind='agent-service', agentId, ownerId, role='agent'`), simpan di `<workspace>/.aoc_agent_env` sebagai `AOC_AGENT_TOKEN`.
+
+`authMiddleware` accept these alongside dashboard JWT. `userOwnsAgent` enforce `req.user.agentId === requestedAgentId` untuk service token.
+
+**Effect**: leaked agent token compromise ONLY itu agent, bukan cluster.
+
+Legacy `DASHBOARD_TOKEN` retain full bypass untuk back-compat — migrate skill scripts ke `$AOC_AGENT_TOKEN` dan rencana hapus env var ini.
+
+### Audit log appendix-only
+
+`server/lib/audit-log.cjs`. Tulis ke tabel `audit_log` saat sensitive mutation: user delete/role change/password reset, invitation create/revoke/delete, agent delete, master link.
+
+**Append-only**, admin-only read at `GET /api/audit-log`. Action verb follow `<resource>.<verb>` past-tense convention. Audit failure **never** block user-facing operation — call site wrap di try/catch dengan log + continue.
+
+## Connection Sharing
+
+### Org-wide boolean
+
+`connections.shared = 1` (migration `0003`) → siapapun di instance ini boleh **assign** connection ke agent mereka (dispatch read decrypted creds runtime). Owner + admin saja yang bisa edit/delete/test/reauth/toggle.
+
+Single decision point: `db.userIdCanUseConnection(uid, connId)` — owner OR admin OR `connections.shared=1`.
+
+`setAgentConnections` call ini untuk setiap requested ID, throw `{status:403, code:'CONNECTION_NOT_ACCESSIBLE'}` saat violation. `requireConnectionOwnership` (mutation routes) **deliberately tidak honor `shared`** — strict owner+admin only.
+
+**Cascade**: `setConnectionShared(id, false)` delete `agent_connections WHERE connection_id=? AND owner_id != owner` — flip share off detach semua non-owner assignment (hindari silent dispatch failure).
+
+### Migration history
+
+- `0002` had per-user ACL table (`connection_shares`)
+- `0003` collapse into boolean flag, drop tabel
+
+**Jangan reintroduce per-user sharing** tanpa product reason yang kuat.
+
+## Login Response
+
+`/api/auth/login` dan `/api/auth/register-invite` MUST include `hasMaster` + `masterAgentId`. Tanpa ini, `<MasterGate>` redirect user ke `/onboarding` walaupun mereka punya master.
+
+## File Versioning
+
+Per file save → `saveVersion()`. Max 50 per scope, dedupe SHA-256.
+
+Scope keys: `agent:{id}:{fileName}`, `skill:global:{slug}`, dst.
+
+REST: `GET /api/versions?scope=`, `POST /api/versions/{id}/restore`, `DELETE /api/versions/{id}` (admin-only untuk system files).
+
+## Frontend Patterns
+
+### `AgentDetailPage.tsx` masih di-incremental split
+
+Pattern: per-tab/section component di `src/pages/agent-detail/`. Tiap component self-contained, terima `{ agentId }` prop saja.
+
+**Saat tambah tab logic baru: buat atau reuse tab module**, jangan grow AgentDetailPage.tsx (saat ini ~4900 lines, target &lt;2000).
+
+### Connection sharing UI: ada `accessible` scope
+
+Default `GET /api/connections` = `accessible` (owned ∪ shared) untuk semua user. `?owner=me` strict-owned, `?owner=all` admin cross-tenant.
+
+`GET /api/connections/:id/usage` return `[{agentId, ownerId, ownerEmail, assignedAt}]` untuk siapapun yang punya use access — sehingga share dialog bisa show "5 agents are using this".
+
+## Onboarding & Master
+
+### Master Agent uses GLOBAL workspace dir
+
+`<userHome>/workspace/` (singular), bukan `<userHome>/workspaces/<id>/`. Match admin's `main` layout.
+
+Provisioning logic: `isMaster ? path.join(home, 'workspace') : path.join(home, 'workspaces', id)`.
+
+### Auto-injected addenda di Master
+
+Saat provisionAgent dengan `isMaster=true`:
+
+- **SOUL.md** — Master Agent persona addendum di-append setelah research-standard block
+- **AGENTS.md** — `MASTER_AGENTS_ADDENDUM` (routing decision table + risk-aware operating + memory habits)
+- **TOOLS.md** — built-in AOC skill table dengan key entry point + pointer ke AGENTS.md orchestration section
+
+**Wajib ada ketiganya**. User boleh edit, tapi addendum auto-re-inject saat gateway restart kalau hilang.
+
+## Tier 3 Roadmap State
+
+Sub-projects 1, 1.5, 2, 3 (Phase 1+2), 4, 4.5: **DONE (uncommitted)** sesuai rule no-auto-commit user. Sub-project 5 (`master-orchestrator` ADLC template): planned, belum start.
+
+Reference state: [`docs/superpowers/plans/TIER3-STATE.md`](docs/superpowers/plans/TIER3-STATE.md).
+
+## Embeddings (in-flight)
+
+Working tree saat tulis halaman ini ada `server/lib/db-migrations/0006-embed-channel.cjs` + `server/lib/db/embed-*.cjs` + `server/lib/embed/`. **Schema + audit + sessions tables staged, belum committed**. Likely support context caching atau semantic search untuk agent memory — tunggu commit untuk halaman dedicated.
+
+## Langkah selanjutnya
+
+- <ConceptLink to="/docs/architecture/multi-tenant">Multi-Tenant Foundation</ConceptLink> — design context multi-tenant
+- <ConceptLink to="/docs/architecture/master-agent">Master Agent</ConceptLink> — kenapa risk-aware via prompting
+- <ConceptLink to="/docs/architecture/gateway-orchestrator">Gateway Orchestrator</ConceptLink> — port allocation + orphan recovery

@@ -1,6 +1,14 @@
 import path from "path"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
+import mdx from "@mdx-js/rollup"
+import remarkGfm from "remark-gfm"
+import remarkFrontmatter from "remark-frontmatter"
+import remarkMdxFrontmatter from "remark-mdx-frontmatter"
+import rehypeSlug from "rehype-slug"
+import rehypePrettyCode from "rehype-pretty-code"
+import withToc from "@stefanprobst/rehype-extract-toc"
+import withTocExport from "@stefanprobst/rehype-extract-toc/mdx"
 import { defineConfig } from "vite"
 import { Agent } from "node:http"
 
@@ -8,7 +16,31 @@ import { Agent } from "node:http"
 const keepAliveAgent = new Agent({ keepAlive: true, maxSockets: 20 })
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    {
+      enforce: "pre",
+      ...mdx({
+        jsxImportSource: "react",
+        providerImportSource: "@mdx-js/react",
+        remarkPlugins: [
+          remarkGfm,
+          remarkFrontmatter,
+          [remarkMdxFrontmatter, { name: "frontmatter" }],
+        ],
+        rehypePlugins: [
+          rehypeSlug,
+          [rehypePrettyCode, {
+            theme: { dark: "github-dark", light: "github-light" },
+            keepBackground: false,
+          }],
+          withToc,
+          [withTocExport, { name: "toc" }],
+        ],
+      }),
+    },
+    react(),
+    tailwindcss(),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -17,11 +49,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // SSE endpoint — needs special handling to disable buffering
       "/api/ai/generate": {
         target: "http://127.0.0.1:18800",
         changeOrigin: true,
-        // Disable response buffering so SSE chunks flow through immediately
         configure: (proxy) => {
           proxy.on("proxyRes", (proxyRes, _req, res) => {
             if (proxyRes.headers["content-type"]?.includes("text/event-stream")) {
@@ -39,6 +69,11 @@ export default defineConfig({
         target: "ws://127.0.0.1:18800",
         ws: true,
         changeOrigin: true,
+      },
+      "/embed": {
+        target: "http://127.0.0.1:18800",
+        changeOrigin: true,
+        agent: keepAliveAgent,
       },
     },
   },

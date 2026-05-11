@@ -6,6 +6,7 @@ export * from "./useThemeStore"
 export { useProjectStore } from './useProjectStore'
 export { useRoomStore } from './useRoomStore'
 export { useFeedbackStore } from './useFeedbackStore'
+export { useEmbedStore } from './useEmbedStore'
 
 // ─── Auth Store ───────────────────────────────────────────────────────────────
 interface AuthState {

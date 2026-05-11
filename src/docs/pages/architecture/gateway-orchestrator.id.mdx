@@ -1,0 +1,191 @@
+---
+title: Gateway Orchestrator
+description: Lifecycle gateway proses per-user — spawn, port allocation, orphan recovery, PATH injection untuk skill scripts.
+updated: 2026-05-10
+---
+
+# Gateway Orchestrator
+
+`server/lib/gateway-orchestrator.cjs` adalah komponen yang **manage lifecycle gateway OpenClaw per-user**. Setiap user (kecuali admin) punya gateway proses sendiri, lazy-spawned, dengan port + token unik.
+
+<Callout type="info" title="Kenapa gateway terpisah per user?">
+Isolasi penuh: gateway A tidak bisa lihat memory, file descriptor, atau session gateway B. Kalau gateway user A crash, user B tidak terdampak. Ini foundation dari multi-tenant guarantee AOC.
+</Callout>
+
+## Lifecycle methods
+
+| Method | Behavior |
+|--------|----------|
+| `spawnGateway(userId)` | Allocate port, mint token, spawn proses OpenClaw, persist `{pid, port, token}` ke SQLite `gateway_state` |
+| `stopGateway(userId)` | SIGTERM → wait → SIGKILL fallback. Clear DB state. |
+| `restartGateway(userId)` | `stopGateway` → `spawnGateway`. Penting setelah edit `openclaw.json` (skill toggle, channel binding, dll). |
+| `getRunningToken(userId)` | Read DB → return token kalau gateway hidup, null kalau tidak. Dipake `GatewayPool` untuk WS auth. |
+| `cleanupOrphans()` | Saat AOC startup. Cek SQLite vs OS process table. PID alive → re-attach (jangan kill). PID dead → clear state. |
+| `findAocManagedOrphanPids()` | Scan port range `19000-19999` dengan `lsof -p <pid> -i tcp` → identify gateway PIDs yang tidak tracked di SQLite. |
+| `gracefulShutdown()` | AOC dapat SIGTERM → leave gateway running (untuk next AOC startup). Detach + close koneksi WS, jangan kill children. |
+
+## Port allocation: 3-stride
+
+Gateway pakai range `19000-19999`. Allocation pakai **stride 3** untuk hindari race condition saat parallel registration:
+
+<Steps>
+  <Step title="Lookup user existing port">
+    Kalau user sudah pernah punya gateway, prefer port lama (sticky).
+  </Step>
+  <Step title="Atomic reserve">
+    `allocatePortAtomic(userId)` reserve **3 port consecutive** (mis. 19000, 19001, 19002) di tabel `port_reservations` dengan transaction. Kalau bentrok dengan user lain, retry next stride.
+  </Step>
+  <Step title="OS probe">
+    Dari 3 port reserved, pick yang **belum listening** (probe via `net.createServer().listen()`). Kalau semua occupied (rare), retry stride next.
+  </Step>
+  <Step title="Final commit">
+    Port terpilih disimpan ke `gateway_state.port`. Sisa 2 port di-release dari reservation.
+  </Step>
+</Steps>
+
+<Callout type="warning" title="Kenapa stride 3?">
+Kalau allocate 1-by-1, dua user yang register bersamaan bisa dapat port sama (race antara `find next free` dan `bind`). Stride 3 kasih buffer — saat user A reserve [19000, 19001, 19002], user B dapat [19003, 19004, 19005]. Bahkan kalau user A cuma pakai 19000, ports 19001/19002 di-release segera tapi user B sudah aman di range terpisah.
+</Callout>
+
+## Orphan recovery (penting saat AOC restart)
+
+Saat AOC server restart (mis. `npm run dev:server` di-restart), gateway anak proses **survives**:
+
+```
+Sebelum AOC restart:
+  AOC process (parent)
+    └── Gateway user 1 (PID 12345, port 19000)
+    └── Gateway user 2 (PID 12346, port 19003)
+
+AOC restart (parent dies):
+  Gateway user 1 (PID 12345, port 19000)  ← masih hidup, di-detach
+  Gateway user 2 (PID 12346, port 19003)  ← masih hidup, di-detach
+
+AOC startup baru:
+  cleanupOrphans() jalan
+  - Read SQLite: user 1 → PID 12345
+  - Cek `kill -0 12345` → alive
+  - Re-attach: WS reconnect, push ke pool
+```
+
+**Implication penting**: jangan asumsikan "AOC restart = semua gateway fresh". Gateway long-lived, AOC short-lived.
+
+### macOS limitation
+
+```
+ps -E <pid>  # Linux: show env. macOS: NOT supported.
+```
+
+Untuk identify gateway orphan di macOS, AOC pakai pendekatan beda: `lsof -p <pid> -i tcp -P -n -a -sTCP:LISTEN` → port binding. Kalau PID listen di port range `19000-19999`, classify as AOC-managed gateway.
+
+Detail: `findAocManagedOrphanPids()` di `server/lib/gateway-orchestrator.cjs`.
+
+## PATH injection untuk skill scripts
+
+Gateway eksekusi `exec` tool spawn `zsh -c '<cmd>'` atau `bash -c '<cmd>'`. **Non-interactive non-login shells** — tidak source `~/.openclaw/.aoc_env` otomatis.
+
+Tanpa PATH injection, command bare-name seperti `aoc-connect.sh`, `team-status.sh`, `schedules-list.sh` akan fail dengan "command not found".
+
+`buildSkillsPathPrefix(userHome)` walks 3 tempat:
+
+<Tabs>
+  <Tab label="(a) User home">
+    `<userHome>/skills/*/scripts` — admin-symlinked + user-installed skill bundles
+  </Tab>
+  <Tab label="(b) Admin base (defensive)">
+    `<adminBase>/skills/*/scripts` — defensive double-glob untuk catch skills yang somehow gak ke-symlink
+  </Tab>
+  <Tab label="(c) Per-agent workspace">
+    Walk semua `cfg.agents.list[].workspace` untuk:
+    - `<ws>/skills/*/scripts`
+    - `<ws>/.agents/skills/*/scripts` (personal skill via `aoc-self`)
+
+    Sehingga agent-authored skill resolved on PATH juga.
+  </Tab>
+</Tabs>
+
+Hasil concatenated PATH di-set ke `childEnv.PATH` saat spawn gateway.
+
+### Admin's external gateway
+
+Admin pakai gateway external systemd-managed di port `18789`. Gak bisa `buildSkillsPathPrefix` runtime karena AOC bukan parent.
+
+Solution: AOC tulis `~/.openclaw/.aoc_paths` (KEY=VALUE format) saat startup, di-read systemd unit via `EnvironmentFile=`. File `.aoc_env` (shell script dengan `for` loop) tidak compatible dengan systemd, makanya ada `.aoc_paths` terpisah.
+
+## Konfigurasi env
+
+Variable yang relevan untuk orchestrator:
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `AOC_MAX_GATEWAYS` | `50` | Cap concurrent per-user gateway. Sisanya queue / reject. |
+| `GATEWAY_BACKOFF_MS` | `5000,30000,300000` | Comma-separated retry delay kalau spawn fail (5s → 30s → 5m) |
+| `OPENCLAW_BIN` | `/opt/homebrew/bin/openclaw` | Path ke binary OpenClaw |
+| `OPENCLAW_HOME` | `~/.openclaw` | Admin home (root untuk per-user nesting) |
+
+## Events
+
+Orchestrator emit event yang `gateway-ws.cjs` listen:
+
+- `spawned(userId)` — gateway baru up. `GatewayPool` connect WS.
+- `stopped(userId)` — gateway down. `GatewayPool` disconnect + drain pending request.
+- `crashed(userId, exitCode)` — gateway exit non-zero. Triggered backoff retry.
+
+Auto-reconnect ini bikin user-triggered restart **tidak butuh AOC restart atau user re-login**.
+
+## Bash CLI: gw.sh
+
+Untuk debugging atau emergency, ada CLI `./scripts/gw.sh`:
+
+```bash
+./scripts/gw.sh                  # List status semua gateway user
+./scripts/gw.sh status <userId>  # Detail status user
+./scripts/gw.sh start  <userId>  # Spawn (atau 'all')
+./scripts/gw.sh stop   <userId>  # Stop (SIGTERM → SIGKILL)
+./scripts/gw.sh restart <userId> # stop + start
+./scripts/gw.sh logs   <userId>  # tail <userHome>/logs/gateway.log
+./scripts/gw.sh orphans          # Find gateway PID gak tracked di SQLite
+```
+
+Gw.sh **independen** dari AOC server — pakai SQLite + `lsof` + `ps` langsung. Berguna kalau AOC down atau orchestrator misbehaving.
+
+## Sharp edges
+
+<Callout type="danger" title="GatewayPool bukan auto-connect">
+`gatewayPool.forUser(userId)` return objek koneksi tapi **tidak otomatis connect**. Caller harus:
+
+```js
+const conn = gatewayPool.forUser(userId)
+if (!conn.isConnected) {
+  const port = await orchestrator.getRunningToken(userId)
+  if (!port) return res.status(503).json({ error: 'gateway_down' })
+  await conn.connect({ port, token })
+}
+const result = await conn.sessionsCreate(agentId)
+```
+
+Lihat `server/routes/master.cjs` untuk pattern lazy-connect.
+</Callout>
+
+<Callout type="warning" title="Gateway restart wajib setelah skill changes">
+OpenClaw load skill list saat startup. Toggle skill di UI mutate `openclaw.json` tapi **tidak trigger reload**. Dashboard kasih affordance "Restart gateway?" setelah skill toggle. Atau eksekusi `restartGateway(userId)` programmatically.
+
+Sama juga untuk: channel binding, cron jobs, agent provision.
+</Callout>
+
+## Troubleshooting
+
+**Gateway gagal spawn dengan "EADDRINUSE"?**
+Port di-occupied process eksternal (bukan gateway AOC). Restart port allocation: `gw.sh restart <userId>` akan retry next stride.
+
+**Gateway "stuck" di status starting?**
+Cek `<userHome>/logs/gateway.log`. Kemungkinan: token mismatch, OPENCLAW_BIN path salah, atau OS resource limit (file handle).
+
+**Orphan gateway di port range tapi tidak claimed AOC user?**
+Run `gw.sh orphans`. Output PIDs yang listen di range tapi gak match SQLite. Bisa dibunuh manual atau biarkan kalau itu user lain (mis. dev jalan AOC kedua di mesin sama).
+
+## Langkah selanjutnya
+
+- <ConceptLink to="/docs/architecture/data-flow">Data Flow End-to-End</ConceptLink> — gimana gateway state nyambung ke UI
+- <ConceptLink to="/docs/operations/gateway-cli">Gateway CLI (gw.sh)</ConceptLink> — reference lengkap command-line
+- <ConceptLink to="/docs/reference/sharp-edges">Sharp Edges</ConceptLink> — daftar lengkap konstrain load-bearing

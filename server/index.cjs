@@ -1,4 +1,11 @@
 require('dotenv').config();
+
+// ─── Embed channel: master key check (must run before any embed module loads) ─
+if (!process.env.AOC_DLP_MASTER_KEY) {
+  console.warn('[startup] AOC_DLP_MASTER_KEY missing — embed channel + DLP audit will fail. ' +
+    'Generate via: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+}
+
 const http = require('http');
 const express = require('express');
 const path = require('path');
@@ -329,11 +336,54 @@ app.use('/api', require('./routes/announcements.cjs')({ db }));
 const feedbackRouter = require('./routes/feedback.cjs');
 app.use('/api', feedbackRouter({ db }));
 
+// ─── Routes: Embed channel (public — no user JWT) ──────────────────────────
+const embedRouter = require('./routes/embed.cjs');
+const embedRateLimit = require('./lib/embed/rate-limit.cjs');
+app.use('/api/embed', embedRouter.api);
+app.use('/embed', embedRouter.serve);
+
+// ─── Routes: Embed admin (owner-authenticated CRUD) ────────────────────────
+app.use('/api/embed/admin', embedRouter.admin);
+
+// ─── Serve avatar presets (cross-origin) ─────────────────────────────────────
+// Static images under /avatars/* are loaded by the embed widget across iframe
+// origins (host page → AOC backend), so they need CORP=cross-origin headers.
+// In prod they'd come from dist/ (Vite copies public/) but we mount the source
+// public/avatars/ directly to make this path work in dev too.
+app.use('/avatars', express.static(path.join(__dirname, '..', 'public', 'avatars'), {
+  setHeaders(res) {
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cache-Control', 'public, max-age=86400');
+  },
+}));
+
+// ─── Serve custom embed avatar uploads (cross-origin) ─────────────────────────
+// Files uploaded via POST /api/embed/admin/embeds/:id/avatar are stored at
+// <OPENCLAW_HOME>/embed-uploads/<embedId>/avatar.<ext>. They need CORP=cross-origin
+// so the embed widget (cross-origin iframe) can load them.
+const embedAvatarUpload = require('./lib/embed/avatar-upload.cjs');
+const embedUploadsRoot = embedAvatarUpload.getUploadsRoot();
+fs.mkdirSync(embedUploadsRoot, { recursive: true });
+app.use('/embed-uploads', express.static(embedUploadsRoot, {
+  setHeaders(res) {
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cache-Control', 'public, max-age=300');
+  },
+}));
+
 // ─── Serve Vite build in prod ─────────────────────────────────────────────────
 const distDir = path.join(__dirname, '..', 'dist');
 app.use(express.static(distDir, { etag: false }));
 app.get('/{*path}', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+  // /embed/* is a public-facing widget channel served by routes/embed.cjs.
+  // If a request reaches the SPA fallback under /embed (e.g. missing static file
+  // or unknown loader id), return JSON 404 instead of swallowing it as the SPA
+  // shell — otherwise the iframe receives the dashboard HTML and tries to parse
+  // it as the widget bundle.
+  if (req.path.startsWith('/embed/')) return res.status(404).type('text/plain').send('// embed asset not found');
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
@@ -676,6 +726,17 @@ async function sweepPendingTasks() {
 async function start() {
   await db.initDatabase();
 
+  // Embed channel rate-limit: restore persisted sliding-window state from SQLite
+  // and start periodic flush (so counters survive restarts).
+  try {
+    embedRateLimit.hydrate();
+    embedRateLimit.startBackgroundPersist(
+      parseInt(process.env.EMBED_RATE_LIMIT_PERSIST_INTERVAL_MS) || 30_000,
+    );
+  } catch (e) {
+    console.warn('[embed-rate-limit] hydrate/start failed:', e.message);
+  }
+
   // Satisfaction daily rollup — runs immediately + every interval (default 1h).
   const { startBackgroundRollup, stopBackgroundRollup } = require('./lib/satisfaction-rollup.cjs');
   startBackgroundRollup({
@@ -906,6 +967,13 @@ async function shutdown(signal) {
   feedWatcher.stop();
   watcherPool.stopAll();
   server.close();
+  // Embed rate-limit: flush in-memory state before exit so counters survive restart.
+  try {
+    embedRateLimit.stopBackgroundPersist();
+    embedRateLimit.persistSnapshot();
+  } catch (e) {
+    console.warn('[embed-rate-limit] shutdown persist failed:', e.message);
+  }
   try {
     await orchestrator.gracefulShutdown();
     console.log('[server] all user gateways stopped');

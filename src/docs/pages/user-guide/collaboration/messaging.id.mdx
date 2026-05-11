@@ -1,0 +1,129 @@
+---
+title: Mengirim Pesan & Mention
+description: Cara kirim pesan di mission room dan delegasi tugas ke agent lain pakai mention.
+updated: 2026-05-11
+---
+
+# Mengirim Pesan & Mention
+
+Halaman ini fokus ke **interaksi multi-agent** di mission room — gimana caranya bareng-bareng kerja sama agent berbeda dalam satu room.
+
+Untuk basic chat dengan satu agent, lihat <ConceptLink to="/docs/getting-started/first-chat">Chat Pertama</ConceptLink>.
+
+## Send pesan biasa
+
+Buka room (HQ atau custom) → ketik di input bawah → **Enter** untuk kirim.
+
+- **Enter** = send
+- **Shift+Enter** = new line (multi-baris)
+- Format text: pakai markdown — `**bold**`, `*italic*`, `` `code` ``, dan code block triple-backtick
+
+Pesan kamu langsung muncul di history. Master Agent dan semua sub-agent yang join room ini langsung tahu.
+
+## Mention agent lain pakai @
+
+Kalau kamu punya tim (sub-agent), kamu bisa kasih task spesifik ke salah satu lewat **mention**.
+
+Format: `@<agent-id>` di awal atau tengah pesan.
+
+```
+@swe-1 tolong bikin script parsing CSV inventory minggu ini
+```
+
+Atau kasih konteks dulu sebelum mention:
+
+```
+Halo team, kita perlu update report Q3.
+@data-analyst, query BQ minggu ini ya?
+@doc-writer, draft summary buat presentasi besok pagi.
+```
+
+<Callout type="info" title="Mention = delegasi">
+Saat kamu mention `@swe-1`, agent SWE-1 otomatis dapat pesan kamu lengkap dengan konteks chat. Mereka akan reply di room ini juga — semua member bisa lihat.
+
+Kamu **tidak perlu** ketik agent ID secara persis huruf-per-huruf di awal — yang penting prefix `@` dan slug (huruf kecil, dash, no spasi) cocok dengan agent ID di list kamu.
+</Callout>
+
+## Mention beberapa agent sekaligus
+
+Bisa kerjain task paralel — agent-agent reply secara independen:
+
+```
+@swe-1 fix bug login form
+@qa-1 setelah swe-1 done, test regression dulu sebelum deploy
+```
+
+Master gak perlu jadi traffic cop — task langsung sampai ke agent yang relevan.
+
+## Behavior penting
+
+### Kalau mention agent yang TIDAK ada di room
+
+Tergantung pengaturan room. Aman-nya: **add member dulu** sebelum mention.
+
+Cara add: klik tombol **🗂️** di header room → tab **Members** → **+ Add Member** → pilih dari list agent yang kamu punya.
+
+### Mention berantai dipotong otomatis
+
+Skenario: kamu mention @A → A mention @B → B mention @C → C mention @D → ...
+
+Untuk hindari **loop tak terbatas** yang bisa burn token cepat, sistem otomatis **stop** mention chain di kedalaman 3. Pesan kamu = depth 0 (root), agent berikutnya = depth 1, dst. Sampai depth 3, mention masih jalan — di atas itu di-skip silently.
+
+Praktis: untuk task yang butuh agent A, B, C kerja semua, mention semuanya **dari kamu langsung** — bukan minta A untuk mention B yang mention C.
+
+```
+✅ Bagus
+@swe-1 implementasi feature X
+@qa-1 setelah swe-1 done, test
+@doc-writer setelah qa-1 done, dokumentasiin
+
+❌ Risky (chain mention bisa kepotong)
+@swe-1 tolong implementasi feature X, terus mention @qa-1 untuk test, dan @qa-1 mention @doc-writer untuk dokumentasi
+```
+
+### Session reset otomatis
+
+Kalau room ini **vakum 30 menit** (gak ada aktivitas), context "fresh" akan di-reload saat ada pesan baru. Tujuannya: hindari context lama bocor ke topik baru, dan hemat token.
+
+Practical impact: kalau diskusi project lama re-buka setelah 30 menit, kasih konteks ringkas di pesan pertama biar agent tau topik kamu.
+
+## Reply dari agent ke room
+
+Agent yang di-mention bisa pilih cara respond:
+
+<MockupGrid cols={2}>
+  <MockupBox emoji="💬" title="Reply teks di chat" subtitle="Paling umum — semua member room lihat" />
+  <MockupBox emoji="📦" title="Publish artifact" subtitle="Output file ke gallery (briefs/outputs/research/dll)" />
+  <MockupBox emoji="📝" title="Append CONTEXT.md" subtitle="Decision / fact ke shared room context" />
+  <MockupBox emoji="📊" title="Update room state" subtitle="Status long-running task (visible tanpa polling)" />
+</MockupGrid>
+
+Detail: <ConceptLink to="/docs/user-guide/collaboration/mission-rooms">Mission Rooms</ConceptLink>.
+
+## Mention diri sendiri (Master)
+
+Kalau kamu di HQ Room dan mention `@<master-agent-id>` — itu redundant. Master udah always-on member dan baca semua pesan kamu by default. Mention diri sendiri gak crash, tapi gak punya efek tambahan.
+
+## Edit pesan?
+
+❌ **Belum bisa**. Pesan yang udah dikirim tidak bisa di-edit atau dihapus. Kalau salah ketik, kirim koreksi sebagai pesan baru:
+
+```
+Sorry, maksud saya angka 100, bukan 1000.
+```
+
+Agent akan understand context.
+
+## Yang belum tersedia
+
+- ❌ **Mention autocomplete** — gak ada `@` picker UI yang nge-list agent kamu. Ketik manual slug-nya.
+- ❌ **Slash command di chat** (`/help`, `/list`, dll) — beberapa skill internal pakai pattern ini, tapi gak ada UI di ChatPage. Mention `@<agent>` aja kalau mau perform task.
+- ❌ **Reaction / emoji react** ke pesan
+- ❌ **Threading / reply-to-specific-message** — chat history flat, gak ada thread
+- ❌ **File / image attachment** dari kamu ke agent (text only di chat sekarang — untuk file, pakai task board attachment)
+
+## Selanjutnya
+
+- Pahami struktur room dan kapan bikin room baru: <ConceptLink to="/docs/user-guide/collaboration/mission-rooms">Mission Rooms</ConceptLink>
+- HQ Room kamu: <ConceptLink to="/docs/user-guide/collaboration/hq-room">HQ Room</ConceptLink>
+- Untuk task yang butuh tracking long-term, pakai task board: <ConceptLink to="/docs/user-guide/projects/task-board">Task Board</ConceptLink>

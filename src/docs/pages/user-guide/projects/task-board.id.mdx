@@ -1,0 +1,183 @@
+---
+title: Task Board
+description: Kanban task management — create, dispatch ke agent, multi-turn conversation per task, dan integrasi sama mission room.
+updated: 2026-05-10
+---
+
+# Task Board
+
+Task Board adalah kanban kanonikal untuk dispatch task ke agent + track progress multi-turn.
+
+<Mockup label="/projects/general — Status Kanban">
+  <MockupKanban>
+    <MockupKanbanColumn title="Open" count={3} accent="neutral">
+      <MockupTaskCard title="Setup BigQuery connection" priority="medium" agent="data-analyst" />
+      <MockupTaskCard title="Audit security review" priority="high" />
+      <MockupTaskCard title="Update CHANGELOG" priority="low" agent="doc-writer" />
+    </MockupKanbanColumn>
+    <MockupKanbanColumn title="In Progress" count={2} accent="primary">
+      <MockupTaskCard title="Implement multi-tenant migration" priority="urgent" agent="swe-1" />
+      <MockupTaskCard title="UX research onboarding flow" priority="high" agent="ux-designer" />
+    </MockupKanbanColumn>
+    <MockupKanbanColumn title="Review" count={1} accent="warning">
+      <MockupTaskCard title="API spec for Master delegation" priority="high" agent="em-architect" />
+    </MockupKanbanColumn>
+    <MockupKanbanColumn title="Done" count={5} accent="success">
+      <MockupTaskCard title="Initial DB schema design" priority="medium" />
+      <MockupTaskCard title="JWT auth implementation" priority="urgent" />
+    </MockupKanbanColumn>
+  </MockupKanban>
+</Mockup>
+
+## Konsep dasar
+
+Tiap **task** punya:
+
+| Field | Default |
+|---|---|
+| `title` | required |
+| `description` | optional, multi-line |
+| `status` | `open` (initial) → `in_progress` → `review` → `done` (atau `cancelled`) |
+| `priority` | `medium` (default), pilihan: urgent / high / medium / low |
+| `agentId` | optional — task bound ke agent spesifik untuk dispatch |
+| `tags` | array string, untuk filter/categorize |
+| `cost` | accumulated USD cost dari turn-turn dispatch |
+| `sessionId` | gateway session yang handle task ini (kalau sudah di-dispatch) |
+| `projectId` | parent project (required) |
+
+## Status flow
+
+<Mockup>
+  <MockupFlow>
+    <MockupBox title="open" subtitle="initial" variant="muted" />
+    <MockupArrow />
+    <MockupBox title="in_progress" subtitle="dispatch fires" variant="primary" />
+    <MockupArrow />
+    <MockupBox title="review" subtitle="awaiting sign-off" variant="default" />
+    <MockupArrow />
+    <MockupBox title="done" subtitle="✓ approved" variant="default" />
+  </MockupFlow>
+  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-muted-foreground">
+    <p><strong className="text-foreground">in_progress → blocked</strong> — saat agent stuck (mis. butuh credential)</p>
+    <p><strong className="text-foreground">review → in_progress</strong> — saat user request changes (re-dispatch)</p>
+    <p><strong className="text-foreground">any → cancelled</strong> — manual cancel</p>
+  </div>
+</Mockup>
+
+Transition di-trigger via:
+
+- **Manual drag** di kanban — UI POST update status
+- **Skill `update_task.sh`** dari agent — sub-agent / Master self-report
+- **Auto** saat dispatch — status auto `in_progress` saat task di-send ke gateway
+
+## Buat task baru
+
+<Steps>
+  <Step title="Klik '+ New Task' di Board">
+    `TaskCreateModal` muncul.
+  </Step>
+  <Step title="Isi field utama">
+    - **Title** wajib
+    - **Description** (Markdown supported)
+    - **Priority** + **Tags**
+  </Step>
+  <Step title="Assign agent (optional)">
+    Pilih sub-agent yang harus eksekusi. Kosongkan kalau Master yang handle solo.
+  </Step>
+  <Step title="Submit">
+    Task masuk ke kolom `open`.
+  </Step>
+</Steps>
+
+## Dispatch ke agent
+
+Klik tombol **Dispatch** di task panel. Yang terjadi:
+
+- Task title + description dikirim ke agent assigned sebagai first message
+- Agent kerja, status task otomatis pindah jadi `in_progress`
+- Reply agent stream real-time ke task panel — kamu bisa lihat progress
+
+Kalau agent stuck atau butuh clarification, kamu bisa kirim follow-up message di task panel — agent dapet konteks lengkap dari turn-turn sebelumnya.
+
+## Multi-turn conversation per task
+
+Tidak semua task selesai 1 kali jalan. Kamu bisa **re-dispatch** task yang udah `in_progress` untuk kasih:
+
+- Clarification ("oh, maksud saya total per minggu, bukan per hari")
+- Tambahan requirement ("plus bandingkan dengan Q2")
+- Feedback hasil intermediate ("draft 1 OK, lanjut ke section 2")
+
+Semua turn tersimpan di task panel — kamu bisa scroll up untuk lihat history kerja agent dari awal sampai sekarang. Konteks **tidak hilang** antar turn.
+
+## Apa yang agent lakukan saat handle task
+
+Agent yang bekerja akan otomatis update progress di task panel kamu:
+
+<Steps>
+  <Step title="Mulai: tandai 'in_progress'">
+    Saat agent mulai kerja, status task auto-update jadi **in_progress**. Kamu lihat aktivitas real-time di task panel.
+  </Step>
+  <Step title="Update progress di tengah jalan">
+    Kalau task panjang, agent kasih comment progress berkala — tanpa nunggu selesai. Mis. "Found 3 edge cases, lanjut investigate".
+  </Step>
+  <Step title="Blocked kalau stuck">
+    Kalau agent butuh sesuatu (mis. credential, decision dari kamu), status pindah ke **blocked** + comment yang menjelaskan apa yang dia tunggu. Kamu dapat notifikasi.
+  </Step>
+  <Step title="Submit untuk review">
+    Kalau agent merasa task selesai, dia upload **deliverable** (file output, link, dll) ke task → status pindah **in_review**. Notifikasi muncul ke kamu.
+  </Step>
+  <Step title="Approve atau request changes">
+    Kamu review hasil. Klik **Approve** kalau OK — status jadi **done**. Atau klik **Request Changes** + tulis feedback — status balik **in_progress**, agent re-dispatch dengan feedback kamu.
+  </Step>
+</Steps>
+
+## ADLC Stage Kanban
+
+Toggle dari "Status Kanban" ke "Stage Kanban" di Board view. Kolom-nya 8 ADLC phase:
+
+```
+Discovery → Design → Architecture → Implementation → QA → Docs → Release → Ops
+```
+
+Tiap task bisa di-tag stage manual atau auto-detect dari role agent yang handle (mis. SWE in Implementation, QA in QA phase).
+
+Useful untuk product team yang track lifecycle feature secara phase-based, bukan cuma todo/done.
+
+## Filter & search
+
+Toolbar Board:
+
+- **Search bar** — match title + description
+- **Filter assignee** — pilih agent atau "Unassigned"
+- **Filter status** — multi-select
+- **Filter priority** — urgent/high/etc
+- **Filter tags** — chip-based, AND logic
+
+State filter persist di URL query → bookmarkable.
+
+## Cost tracking
+
+Tiap turn dispatch, gateway report cost (token usage × model price). Auto-accumulate ke `task.cost`. Total project cost = sum task cost.
+
+Useful untuk:
+- Budget tracking per project
+- Identify task yang expensive (mungkin perlu split atau pakai model lebih murah)
+- Audit "berapa AOC bantu kerja kita minggu ini"
+
+## Bulk action (planned)
+
+Belum tersedia v1. Sementara harus per-task: assign, status change, delete.
+
+## Mission Room ↔ Task
+
+Saat task di-create di project yang punya default mission room:
+- Notification posted di mission room (`New task: <title>`)
+- Member room (Master + sub-agent) bisa lihat tanpa polling kanban
+- Reply di room tidak otomatis link ke task — gunakan TaskPanel untuk percakapan task-specific
+
+Untuk room custom yang tidak terikat project: task tidak otomatis muncul di sana.
+
+## Langkah selanjutnya
+
+- Mau project baru lengkap dengan board: <ConceptLink to="/docs/user-guide/projects/overview">Overview Project</ConceptLink>
+- Setup cron untuk auto-create task: <ConceptLink to="/docs/user-guide/automation/schedules">Jadwal (Cron)</ConceptLink>

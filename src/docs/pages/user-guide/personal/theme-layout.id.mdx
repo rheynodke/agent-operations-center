@@ -1,0 +1,104 @@
+---
+title: Tema & Layout
+description: Atur tampilan dashboard sesuai preferensimu — dark/light mode, sidebar, live feed.
+updated: 2026-05-11
+---
+
+# Tema & Layout
+
+Beberapa tampilan dashboard bisa kamu sesuaikan. Pilihan-mu **diingat** otomatis di browser ini — gak perlu set ulang setiap login.
+
+## Ganti tema: Light vs Dark
+
+Klik icon **☀️** atau **🌙** di kanan atas (TopBar) untuk switch.
+
+<Mockup>
+  <div className="flex items-center justify-end gap-2 p-2">
+    <span className="text-xs text-muted-foreground">Theme:</span>
+    <span className="inline-flex items-center justify-center w-9 h-9 rounded-md bg-muted/50 border border-border">
+      ☀
+    </span>
+    <span className="text-muted-foreground/60">/</span>
+    <span className="inline-flex items-center justify-center w-9 h-9 rounded-md bg-foreground text-background border border-border">
+      🌙
+    </span>
+  </div>
+</Mockup>
+
+- **Default**: Dark mode
+- **Pilihan**: Light atau Dark — itu aja, gak ada "auto / system"
+
+<Callout type="info" title="Gak follow OS theme">
+Beberapa app punya opsi "System" yang ngikutin OS preference. AOC saat ini cuma Light atau Dark. Kalau OS kamu ganti theme, dashboard tetep di mode yang kamu pilih terakhir.
+</Callout>
+
+## Sidebar collapse (desktop)
+
+Sidebar kiri bisa di-collapse jadi narrow column (icon-only) buat ngasih ruang lebih ke main content.
+
+- Saat collapsed: cuma icon-icon yang visible, tanpa label text
+- Saat expanded: icon + label + group title
+- State diingat — kalau kamu collapse, dia stay collapsed di session berikutnya
+
+(Toggle button-nya ada di area sidebar — biasanya di bagian bawah dengan icon panel.)
+
+## Mobile navigation
+
+Di HP / tablet kecil (`<768px`):
+
+- Sidebar default tertutup
+- Klik **icon hamburger ☰** di TopBar → sidebar slide in dari kiri
+- Tap area gelap di samping → sidebar tutup
+- Buka halaman lain → sidebar tutup otomatis
+
+State mobile nav **gak persist** — kalau kamu refresh, dia balik ke tertutup. Itu by design (biar gak ngehalangin saat first load mobile).
+
+## Live Feed Panel
+
+**Live Feed** = stream real-time dari semua aktivitas agent kamu — pesan masuk, tool call yang lagi running, error, system event, cost tracking. Berguna saat lagi monitor agent yang lagi run task panjang.
+
+### Desktop
+
+Side panel kanan (selalu di-render). Kalau penuh, scroll otomatis. Tombol di TopBar (icon ⚡ Zap) atau toggle minimize untuk tutup.
+
+### Mobile
+
+Bottom sheet — slide up dari bawah. Klik icon di TopBar untuk buka. Tutup dengan tap di luar sheet.
+
+## Halaman Settings (admin only)
+
+Halaman `/settings` ada beberapa tab tapi **fokus ke konfigurasi platform**, bukan personal info kamu:
+
+- **Account** — info auth (sign out), version info AOC. **Tidak ada** edit avatar / display name / bio di sini.
+- **Engine, Gateway, Models, Tools, Env, Raw** — pengaturan teknis, **admin only**.
+
+Kalau kamu **non-admin**, halaman `/settings` di-redirect ke dashboard root.
+
+## Yang belum bisa kamu kustomisasi
+
+- ❌ **Custom theme color** (primary color, accent) — preset jadi obsidian cyberpunk theme yang shipped sama AOC
+- ❌ **Font size / line spacing** — fixed
+- ❌ **Sidebar position** (kiri vs kanan) — kiri only
+- ❌ **Density** (comfortable vs compact) — fixed
+- ❌ **Edit avatar / display name / bio** profilemu sendiri — belum tersedia. Kalau perlu update password, minta admin lewat halaman User Management.
+- ❌ **Reduced motion** preference — animasi kayak PixelSnow di onboarding belum respect `prefers-reduced-motion` OS
+
+## Reset ke default
+
+Kalau ada bug visual atau ingin reset semua preference di browser ini:
+
+1. Buka DevTools browser (F12)
+2. Tab **Console**, paste:
+   ```js
+   localStorage.clear()
+   location.reload()
+   ```
+
+Semua preference (theme, sidebar collapse, docs language, docs POV) balik ke default.
+
+⚠ Ini juga akan **clear login token** kamu — kamu perlu login ulang.
+
+## Selanjutnya
+
+- Eksplor halaman lain di sidebar
+- Switch ke **Developer POV** kalau mau lihat halaman arsitektur (kalau kamu role developer atau admin)

@@ -1,0 +1,109 @@
+---
+title: Setup Telegram
+description: Hubungkan agent kamu ke Telegram bot — bisa chat lewat HP tanpa buka dashboard.
+updated: 2026-05-11
+---
+
+# Setup Telegram
+
+Setelah setup ini, kamu bisa **chat agent dari Telegram langsung di HP** — agent reply real-time. Cocok buat akses cepat saat lagi di luar.
+
+## Yang kamu butuhin
+
+- Akses ke Telegram (HP atau desktop)
+- Akun Telegram aktif
+
+Itu aja. Gak perlu coding atau install apa-apa.
+
+## Langkah-langkah
+
+<Steps>
+  <Step title="Bikin bot di Telegram">
+    Di Telegram, buka chat dengan **@BotFather** (akun resmi Telegram untuk bikin bot). Ketik `/newbot` lalu ikuti petunjuknya:
+
+    - **Nama display** — bebas (mis. "Evergreen Asisten")
+    - **Username** — harus unik, akhiri dengan `bot` (mis. `evergreen_asisten_bot`)
+
+    Setelah selesai, BotFather kasih kamu **token** — string panjang seperti `123456789:AAH-XXXXXXXX`. Copy token ini, jangan share ke orang lain.
+  </Step>
+
+  <Step title="Buka halaman agent kamu">
+    Di dashboard, klik agent yang mau di-bind ke Telegram → tab **Channels**.
+
+    Card "Telegram" muncul. Klik **+ Add Telegram** kalau belum ada binding.
+  </Step>
+
+  <Step title="Paste token + pilih policy">
+    Di form yang muncul:
+
+    - **Bot Token** — paste token dari BotFather
+    - **DM Policy** — pilih siapa yang boleh DM bot:
+      - **Pairing** (recommended) — user harus DM bot dulu, dapat kode, baru bisa interaksi penuh. Aman dari spam.
+      - **Allow** — siapa pun bisa DM, langsung jalan. Cocok untuk personal use atau internal team yang udah trust
+      - **Block** — DM ditolak total. Cuma group / channel allowed yang bisa kirim
+    - **Streaming Mode** — pilih cara agent reply:
+      - **Off** — agent kirim final reply, satu pesan utuh
+      - **Partial** (recommended) — agent edit pesan progressively saat ngetik, kelihatan alami kayak orang typing
+      - **Full** — stream tiap chunk, paling responsif tapi notifikasi sering bunyi
+
+    Klik **Save**.
+  </Step>
+
+  <Step title="Tunggu agent restart">
+    Notifikasi "Telegram channel updated" muncul. Dashboard otomatis restart agent kamu (sekitar 5-10 detik). Tab Channels punya **lampu hijau 🟢** kalau sudah aktif.
+  </Step>
+
+  <Step title="Test dari HP">
+    Buka Telegram di HP → cari bot kamu (`@evergreen_asisten_bot` atau username yang kamu pilih) → kirim "Halo".
+
+    **Kalau policy Pairing**: bot reply kasih kode 6-digit. Buka dashboard → Agent Detail → **Pairing Requests** panel → klik approve. Setelah approved, lanjut chat normal.
+
+    **Kalau policy Allow**: agent langsung respond.
+  </Step>
+</Steps>
+
+## Setelah terhubung
+
+Yang berubah:
+
+- ✅ Bisa chat agent dari Telegram (HP / desktop / web)
+- ✅ History chat di Telegram **terpisah** dari history dashboard — tapi context (konteks) agent tetap continue
+- ✅ Kalau matikan dashboard, agent tetap responsive di Telegram (selama gateway proses jalan di server)
+
+Yang **tidak** berubah:
+
+- ❌ Telegram chat gak otomatis muncul di dashboard chat history
+- ❌ File / image yang di-share lewat Telegram belum di-handle agent (cuma text)
+
+## Edit / hapus
+
+- **Edit setting** — klik ✎ pencil icon di card Telegram → ubah → save. Tunggu restart.
+- **Hapus binding** — klik 🗑 trash icon → konfirmasi. Bot bakal "berhenti respond" dari sisi Telegram, tapi agent tetep ada di dashboard.
+
+## Kalau ada masalah
+
+**Bot gak reply waktu di-chat**
+
+Cek 3 hal:
+1. **Lampu di tab Channels** — kalau merah/abu-abu, klik **Restart gateway** di Agent Detail header
+2. **DM Policy** — pastikan bukan `block`
+3. **Token typo** — paste ulang dari BotFather kalau ragu
+
+**Pairing code masuk tapi gak muncul di dashboard**
+
+Refresh halaman Agent Detail. Kalau masih kosong, bot mungkin restart loop — cek admin / tunggu beberapa menit.
+
+**"Bot is blocked" error di Telegram**
+
+User pernah block bot di Telegram. Buka Telegram → cari bot → unblock dari menu. Lalu DM lagi.
+
+## Yang belum bisa di-Telegram (untuk awareness)
+
+- ❌ Inline buttons / quick reply menu
+- ❌ Voice / image input (cuma teks)
+- ❌ Bot command auto-suggest (`/help`, `/start`, dll — gak otomatis di-set)
+- ❌ Webhook mode (AOC pakai polling — fungsional tapi delay 1-2 detik)
+
+## Selanjutnya
+
+Mau bind channel kedua biar dapat akses lewat lebih banyak app? Lihat <ConceptLink to="/docs/user-guide/channels/whatsapp">Setup WhatsApp</ConceptLink>.

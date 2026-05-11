@@ -1,0 +1,190 @@
+---
+title: Menjelajahi Agen
+description: Tour halaman /agents — list, search, filter, status badges, dan akses cepat ke fitur per-agent.
+updated: 2026-05-10
+---
+
+# Menjelajahi Agen
+
+Halaman `/agents` adalah pusat manajemen semua agent kamu — Master + sub-agent. Buka via sidebar **Agents** atau langsung URL.
+
+## Layout halaman
+
+<Mockup label="/agents">
+  <div className="flex items-center justify-between mb-4">
+    <span className="text-sm font-bold tracking-tight text-foreground">Agents</span>
+    <span className="inline-flex items-center gap-1 px-2.5 h-7 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-semibold leading-none">
+      <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" viewBox="0 0 24 24" aria-hidden>
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      <span>New</span>
+    </span>
+  </div>
+  <div className="flex flex-wrap items-center gap-2 mb-2">
+    <MockupInput placeholder="Search agents…" className="!w-[240px] !h-8" />
+    <MockupStatusFilter active="all" />
+    <MockupDropdown className="ml-auto">Owner: Me</MockupDropdown>
+  </div>
+  <div className="text-[11px] text-muted-foreground mb-4 px-0.5">3 of 3 agents</div>
+  <MockupGrid cols={3}>
+    <MockupAgentCard
+      avatarPresetId="emerald"
+      name="Evergreen"
+      id="abc1"
+      role="Master Orchestrator"
+      roleColor="#10b981"
+      roleNumber={0}
+      roleEmoji="🧭"
+      status="active"
+      vibe="Asisten yang percaya diri dan selalu siap membantu. Memberi jawaban jelas, langsung ke poin."
+      sessions={12}
+      cost={2.34}
+      tokens={845000}
+      channels={["telegram"]}
+      model="claude-sonnet-4-6"
+    />
+    <MockupAgentCard
+      avatarPresetId="cyan"
+      name="Flux"
+      id="b2cd"
+      role="Software Engineer"
+      roleColor="#06b6d4"
+      roleNumber={4}
+      roleEmoji="💻"
+      status="idle"
+      vibe="Asisten yang adaptif dan responsif. Menyesuaikan diri dengan kebutuhan user yang berubah."
+      sessions={5}
+      cost={0.87}
+      tokens={120000}
+      model="claude-sonnet-4-6"
+    />
+    <MockupAgentCard
+      avatarPresetId="orange"
+      name="Blaze"
+      id="c34e"
+      role="Product Manager"
+      roleColor="#f97316"
+      roleNumber={1}
+      roleEmoji="📋"
+      status="processing"
+      vibe="Asisten yang berani dan tegas. Tidak ragu mengambil keputusan, memberikan rekomendasi yang kuat."
+      sessions={3}
+      cost={0.45}
+      tokens={68000}
+      channels={["whatsapp", "discord"]}
+      model="claude-opus-4-7"
+    />
+  </MockupGrid>
+</Mockup>
+
+Setiap card menampilkan (top → bottom):
+
+- **Hash ID** kiri-atas — `#XXXX` (4 char pertama dari agent ID, mono uppercase)
+- **Status pill** kanan-atas — colored pill dengan dot + label (Active / Idle / Working / Paused / Error)
+- **Avatar 64×64** di tengah — emoji + custom preset, hover bikin scale-105
+- **Nama display** — bold, center-aligned
+- **Role badge** — `[number]` color circle + emoji + uppercase label, color match role template (mis. `0 🧭 MASTER ORCHESTRATOR` ungu, `4 💻 SOFTWARE ENGINEER` cyan)
+- **Vibe / description** — italic muted text, line-clamp-2 (kalau kosong tetap reserve 2 line height untuk grid alignment)
+- **3-stat grid** — Sessions / Cost / Tokens, masing-masing dalam pill `bg-foreground/3` rounded
+- **Channels row** (kalau ada) — icons Telegram/WhatsApp/Discord di bawah divider
+- **Model footer** — mono small text, mis. `claude-sonnet-4-6`, dengan dot kecil di kiri
+
+### Status pill variants
+
+<div className="not-prose flex flex-wrap items-center gap-2 my-4">
+  <MockupStatusPill status="active" />
+  <MockupStatusPill status="idle" />
+  <MockupStatusPill status="processing" />
+  <MockupStatusPill status="paused" />
+  <MockupStatusPill status="error" />
+</div>
+
+| Status | Kapan muncul |
+|--------|---------------|
+| **Active** | Agent online + gateway running + ready terima turn |
+| **Idle** | Gateway running, tapi tidak ada session aktif |
+| **Working** | Lagi process turn (animated pulse, hero shadow ber-glow amber) |
+| **Paused** | User explicit pause via Edit Configuration |
+| **Error** | Gateway crash atau stuck — restart dari Agent Detail |
+
+Card juga punya **role accent strip 0.5px** di paling atas (gradient horizontal dari role color) sebagai visual anchor — match warna role template.
+
+## Search & Filter
+
+<Steps>
+  <Step title="Search bar">
+    Cari berdasarkan nama, ID, atau persona snippet. Real-time match — cukup ketik beberapa karakter.
+  </Step>
+  <Step title="Filter Owner (admin only)">
+    Default: agent kamu sendiri. Dropdown:
+    - **Me** — punya kamu (default)
+    - **All** — semua user (cross-tenant view, admin only)
+    - **User specific** — pilih user tertentu untuk impersonate view
+  </Step>
+  <Step title="Status filter (planned)">
+    Filter by status (active/idle/processing/error) — belum tersedia di v1.
+  </Step>
+</Steps>
+
+<Callout type="info" title="Default scope = 'me'">
+Semua user (admin atau bukan) default-nya cuma lihat agent mereka sendiri. Ini disengaja untuk hindari accidental cross-tenant leakage. Admin harus eksplisit pilih `?owner=all` untuk lihat semua. Detail di <ConceptLink to="/docs/reference/sharp-edges">Sharp Edges</ConceptLink>.
+</Callout>
+
+## Klik card → buka detail
+
+Card di `/agents` cuma punya **satu aksi**: klik di mana saja di area card untuk navigate ke `/agents/<id>` (detail page). Tidak ada context menu, dropdown, atau action overlay di card itu sendiri.
+
+<Callout type="info" title="Semua aksi ada di Agent Detail page">
+Edit konfigurasi, restart gateway, kelola channel, install skill, dispatch task, delete agent — semuanya hidup di **Agent Detail page**. Card di list cuma entry point. Lihat <ConceptLink to="/docs/user-guide/agents/detail-overview">Halaman Detail Agen</ConceptLink> untuk tour lengkap.
+</Callout>
+
+Hover effect:
+- Card **lift up** 2px (`hover:-translate-y-0.5`)
+- Shadow membesar (`hover:shadow-xl hover:shadow-black/20`)
+- Avatar di hero scale-105 (subtle pop)
+- Cursor jadi pointer — sinyal seluruh area click-able
+
+## Provision agent baru
+
+Klik tombol **+ New Agent** di kanan atas. Akan muncul `TemplateEntryModal` dengan dua pilihan:
+
+<Tabs>
+  <Tab label="ADLC Template">
+    Pilih dari 9 role template (PM Discovery, PA Monitor, UX Designer, EM Architect, SWE, QA Engineer, Doc Writer, Biz Analyst, Data Analyst). Template auto-fill: emoji, color, persona description, recommended skills, soul prompt.
+  </Tab>
+  <Tab label="Blank">
+    Mulai dari kosong. Kamu isi semua field manual. Cocok kalau peran agent gak match template existing.
+  </Tab>
+</Tabs>
+
+Detail flow: <ConceptLink to="/docs/user-guide/agents/provisioning">Membuat Sub-Agent</ConceptLink>.
+
+## Bulk action
+
+Belum tersedia di v1 (planned). Sementara aksi destructive harus per-agent.
+
+## Empty state
+
+Kalau kamu cuma punya Master Agent (state baru selesai onboarding), halaman ini menampilkan:
+
+<Mockup label="/agents — empty state">
+  <div className="text-center py-8 px-4">
+    <div className="text-4xl mb-3">🤖</div>
+    <p className="text-base font-semibold text-foreground mb-1.5">Cuma kamu dan Master sejauh ini</p>
+    <p className="text-sm text-muted-foreground max-w-md mx-auto leading-relaxed mb-5">
+      Master Agent kamu siap eksekusi task — gak perlu rush bikin sub-agent.<br />
+      Provision sub-agent saat task <strong>berulang</strong> atau butuh <strong>persona spesifik</strong>.
+    </p>
+    <div className="flex items-center justify-center gap-2 flex-wrap">
+      <MockupButton variant="primary">+ Provision Sub-Agent</MockupButton>
+      <MockupButton>Pelajari Master Agent</MockupButton>
+    </div>
+  </div>
+</Mockup>
+
+Klik **Pelajari Master Agent** akan navigate ke <ConceptLink to="/docs/architecture/master-agent">halaman Master Agent</ConceptLink>.
+
+## Langkah selanjutnya
+
+- Mau provision sub-agent pertama? <ConceptLink to="/docs/user-guide/agents/provisioning">Membuat Sub-Agent</ConceptLink>
+- Klik agent untuk eksplor halaman detailnya. <ConceptLink to="/docs/user-guide/agents/detail-overview">Halaman Detail Agen</ConceptLink>

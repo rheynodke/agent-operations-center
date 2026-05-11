@@ -1,0 +1,150 @@
+---
+title: Agent World
+description: 3D isometric visualization workspace agent kamu — lihat tim wandering antar zona + chat langsung tanpa keluar dari view.
+updated: 2026-05-11
+---
+
+# Agent World
+
+**Agent World** adalah cara unik melihat tim AI kamu — bukan list flat, tapi **3D isometric scene** dimana agent-agent kamu berkeliaran di "kantor virtual" dengan zona berbeda. Plus floating chat panel — ngobrol sama agent **tanpa keluar** dari view.
+
+<Callout type="info" title="Where to find it">
+Buka halaman **Overview** (`/`) → toggle **Agent World** di kanan atas (sebelahan dengan tombol Dashboard).
+</Callout>
+
+## Apa yang kamu lihat
+
+<Screenshot
+  src="/docs/agent-world.png"
+  alt="Agent World — 3D isometric scene dengan 4 zona (Lounge, Coffee Bar, Meeting Room, Workspace) + agent characters wandering + floating chat panel ke Tadaki"
+  caption="Agent World mode dengan chat panel terbuka ke salah satu agent. Klik gambar untuk zoom."
+  zoom
+/>
+
+Scene 3D dengan **4 zona kantor virtual**:
+
+| Zona | Fungsi konseptual |
+|---|---|
+| 🛋️ **Lounge** | Area santai dengan sofa cluster — agent yang lagi idle hangout di sini |
+| ☕ **Coffee Bar** | Bar dengan stool — agent yang lagi "ngopi" alias break |
+| 🪑 **Meeting Room** | Round table — agent yang lagi rapat / kolaborasi multi-agent |
+| 💻 **Workspace** | Office desk — agent yang lagi processing task (working state) |
+
+Plus **Meeting Nook**, **Lounge 2** (multi-cluster sofa), dan disco ball pusat untuk dekorasi.
+
+## Agent character
+
+Tiap agent kamu di-render sebagai **3D character** dengan:
+
+- **Avatar mesh** — bentuk + warna sesuai preset agent (Evergreen hijau, Lumi gold, Flux cyan, dll)
+- **Name pill** — label di atas character dengan nama agent
+- **Level badge** — angka level (`L1` - `L100`) sebagai progress indicator engagement
+- **Movement animation** — wandering antar zona (idle), atau stay di workspace zone (saat working)
+- **Status ring** — lingkaran di bawah character: hijau (idle), kuning (working), merah (error), abu (offline)
+
+### Sistem leveling
+
+Tiap agent punya level dari **L1 (baru)** sampai **L100 (veteran)**. Formula gabungan dari:
+
+- Jumlah session yang dia handle
+- Total token yang dia process
+- Umur agent (multiplier 1× - 2.5×)
+
+Milestone:
+- **L1** → agent baru dibuat
+- **L10** → ~25 sessions, beberapa minggu
+- **L25** → ~150 sessions, beberapa bulan
+- **L50** → ~500 sessions, 6 bulan
+- **L75** → ~1000 sessions + heavy memory + 1 tahun
+- **L100** → veteran: ~2000 sessions + 50M+ tokens + 1 tahun
+
+Level ngasih **vibe gamification** — kamu bisa lihat agent mana yang udah "berpengalaman" tinggi vs yang masih fresh.
+
+## Mode toggle: My World vs Open World
+
+Top-right scene punya 2 button:
+
+| Mode | Yang ditampilkan |
+|---|---|
+| **My World** (default) | Cuma agent kamu sendiri — Master + sub-agent yang kamu provision |
+| **Open World** | **Semua Master Agent** dari user lain di instance ini — visualize seluruh komunitas AOC |
+
+<Callout type="info" title="Open World — cross-tenant view">
+Open World hanya tampilin **Master Agent** (1 per user), bukan sub-agent. Server aggregate data per-master jadi leveling consistent.
+
+Limit: kamu **gak bisa chat** sama agent dari user lain di Open World mode (gateway-nya beda owner). Cuma view-only.
+</Callout>
+
+## Klik agent → buka chat
+
+Klik character agent kamu di scene → **floating chat panel** muncul di kanan layar.
+
+### Komponen chat panel
+
+- **Header**: avatar agent + nama + status (Online · idle / working / error). Tombol refresh ↻ + close ✕
+- **2 tab**:
+  - **Chat** — message thread biasa (default)
+  - **Outputs** — file output yang agent generate di session ini (mis. CSV, PDF, markdown). Bisa di-preview / download
+- **Message thread**: visitor message right-aligned, agent reply left-aligned, max-height ~300px scroll
+- **Input bar**: text input + Send button. Enter untuk kirim, Shift+Enter untuk newline
+
+### Continuity session
+
+Saat kamu chat di pill ini, AOC **simpan session-nya per agent** — kalau kamu close pill terus buka lagi besok, percakapan **lanjut** di session yang sama, bukan fresh.
+
+Kalau mau reset (mulai fresh): klik tombol **↻ refresh** di header pill — hapus pinned session, next message bikin fresh session.
+
+### Inline output preview
+
+Di tab **Outputs**, agent yang publish file output (mis. via skill `room-publish.sh` atau task save_output) akan muncul list:
+
+- Markdown / HTML / JSON / CSV / TXT → **inline preview** dalam panel
+- File lain (PDF, DOCX, XLSX, image, archive) → **download-only** button
+
+Cocok untuk workflow: kamu kasih task ke agent → agent kerja background → kamu cek hasil di pill chat tanpa buka task panel.
+
+### Feedback (thumbs up/down)
+
+Tiap reply agent punya icon 👍 / 👎 tipis di kanan bawah message bubble. Klik untuk kasih feedback:
+
+- 👍 = "Reply ini bagus / sesuai harapan"
+- 👎 = "Reply ini missed / off-topic"
+
+Data feedback masuk ke **Satisfaction tab** di Agent Detail page — dipakai untuk monitor kualitas persona + tuning soul.
+
+## "Open full chat" link
+
+Bottom panel ada link **Open full chat →** — klik untuk pindah ke halaman `/chat` yang lebih luas (full-screen chat dengan side panel members/artifacts/context).
+
+Cocok kalau percakapan jadi panjang dan butuh context dari mission room.
+
+## Performance
+
+Scene 3D pakai **React Three Fiber + drei** — full WebGL accelerated. Beberapa hal yang dipake:
+
+- Geometry instancing untuk repeat objects (sofa, plant, table)
+- LOD (Level of Detail) — character mesh simplified saat zoom out
+- Idle animation loop — agent randomly walk antar zona
+
+Di laptop low-end / battery saver mode, kamu bisa toggle ke **Dashboard** mode kalau prefer text-based view (3D scene cukup GPU-intensive).
+
+## Untuk apa fitur ini
+
+- **Vibes monitoring** — at-a-glance lihat tim kamu lagi pada ngapain (working concentrated di workspace vs idle di lounge)
+- **Quick chat without context switch** — klik agent, chat, close — gak perlu navigate ke `/agents/<id>` atau `/chat`
+- **Gamification** — level system kasih sense of progression untuk agent kamu
+- **Cross-team awareness** (Open World) — lihat seluruh komunitas AOC tanpa perlu visit halaman terpisah
+
+## Yang TIDAK bisa di Agent World
+
+- ❌ **Provision agent baru dari sini** — harus via `/agents` page
+- ❌ **Edit configuration agent** — buka detail page
+- ❌ **Multi-agent group chat** — pill chat 1-on-1 only. Untuk multi-agent, pakai mission room
+- ❌ **Customize zone / decoration** — scene fixed (zone layout sudah ditentukan di code)
+- ❌ **Tap on Open World agent untuk chat** — Open World adalah view-only
+
+## Selanjutnya
+
+- Buat sub-agent dulu kalau scene cuma punya Master kamu: <ConceptLink to="/docs/user-guide/agents/provisioning">Membuat Sub-Agent</ConceptLink>
+- Pahami chat persistence + outputs lebih dalam: <ConceptLink to="/docs/getting-started/first-chat">Chat Pertama</ConceptLink>
+- Untuk full-screen chat dengan member panel: <ConceptLink to="/docs/user-guide/collaboration/mission-rooms">Mission Rooms</ConceptLink>

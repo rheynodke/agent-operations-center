@@ -87,6 +87,15 @@ const EVENT_TYPES = Object.freeze({
   // Open World — master agent roster change (provision/delete) so live
   // viewers see new masters spawn / removed masters disappear without reload.
   OPEN_WORLD_CHANGED:         'open-world:changed',
+  // Embed channel
+  EMBED_STATUS_CHANGED:       'embed:status_changed',
+  EMBED_MESSAGE_IN:           'embed:message_in',
+  EMBED_MESSAGE_OUT:          'embed:message_out',
+  EMBED_DLP_REDACTION:        'embed:dlp_redaction',
+  EMBED_TOOL_VIOLATION:       'embed:tool_violation',
+  EMBED_BUDGET_WARNING:       'embed:budget_warning',
+  EMBED_BUDGET_EXHAUSTED:     'embed:budget_exhausted',
+  EMBED_TOKEN_LEAK_SUSPECT:   'embed:token_leak_suspect',
 });
 
 const EVENT_VALUES = new Set(Object.values(EVENT_TYPES));

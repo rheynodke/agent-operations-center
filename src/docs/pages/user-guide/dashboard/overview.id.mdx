@@ -1,0 +1,126 @@
+---
+title: Dashboard Overview
+description: Tour halaman utama AOC — hero card, metric snapshot, gateway control, recent activity, dan live agents grid.
+updated: 2026-05-11
+---
+
+# Dashboard Overview
+
+Halaman pertama yang kamu lihat setelah login. URL: `/`. Ini hub monitoring real-time semua agent + sistem kamu.
+
+## Layout
+
+<Screenshot
+  src="/docs/dashboard-overview.png"
+  alt="System Overview page — hero card, metric cards, recent activity, gateway control, live agents grid"
+  caption="Halaman / — System Overview saat login. Klik gambar untuk zoom."
+  zoom
+/>
+
+## Bagian-bagiannya
+
+### 1. Hero card "Control Your AI Mission"
+
+Card besar dengan mascot 3D + tagline. Tombol **View Activity** scroll halaman ke section Recent Activity di bawah.
+
+Cocok sebagai welcome screen — kasih konteks ke user baru tentang apa yang AOC lakuin.
+
+### 2. Metric cards (4 KPI)
+
+Real-time stats dari sistem kamu:
+
+| Card | Value | Detail |
+|---|---|---|
+| **Gateway** | Running / Stopped | Port (mis. `18789` admin / `19xxx` user), status indicator hijau/merah, sparkline trend uptime |
+| **Sessions** | Total angka | Active count + gateway count (mis. "0 active · 98 gateway") |
+| **Agents** | Total provisioned | Active count below |
+| **Total Cost** | USD value | Cumulative cost dari semua agent kamu |
+
+Tiap card punya **mini sparkline chart** di bawah angka — visualize trend 24-jam terakhir.
+
+### 3. Active Sessions / Alerts mini stats
+
+Dua stat compact di bawah hero:
+
+- **Active Sessions** — berapa session lagi processing right now. Showing % change "vs yesterday"
+- **Alerts** — pending alert dari sistem (mis. error agent, gateway down). Showing % change
+
+Klik untuk navigate ke section yang lebih detail.
+
+### 4. Recent Activity feed
+
+List 10 event terakhir dari semua agent kamu. Tiap row menampilkan:
+
+- **Timestamp** — "9m ago", "10m ago", dll
+- **Avatar** + **Agent name** + status badge (IDLE / WORKING / ERROR)
+- **Stats**: jumlah message, total token usage
+- **Preview message** — snippet teks atau "HEARTBEAT_OK" untuk system events
+
+Klik row untuk buka session detail modal lengkap dengan history transkrip.
+
+### 5. Agent Gateway control
+
+Panel kanan atas. Berisi:
+
+- **Status indicator** (RUNNING / STOPPED) dengan icon WiFi
+- Tombol **Stop** + **Restart** + refresh
+- **Port** info, **Mode** (local / remote), **Bind** (loopback / 0.0.0.0), **PID**
+
+Useful saat gateway misbehaving — kamu langsung restart dari sini tanpa buka terminal.
+
+<Callout type="warning" title="Restart = drop semua session aktif">
+Tombol Restart akan kill gateway proses + spawn ulang. Semua session yang lagi processing **terputus** dan harus re-dispatch. Pakai cuma kalau perlu (mis. setelah edit `openclaw.json`, install skill, atau gateway stuck).
+</Callout>
+
+### 6. Live Agents grid
+
+Panel "4 ONLINE" di kanan bawah. Tiap card:
+
+- Avatar + nama agent + status (IDLE / WORKING / ERROR)
+- Subtitle: model yang digunakan (mis. `custom-api-kimi-com/kimi-for-co...`)
+
+Klik **See all** → navigate ke `/agents` halaman list lengkap.
+
+### 7. System Status banner
+
+Footer summary state. Contoh:
+
+- "✅ All agents are idle. No sessions recorded yet."
+- "⚠ 3 agents running, 2 alerts pending"
+- "🔴 Gateway disconnected — restart needed"
+
+Color-coded sesuai severity.
+
+## Tab toggle: Dashboard vs Agent World
+
+Top-right ada toggle 2-state:
+
+- **Dashboard** (default) — view metric + activity yang barusan kamu lihat
+- **Agent World** — switch ke 3D isometric visualization
+
+Toggle ini **di halaman yang sama** — gak navigate ke URL beda.
+
+## Navigation dari sini
+
+Kamu biasanya lompat dari sini ke:
+
+- **Live Agents → See all** → `/agents` (manage tim kamu)
+- **Recent Activity → klik event** → session detail (lihat full transkrip)
+- **Agent Gateway → Restart** (recovery action)
+- **Tab Agent World** → 3D visualization (lihat di section selanjutnya)
+
+## Auto-refresh
+
+Halaman ini **real-time** — semua data di-update otomatis via WebSocket:
+
+- Status agent (IDLE → WORKING → IDLE) update saat agent receive task
+- Recent Activity feed otomatis nambah event baru
+- Metric cards re-fetch tiap beberapa detik
+- Gateway status berubah saat connection state berubah
+
+Gak perlu refresh manual.
+
+## Selanjutnya
+
+- Eksplor 3D visualization mode: <ConceptLink to="/docs/user-guide/dashboard/agent-world">Agent World</ConceptLink>
+- Manage tim kamu: <ConceptLink to="/docs/user-guide/agents/browsing">Menjelajahi Agen</ConceptLink>

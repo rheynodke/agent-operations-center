@@ -1,0 +1,151 @@
+---
+title: Membuat Sub-Agent
+description: 4-step wizard untuk provisioning sub-agent baru — pilih template, custom identity, install skill, dan deploy.
+updated: 2026-05-10
+---
+
+# Membuat Sub-Agent
+
+**Sub-agent** adalah agent spesialis yang Master orchestrate. Beda dengan Master, sub-agent punya workspace terisolasi dan role spesifik.
+
+<Callout type="tip" title="Sebelum mulai: butuh atau tidak?">
+Jangan rush bikin sub-agent. Master Agent kamu sudah cukup powerful untuk most tasks (lihat <ConceptLink to="/docs/architecture/master-agent">Master Agent — Solo mode</ConceptLink>). Provision sub-agent saat:
+
+- Task spesifik **berulang** (mis. weekly report) — bikin agent dedicated
+- Task butuh **persona berbeda** (PM formal vs SWE santai)
+- Workspace task perlu **isolated** dari Master
+- Mau setup **multi-agent flow** (PM → SWE → QA paralel)
+
+Kalau ad-hoc satu kali, biarin Master handle.
+</Callout>
+
+## Akses wizard
+
+Dari halaman `/agents`, klik **+ New Agent**. Modal `TemplateEntryModal` muncul dengan 2 pilihan:
+
+- **ADLC Template** — preset role yang sudah dirancang
+- **Blank** — mulai dari kosong
+
+## Path A: ADLC Template
+
+9 template tersedia, tiap template punya emoji, color, persona, recommended skills, dan soul prompt.
+
+<Tabs>
+  <Tab label="Discovery & Strategy">
+    - **PM Discovery** 📋 — riset user, ideation feature, write PRD
+    - **PA Monitor** 📡 — monitor existing feature, baseline metrics, regression alert
+    - **Biz Analyst** 📊 — domain modeling, process mapping, ROI analysis
+  </Tab>
+  <Tab label="Design & Architecture">
+    - **UX Designer** 🎨 — wireframe, design system, prototype review
+    - **EM Architect** 🏛️ — high-level system design, tech tradeoff, ADR
+  </Tab>
+  <Tab label="Build & QA">
+    - **SWE** 💻 — implement code, refactor, debug
+    - **QA Engineer** 🧪 — test plan, automated tests, regression catch
+  </Tab>
+  <Tab label="Document & Analyze">
+    - **Doc Writer** 📝 — README, technical docs, runbook, changelog
+    - **Data Analyst** 📈 — SQL/BQ query, dashboard, anomaly detection
+  </Tab>
+</Tabs>
+
+Pilih template lalu klik **Lanjut** ke wizard 4-step.
+
+## Path B: Blank
+
+Skip template. Wizard mulai dari kosong, kamu isi semua field manual. Cocok untuk peran custom yang gak match 9 ADLC role.
+
+## Wizard 4-step
+
+Setelah pilih template (atau blank), masuk wizard:
+
+<Steps>
+  <Step title="Identitas">
+    - **ID slug** — auto-generated dari nama, lowercase + dash. Bisa di-edit. Contoh: `swe-1`, `support-bot`, `report-weekly`.
+    - **Display name** — nama yang muncul di UI (bisa Bahasa Indonesia, dengan spasi).
+    - **Emoji + color** — auto-fill dari template, bisa override.
+    - **Persona description** — paragraf 1-2 kalimat tentang gaya komunikasi.
+
+    <Callout type="warning" title="ID slug load-bearing">
+      ID slug jadi folder workspace + kunci di `openclaw.json`. Hindari karakter aneh, spasi, atau konflik dengan agent lain. Default sanitization akan replace spasi jadi dash dan strip karakter non-alphanumeric.
+    </Callout>
+  </Step>
+
+  <Step title="Soul (persona prompt)">
+    Editor Monaco dengan auto-fill dari template (`buildRoleSoul()`). Boleh edit, tapi struktur dasarnya disarankan dipertahankan:
+    - Identitas dasar (siapa kamu, apa peran)
+    - Personality + komunikasi style
+    - Operating principles (apa yang dilakukan/dihindari)
+    - Tools yang sering dipakai
+
+    <Callout type="tip" title="Soul yang efektif">
+      Soul yang bagus = spesifik. Hindari "asisten yang membantu user dengan task". Lebih baik: "SWE pragmatis yang prefer kode simple > clever, akan tanya clarifying question kalau spec ambigu, dan selalu kasih test sebelum claim 'done'."
+    </Callout>
+  </Step>
+
+  <Step title="Skills & Tools">
+    Pilih skill yang agent ini boleh akses. Default-nya: `agents.defaults.skills` (built-in: aoc-tasks, aoc-connections, aoc-room, aoc-schedules, aoc-self).
+
+    Tambahan dari template:
+    - PM/PA: `notify.sh`, `gdocs-export.sh`
+    - SWE: tooling extra
+    - Doc Writer: pandoc-related skills
+    - dst.
+
+    Bisa add custom skill dari list global atau ClawHub URL.
+
+    <Callout type="warning" title="Sub-agent fs.workspaceOnly: true">
+      Default sub-agent tidak bisa baca/tulis di luar workspace mereka. Kalau task butuh akses fs lebih luas (mis. baca config global), set `tools.fs.workspaceOnly: false` di field `Advanced` (gak recommended kecuali yakin).
+    </Callout>
+  </Step>
+
+  <Step title="Review & Buat">
+    Preview card agent: avatar, nama, persona, skill list. Klik **Buat Agent**.
+
+    Dashboard akan:
+    - Bikin agent baru di tim kamu
+    - Setup workspace personal-nya
+    - Auto-add ke HQ Room kamu (jadi bisa langsung di-mention dari chat)
+    - Restart agent supaya skill + binding ke-load
+
+    Tunggu progress dialog selesai (~5-10 detik). Setelah itu kamu otomatis redirect ke halaman detail agent baru.
+  </Step>
+</Steps>
+
+## Setelah provisioning
+
+- Sub-agent baru muncul di list `/agents`
+- Otomatis jadi member HQ Room kamu — bisa di-mention `@<agent-id>` dari chat Master
+- Master Agent kamu sekarang punya pilihan delegate task ke sub-agent ini saat relevan
+
+## Edit / re-provision
+
+Setelah created, kamu bisa edit:
+
+- **Identity, persona, soul** — di Agent Detail page tab Agent Files
+- **Skills** — tab Skills & Tools, toggle on/off
+- **Channels** — tab Channels, bind Telegram/WhatsApp/Discord
+- **Connections** — tab Connections, assign DB / API connection
+- **Schedules** — tab Schedules, bikin cron job
+
+Detail per tab: <ConceptLink to="/docs/user-guide/agents/detail-overview">Halaman Detail Agen</ConceptLink>.
+
+## Delete
+
+Dari halaman Agent Detail → menu opsi → **Delete Agent**. Konfirmasi 2-step (kamu ketik nama agent untuk konfirm). Yang hilang:
+
+- Agent profile + workspace file-nya
+- Connection assignment ke agent ini
+- Membership di mission room
+- Cron jobs yang assigned
+
+**Master Agent kamu gak bisa di-delete** — by design (1 user = 1 Master immutable). Sub-agent boleh di-delete kapan saja.
+
+⚠ Tidak bisa di-undo. Backup workspace dulu kalau ada output penting.
+
+## Langkah selanjutnya
+
+- Sub-agent baru kamu akan muncul di sidebar HQ Room — coba mention `@<agent-id>` di chat untuk delegate task pertama
+- Setup channel binding kalau mau interaksi via Telegram/WA/Discord — (segera hadir) Channels Overview
+- Eksplor tab di Agent Detail: <ConceptLink to="/docs/user-guide/agents/detail-overview">Halaman Detail Agen</ConceptLink>

@@ -1,0 +1,249 @@
+---
+title: Jadwal (Cron)
+description: Schedule recurring task untuk agent — cron / every / at expressions, session continuity, dan delivery channel.
+updated: 2026-05-10
+---
+
+# Jadwal (Cron)
+
+Schedule task agent untuk run berulang. Agent kamu bisa "ingatkan saya tiap pagi", "scrape data tiap jam", "weekly report tiap Senin", dll.
+
+<Callout type="warning" title="Gateway restart wajib setelah edit cron">
+Cron scheduler ada di **gateway proses**, bukan AOC backend. Gateway baca `<userHome>/cron/jobs.json` **sekali saat startup**. Job baru / update tidak aktif sampai gateway restart.
+
+UI kasih affordance "Restart now?" setelah create/edit. Atau eksekusi `./scripts/gw.sh restart <userId>`.
+</Callout>
+
+## Akses
+
+Halaman `/cron` (sidebar **Schedules**). Atau tab **Schedules** di Agent Detail (filter ke agent itu saja).
+
+## Tipe schedule (kind)
+
+3 tipe expression:
+
+<Tabs>
+  <Tab label="cron">
+    Standard cron syntax:
+    ```
+    0 9 * * 1-5         # tiap weekday jam 9:00
+    */15 * * * *        # tiap 15 menit
+    0 0 1 * *           # tanggal 1 setiap bulan, jam 0:00
+    ```
+    Format: `<minute> <hour> <day> <month> <day-of-week>`. Support `*`, `*/N`, `A-B`, `A,B,C`.
+  </Tab>
+  <Tab label="every">
+    Interval-based:
+    ```
+    every: 30m          # tiap 30 menit
+    every: 2h           # tiap 2 jam
+    every: 1d           # tiap hari
+    ```
+    Suffix: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
+  </Tab>
+  <Tab label="at">
+    One-shot di waktu spesifik:
+    ```
+    at: 2026-05-10T15:00:00+07:00
+    at: 2026-05-15T09:00
+    ```
+    ISO format. Setelah run, job di-disable (gak repeat).
+  </Tab>
+</Tabs>
+
+## Buat schedule
+
+<Steps>
+  <Step title="Klik '+ New Schedule'">
+    `CronJobFormDialog` muncul.
+  </Step>
+  <Step title="Isi metadata">
+    - **Name** — display name (mis. "Weekly Inventory Report")
+    - **Agent** — pilih agent yang eksekusi (default: Master)
+    - **Kind** — cron / every / at
+    - **Schedule expression** — format sesuai kind
+    - **Timezone** — default `Asia/Jakarta`, bisa override (penting saat schedule lintas TZ)
+  </Step>
+  <Step title="Isi message (prompt)">
+    Apa yang agent eksekusi saat fire? Contoh:
+    ```
+    Generate weekly inventory report dari connection bigquery-prod.
+    Output ke spreadsheet "Weekly Inventory" sheet "Q3 2026".
+    Notify saya via Telegram setelah selesai.
+    ```
+  </Step>
+  <Step title="Pilih session strategy">
+    - **isolated** (default) — fresh session per run, no context dari run sebelumnya
+    - **main** — pakai session utama agent (continuity)
+    - **current** — pakai active session kalau ada, fallback ke main
+  </Step>
+  <Step title="Pilih delivery channel (optional)">
+    Output di-deliver via:
+    - **Dashboard** (default) — visible di sessions list
+    - **Telegram** — kalau agent bind ke Telegram, send hasil ke chat
+    - **WhatsApp** — sama seperti Telegram
+    - **Email** — kalau agent skill enabled (`email-notif.sh`)
+    - **None** — silent run (cek hasil manual)
+  </Step>
+  <Step title="Submit">
+    Job tersimpan ke `<userHome>/cron/jobs.json` + SQLite `cron_jobs`.
+
+    UI kasih reminder: "Gateway restart needed for new schedule to activate. Restart now?".
+  </Step>
+</Steps>
+
+## Manage schedule
+
+Tiap row schedule punya menu aksi `⋮` di kanan:
+
+<div className="not-prose flex flex-col sm:flex-row gap-6 my-5 items-start">
+  <div className="flex-1 w-full sm:max-w-md rounded-lg border border-border bg-card p-3.5">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+          <p className="text-sm font-semibold text-foreground truncate">Morning brief</p>
+        </div>
+        <p className="text-[11px] text-muted-foreground/70 font-mono">
+          cron · 0 8 * * 1-5 · Asia/Jakarta
+        </p>
+        <p className="text-[10px] text-muted-foreground/50 mt-1 truncate">
+          Next run: tomorrow 08:00 · @evergreen
+        </p>
+      </div>
+      <span className="text-muted-foreground/60 text-base shrink-0">⋮</span>
+    </div>
+  </div>
+
+  <div className="flex flex-col gap-2 items-start">
+    <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-semibold pl-2">
+      → Action menu
+    </span>
+    <MockupActionMenu
+      items={[
+        { icon: "✎", label: "Edit" },
+        { icon: "▶", label: "Run now" },
+        { icon: "🕘", label: "View runs" },
+        { icon: "⏸", label: "Pause" },
+        { icon: "🗑", label: "Delete", variant: "danger" },
+      ]}
+    />
+  </div>
+</div>
+
+| Aksi | Behavior |
+|---|---|
+| **Edit** ✎ | Buka form untuk ubah jadwal / message / channel delivery. Setelah simpan, agent perlu di-restart supaya jadwal baru aktif. |
+| **Run now** ▶ | Eksekusi schedule **langsung** sekarang juga, tanpa nunggu next fire. Hasil bisa kamu lihat di "View runs". |
+| **View runs** 🕘 | Lihat history 20 run terakhir — status (sukses / error / cancelled / lagi running), waktu mulai-selesai, error message, ringkasan output. |
+| **Pause / Resume** | Hentikan sementara tanpa hapus. Klik lagi untuk lanjut. Restart agent supaya state aktif. |
+| **Delete** 🗑 | Hapus permanen. Konfirmasi dialog muncul dulu. |
+
+## Run history
+
+Klik **View runs** di action menu schedule → modal muncul dengan list 20 run terakhir. Tiap run punya:
+
+- **Status** — sukses / error / cancelled / running
+- **Started at** + **Ended at** — waktu eksekusi
+- **Error** — pesan error kalau gagal
+- **Summary** — ringkasan output yang agent return
+
+Useful untuk debug schedule yang gak jalan sesuai harapan.
+
+## Skill `aoc-schedules` (agent self-manage)
+
+Master atau sub-agent bisa kelola schedule sendiri lewat skill `aoc-schedules`:
+
+| Script | Fungsi |
+|---|---|
+| `schedules-list.sh` | List job (default: yang assigned ke agent ini); `--all` untuk semua job owner; `--enabled` filter aktif saja |
+| `schedules-create.sh` | Bikin baru: `--name --kind --schedule --message --tz --session --delivery-channel` |
+| `schedules-update.sh` | Patch field |
+| `schedules-toggle.sh` | Enable/disable |
+| `schedules-run-now.sh` | Trigger immediately |
+| `schedules-runs.sh <id>` | Show last N runs |
+| `schedules-delete.sh <id> --yes` | Remove |
+
+<Callout type="info" title="Default scope agent">
+Saat agent eksekusi `schedules-create.sh` tanpa flag `--no-bind`, job otomatis bound ke agent itu (`AOC_AGENT_ID` env). Pass `--no-bind` untuk owner-level job (siapapun di owner ini bisa execute).
+</Callout>
+
+## Common patterns
+
+### Daily morning routine
+
+```yaml
+name: "Morning brief"
+kind: cron
+schedule: "0 8 * * 1-5"  # weekday 8 AM
+agent: master
+session: main
+message: |
+  Cek inbox saya di Gmail (subject mengandung "urgent").
+  Summarize 3 task paling penting hari ini.
+  Kirim ke Telegram saya dengan format singkat (max 200 char).
+delivery: telegram
+```
+
+### Hourly health check
+
+```yaml
+name: "Health probe production"
+kind: every
+schedule: "1h"
+agent: pa-monitor
+session: isolated
+message: |
+  Probe https://api.example.com/health.
+  Kalau response time > 1s atau status != 200, post alert ke #ops mission room.
+delivery: none
+```
+
+### Weekly report
+
+```yaml
+name: "Q3 Weekly Inventory"
+kind: cron
+schedule: "0 9 * * 1"  # Senin pagi 9:00
+agent: data-analyst
+session: isolated
+message: |
+  Query BQ commercial_dataset.inventory untuk minggu lalu.
+  Generate report markdown + push ke Google Doc "Weekly Inventory".
+  Save link ke dashboard sebagai output, notify ke email saya.
+delivery: email
+```
+
+### One-shot reminder
+
+```yaml
+name: "Remind me kontrak vendor expires"
+kind: at
+schedule: "2026-06-01T09:00:00+07:00"
+agent: master
+session: main
+message: |
+  Tolong ingatkan saya bahwa kontrak vendor X expires hari ini.
+  Cari draft renewal di Google Drive.
+delivery: dashboard
+```
+
+## Troubleshooting
+
+**Job created tapi gak fire?**
+- Cek apakah enabled (toggle on)
+- Cek apakah gateway sudah restart sejak job dibuat
+- Cek `<userHome>/logs/gateway.log` ada error scheduler-related?
+- Verify expression valid: pakai online cron parser untuk konfirmasi
+
+**Job fire tapi agent gagal eksekusi?**
+- Lihat run history → error message
+- Common: skill yang dipakai gak available, connection gak assigned, atau prompt ambigu
+
+**Job duplicate fire?**
+- Bisa terjadi kalau gateway restart 2x cepat — scheduler load 2x. Stop manual semua, tunggu, lalu restart sekali.
+
+## Langkah selanjutnya
+
+- Pakai task board untuk track output cron: <ConceptLink to="/docs/user-guide/projects/task-board">Task Board</ConceptLink>
+- Setup connection untuk akses external resource: (segera hadir) Connections Overview

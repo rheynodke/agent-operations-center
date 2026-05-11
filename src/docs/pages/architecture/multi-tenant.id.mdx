@@ -1,0 +1,92 @@
+---
+title: Multi-Tenant Foundation
+description: Bagaimana AOC mengisolasi setiap user — filesystem, gateway proses, ownership scoping, dan pola access control.
+updated: 2026-05-10
+---
+
+# Multi-Tenant Foundation
+
+AOC menerapkan multi-tenancy di **tiga lapisan**: filesystem, proses gateway, dan SQLite row ownership. Tujuannya: aksi salah satu user tidak boleh bocor ke user lain — baik secara teknis (path traversal, race condition) maupun secara permission (data leakage).
+
+<Callout type="warning" title="Halaman ini load-bearing">
+Konstrain di halaman ini bersifat fundamental. Mengubahnya tanpa memahami konteksnya akan menyebabkan cross-tenant data leakage. Pastikan baca <ConceptLink to="/docs/reference/sharp-edges">Sharp Edges</ConceptLink> sebelum modifikasi.
+</Callout>
+
+## Tiga lapisan isolasi
+
+<Tabs>
+  <Tab label="Filesystem">
+    Setiap user mendapat directory terisolasi:
+
+    - **Admin** (uid=1): `~/.openclaw/`
+    - **User lain**: `~/.openclaw/users/<id>/.openclaw/`
+
+    Resolusi via `getUserHome(userId)` di `server/lib/config.cjs`. Saat user pertama kali login, `ensureUserHome()` di gateway-orchestrator yang membikin directory ini, salin `agents.defaults` dari admin (rewrite path workspace ke per-user), dan inherit config `tools` + `approvals` dari top-level admin.
+
+    Skills + scripts shared via **symlink** — `<userHome>/skills/` symlink ke `~/.openclaw/skills/`. Install skill sekali di admin's home → otomatis dapat di semua user.
+  </Tab>
+
+  <Tab label="Gateway proses">
+    Setiap user dapat **gateway OpenClaw terpisah**:
+
+    - **Admin**: gateway eksternal di port `18789`, di-manage systemd.
+    - **User lain**: gateway lazy-spawned ke port range `19000-19999`, dikelola `server/lib/gateway-orchestrator.cjs`.
+
+    Lifecycle:
+    - `spawnGateway(userId)` — bikin proses baru, tulis PID + port + token ke SQLite.
+    - `restartGateway(userId)` — stop + spawn (penting setelah perubahan `openclaw.json`).
+    - `cleanupOrphans()` — saat AOC restart, cek SQLite vs OS process table; PID yang masih hidup di-reattach (bukan dibunuh).
+  </Tab>
+
+  <Tab label="SQLite ownership">
+    Setiap row mutable diberi kolom owner:
+
+    - `agent_profiles.provisioned_by`
+    - `connections.created_by`
+    - `projects.created_by`
+    - `mission_rooms.created_by`
+    - `users.master_agent_id`
+
+    Filter list di setiap REST handler default-nya `'me'` — admin bisa override via `?owner=<id>` atau `?owner=all`. Detail di `server/helpers/access-control.cjs`.
+  </Tab>
+</Tabs>
+
+## Owner context dengan AsyncLocalStorage
+
+Beberapa accessor (mis. `db.getAgentProfile`) butuh `ownerId` untuk disambiguate slug yang sama dipakai dua user. Untuk avoid passing `ownerId` ke setiap call site, AOC pakai **AsyncLocalStorage**:
+
+<Steps>
+  <Step title="Middleware set context">
+    `requireAgentOwnership` membungkus handler dalam `withOwnerContext(userId, async () => handler())`.
+  </Step>
+  <Step title="Filesystem resolver baca context">
+    `homeFor`, `agentsDirFor`, `workspaceFor` baca current owner dari context, bukan dari arg.
+  </Step>
+  <Step title="Service token bypass">
+    Per-agent service tokens (claim `kind='agent-service'`) skip context — mereka hanya bisa akses agen mereka sendiri.
+  </Step>
+</Steps>
+
+Implementation: `server/lib/agents/owner-context.cjs`.
+
+## Composite primary key untuk slug
+
+`agent_profiles` PK = `(agent_id, provisioned_by)`. Artinya **dua user bisa punya agent slug yang sama** (mis. dua user sama-sama punya agent slug `support-bot`) sebagai dua row terpisah.
+
+<Callout type="danger" title="Hindari hardcode 'main'">
+Ada banyak helper yang assumsi master agent ID adalah `'main'`. Itu **HANYA admin**. User lain punya master ID acak (UUID-prefixed). Selalu pakai `db.getUserMasterAgentId(userId)` atau `normalizeMissionMembers(ids, masterAgentId)` — JANGAN hardcode `'main'`. Baca <ConceptLink to="/docs/reference/sharp-edges">Sharp Edges</ConceptLink> untuk daftar lengkap.
+</Callout>
+
+## Default scope: `'me'`, bukan `'all'`
+
+`GET /api/agents`, `/api/connections`, `/api/rooms`, `/api/projects` semuanya default ke `?owner=me` — termasuk untuk admin. Ini **disengaja** untuk hindari accidental cross-tenant data leakage.
+
+Untuk lihat semua user (admin only), eksplisit pakai `?owner=all`.
+
+Alternatif: navigasi pakai keyboard shortcut <KeyboardShortcut keys={["cmd", "k"]} /> untuk buka command palette (rencana future).
+
+## Apa yang TIDAK termasuk di sini
+
+- **Channel binding** (Telegram/WhatsApp/Discord) per-user — di-handle di gateway, bukan di AOC. Lihat halaman Channel Binding Internals.
+- **Connection sharing** — connection bisa di-set `shared=1` agar user lain bisa **assign** ke agent mereka tapi tidak edit. Lihat Connection Sharing Model.
+- **Cross-tenant admin monitoring** — direncanakan tapi belum di-build. Untuk sementara admin pakai `?owner=all` per request.

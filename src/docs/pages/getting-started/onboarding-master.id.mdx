@@ -1,0 +1,88 @@
+---
+title: Onboarding Master Agent
+description: Walkthrough wizard 4-step pembuatan Master Agent pertamamu — siapa Master, kenapa wajib, dan apa yang terjadi di balik layar.
+updated: 2026-05-10
+---
+
+# Onboarding Master Agent
+
+Setelah login pertama kali, kamu akan diarahkan ke `/onboarding`. Ini adalah wizard 4-step (atau 5-step kalau kamu bind channel) untuk bikin **Master Agent** kamu.
+
+<Callout type="info" title="Apa itu Master Agent?">
+Master Agent adalah satu-satunya agent default per user yang berperan sebagai orchestrator — dia ngerouting intent kamu ke spesialis (sub-agent), bisa delegate task, dan punya akses workspace yang lebih luas dibanding sub-agent biasa.
+</Callout>
+
+## Yang akan kamu siapkan
+
+Sebelum mulai, siapkan:
+
+- Nama panggilan untuk Master Agent (bebas, contoh: "Aira", "Kazuki", "Ravi")
+- Persona singkat (1-2 kalimat menggambarkan gaya komunikasinya)
+- (Opsional) Akses ke salah satu: Telegram bot token, WhatsApp account, atau Discord bot token — kalau mau interaksi lewat chat app, bukan dashboard saja
+
+Kalau tidak mau bind channel, skip aja — bisa dilakukan kapan saja nanti.
+
+## Langkah-langkah
+
+<Steps>
+  <Step title="Mulai (Welcome)">
+    Halaman pembuka, dengan background animasi PixelSnow. Klik **Lanjut** untuk masuk step identitas.
+  </Step>
+
+  <Step title="Identitas">
+    Pilih avatar dari 16 preset. Memilih preset akan **autofill** nama, persona, dan deskripsi dalam Bahasa Indonesia. Kamu bisa edit field manapun setelah autofill — kustomisasi kamu akan di-preserve kalau kamu ganti preset lagi.
+
+    Field yang harus diisi:
+    - **Nama** — auto-filled dari preset, tapi recommended kustomisasi
+    - **Persona** — kalimat singkat tentang gaya
+    - **Deskripsi** — paragraf pendek tentang peran
+
+    <Callout type="tip" title="Persona penting">
+      Persona yang clear bikin Master Agent lebih konsisten dalam komunikasi. Hindari deskripsi generik kayak "asisten yang membantu" — lebih bagus spesifik kayak "anak techy yang santai tapi to-the-point".
+    </Callout>
+  </Step>
+
+  <Step title="Channel">
+    Pilih **Telegram**, **WhatsApp**, **Discord**, atau **Skip**. Kalau pilih channel, kamu akan dikasih form inline untuk masukin token/account info.
+
+    <Callout type="warning" title="WhatsApp butuh waktu">
+      WhatsApp pakai QR login dan butuh ~5-10 detik setelah gateway restart untuk QR muncul. Wizard akan auto-retry dengan backoff — sabar saja kalau kosong di awal.
+    </Callout>
+  </Step>
+
+  <Step title="Review">
+    Hero card menampilkan preview Master Agent — avatar, nama, persona, channel binding. Klik **Buat Agent** untuk eksekusi.
+
+    Yang terjadi di balik layar:
+
+    - Provisioning agent dengan flag `isMaster=true`
+    - Workspace di `<userHome>/workspace` (bukan `workspaces/<id>` seperti sub-agent)
+    - Inject persona ke `SOUL.md`, orchestration playbook ke `AGENTS.md`, skill table ke `TOOLS.md`
+    - Auto-enable skill `aoc-master`
+    - Bikin per-user "General" project + default mission room
+    - Restart gateway agar binding channel + skill baru ke-load
+  </Step>
+
+  <Step title="Hubungkan (kalau bind channel)">
+    Step kelima ini cuma muncul kalau kamu bind channel di step 3. Wizard polling pairing request setiap 3 detik dan auto-approve yang pertama match.
+
+    Untuk WhatsApp: scan QR code yang muncul. Untuk Telegram/Discord: kirim kode 6-digit dari bot ke nomor/server kamu.
+
+    Setelah pairing approved, klik **Selesai** untuk masuk dashboard.
+  </Step>
+</Steps>
+
+## Setelah onboarding
+
+Begitu wizard selesai, kamu akan di-redirect ke `/` dengan zoom-in animation 700ms. Master Agent kamu sudah siap. Coba kirim chat pertamamu — lihat <ConceptLink to="/docs/getting-started/first-chat">Your First Chat</ConceptLink>.
+
+## Troubleshooting
+
+**Wizard stuck di step 5 untuk WhatsApp?**
+QR code expired atau gateway belum siap. Klik tombol "Refresh QR" atau tunggu beberapa detik. Kalau lebih dari 1 menit gak respond, refresh halaman dan ulang dari step 5.
+
+**Agent dibikin tapi tidak bisa chat?**
+Gateway perlu restart. Buka <KeyboardShortcut keys={["cmd", "shift", "g"]} /> (planned shortcut, sementara via Settings → Gateway → Restart) atau eksekusi `./scripts/gw.sh restart <userId>` di terminal admin.
+
+**Mau ganti Master Agent setelah onboarding?**
+Tidak bisa di-replace — satu user satu Master selamanya. Tapi kamu bisa edit nama, persona, dan skill-nya kapan saja di Agent Detail page.

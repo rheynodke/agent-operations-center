@@ -1,0 +1,133 @@
+---
+title: Setup Discord
+description: Hubungkan agent kamu ke Discord bot — chat lewat DM langsung atau di server (guild) yang kamu pilih.
+updated: 2026-05-11
+---
+
+# Setup Discord
+
+Setelah setup ini, kamu bisa **chat agent dari Discord** — DM langsung atau via server tertentu yang kamu allow.
+
+## Yang kamu butuhin
+
+- Akun Discord aktif
+- Akses ke [Discord Developer Portal](https://discord.com/developers/applications)
+- Server Discord (guild) kalau mau bot di server, opsional
+
+## Langkah-langkah
+
+<Steps>
+  <Step title="Bikin bot di Discord Developer Portal">
+    Buka [https://discord.com/developers/applications](https://discord.com/developers/applications) → klik **New Application** → kasih nama (mis. "Evergreen Bot") → klik Create.
+
+    Di sidebar kiri, klik **Bot** → klik **Add Bot** → konfirmasi.
+  </Step>
+
+  <Step title="Ambil token bot">
+    Di halaman Bot, klik **Reset Token** (kalau pertama kali) atau **Copy** kalau sudah ada. Token format: string panjang ~70 karakter.
+
+    ⚠ Token ini **rahasia**. Kalau bocor, segera reset.
+  </Step>
+
+  <Step title="Set bot permissions (penting)">
+    Di tab **OAuth2 → URL Generator**:
+
+    - Pilih **Scopes**: ✅ `bot` + ✅ `applications.commands` (kalau mau slash command, optional)
+    - Pilih **Bot Permissions**: ✅ `Send Messages`, ✅ `Read Message History`, ✅ `View Channels` (minimum)
+
+    Copy generated URL. Buka di browser → pilih server tujuan → authorize. Bot kamu sekarang join server itu.
+
+    Untuk bot yang **DM only** (gak di server), kamu bisa skip step ini.
+  </Step>
+
+  <Step title="Buka halaman agent kamu">
+    Di dashboard, klik agent → tab **Channels**.
+
+    Card "Discord" muncul. Klik **+ Add Discord** kalau belum ada binding.
+  </Step>
+
+  <Step title="Paste token + pilih policy">
+    Di form yang muncul:
+
+    - **Bot Token** — paste token dari Developer Portal
+    - **DM Policy** — siapa yang boleh DM bot:
+      - **Pairing** (recommended) — user DM dulu, dapat kode, approve di dashboard
+      - **Allow** — siapa pun bisa langsung DM
+      - **Block** — DM dimatikan, cuma group / server yang aktif
+    - **Group Policy** — bagaimana bot reply di server (guild):
+      - **Open** — semua server bot ada bisa interaksi
+      - **Allowlist only** — cuma server tertentu yang di-whitelist
+      - **Disabled** — bot diam di server, cuma respond DM
+
+    Klik **Save**.
+  </Step>
+
+  <Step title="Tunggu agent restart">
+    Notifikasi sukses muncul. Agent restart (5-10 detik). Tab Channels punya **lampu hijau 🟢** kalau aktif.
+  </Step>
+
+  <Step title="Test dari Discord">
+    Buka Discord → cari bot kamu di **Friends → Add Friend** (search by username), atau ke server yang kamu invite bot tadi.
+
+    - **Test DM**: kirim "Halo" ke bot. Kalau policy `pairing`, kamu dapat kode 6-digit → approve di dashboard. Kalau `allow`, langsung respond.
+    - **Test di server (kalau group policy = open atau allowlist server ini)**: mention bot dengan `@bot-name` atau kirim di channel yang bot ada.
+  </Step>
+</Steps>
+
+## Setelah terhubung
+
+- ✅ Chat agent via Discord DM
+- ✅ Mention bot di server yang allow → bot reply
+- ✅ Pakai dari multiple devices Discord (mobile, desktop, web)
+- ⚠ Server visibility: bot cuma bisa lihat channel yang dia ada permission-nya (sama seperti user biasa di Discord)
+
+## Edit / hapus
+
+- **Edit setting** — klik ✎ di card Discord → ubah → save → restart.
+- **Hapus binding** — klik 🗑 → konfirmasi. Bot stop respond di Discord, tapi agent tetap ada di dashboard.
+
+Kalau mau **uninstall bot dari server Discord** sepenuhnya: buka server settings → Members → cari bot → klik kick.
+
+## Tips: bot multiple server
+
+Bot Discord by design bisa join **banyak server** sekaligus dengan satu token. Berguna kalau kamu punya beberapa team/community.
+
+Pakai **group policy = allowlist** untuk strict control — cuma server yang kamu approve yang dapat akses ke agent.
+
+## Kalau ada masalah
+
+**Bot offline status di Discord**
+
+Bot tampil "Offline" di sidebar Discord member. Cek:
+1. **Lampu di tab Channels** — kalau merah, klik **Restart gateway** di Agent Detail
+2. **Token typo** — paste ulang dari Developer Portal
+3. **Bot intents** — kalau "Send Messages" gak diaktifkan, bot connect tapi gak bisa reply
+
+**Bot di server tapi gak respond**
+
+- DM Policy bukan `block` (kalau test via DM)
+- Group Policy bukan `disabled` (kalau test di channel)
+- Bot punya permission **View Channels** + **Send Messages** di channel tujuan
+- Channel itu permission bot bukan "denied"
+
+**"Missing Access" error di Discord**
+
+Bot gak punya permission yang dibutuhin di channel/server tertentu. Cek role bot di server settings → roles → role bot → permissions.
+
+**Pairing code dari bot DM tapi gak muncul di dashboard**
+
+Refresh halaman Agent Detail. Pending request masuk realtime, tapi kadang network delay.
+
+## Yang belum bisa via Discord
+
+- ❌ **Voice channel** — bot belum support join voice
+- ❌ **Slash command auto-register** — `/help`, `/list` perlu setup manual di Developer Portal
+- ❌ **File / attachment dari user** — cuma teks
+- ❌ **Reaction (emoji)** — bot belum bisa add reaction ke message
+- ❌ **Embed message** dengan rich format — text reply sederhana saja
+- ❌ **Threads** — belum di-handle, cuma main channel
+
+## Selanjutnya
+
+- Setup channel kedua: <ConceptLink to="/docs/user-guide/channels/telegram">Telegram</ConceptLink> atau <ConceptLink to="/docs/user-guide/channels/whatsapp">WhatsApp</ConceptLink>
+- Pahami pairing flow lengkap: <ConceptLink to="/docs/user-guide/channels/overview">Overview Channel</ConceptLink>
