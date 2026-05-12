@@ -18,7 +18,7 @@ let _memoryHooks = null;
 function memoryHooks() {
   // Lazy require to avoid circular dep risk during boot.
   if (_memoryHooks == null) {
-    try { _memoryHooks = require('./memory-hooks'); }
+    try { _memoryHooks = require('./memory-hooks/index.cjs'); }
     catch (e) { _memoryHooks = false; if (process.env.AOC_MEMORY_HOOK_DEBUG) console.warn('[gateway-ws] memory-hooks load failed:', e.message); }
   }
   return _memoryHooks || null;

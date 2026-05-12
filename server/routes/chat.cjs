@@ -10,7 +10,7 @@
 const fs = require('node:fs');
 const { gatewayForReq } = require('../helpers/gateway-context.cjs');
 const outputsLib = require('../lib/outputs.cjs');
-const memoryHooks = require('../lib/memory-hooks');
+const memoryHooks = require('../lib/memory-hooks/index.cjs');
 
 module.exports = function chatRouter(deps) {
   const { db, parsers, loadAllJSONLMessagesForTask } = deps;
