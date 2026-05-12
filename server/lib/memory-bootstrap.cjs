@@ -36,7 +36,7 @@ const ACTIVE_MEMORY_DEFAULTS = {
   enabled: true,
   agents: null, // populated dynamically with all current agent IDs
   allowedChatTypes: ['direct'],
-  model: 'claude-cli/claude-haiku-4-5',
+  model: 'claude-cli/claude-haiku-3-5',
   queryMode: 'recent',
   promptStyle: 'balanced',
   timeoutMs: 8000,

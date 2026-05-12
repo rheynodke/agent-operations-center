@@ -11,6 +11,16 @@
 const orchestrator = require('../lib/gateway-orchestrator.cjs');
 const { gatewayPool } = require('../lib/gateway-ws.cjs');
 const audit = require('../lib/audit-log.cjs');
+const { withKeyLock } = require('../lib/locks.cjs');
+
+// Tenant-topology mutex. Serializes register flows so that two concurrent
+// registrations cannot interleave createUser + spawnGateway + sandbox
+// refresh. Without this, peer A's sandbox profile could miss peer B if B
+// commits after A reads db.getAllUsers(). The window converges within a
+// few seconds anyway (each peer's refresh restarts the others), but the
+// lock closes it deterministically — important because newly-registered
+// tenants start populating data within the first minute.
+const TENANT_TOPOLOGY_LOCK = 'tenant-topology';
 
 /** Per-user mutex so two simultaneous logins for the same user dedupe spawn. */
 const _spawnInflight = new Map();
@@ -203,55 +213,67 @@ module.exports = function authRouter(deps) {
     if (inv.revokedAt) return res.status(410).json({ error: 'Invitation revoked' });
     if (inv.expired)   return res.status(410).json({ error: 'Invitation expired' });
 
+    // Serialize the whole tenant-creation flow (createUser → spawnGateway →
+    // sandbox refresh) so two concurrent registers cannot leave a peer with
+    // a stale deny list. See TENANT_TOPOLOGY_LOCK comment up top.
+    let user;
     try {
-      const user = db.createUser({
-        username,
-        password,
-        displayName: displayName || username,
-        role: inv.defaultRole || 'user',
-      });
-      db.incrementInvitationUse(inv.id);
-
-      // Note: per-user "General" project is auto-created in onboarding/master
-      // (after the master agent exists), NOT here — otherwise the project's
-      // default mission room falls back to admin's `main` because
-      // `getUserMasterAgentId(uid)` returns null at this point.
-
-      // Provision the new user's gateway during registration. This is the
-      // primary spawn point — login retains the call as a silent fallback for
-      // post-AOC-restart recovery.
-      try {
-        await ensureUserGateway(user.id);
-      } catch (e) {
-        console.error(`[auth/register-invite] gateway spawn failed for user ${user.id}: ${e.message}`);
-        return res.status(503).json({
-          error: 'Account created but workspace setup failed. Please contact admin.',
-          code: 'GATEWAY_SPAWN_FAILED',
-          details: String(e?.message ?? e),
-          partial: { userId: user.id, username: user.username },
+      user = await withKeyLock(TENANT_TOPOLOGY_LOCK, async () => {
+        const u = db.createUser({
+          username,
+          password,
+          displayName: displayName || username,
+          role: inv.defaultRole || 'user',
         });
-      }
+        db.incrementInvitationUse(inv.id);
 
-      const jwtToken = db.generateToken(user);
-      console.log(`[auth] User "${username}" registered via invitation #${inv.id}`);
-      res.json({
-        token: jwtToken,
-        user: {
-          id: user.id,
-          username: user.username,
-          displayName: user.display_name,
-          role: user.role,
-          hasMaster: false,
-          masterAgentId: null,
-        },
+        // Note: per-user "General" project is auto-created in onboarding/master
+        // (after the master agent exists), NOT here — otherwise the project's
+        // default mission room falls back to admin's `main` because
+        // `getUserMasterAgentId(uid)` returns null at this point.
+
+        // Provision the new user's gateway during registration. This is the
+        // primary spawn point — login retains the call as a silent fallback for
+        // post-AOC-restart recovery.
+        await ensureUserGateway(u.id);
+
+        // Refresh peer gateways so their sandbox profiles include the new
+        // user in the cross-tenant deny list. AWAITED inside the lock so the
+        // lock release guarantees full convergence — no race with the next
+        // concurrent register.
+        try {
+          const r = await orchestrator.refreshTenantSandboxes(u.id);
+          console.log(`[auth] sandbox refresh restarted peers:`, r.restarted);
+        } catch (e) {
+          console.warn(`[auth] sandbox refresh failed: ${e.message} — peers may have stale profiles; next register will fix`);
+        }
+        return u;
       });
-    } catch (err) {
-      if (err.message?.includes('UNIQUE')) {
+    } catch (e) {
+      if (e?.message?.includes('UNIQUE')) {
         return res.status(409).json({ error: 'Username already exists' });
       }
-      console.error('[auth/register-invite]', err);
-      res.status(500).json({ error: 'Failed to create user' });
+      console.error(`[auth/register-invite] tenant provisioning failed: ${e.message}`);
+      return res.status(503).json({
+        error: 'Account created but workspace setup failed. Please contact admin.',
+        code: 'GATEWAY_SPAWN_FAILED',
+        details: String(e?.message ?? e),
+      });
     }
+
+    const jwtToken = db.generateToken(user);
+    console.log(`[auth] User "${username}" registered via invitation #${inv.id}`);
+    res.json({
+      token: jwtToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.display_name,
+        role: user.role,
+        hasMaster: false,
+        masterAgentId: null,
+      },
+    });
   });
 
   // ─── Admin: Invitations CRUD ────────────────────────────────────────────────

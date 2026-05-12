@@ -639,8 +639,40 @@ async function spawnGatewayLocked(userId) {
 
   // For mock-binary tests: openclawBin may be a .cjs script. Detect and pass through node.
   const isJsBin = openclawBin.endsWith('.cjs') || openclawBin.endsWith('.js') || openclawBin.endsWith('.mjs');
-  const cmd  = isJsBin ? process.execPath : openclawBin;
-  const args = isJsBin ? [openclawBin] : ['gateway'];
+  let cmd  = isJsBin ? process.execPath : openclawBin;
+  let args = isJsBin ? [openclawBin] : ['gateway'];
+
+  // Cross-tenant hard limit via macOS sandbox-exec. Per-user gateways (uid >= 2)
+  // are wrapped so the kernel denies file ops on other tenants' homes — even
+  // if the model bypasses skill-based safety guards. Admin (uid=1) is not
+  // sandboxed (operator role; runs via launchd directly anyway). Disable in
+  // tests (isJsBin) or via AOC_DISABLE_TENANT_SANDBOX=1.
+  if (process.platform === 'darwin'
+      && Number(userId) !== 1
+      && !isJsBin
+      && process.env.AOC_DISABLE_TENANT_SANDBOX !== '1') {
+    try {
+      const sandboxBin = '/usr/bin/sandbox-exec';
+      if (fs.existsSync(sandboxBin)) {
+        const { writeProfileForUser } = require('./sandbox-profile.cjs');
+        // Peer user IDs = all other rows in `users` table.
+        const peers = (db.getAllUsers ? db.getAllUsers() : [])
+          .map(u => Number(u.id))
+          .filter(uid => Number.isFinite(uid) && uid !== Number(userId) && uid !== 1);
+        const profile = writeProfileForUser({
+          ownerUserId: Number(userId),
+          peerUserIds: peers,
+          userHome,
+        });
+        args = ['-f', profile, cmd, ...args];
+        cmd = sandboxBin;
+      } else {
+        console.warn(`[orchestrator] sandbox-exec missing at ${sandboxBin}, spawning uid=${userId} without tenant sandbox`);
+      }
+    } catch (e) {
+      console.warn(`[orchestrator] sandbox wrap failed for uid=${userId}: ${e.message} — spawning unsandboxed`);
+    }
+  }
 
   const child = spawn(cmd, args, {
     detached: true,
@@ -1116,6 +1148,25 @@ async function cleanupOrphans() {
 }
 
 /**
+ * Restart every running per-user gateway except `excludeUserId` (and admin)
+ * so their sandbox profiles regenerate with the freshly-extended peer list.
+ * Called after a new user is registered. Fails silently per-user — one
+ * laggy gateway must not block onboarding.
+ */
+async function refreshTenantSandboxes(excludeUserId) {
+  const rows = (db.listGatewayStates && db.listGatewayStates()) || [];
+  const targets = rows
+    .filter(r => r.state === 'running' && r.pid != null)
+    .map(r => Number(r.user_id ?? r.userId ?? r.id))
+    .filter(uid => Number.isFinite(uid) && uid !== 1 && uid !== Number(excludeUserId));
+  for (const uid of targets) {
+    try { await restartGateway(uid); }
+    catch (e) { console.warn(`[orchestrator] refreshTenantSandboxes restart uid=${uid} failed: ${e.message}`); }
+  }
+  return { restarted: targets };
+}
+
+/**
  * Shut down AOC cleanly WITHOUT terminating per-user gateways. Per-tenant
  * isolation: a user's gateway should keep running across an AOC pm2 restart.
  * On next AOC start, `cleanupOrphans()` re-attaches via PID + persisted token.
@@ -1131,6 +1182,7 @@ module.exports = {
   linkSharedQmdModelsForAgent,
   linkSharedQmdModelsForUser,
   spawnGateway, stopGateway, restartGateway,
+  refreshTenantSandboxes,
   getGatewayState, listGateways, getRunningToken,
   cleanupOrphans, gracefulShutdown, findAocManagedOrphanPids,
   ensureSharedProviders,
