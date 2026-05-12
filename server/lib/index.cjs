@@ -31,6 +31,7 @@ const aocRoomSkill        = require('./aoc-room/installer.cjs');
 const aocOdooSkill        = require('./aoc-odoo/installer.cjs');
 const aocSchedulesSkill   = require('./aoc-schedules/installer.cjs');
 const aocSelfSkill        = require('./aoc-self/installer.cjs');
+const aocSafetySkill      = require('./aoc-safety/installer.cjs');
 const workspaceBrowser    = require('./workspace-browser.cjs');
 const roleTemplates = require('./role-templates.cjs');
 const skillCatalog  = require('./skill-catalog.cjs');
@@ -208,6 +209,7 @@ module.exports = {
   aocOdooSkill,
   aocSchedulesSkill,
   aocSelfSkill,
+  aocSafetySkill,
   workspaceBrowser,
 
   // ── role templates (Phase 1: read-only + seed) ────────────────────────────

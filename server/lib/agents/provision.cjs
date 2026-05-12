@@ -459,6 +459,10 @@ function provisionAgentLocked(opts, userId, home, configPath) {
   // Master-only skills layered on top of the defaults. aoc-master is the
   // orchestration toolkit; browser-harness-odoo extends master's testing reach.
   const MASTER_EXTRA_SKILLS = ['aoc-master', 'browser-harness-odoo'];
+  // Skills that ride in agents.defaults but must be stripped for masters.
+  // aoc-safety-worker is sub-agent-only: it enforces workspace-only writes
+  // and no-orchestration rules that masters legitimately violate.
+  const MASTER_EXCLUDED_SKILLS = ['aoc-safety-worker'];
 
   // 1. Validate
   validateProvision(opts, agentList);
@@ -519,6 +523,7 @@ function provisionAgentLocked(opts, userId, home, configPath) {
     //   - Master: defaults + master-only extras (aoc-master, browser-harness-odoo).
     skills: isMaster
       ? Array.from(new Set([...MASTER_EXTRA_SKILLS, ...defaultSkills]))
+          .filter((s) => !MASTER_EXCLUDED_SKILLS.includes(s))
       : [...defaultSkills],
     // Enable heartbeat for this agent (OpenClaw requires explicit config per agent).
     // Budget-friendly defaults: isolatedSession + lightContext drop per-heartbeat

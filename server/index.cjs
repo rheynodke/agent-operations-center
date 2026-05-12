@@ -864,6 +864,27 @@ async function start() {
     parsers.aocSelfSkill.ensureSkillEnabledForAllAgents()
       .catch((e) => console.warn('[startup] aoc-self ensure failed:', e.message));
   } catch (e) { console.warn('[startup] aoc-self skill init failed:', e.message); }
+  // aoc-safety built-in skills: install bundles + auto-enable.
+  // Core goes to every agent (master + sub-agent). Worker is sub-agent-only —
+  // master agents are excluded via MASTER_EXCLUDED_SKILLS in provision.cjs
+  // and via the master-aware ensureWorkerEnabledForNonMasterAgents walk.
+  try {
+    parsers.aocSafetySkill.installSafe();
+    parsers.aocSafetySkill.ensureCoreEnabledForAllAgents()
+      .catch((e) => console.warn('[startup] aoc-safety-core ensure failed:', e.message));
+    // Build the userId → masterAgentId map from SQLite users table.
+    const masterByUser = {};
+    try {
+      const allUsers = db.getAllUsers ? db.getAllUsers() : [];
+      for (const u of allUsers) {
+        const masterId = u.master_agent_id || u.masterAgentId;
+        if (masterId) masterByUser[u.id] = masterId;
+      }
+    } catch (e) { console.warn('[startup] aoc-safety masterByUser build failed:', e.message); }
+    parsers.aocSafetySkill.ensureWorkerEnabledForNonMasterAgents({ masterByUser })
+      .catch((e) => console.warn('[startup] aoc-safety-worker ensure failed:', e.message));
+  } catch (e) { console.warn('[startup] aoc-safety skill init failed:', e.message); }
+
   // aoc-master skill: install bundle (master agents are enrolled per-provision /
   // per-onboarding via ensureSkillEnabledForUserMasters elsewhere).
   // As of aoc-master 1.1.0, mission_room.sh + the task-board playbook live

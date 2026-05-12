@@ -284,7 +284,7 @@ Allowed extensions: `.sh`, `.py`, `.js`, `.ts`, `.rb`, `.bash`, `.zsh`, `.fish`,
 
 ## AOC Built-in Skills & Sync Engine
 
-AOC ships **seven** skill bundles. They are infrastructure, not toggleable in the UI.
+AOC ships **ten** skill bundles. They are infrastructure, not toggleable in the UI.
 
 | Slug | Master-only? | Purpose |
 |---|---|---|
@@ -296,6 +296,8 @@ AOC ships **seven** skill bundles. They are infrastructure, not toggleable in th
 | `aoc-self` | No | Lets agents author their own personal (scope='agent') skills: `agent-skill-create`, `-add-script`, `-list`, `-remove`. Skills land at `<workspace>/.agents/skills/<slug>/` — visible only to that agent. `buildSkillsPathPrefix` walks each agent's workspace too, so script names resolve on PATH after gateway restart. Delete refuses without `--yes`. |
 | `browser-harness-odoo` | No (but defaults exclude it) | Odoo browser automation. SKILL.md + 10 shell scripts. |
 | `aoc-master` | **Yes** | Orchestration toolkit: `delegate.sh`, `team-status.sh`, `list-team-roles.sh`, `provision.sh`, `mission_room.sh` (Task Board driver: create/update/comment/dispatch/approve/request-change tasks + post to other rooms). Auto-enabled only for agents with `is_master=1`. As of 1.1.0 absorbed the deprecated `mission-orchestrator` skill. |
+| `aoc-safety-core` | No | Universal safety hard limits — tenant boundary, credential disclosure, prompt injection, config integrity. Auto-enabled for every agent. Text-only SKILL.md (no scripts). |
+| `aoc-safety-worker` | Excluded for master | Sub-agent additional limits — workspace boundary, no orchestration, out-of-band auth refusal. Master agents strip this via `MASTER_EXCLUDED_SKILLS` in `provision.cjs`. |
 
 **Auto-enable mechanism (each installer):**
 1. Install/refresh the skill bundle to `~/.openclaw/skills/{slug}/`.
@@ -526,6 +528,8 @@ Two user roles: `admin` and `user` (plus internal `agent` role for service token
 
 These are the load-bearing constraints discovered during Tier 3 multi-tenant work. Future you will re-introduce them otherwise.
 
+- **`aoc-safety-worker` exclusion lives in two places.** (1) `MASTER_EXCLUDED_SKILLS` in `server/lib/agents/provision.cjs` filters it out when a new master agent is provisioned. (2) `ensureWorkerEnabledForNonMasterAgents` in `server/lib/aoc-safety/installer.cjs` skips the master agent ID when walking existing per-user `openclaw.json`. Both are required — provision-time handles new masters, installer-time handles existing ones. Skip either and masters will end up with the wrong skill set after a re-install.
+- **Safety skill changes need gateway restart to reach existing sessions.** New agents created after AOC boot pick up the safety skills automatically. Existing live sessions keep their old skill set until the gateway is restarted. Run `./scripts/gw.sh restart all` after bumping `BUNDLE_VERSION` if you need immediate cluster-wide effect.
 - **OpenClaw gateway rejects unknown keys** in `agents.list[]` of `openclaw.json`. Confirmed rejected: `isMaster`, `adlcRole`. **Track all custom flags in SQLite** (`agent_profiles` columns), NEVER in openclaw.json.
 - **`<userHome>/skills/` is a symlink** to admin's `~/.openclaw/skills/`. Installing a bundle once at admin's home propagates to every user. Don't try to install per-user.
 - **Gateway exec PATH must include skill scripts dirs.** OpenClaw's `exec` tool spawns `zsh -c '<cmd>'` / `bash -c '<cmd>'` — non-interactive non-login shells that **do NOT source `~/.openclaw/.aoc_env`**. Bare commands like `aoc-connect.sh` / `team-status.sh` / `schedules-list.sh` fail with "command not found" unless skill scripts dirs are pre-injected into the gateway's PATH. Per-user gateways: orchestrator's `buildSkillsPathPrefix(userHome)` does this in `childEnv` at spawn. It walks (a) `<userHome>/skills/*/scripts` (admin-symlinked + user-installed), (b) `<adminBase>/skills/*/scripts` (defensive double-glob), AND (c) every agent's workspace via `cfg.agents.list[].workspace` for `<ws>/skills/*/scripts` + `<ws>/.agents/skills/*/scripts` — so agent-authored personal skills (via `aoc-self`) resolve too. Admin's external (systemd-managed) gateway: read `~/.openclaw/.aoc_paths` (static KEY=VALUE format, written at AOC startup alongside `.aoc_env`) via `EnvironmentFile=` in the systemd unit. The `.aoc_env` file uses shell `for` loops and is NOT consumable by systemd directly — that's what `.aoc_paths` is for. New skills (built-in OR agent-authored) require gateway restart to land on PATH.
