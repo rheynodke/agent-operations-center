@@ -1,11 +1,43 @@
 'use strict';
+// Isolate from production port range (19000-19999). Must be set BEFORE
+// gateway-orchestrator.cjs is required, since the range is read at module load.
+process.env.AOC_GATEWAY_PORT_RANGE_START ||= '29000';
+process.env.AOC_GATEWAY_PORT_RANGE_END   ||= '29999';
+const TEST_PORT_RANGE_START = Number(process.env.AOC_GATEWAY_PORT_RANGE_START);
+const TEST_PORT_RANGE_END   = Number(process.env.AOC_GATEWAY_PORT_RANGE_END);
+
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { execSync } = require('node:child_process');
 
 let orchestrator;
+
+// Safety net: if any test forgets to await stopGateway() (e.g. on assertion
+// failure before cleanup), the mock-binary children survive the test process
+// and keep the parent test runner's event loop alive — historically causing
+// 10-minute hangs and "Promise resolution still pending" failures. Kill any
+// mock-binary descendant on exit so a test bug never blocks CI shutdown.
+function killStrayMocks() {
+  try {
+    const out = execSync(
+      'pgrep -f gateway-orchestrator.mock-binary.cjs 2>/dev/null || true',
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+    const myPid = process.pid;
+    const pids = out.split('\n').map(s => Number(s.trim())).filter(p => p && p !== myPid);
+    for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
+  } catch (_) { /* best-effort */ }
+}
+process.on('exit', killStrayMocks);
+process.on('SIGINT', () => { killStrayMocks(); process.exit(130); });
+process.on('SIGTERM', () => { killStrayMocks(); process.exit(143); });
+// Runs after the last test in this file completes — clears leaked mocks
+// before Node tries to drain the event loop. Without this, lingering child
+// sockets keep the loop alive past the test runner's exit-wait window.
+test.after(killStrayMocks);
 
 function freshOrchestrator(tmpDataDir) {
   process.env.AOC_DATA_DIR = tmpDataDir;
@@ -25,7 +57,7 @@ test('generateToken: 64-char hex string, unique per call', () => {
   assert.notEqual(a, b);
 });
 
-test('allocatePort: returns first DB-free 3-port slot in 19000-19999 range, advances when DB rows occupy slots', async () => {
+test('allocatePort: returns first DB-free 3-port slot in configured range, advances when DB rows occupy slots', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
   orchestrator = freshOrchestrator(tmp);
   const db = require('./db.cjs');
@@ -37,10 +69,10 @@ test('allocatePort: returns first DB-free 3-port slot in 19000-19999 range, adva
 
   // Each gateway needs 3 consecutive ports (WS / canvas / browser-control).
   // Allocator strides by 3 AND probes the OS to skip in-use ports.
-  // First call: should land on a 3-slot starting at 19000+3k for some k.
+  // First call: should land on a 3-slot starting at PORT_RANGE_START+3k for some k.
   const p1 = await orchestrator._test.allocatePort();
-  assert.ok(p1 >= 19000 && p1 < 19999);
-  assert.equal((p1 - 19000) % 3, 0, 'allocations align to 3-port boundaries');
+  assert.ok(p1 >= TEST_PORT_RANGE_START && p1 < TEST_PORT_RANGE_END);
+  assert.equal((p1 - TEST_PORT_RANGE_START) % 3, 0, 'allocations align to 3-port boundaries');
 
   // Mark p1 used in DB; next call must return a different (later) slot.
   db.setGatewayState(2, { port: p1, pid: 1, state: 'running' });
@@ -62,7 +94,7 @@ test('allocatePort: throws when range is exhausted', async () => {
     raw.run("INSERT INTO users (username, password_hash, role) VALUES (?, 'x', 'user')", [`u${i}`]);
   }
   for (let i = 1; i <= 1000; i++) {
-    db.setGatewayState(i, { port: 18999 + i, pid: i, state: 'running' });
+    db.setGatewayState(i, { port: (TEST_PORT_RANGE_START - 1) + i, pid: i, state: 'running' });
   }
   await assert.rejects(orchestrator._test.allocatePort(), /port pool exhausted/);
 });
@@ -136,7 +168,7 @@ test('spawnGateway: spawns mock binary, waits for readiness, persists DB state',
   raw.run("INSERT INTO users (username, password_hash, role) VALUES ('u2', 'x', 'user')");
 
   const result = await orchestrator.spawnGateway(2);
-  assert.ok(result.port >= 19000 && result.port <= 19999);
+  assert.ok(result.port >= TEST_PORT_RANGE_START && result.port <= TEST_PORT_RANGE_END);
   assert.ok(result.pid > 0);
   assert.ok(typeof result.token === 'string' && result.token.length === 64,
             `expected 64-char hex token, got ${result.token}`);

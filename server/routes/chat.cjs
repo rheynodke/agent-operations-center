@@ -10,6 +10,7 @@
 const fs = require('node:fs');
 const { gatewayForReq } = require('../helpers/gateway-context.cjs');
 const outputsLib = require('../lib/outputs.cjs');
+const memoryHooks = require('../lib/memory-hooks');
 
 module.exports = function chatRouter(deps) {
   const { db, parsers, loadAllJSONLMessagesForTask } = deps;
@@ -258,7 +259,13 @@ module.exports = function chatRouter(deps) {
     // openclaw:src/gateway/protocol/schema/logs-chat.ts). Previous code shoved
     // content blocks into `message` which the schema rejects with
     // "invalid chat.send params: at /message: must be string".
-    const message = (text || '').trim();
+    let message = (text || '').trim();
+    // Memory hooks: pre-inject persistent-memory block + capture user turn for
+    // post-turn extractor correlation. Skip if disabled via env. Never blocks.
+    if (process.env.AOC_MEMORY_HOOKS_DISABLED !== '1' && message) {
+      try { memoryHooks.captureUserTurn(sessionKey, message); } catch {}
+      try { message = await memoryHooks.preInjectMemory(sessionKey, message); } catch {}
+    }
     const attachments = [];
     if (Array.isArray(images) && images.length > 0) {
       images.forEach((dataUrl, i) => {

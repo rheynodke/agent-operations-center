@@ -41,7 +41,7 @@ PORT_RANGE_START=19000
 PORT_RANGE_END=19999
 ADMIN_GW_PORT="${GATEWAY_PORT:-18789}"
 ADMIN_LAUNCHD_LABEL="${OPENCLAW_LAUNCHD_LABEL:-ai.openclaw.gateway}"
-ADMIN_RESTART_TIMEOUT_SECS=20
+ADMIN_RESTART_TIMEOUT_SECS=60
 
 # AOC dashboard server (drives the gateway orchestrator). When AOC is alive,
 # gw.sh defers user-gateway lifecycle (start/stop/restart) to it via API
@@ -54,12 +54,26 @@ aoc_alive() {
     || curl -sf -m 2 -o /dev/null "$AOC_HOST/" 2>/dev/null
 }
 aoc_ops() {
-  # POST /api/ops/gateway/<uid>/<action>. Returns non-zero on HTTP error.
+  # POST /api/ops/gateway/<uid>/<action>.
+  # Prints body (or "HTTP <code>: <body>" on error) and returns non-zero on non-2xx
+  # — avoids `curl -f` swallowing the response body on HTTP errors.
   local uid="$1" action="$2"
   [[ -n "${DASHBOARD_TOKEN:-}" ]] || { echo "DASHBOARD_TOKEN not set in .env" >&2; return 78; }
-  curl -sf -m 30 -X POST \
+  local body http_code
+  body=$(curl -s -m 30 -o /dev/stdout -w '\n%{http_code}' -X POST \
     -H "Authorization: Bearer $DASHBOARD_TOKEN" \
-    "$AOC_HOST/api/ops/gateway/$uid/$action"
+    "$AOC_HOST/api/ops/gateway/$uid/$action") || {
+    echo "curl error: $body"
+    return 1
+  }
+  http_code="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+  if [[ "$http_code" =~ ^2 ]]; then
+    printf '%s' "$body"
+    return 0
+  fi
+  printf 'HTTP %s: %s' "$http_code" "${body:-<empty body>}"
+  return 1
 }
 
 # ── Colors ────────────────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ function _workspaceFor(userId) {
     : path.join(getUserHome(userId), 'workspace');
 }
 const { ensureUpdateTaskScript, ensureCheckTasksScript, ensureCheckConnectionsScript, ensureGwsCallScript, ensureAocConnectScript, ensureMcpCallScript, ensureFetchAttachmentScript, ensureSaveOutputScript, ensurePostCommentScript, injectHeartbeatTaskCheck, ensureSharedAdlcScripts, syncAgentBuiltins, stampBuiltinSharedMeta } = require('../scripts.cjs');
+const { bootstrapAgentMemory } = require('../memory-bootstrap.cjs');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -694,11 +695,25 @@ function provisionAgentLocked(opts, userId, home, configPath) {
     generateToolsMd({ name, isMaster })
   );
 
-  // MEMORY.md — long-term memory file (always scaffold, empty initially)
+  // MEMORY.md — long-term memory file (always scaffold, empty initially).
+  // Replaced below by bootstrapAgentMemory() with a richer template; we write
+  // the empty placeholder first so the seed regex matches predictably.
   writeFile(
     path.join(workspacePath, 'MEMORY.md'),
     `# MEMORY.md — ${name}'s Long-Term Memory\n\n_Nothing here yet. ${name} will fill this in over time._\n`
   );
+
+  // Memory infrastructure: enable openclaw dreaming promotion (if not already),
+  // create empty short-term-recall.json, and upgrade MEMORY.md template.
+  // Idempotent — backfill script uses the same helper.
+  try {
+    const result = bootstrapAgentMemory({ cfgPath: configPath, workspacePath, agentName: name });
+    if (result.configChanged || result.recallCreated || result.memorySeeded) {
+      console.log(`[provision] memory-bootstrap for ${id}:`, result);
+    }
+  } catch (e) {
+    console.warn(`[provision] memory-bootstrap failed for ${id}: ${e.message}`);
+  }
 
   // USER.md — copy from this user's main workspace if available
   const mainUserMd = readFileSafe(path.join(_workspaceFor(userId), 'USER.md'));

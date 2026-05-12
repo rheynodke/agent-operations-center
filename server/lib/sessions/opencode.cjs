@@ -206,8 +206,8 @@ function parseCronJobs(userId) {
       else scheduleStr = `${ms}ms`;
     } else if (kind === 'at' && sched.atMs) {
       scheduleStr = new Date(sched.atMs).toISOString();
-    } else if (kind === 'cron' && sched.cronExpr) {
-      scheduleStr = sched.cronExpr;
+    } else if (kind === 'cron' && (sched.expr || sched.cronExpr)) {
+      scheduleStr = sched.expr || sched.cronExpr;
     } else {
       scheduleStr = JSON.stringify(sched);
     }

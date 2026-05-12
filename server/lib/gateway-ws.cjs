@@ -14,6 +14,15 @@ const { WebSocket } = require('ws');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+let _memoryHooks = null;
+function memoryHooks() {
+  // Lazy require to avoid circular dep risk during boot.
+  if (_memoryHooks == null) {
+    try { _memoryHooks = require('./memory-hooks'); }
+    catch (e) { _memoryHooks = false; if (process.env.AOC_MEMORY_HOOK_DEBUG) console.warn('[gateway-ws] memory-hooks load failed:', e.message); }
+  }
+  return _memoryHooks || null;
+}
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -546,6 +555,19 @@ class GatewayConnection {
                 replace: true,        // signal frontend: overwrite, not append
               },
             });
+            // Memory hooks: post-turn lesson extractor (fire-and-forget).
+            // Disabled when AOC_MEMORY_HOOKS_DISABLED=1.
+            if (process.env.AOC_MEMORY_HOOKS_DISABLED !== '1') {
+              const mh = memoryHooks();
+              if (mh && mh.onAssistantFinal) {
+                try {
+                  const userTxt = mh.getLastUserTurn(chatKey) || '';
+                  mh.onAssistantFinal(chatKey, userTxt, finalText);
+                } catch (e) {
+                  if (process.env.AOC_MEMORY_HOOK_DEBUG) console.warn('[gateway-ws] onAssistantFinal failed:', e.message);
+                }
+              }
+            }
           }
           if (chatKey) this.broadcast({ type: 'chat:done', payload: { sessionKey: chatKey } });
         }

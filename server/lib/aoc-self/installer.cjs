@@ -19,7 +19,7 @@ const crypto = require('node:crypto');
 const { OPENCLAW_HOME, readJsonSafe } = require('../config.cjs');
 
 const SKILL_SLUG = 'aoc-self';
-const BUNDLE_VERSION = '1.1.0'; // 1.1.0: ship commands.json for room slash menu
+const BUNDLE_VERSION = '1.2.0'; // 1.2.0: add /remember command + agent-memory-append.sh; resolve MEMORY.md guidance conflict
 
 const ENV_PRELUDE = `\\
 source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
@@ -30,18 +30,26 @@ source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
 
 const SKILL_MD = `---
 name: aoc-self
-description: Built-in AOC skill — author your own personal skills (scope='agent'). Use when you find yourself doing the same multi-step shell incantation repeatedly and want to bottle it up as a reusable named tool. Skills you create via this bundle are visible to YOU only, not other agents.
+description: Built-in AOC skill — author your own personal skills (scope='agent'), AND persist single-line rules/facts to your own MEMORY.md so you never have to be re-taught the same thing twice. Skills bottle multi-step workflows. /remember persists individual rules.
 type: built-in
 layer: 1
 ---
 
-# aoc-self — Author your own skills
+# aoc-self — Author your own skills AND persist rules
 
-You can write personal skills that only YOU can see and run. Use this when:
+You can:
+1. **Write personal skills** that only YOU can see and run (multi-step workflows).
+2. **Persist single rules / facts to MEMORY.md** via the \`/remember\` command — so the next session you start, you already know what the user told you.
 
-- You find yourself piping the same chain of \`curl | jq | ...\` repeatedly.
-- You want to remember a workflow ("how I export inventory to Sheets every Monday") as a named command instead of reasoning through it from scratch each time.
-- The user asks you to "remember how to do X" — bottle it as a skill rather than just writing to MEMORY.md.
+## When to use which
+
+| User says... | Right tool | Why |
+|--------------|-----------|-----|
+| "Kalau aku bilang X, selalu lakukan Y" / "Inget ini ya" / "Jangan lagi begitu" | **\`/remember\` → MEMORY.md** | Single durable rule, no shell command. |
+| "Bottle this workflow as a command" / "Ini chain curl panjang, simpan dong" | **agent-skill-create.sh** | Multi-step shell, needs PATH integration. |
+| "Catat ini ke memory" / "Save to memory" / "Note this for next time" | **\`/remember\`** | Default — append to MEMORY.md. |
+
+**Never claim "saved to memory" without actually executing one of these tools in the same turn. That is a hard rule — see SOUL.md self-correction protocol.**
 
 ## Setup — once per shell session
 
@@ -281,7 +289,75 @@ curl -sf -X DELETE \\
   "\$AOC_URL/api/agents/\$AOC_AGENT_ID/skills/\$SLUG" | jq .
 `;
 
+const AGENT_MEMORY_APPEND_SH = `#!/usr/bin/env bash
+# aoc-self / agent-memory-append.sh — append a single rule/fact to YOUR MEMORY.md.
+# Usage: agent-memory-append.sh "<rule text>"
+#        echo "<rule text>" | agent-memory-append.sh -
+# The script GETs current MEMORY.md, appends the rule under a dated heading,
+# then PUTs it back. Idempotent on exact duplicate lines (skips if already present).
+set -euo pipefail
+${ENV_PRELUDE}
+AOC_URL="\${AOC_URL:=http://localhost:18800}"
+AOC_TOKEN="\${AOC_TOKEN:?AOC_TOKEN not set}"
+AOC_AGENT_ID="\${AOC_AGENT_ID:?AOC_AGENT_ID not set}"
+
+RULE="\${1:?Usage: agent-memory-append.sh \\"<rule>\\" | -}"
+if [ "\$RULE" = "-" ]; then RULE=\$(cat); fi
+RULE=\$(printf '%s' "\$RULE" | sed 's/[[:space:]]*$//') # trim trailing whitespace
+[ -n "\$RULE" ] || { echo "Refusing empty rule" >&2; exit 64; }
+
+API="\$AOC_URL/api/agents/\$AOC_AGENT_ID/files/MEMORY.md"
+
+CURRENT=\$(curl -sf -H "Authorization: Bearer \$AOC_TOKEN" "\$API" | jq -r '.content // ""')
+
+# Idempotency: skip if exact rule line already in file
+if printf '%s\\n' "\$CURRENT" | grep -Fxq "- \$RULE"; then
+  echo "Rule already present in MEMORY.md (no change)." >&2
+  exit 0
+fi
+
+TODAY=\$(date +%Y-%m-%d)
+HEADING="## Auto-remembered (\$TODAY)"
+
+# Append. If today's heading exists, slot under it; else add new heading section.
+if printf '%s\\n' "\$CURRENT" | grep -Fxq "\$HEADING"; then
+  NEW=\$(printf '%s\\n- %s\\n' "\$CURRENT" "\$RULE")
+else
+  SEP=""
+  [ -n "\$CURRENT" ] && SEP=$'\\n\\n'
+  NEW=\$(printf '%s%s%s\\n\\n- %s\\n' "\$CURRENT" "\$SEP" "\$HEADING" "\$RULE")
+fi
+
+curl -sf -X PUT \\
+  -H "Authorization: Bearer \$AOC_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d "\$(jq -n --arg content "\$NEW" '{content: \$content}')" \\
+  "\$API" >/dev/null
+
+echo "Appended to MEMORY.md: \$RULE" >&2
+`;
+
 const COMMANDS_JSON = JSON.stringify([
+  {
+    name: 'remember',
+    description: 'Persist a single rule / fact / preference to your MEMORY.md',
+    argHint: '<rule text — one durable sentence the user wants you to know forever>',
+    template:
+`User memberi slash command /remember.
+
+User input: {{args}}
+
+LANGKAH WAJIB:
+1. Bersihkan input: hilangkan "inget ya", "catat dong", dsb. Sisakan rule inti dalam 1 kalimat deklaratif.
+2. Kalau input kosong atau ambigu, tanya 1 pertanyaan klarifikasi singkat lalu STOP.
+3. Eksekusi: \`agent-memory-append.sh "<rule>"\` — JANGAN skip, JANGAN klaim sukses tanpa exit code 0.
+4. Setelah script sukses, balas 1 baris: "✅ Tersimpan ke MEMORY.md: <rule>".
+5. STOP. Jangan tawarkan tindakan lain.
+
+LARANGAN KERAS:
+- Jangan pernah merespons "sudah kucatat" tanpa benar-benar menjalankan agent-memory-append.sh di turn ini.
+- Kalau script gagal (non-zero exit), laporkan error apa adanya — JANGAN palsu klaim sukses.`
+  },
   {
     name: 'list-my-skills',
     description: 'Tampilkan daftar skill personal yang Anda buat sendiri',
@@ -346,6 +422,7 @@ const BUNDLE = {
     { rel: 'scripts/agent-skill-add-script.sh', content: AGENT_SKILL_ADD_SCRIPT_SH, mode: 0o755 },
     { rel: 'scripts/agent-skill-list.sh',       content: AGENT_SKILL_LIST_SH,       mode: 0o755 },
     { rel: 'scripts/agent-skill-remove.sh',     content: AGENT_SKILL_REMOVE_SH,     mode: 0o755 },
+    { rel: 'scripts/agent-memory-append.sh',    content: AGENT_MEMORY_APPEND_SH,    mode: 0o755 },
   ],
 };
 

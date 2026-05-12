@@ -61,7 +61,7 @@ function buildSchedule(opts) {
   }
   // cron expression (5-field)
   const tz = opts.tz || 'UTC';
-  return { kind: 'cron', cronExpr: raw, tz };
+  return { kind: 'cron', expr: raw, tz };
 }
 
 function buildJobFromOpts(opts, existingId) {

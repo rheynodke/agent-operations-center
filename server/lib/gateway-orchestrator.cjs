@@ -49,8 +49,11 @@ orchestratorEvents.setMaxListeners(50);
 
 // ─── Internals ───────────────────────────────────────────────────────────────
 
-const PORT_RANGE_START = 19000;
-const PORT_RANGE_END   = 19999;
+// Production range 19000-19999. Override via env so test suites never grab
+// production ports (a stale test process would otherwise block real user
+// gateways from spawning until the OS evicts it).
+const PORT_RANGE_START = Number(process.env.AOC_GATEWAY_PORT_RANGE_START) || 19000;
+const PORT_RANGE_END   = Number(process.env.AOC_GATEWAY_PORT_RANGE_END)   || 19999;
 
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
@@ -457,6 +460,14 @@ function ensureUserHome(userId, userHome) {
       inheritedPluginEntries = adminCfg?.plugins?.entries
         ? JSON.parse(JSON.stringify(adminCfg.plugins.entries))
         : null;
+      // Don't leak admin's per-agent allowlists into the new tenant. Reset
+      // tenant-scoped lists so the per-user bootstrap (memory-bootstrap
+      // ensureActiveMemoryEnabled, etc.) fills them from this user's own
+      // agents.list. Leaving admin's IDs in here causes harmless-but-confusing
+      // entries like "main" appearing in a user who has no agent named "main".
+      if (inheritedPluginEntries && inheritedPluginEntries['active-memory']?.config?.agents) {
+        inheritedPluginEntries['active-memory'].config.agents = [];
+      }
     } catch (_) { /* admin config missing — leave defaults empty */ }
 
     // Rewrite admin-scoped paths to per-user paths so we don't leak admin's
