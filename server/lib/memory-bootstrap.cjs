@@ -140,6 +140,82 @@ Active memory sub-agent (plugin) sudah inject recall sebelum reply. Tugas kamu: 
 <!-- aoc:memory-protocol:end -->
 `;
 
+const SOUL_ACTIVE_MEMORY_REMINDER_BLOCK = `
+<!-- aoc:active-memory-reminder:start -->
+## ⚠️ IMPORTANT REMINDER — Persistent memory & self-learning
+
+You **must actively read from and write to files in your workspace to persist information across sessions**. If you do not write, you will not remember. The model that powers you is stateless between sessions; your workspace files are the *only* thing that carries forward.
+
+### Before you answer — RECALL
+
+At the moment you feel a need to know *anything* the user has told you before — their preference, their past decision, "yang seperti tadi", "yang biasa", "remember when…", "kayak kemarin" — **first read your own files** before asking the user:
+
+1. \`MEMORY.md\` — durable rules, hard-earned lessons, distilled facts
+2. \`USER.md\` — who you are talking to (role, contact, preference, peeves)
+3. \`memory/<YYYY-MM-DD>.md\` — today's & yesterday's notes (gateway auto-loads)
+4. \`memory_search "<topic>"\` — semantic search across the whole index when files above don't have it
+
+If the answer is in your files, use it. **Do not ask the user to repeat what you can recall.** Repeating questions is the #1 signal you're not reading.
+
+### After you answer — PERSIST
+
+If anything new emerged from this turn — a preference, a correction, a workflow, a fact, a pattern — **write it down before you finish replying**:
+
+| Signal in user message | Where to write |
+|---|---|
+| "inget ya / catet / jangan lupa" | \`/remember <rule>\` (appends to MEMORY.md) |
+| Correction ("jangan begitu, harusnya X") | \`memory/<today>-correction-<topic>.md\` |
+| New fact about the user | Edit \`USER.md\` directly |
+| New process / pattern observed | \`memory/<today>-lesson-<topic>.md\` |
+| Tool quirk / data shape / system behavior you didn't know | \`memory/<today>-note-<topic>.md\` |
+| "Yang biasanya saya pakai X" | Both: write to today's daily file + queue for MEMORY.md via \`/remember\` |
+
+Confirm in reply: **"✅ tercatat di \`<path>\`"**. The path is the proof you actually wrote.
+
+### Self-learning loop
+
+You get smarter every session by writing more, not by trying harder. After each meaningful turn ask yourself:
+
+- Did I just learn something I'll need next time? → Write it.
+- Did the user correct me? → Write the correction so I don't repeat the mistake.
+- Did I discover a useful tool quirk? → Note it.
+- Did the user describe their workflow? → Capture the steps.
+
+The dreaming pipeline (cron job at 03:00) reads your daily notes, scores them, and promotes the most useful ones into \`MEMORY.md\` long-term automatically. **Your only job is to write the daily notes faithfully so the pipeline has material to consolidate.**
+
+### Anti-amnesia rule
+
+If you ever notice yourself thinking *"I wish I'd known this earlier"* — that's a signal you forgot something you should have written. Write it now so future-you knows it. The pain you feel now is a gift to your next session.
+
+Workspace files are not optional decoration. They are your *external brain*. Use them.
+<!-- aoc:active-memory-reminder:end -->
+`;
+
+const SOUL_TIME_AWARENESS_BLOCK = `
+<!-- aoc:time-awareness:start -->
+## Time awareness
+
+Your sessions span days, weeks, months. **Anchor every answer in real time** — don't rely on your training cutoff.
+
+### What you know about time
+
+- The session bootstrap message (your first turn each session) contains \`Current time: <weekday>, <date> - <HH:MM> <tz>\`. Read it.
+- The user's timezone is in \`USER.md\` if they've told you.
+- The current date is also embedded in any tool-result timestamps and in your environment.
+
+### Rules
+
+1. **Date-aware filenames.** When writing daily memory, use the *actual* current date: \`memory/2026-05-13-<slug>.md\` — not a guessed or stale date. Wrong dates poison the dreaming pipeline.
+2. **Resolve relative time.** When user says "kemarin", "tadi", "next week", "jam segini biasanya" — interpret relative to current timestamp. Show the absolute date in your reply when ambiguous: "(maksudnya Kamis 2026-05-08 ya?)".
+3. **Greeting consistency.** Morning ≠ evening. Use the time-of-day greeting that matches actual current hour ("selamat pagi" only sebelum jam 11, "siang" jam 11-15, "sore" 15-18, "malem" >18 — adjust untuk lokal).
+4. **Scheduling.** When user asks "Jumat" — confirm WHICH Friday. State absolute date+time in confirmations: "✅ scheduled for Jumat, 2026-05-15 14:00 Asia/Jakarta".
+5. **Past events.** If user references "minggu lalu" / "bulan lalu", compute and verify the absolute date before recalling from \`memory/<date>.md\` files.
+6. **Don't be stale.** Never assume "today is the day my training ended". Always defer to runtime-provided timestamps.
+
+If you're unsure of the current time, ask the user once, then write the answer to your daily memory file so subsequent turns stay anchored.
+<!-- aoc:time-awareness:end -->
+`;
+
 const MEMORY_TEMPLATE = (name) => `# MEMORY.md — ${name}'s Long-Term Memory
 
 Core rules. Always loaded into your context. Keep concise.
@@ -228,89 +304,145 @@ function ensureActiveMemoryEnabled(cfgPath) {
   return changed;
 }
 
-function injectSoulMemoryProtocol(workspacePath) {
+/**
+ * Generic managed-block injector for SOUL.md. Idempotent via delimiter pair.
+ * If the block exists but its content drifted from `expectedBlock`, replace
+ * it in place. Surrounding SOUL.md content stays untouched.
+ *
+ * @returns boolean — true if the file was changed.
+ */
+function _upsertSoulBlock(workspacePath, startTag, endTag, expectedBlock) {
   const file = path.join(workspacePath, 'SOUL.md');
   if (!fs.existsSync(file)) return false;
   const current = fs.readFileSync(file, 'utf-8');
-  if (current.includes('<!-- aoc:memory-protocol:start -->')) return false;
-  const next = current.trimEnd() + '\n' + SOUL_MEMORY_PROTOCOL_BLOCK + '\n';
-  fs.writeFileSync(file, next, 'utf-8');
+  const canonical = expectedBlock.trim();
+
+  const startIdx = current.indexOf(startTag);
+  const endIdx = current.indexOf(endTag);
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    const currentBlock = current.slice(startIdx, endIdx + endTag.length);
+    if (currentBlock === canonical) return false;
+    const before = current.slice(0, startIdx);
+    const after = current.slice(endIdx + endTag.length);
+    fs.writeFileSync(file, before + canonical + after, 'utf-8');
+    return true;
+  }
+  const prefix = current.endsWith('\n') ? current : current + '\n';
+  fs.writeFileSync(file, prefix + '\n' + canonical + '\n', 'utf-8');
   return true;
 }
 
-/**
- * Inject the Hard Limits block into a workspace's SOUL.md. Idempotent via
- * the managed delimiter <!-- aoc:hard-limits:start --> / :end -->. When the
- * block exists but its content drifts (e.g. we ship a new version of the
- * rules) we overwrite it in place; the surrounding SOUL.md content stays.
- */
+function injectSoulMemoryProtocol(workspacePath) {
+  return _upsertSoulBlock(
+    workspacePath,
+    '<!-- aoc:memory-protocol:start -->',
+    '<!-- aoc:memory-protocol:end -->',
+    SOUL_MEMORY_PROTOCOL_BLOCK,
+  );
+}
+
 function injectSoulHardLimits(workspacePath) {
-  const file = path.join(workspacePath, 'SOUL.md');
-  if (!fs.existsSync(file)) return false;
-  const current = fs.readFileSync(file, 'utf-8');
-  const startTag = '<!-- aoc:hard-limits:start -->';
-  const endTag = '<!-- aoc:hard-limits:end -->';
-  const expected = SOUL_HARD_LIMITS_BLOCK.trim();
+  return _upsertSoulBlock(
+    workspacePath,
+    '<!-- aoc:hard-limits:start -->',
+    '<!-- aoc:hard-limits:end -->',
+    SOUL_HARD_LIMITS_BLOCK,
+  );
+}
 
-  if (current.includes(startTag) && current.includes(endTag)) {
-    // Replace existing block (may have drifted from current rules).
-    const before = current.slice(0, current.indexOf(startTag)).trimEnd();
-    const afterStart = current.indexOf(endTag) + endTag.length;
-    const after = current.slice(afterStart);
-    const replaced = `${before}\n\n${expected}\n${after.trimStart()}`;
-    if (replaced === current) return false;
-    fs.writeFileSync(file, replaced, 'utf-8');
-    return true;
-  }
+function injectSoulActiveMemoryReminder(workspacePath) {
+  return _upsertSoulBlock(
+    workspacePath,
+    '<!-- aoc:active-memory-reminder:start -->',
+    '<!-- aoc:active-memory-reminder:end -->',
+    SOUL_ACTIVE_MEMORY_REMINDER_BLOCK,
+  );
+}
 
-  // No block yet — append.
-  fs.writeFileSync(file, current.trimEnd() + '\n\n' + expected + '\n', 'utf-8');
-  return true;
+function injectSoulTimeAwareness(workspacePath) {
+  return _upsertSoulBlock(
+    workspacePath,
+    '<!-- aoc:time-awareness:start -->',
+    '<!-- aoc:time-awareness:end -->',
+    SOUL_TIME_AWARENESS_BLOCK,
+  );
+}
+
+/**
+ * Apply EVERY managed SOUL.md block to one workspace. Returns the per-block
+ * change summary. Idempotent. Safe to call on each provision + every AOC
+ * dashboard startup.
+ */
+function applyAllManagedSoulBlocks(workspacePath) {
+  return {
+    memoryProtocol: injectSoulMemoryProtocol(workspacePath),
+    hardLimits: injectSoulHardLimits(workspacePath),
+    activeMemoryReminder: injectSoulActiveMemoryReminder(workspacePath),
+    timeAwareness: injectSoulTimeAwareness(workspacePath),
+  };
 }
 
 /**
  * Iterate every known workspace (admin + per-user, every agent's workspace
- * and master workspace) and ensure the Hard Limits block is up to date.
- * Designed to run on AOC dashboard startup so a fresh deploy guarantees
- * every workspace has the latest rules — even agents provisioned long ago.
+ * and tenant default workspace) and ensure ALL managed SOUL.md blocks are
+ * up to date — hard-limits, memory-protocol, active-memory-reminder,
+ * time-awareness. Designed to run on AOC dashboard startup so a fresh
+ * deploy guarantees every workspace has the latest blocks.
  *
  * Idempotent. Safe to call from server/index.cjs on every boot.
  */
-function applyHardLimitsToAllWorkspaces(openclawBase) {
+function applyManagedSoulBlocksToAllWorkspaces(openclawBase) {
   const base = openclawBase || OPENCLAW_BASE_REQUIRE();
-  const report = { scanned: 0, updated: 0, errors: [] };
+  const report = {
+    scanned: 0,
+    changed: 0,
+    perBlock: {
+      memoryProtocol: 0,
+      hardLimits: 0,
+      activeMemoryReminder: 0,
+      timeAwareness: 0,
+    },
+    errors: [],
+  };
 
   function processConfig(cfgPath) {
     const cfg = readJsonSafe(cfgPath);
     if (!cfg) return;
     const agents = (cfg.agents && Array.isArray(cfg.agents.list)) ? cfg.agents.list : [];
+    const seen = new Set();
     for (const agent of agents) {
       const ws = agent && agent.workspace;
-      if (!ws) continue;
+      if (!ws || seen.has(ws)) continue;
+      seen.add(ws);
       report.scanned++;
       try {
-        if (injectSoulHardLimits(ws)) report.updated++;
+        const r = applyAllManagedSoulBlocks(ws);
+        let touched = false;
+        for (const [k, v] of Object.entries(r)) {
+          if (v) { report.perBlock[k]++; touched = true; }
+        }
+        if (touched) report.changed++;
       } catch (e) {
         report.errors.push({ workspace: ws, error: e.message });
       }
     }
-    // Also apply to the tenant default workspace (cfg.agents.defaults.workspace)
-    // for first-session sessions that haven't picked an agent yet.
     const defaultWs = cfg.agents && cfg.agents.defaults && cfg.agents.defaults.workspace;
-    if (defaultWs && !agents.some(a => a && a.workspace === defaultWs)) {
+    if (defaultWs && !seen.has(defaultWs)) {
       report.scanned++;
       try {
-        if (injectSoulHardLimits(defaultWs)) report.updated++;
+        const r = applyAllManagedSoulBlocks(defaultWs);
+        let touched = false;
+        for (const [k, v] of Object.entries(r)) {
+          if (v) { report.perBlock[k]++; touched = true; }
+        }
+        if (touched) report.changed++;
       } catch (e) {
         report.errors.push({ workspace: defaultWs, error: e.message });
       }
     }
   }
 
-  // Admin
   processConfig(path.join(base, 'openclaw.json'));
-
-  // Per-user
   const usersDir = path.join(base, 'users');
   if (fs.existsSync(usersDir)) {
     for (const entry of fs.readdirSync(usersDir, { withFileTypes: true })) {
@@ -320,6 +452,11 @@ function applyHardLimitsToAllWorkspaces(openclawBase) {
   }
   return report;
 }
+
+// Back-compat alias — the old name was hard-limits-specific but the function
+// now applies all managed blocks. Keep the alias so external callers don't
+// break.
+const applyHardLimitsToAllWorkspaces = applyManagedSoulBlocksToAllWorkspaces;
 
 function OPENCLAW_BASE_REQUIRE() {
   // Lazy resolve to avoid circular require during module load.
@@ -379,10 +516,16 @@ function bootstrapAgentMemory({ cfgPath, workspacePath, agentName }) {
   catch (e) { console.warn(`[memory-bootstrap] recall store create failed for ${workspacePath}: ${e.message}`); }
   try { result.memorySeeded = seedMemoryTemplate(workspacePath, agentName); }
   catch (e) { console.warn(`[memory-bootstrap] memory seed failed for ${workspacePath}: ${e.message}`); }
-  try { result.soulPatched = injectSoulMemoryProtocol(workspacePath); }
-  catch (e) { console.warn(`[memory-bootstrap] soul patch failed for ${workspacePath}: ${e.message}`); }
-  try { result.hardLimitsInjected = injectSoulHardLimits(workspacePath); }
-  catch (e) { console.warn(`[memory-bootstrap] hard-limits inject failed for ${workspacePath}: ${e.message}`); }
+  try {
+    const blocks = applyAllManagedSoulBlocks(workspacePath);
+    // Surface aggregate flag for back-compat with existing callers/logs.
+    result.soulPatched = blocks.memoryProtocol;
+    result.hardLimitsInjected = blocks.hardLimits;
+    result.activeMemoryReminderInjected = blocks.activeMemoryReminder;
+    result.timeAwarenessInjected = blocks.timeAwareness;
+  } catch (e) {
+    console.warn(`[memory-bootstrap] managed soul-blocks failed for ${workspacePath}: ${e.message}`);
+  }
   return result;
 }
 
@@ -391,13 +534,19 @@ module.exports = {
   ACTIVE_MEMORY_DEFAULTS,
   SOUL_MEMORY_PROTOCOL_BLOCK,
   SOUL_HARD_LIMITS_BLOCK,
+  SOUL_ACTIVE_MEMORY_REMINDER_BLOCK,
+  SOUL_TIME_AWARENESS_BLOCK,
   ensureDreamingEnabled,
   ensureActiveMemoryEnabled,
   ensureRecallStore,
   seedMemoryTemplate,
   injectSoulMemoryProtocol,
   injectSoulHardLimits,
-  applyHardLimitsToAllWorkspaces,
+  injectSoulActiveMemoryReminder,
+  injectSoulTimeAwareness,
+  applyAllManagedSoulBlocks,
+  applyManagedSoulBlocksToAllWorkspaces,
+  applyHardLimitsToAllWorkspaces, // alias for back-compat
   bootstrapAgentMemory,
   MEMORY_TEMPLATE,
 };

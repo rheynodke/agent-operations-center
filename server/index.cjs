@@ -900,20 +900,27 @@ async function start() {
   try { parsers.purgeLegacyFlatScripts(); }
   catch (e) { console.warn('[startup] purgeLegacyFlatScripts failed:', e.message); }
 
-  // Promote Hard Limits security block into every agent's SOUL.md. The
-  // aoc-safety-core SKILL.md is lazy-loaded (only referenced from the skill
-  // registry XML in the system prompt; its content is not delivered) so the
-  // model never sees the actual refuse rules. Mirroring those rules into
-  // SOUL.md guarantees every session has them in context. Idempotent: the
-  // block is delimited and re-applies cleanly if the rules change.
+  // Promote ALL managed SOUL.md blocks into every agent's workspace.
+  // Skill SKILL.md content is lazy-loaded by openclaw (system prompt only
+  // gets a compact XML pointer), so the agent never sees the actual rules.
+  // Mirroring critical guidance directly into SOUL.md (which IS always
+  // loaded) guarantees every session has it in context. Idempotent: each
+  // block has a delimiter and is overwritten in place when drifted.
+  //
+  // Blocks managed here:
+  //   - memory-protocol           (recall + persist rules)
+  //   - hard-limits               (security: tenant, secrets, prompt-injection, fs disclosure)
+  //   - active-memory-reminder    (loud "you WILL forget unless you write" alarm)
+  //   - time-awareness            (anchor answers in real time, not training cutoff)
   try {
-    const { applyHardLimitsToAllWorkspaces } = require('./lib/memory-bootstrap.cjs');
-    const r = applyHardLimitsToAllWorkspaces();
-    if (r.updated > 0 || r.errors.length > 0) {
-      console.log(`[startup] hard-limits SOUL injection: scanned=${r.scanned} updated=${r.updated} errors=${r.errors.length}`);
+    const { applyManagedSoulBlocksToAllWorkspaces } = require('./lib/memory-bootstrap.cjs');
+    const r = applyManagedSoulBlocksToAllWorkspaces();
+    if (r.changed > 0 || r.errors.length > 0) {
+      const blocks = Object.entries(r.perBlock).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`).join(' ');
+      console.log(`[startup] managed SOUL blocks: scanned=${r.scanned} changed=${r.changed} (${blocks}) errors=${r.errors.length}`);
       if (r.errors.length) for (const e of r.errors) console.warn(`  - ${e.workspace}: ${e.error}`);
     }
-  } catch (e) { console.warn('[startup] hard-limits SOUL injection failed:', e.message); }
+  } catch (e) { console.warn('[startup] managed SOUL blocks injection failed:', e.message); }
 
   // Connect to OpenClaw Gateway for real-time chat
   gatewayProxy.connect();

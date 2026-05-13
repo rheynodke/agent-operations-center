@@ -213,9 +213,15 @@ module.exports = function authRouter(deps) {
     if (inv.revokedAt) return res.status(410).json({ error: 'Invitation revoked' });
     if (inv.expired)   return res.status(410).json({ error: 'Invitation expired' });
 
-    // Serialize the whole tenant-creation flow (createUser → spawnGateway →
-    // sandbox refresh) so two concurrent registers cannot leave a peer with
-    // a stale deny list. See TENANT_TOPOLOGY_LOCK comment up top.
+    // Serialize createUser + spawnGateway across concurrent registers so two
+    // simultaneous registers cannot read each other's peer list mid-commit.
+    // The peer-sandbox refresh is intentionally moved OUTSIDE the lock and
+    // dispatched in the background — making register response wait for every
+    // peer to restart scales O(N_peers) per registration and would push the
+    // user-facing latency to minutes once the tenant count grows. The race
+    // window between A.spawn and B.refresh restarting A is acceptable because
+    // brand-new tenants don't yet hold sensitive data, and convergence still
+    // happens within ~30s after both registers complete.
     let user;
     try {
       user = await withKeyLock(TENANT_TOPOLOGY_LOCK, async () => {
@@ -236,19 +242,14 @@ module.exports = function authRouter(deps) {
         // primary spawn point — login retains the call as a silent fallback for
         // post-AOC-restart recovery.
         await ensureUserGateway(u.id);
-
-        // Refresh peer gateways so their sandbox profiles include the new
-        // user in the cross-tenant deny list. AWAITED inside the lock so the
-        // lock release guarantees full convergence — no race with the next
-        // concurrent register.
-        try {
-          const r = await orchestrator.refreshTenantSandboxes(u.id);
-          console.log(`[auth] sandbox refresh restarted peers:`, r.restarted);
-        } catch (e) {
-          console.warn(`[auth] sandbox refresh failed: ${e.message} — peers may have stale profiles; next register will fix`);
-        }
         return u;
       });
+      // Refresh peer gateways in the background so their sandbox profiles
+      // include the new user in the cross-tenant deny list. Does NOT block
+      // the register response. Internally parallelized across peers.
+      orchestrator.refreshTenantSandboxes(user.id)
+        .then(r => console.log(`[auth] sandbox refresh for new user ${user.id}: restarted ${(r.restarted || []).length} peer(s) [${(r.restarted || []).join(',')}]`))
+        .catch(e => console.warn(`[auth] sandbox refresh failed for new user ${user.id}: ${e.message} — peers may have stale profiles; subsequent registers will fix`));
     } catch (e) {
       if (e?.message?.includes('UNIQUE')) {
         return res.status(409).json({ error: 'Username already exists' });
