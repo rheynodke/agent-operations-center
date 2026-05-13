@@ -299,6 +299,85 @@ module.exports = function connectionsRouter(deps) {
     }
   });
 
+  // ── GitHub: Copy to Local (clone remote repo into tenant workspace) ──
+  // Starts a background clone job. Returns the initial job descriptor; client
+  // polls /connections/:id/clone-status until state === 'completed' | 'failed'.
+  router.post('/connections/:id/clone-to-local', db.authMiddleware, db.requireConnectionOwnership, (req, res) => {
+    try {
+      const conn = db.getConnection(req.params.id);
+      if (!conn) return res.status(404).json({ error: 'Connection not found' });
+      if (conn.type !== 'github') return res.status(400).json({ error: 'only github connections support clone-to-local' });
+      const meta = conn.metadata || {};
+      if ((meta.githubMode || 'remote') !== 'remote') {
+        return res.status(400).json({ error: 'connection is not in remote mode' });
+      }
+      if (!conn.credentials) {
+        return res.status(400).json({ error: 'PAT required: set a Personal Access Token on the connection first (private repo clone needs auth, push always needs auth)' });
+      }
+      const githubClone = require('../lib/connections/github-clone.cjs');
+      const ownerUserId = Number(conn.created_by || conn.createdBy || req.user?.userId);
+      const job = githubClone.startCloneJob({ connection: conn, ownerUserId, db });
+      try { audit.record(req, { action: 'connection.github.clone-started', targetType: 'connection', targetId: req.params.id, after: { repo: job.repo, branch: job.branch } }); } catch (_) {}
+      res.json({ ok: true, job });
+    } catch (err) {
+      console.error('[api/connections/clone-to-local]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Poll job status. Frontend hits this every ~1s after starting clone.
+  router.get('/connections/:id/clone-status', db.authMiddleware, db.requireConnectionOwnership, (req, res) => {
+    try {
+      const conn = db.getConnection(req.params.id);
+      if (!conn) return res.status(404).json({ error: 'Connection not found' });
+      const githubClone = require('../lib/connections/github-clone.cjs');
+      const meta = conn.metadata || {};
+      const liveJob = githubClone.getJobState(req.params.id);
+      res.json({
+        ok: true,
+        clonePath: meta.clonePath || null,
+        clonedAt: meta.clonedAt || null,
+        lastSyncAt: meta.lastSyncAt || null,
+        job: liveJob || meta.cloneJob || null,
+      });
+    } catch (err) {
+      console.error('[api/connections/clone-status]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Sync existing clone with remote (fetch + report divergence). Does NOT
+  // auto-rebase — caller's agent should explicitly run `aoc-connect.sh <name> pull`
+  // when ready to apply remote changes.
+  router.post('/connections/:id/clone-sync', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+    try {
+      const conn = db.getConnection(req.params.id);
+      if (!conn) return res.status(404).json({ error: 'Connection not found' });
+      const githubClone = require('../lib/connections/github-clone.cjs');
+      const result = await githubClone.syncClone({ connection: conn, db });
+      try { audit.record(req, { action: 'connection.github.clone-synced', targetType: 'connection', targetId: req.params.id, after: result }); } catch (_) {}
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error('[api/connections/clone-sync]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Remove the local clone. Destructive — UI must confirm.
+  router.post('/connections/:id/unclone', db.authMiddleware, db.requireConnectionOwnership, async (req, res) => {
+    try {
+      const conn = db.getConnection(req.params.id);
+      if (!conn) return res.status(404).json({ error: 'Connection not found' });
+      const githubClone = require('../lib/connections/github-clone.cjs');
+      const result = await githubClone.unclone({ connection: conn, db });
+      try { audit.record(req, { action: 'connection.github.uncloned', targetType: 'connection', targetId: req.params.id, after: result }); } catch (_) {}
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error('[api/connections/unclone]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Who is using this connection? Returns every (agent, owner) pair that
   // currently has it assigned. Visible to anyone who can use the connection
   // — owners, admin, and (if shared) all users — so the "5 agents are using

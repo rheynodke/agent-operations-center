@@ -632,6 +632,11 @@ async function spawnGatewayLocked(userId) {
     ...process.env,
     OPENCLAW_HOME: path.dirname(userHome),
     OPENCLAW_STATE_DIR: userHome,
+    // Explicitly set per-user workspace. AOC server inherits OPENCLAW_WORKSPACE
+    // from .env (admin path), and without this override it leaks into per-user
+    // gateways → exec subshells → odoo-list.sh fallback reads admin's
+    // .aoc_agent_env (AOC_AGENT_ID=main) and returns admin's connections.
+    OPENCLAW_WORKSPACE: path.join(userHome, 'workspace'),
     OPENCLAW_GATEWAY_TOKEN: token,
     OPENCLAW_GATEWAY_PORT: String(port),
     PATH: skillsPath ? `${skillsPath}:${process.env.PATH || ''}` : (process.env.PATH || ''),
@@ -808,6 +813,22 @@ function findAocManagedOrphanPids({ userId = null, exceptPids = new Set() } = {}
   } catch { return []; }
   if (!allPids.length) return [];
 
+  // Build PID → PPID map so we can recognize legitimate child workers spawned
+  // by a tracked launcher (openclaw-gateway forks an inner process that owns
+  // the listen socket; the launcher in DB is the parent). Without this, the
+  // child appears as "untracked PID listening on a managed port" and gets
+  // killed — taking the whole gateway down.
+  const ppidByPid = new Map();
+  if (allPids.length > 0) {
+    try {
+      const out = cp.execSync(`ps -o pid=,ppid= -p ${allPids.join(',')}`, { encoding: 'utf8', timeout: 2000 });
+      for (const line of out.split('\n')) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+        if (m) ppidByPid.set(Number(m[1]), Number(m[2]));
+      }
+    } catch { /* ps unavailable — degrade to old behavior */ }
+  }
+
   const { managed: pidPort, anyPort } = _gatewayPidsByPort();
 
   // Build a set of "expected" {pid, port} pairs from DB.
@@ -835,11 +856,19 @@ function findAocManagedOrphanPids({ userId = null, exceptPids = new Set() } = {}
     }
   } catch { /* DB unavailable */ }
 
+  // Set of PIDs that are LIVE tracked launchers — any child of one of these
+  // is a legitimate worker, not an orphan.
+  const liveTrackedLaunchers = new Set(Array.from(expectedByUser.values()).map(e => e.pid));
+
   const matched = [];
   for (const [pidStr, port] of Object.entries(pidPort)) {
     const pid = Number(pidStr);
     if (exceptPids.has(pid)) continue;
     if (reservationPids.has(pid)) continue;   // Active reservation — don't kill mid-spawn
+    // Skip if this PID is a direct child of a tracked launcher — that's the
+    // inner gateway worker that actually owns the listen socket.
+    const ppid = ppidByPid.get(pid);
+    if (ppid != null && liveTrackedLaunchers.has(ppid)) continue;
 
     if (userId != null) {
       // For a specific user: kill any gateway listening on their expected port

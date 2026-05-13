@@ -844,7 +844,7 @@ if not conns:
     sys.exit(0)
 SAFE_KEYS = {'name','type','hint','projectId','datasets','host','port','database','username',
              'url','loginUrl','authType','user','description','sslMode',
-             'githubMode','repo','branch','localPath','repoOwner','repoName',
+             'githubMode','repo','branch','localPath','clonePath','repoOwner','repoName',
              'linkedEmail','preset','authState','scopes',
              'command','args','toolsDiscoveredAt','transport','url'}
 for c in conns:
@@ -1544,6 +1544,7 @@ emit('REPO_OWNER', conn.get('repoOwner', ''))
 emit('REPO_NAME', conn.get('repoName', ''))
 emit('BRANCH', conn.get('branch', 'main'))
 emit('LOCAL_PATH', conn.get('localPath', ''))
+emit('CLONE_PATH', conn.get('clonePath', ''))
 emit('TOKEN', conn.get('token', ''))
 # odoocli
 emit('ODOO_URL', conn.get('odooUrl', ''))
@@ -1776,6 +1777,288 @@ fi
 if [ "$TYPE" = "github" ]; then
   GITHUB_MODE="\${_C_GITHUB_MODE:-remote}"
   BRANCH="\${_C_BRANCH:-main}"
+  CLONE_PATH="\${_C_CLONE_PATH:-}"
+
+  # ── Cloned-mode (hybrid: remote source-of-truth + local working copy) ──
+  # If the operator clicked "Copy to Local" on a remote connection, _C_CLONE_PATH
+  # is set and the repo lives inside the tenant root. Route git ops there with
+  # GIT_ASKPASS-based PAT injection (no token persisted to .git/config).
+  # Rebase-first policy: pull.rebase=true was configured at clone time, so all
+  # \`pull\` here implicitly rebases the local branch onto upstream — no merge
+  # commits in normal sync flow.
+  if [ -n "$CLONE_PATH" ] && [ -d "$CLONE_PATH/.git" ]; then
+    # Build ephemeral GIT_ASKPASS helper that echoes the PAT. Token lives in
+    # process env only; helper file is mode 0700 and removed on EXIT.
+    if [ -n "\${_C_TOKEN:-}" ]; then
+      _ASKPASS=$(mktemp /tmp/aoc-gh-askpass-XXXXXX)
+      TMPFILES+=("$_ASKPASS")
+      printf '#!/bin/sh\\necho "$GH_TOKEN"\\n' > "$_ASKPASS"
+      chmod 0700 "$_ASKPASS"
+      export GH_TOKEN="$_C_TOKEN"
+      export GIT_ASKPASS="$_ASKPASS"
+      export GIT_TERMINAL_PROMPT=0
+    fi
+
+    # Destructive-op guard: strip --force from any user-supplied ARGS, refuse
+    # reset --hard (loses uncommitted work) and branch -D (deletes work).
+    _CLEAN_ARGS=()
+    _SAW_FORCE=0
+    for a in "\${ARGS_ARRAY[@]:-}"; do
+      case "$a" in
+        --force|-f|--force-with-lease) _SAW_FORCE=1 ;;
+        *) _CLEAN_ARGS+=("$a") ;;
+      esac
+    done
+
+    case "$ACTION" in
+      info)
+        echo "=== Cloned repo: $CLONE_PATH ==="
+        echo "Branch:   \$(git -C "$CLONE_PATH" branch --show-current 2>/dev/null || echo unknown)"
+        echo "Remote:   \$(git -C "$CLONE_PATH" remote get-url origin 2>/dev/null || echo unknown)"
+        echo ""
+        echo "=== Last 5 commits ==="
+        git -C "$CLONE_PATH" log -5 --format="%h %s (%an, %ar)" 2>&1
+        echo ""
+        echo "=== Working tree ==="
+        git -C "$CLONE_PATH" status --short 2>&1 | head -30
+        ;;
+      log)
+        N="\${_CLEAN_ARGS[0]:-20}"
+        git -C "$CLONE_PATH" log -"$N" --format="%h %s (%an, %ar)" 2>&1
+        ;;
+      status)
+        git -C "$CLONE_PATH" status 2>&1
+        ;;
+      branch)
+        if [ -z "\${_CLEAN_ARGS[*]:-}" ]; then
+          echo "=== Local branches ==="
+          git -C "$CLONE_PATH" branch -v 2>&1
+          echo ""
+          echo "=== Remote branches ==="
+          git -C "$CLONE_PATH" branch -rv 2>&1 | head -20
+        else
+          # Create + checkout new branch
+          NEW="\${_CLEAN_ARGS[0]}"
+          git -C "$CLONE_PATH" checkout -b "$NEW" 2>&1
+        fi
+        ;;
+      checkout)
+        REF="\${_CLEAN_ARGS[0]:?Usage: ... checkout <branch-or-ref>}"
+        git -C "$CLONE_PATH" checkout "$REF" 2>&1
+        ;;
+      pull|sync)
+        # pull.rebase=true was set at clone time, so this is effectively
+        # 'git fetch && git rebase origin/<branch>'.
+        git -C "$CLONE_PATH" fetch --prune 2>&1
+        if [ "$ACTION" = "pull" ]; then
+          git -C "$CLONE_PATH" pull --rebase 2>&1
+        fi
+        # Always show divergence summary at end
+        echo ""
+        echo "=== Divergence ==="
+        CUR=\$(git -C "$CLONE_PATH" branch --show-current 2>/dev/null || echo HEAD)
+        git -C "$CLONE_PATH" rev-list --left-right --count "origin/\${CUR}...HEAD" 2>/dev/null \\
+          | awk '{print "  behind upstream: "$1"   ahead of upstream: "$2}'
+        ;;
+      diff)
+        TARGET="\${_CLEAN_ARGS[0]:-}"
+        if [ -n "$TARGET" ]; then
+          git -C "$CLONE_PATH" diff "$TARGET" 2>&1 | head -300
+        else
+          git -C "$CLONE_PATH" diff 2>&1 | head -300
+        fi
+        ;;
+      files)
+        FILE_PATH="\${_CLEAN_ARGS[0]:-}"
+        TARGET_PATH="$CLONE_PATH\${FILE_PATH:+/$FILE_PATH}"
+        if [ -f "$TARGET_PATH" ]; then
+          cat "$TARGET_PATH"
+        elif [ -d "$TARGET_PATH" ]; then
+          ls -la "$TARGET_PATH" | head -50
+        else
+          echo "ERROR: '$TARGET_PATH' not found"
+          exit 1
+        fi
+        ;;
+      commit)
+        # Usage: commit "<msg>"  → git add -A then commit -m
+        MSG="\${_CLEAN_ARGS[0]:?Usage: ... commit \\"<message>\\"}"
+        git -C "$CLONE_PATH" add -A 2>&1
+        git -C "$CLONE_PATH" commit -m "$MSG" 2>&1
+        ;;
+      commit-files)
+        # Usage: commit-files <file1> <file2> ... <message>
+        # Last arg is the message, prior are file paths.
+        N=\${#_CLEAN_ARGS[@]}
+        if [ "$N" -lt 2 ]; then
+          echo "ERROR: Usage: ... commit-files <path1> [path2 ...] \\"<message>\\""
+          exit 64
+        fi
+        MSG="\${_CLEAN_ARGS[\$((N-1))]}"
+        FILES=("\${_CLEAN_ARGS[@]:0:\$((N-1))}")
+        git -C "$CLONE_PATH" add -- "\${FILES[@]}" 2>&1
+        git -C "$CLONE_PATH" commit -m "$MSG" 2>&1
+        ;;
+      push)
+        if [ "$_SAW_FORCE" -eq 1 ]; then
+          echo "ERROR: --force / --force-with-lease stripped. Push refused."
+          echo "       Force-push to a shared remote is a hard-limit violation."
+          echo "       If you really need it, the operator must do it manually outside this agent."
+          exit 65
+        fi
+        TARGET_BRANCH="\${_CLEAN_ARGS[0]:-}"
+        if [ -z "$TARGET_BRANCH" ]; then
+          TARGET_BRANCH=\$(git -C "$CLONE_PATH" branch --show-current 2>/dev/null)
+        fi
+        git -C "$CLONE_PATH" push origin "$TARGET_BRANCH" 2>&1
+        ;;
+      rebase)
+        # rebase <upstream> — rebase current branch onto upstream
+        UPSTREAM="\${_CLEAN_ARGS[0]:?Usage: ... rebase <upstream-branch>}"
+        git -C "$CLONE_PATH" fetch --prune 2>&1
+        git -C "$CLONE_PATH" rebase "$UPSTREAM" 2>&1
+        ;;
+      reset)
+        # Refuse --hard. Allow soft/mixed which preserve working tree.
+        MODE="\${_CLEAN_ARGS[0]:-}"
+        case "$MODE" in
+          --hard|--keep)
+            echo "ERROR: 'reset $MODE' refused — discards uncommitted work."
+            echo "       Use 'commit' to save changes first, or 'checkout' to discard specific files."
+            exit 65
+            ;;
+        esac
+        git -C "$CLONE_PATH" reset "\${_CLEAN_ARGS[@]}" 2>&1
+        ;;
+      cherry-pick)
+        SHA="\${_CLEAN_ARGS[0]:?Usage: ... cherry-pick <commit-sha>}"
+        # Validate SHA exists locally; if not, fetch may be needed.
+        if ! git -C "$CLONE_PATH" cat-file -e "\$SHA^{commit}" 2>/dev/null; then
+          echo "Commit \$SHA not found locally; fetching all refs first..."
+          git -C "$CLONE_PATH" fetch --all --prune 2>&1
+          if ! git -C "$CLONE_PATH" cat-file -e "\$SHA^{commit}" 2>/dev/null; then
+            echo "ERROR: commit \$SHA still not found after fetch. Wrong sha or wrong remote."
+            exit 1
+          fi
+        fi
+        # Check no rebase / cherry-pick in progress
+        if [ -e "$CLONE_PATH/.git/CHERRY_PICK_HEAD" ] || [ -d "$CLONE_PATH/.git/rebase-merge" ] || [ -d "$CLONE_PATH/.git/rebase-apply" ]; then
+          echo "ERROR: rebase or cherry-pick already in progress."
+          echo "       Resolve with 'rebase-continue' / 'rebase-abort' / 'cherry-pick-continue' / 'cherry-pick-abort' first."
+          exit 65
+        fi
+        git -C "$CLONE_PATH" cherry-pick "\$SHA" 2>&1
+        RC=\$?
+        if [ \$RC -ne 0 ]; then
+          echo ""
+          echo "Cherry-pick stopped due to conflict. Inspect with 'conflicts' / 'status'."
+          echo "After resolving: stage files then run 'cherry-pick-continue' or 'cherry-pick-abort'."
+        fi
+        exit \$RC
+        ;;
+      cherry-pick-continue)
+        # Stage user-resolved files first if requested.
+        if [ -n "\${_CLEAN_ARGS[0]:-}" ]; then
+          git -C "$CLONE_PATH" add -- "\${_CLEAN_ARGS[@]}" 2>&1
+        fi
+        git -C "$CLONE_PATH" cherry-pick --continue 2>&1
+        ;;
+      cherry-pick-abort)
+        git -C "$CLONE_PATH" cherry-pick --abort 2>&1
+        ;;
+      rebase-abort)
+        git -C "$CLONE_PATH" rebase --abort 2>&1
+        ;;
+      rebase-continue)
+        if [ -n "\${_CLEAN_ARGS[0]:-}" ]; then
+          git -C "$CLONE_PATH" add -- "\${_CLEAN_ARGS[@]}" 2>&1
+        fi
+        git -C "$CLONE_PATH" rebase --continue 2>&1
+        ;;
+      conflicts)
+        # List files with unresolved conflicts. Empty stdout = clean tree.
+        UNMERGED=\$(git -C "$CLONE_PATH" diff --name-only --diff-filter=U 2>/dev/null)
+        if [ -z "$UNMERGED" ]; then
+          echo "No unresolved conflicts."
+        else
+          echo "=== Unresolved conflicts ==="
+          echo "$UNMERGED"
+          echo ""
+          echo "After fixing each file, stage with 'commit-files <f1>... \\"<msg>\\"' (if committing),"
+          echo "or 'rebase-continue <f1>...' / 'cherry-pick-continue <f1>...' to resume the in-progress op."
+        fi
+        ;;
+      stash)
+        # Usage: stash ["<msg>"]
+        MSG="\${_CLEAN_ARGS[0]:-aoc-agent stash @ \$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+        git -C "$CLONE_PATH" stash push -u -m "\$MSG" 2>&1
+        ;;
+      stash-pop)
+        git -C "$CLONE_PATH" stash pop 2>&1
+        ;;
+      stash-list)
+        git -C "$CLONE_PATH" stash list 2>&1
+        ;;
+      pr-create)
+        # Usage: pr-create "<title>" "<body>" [base-branch]
+        TITLE="\${_CLEAN_ARGS[0]:?Usage: ... pr-create \\"<title>\\" \\"<body>\\" [base-branch]}"
+        BODY="\${_CLEAN_ARGS[1]:-}"
+        BASE="\${_CLEAN_ARGS[2]:-\$BRANCH}"
+        if [ -z "\${_C_TOKEN:-}" ]; then
+          echo "ERROR: PR creation requires a PAT with 'repo' scope. Set PAT on the connection."
+          exit 1
+        fi
+        export GH_TOKEN="$_C_TOKEN"
+        CURRENT_BRANCH=\$(git -C "$CLONE_PATH" branch --show-current 2>/dev/null)
+        if [ -z "\$CURRENT_BRANCH" ] || [ "\$CURRENT_BRANCH" = "\$BASE" ]; then
+          echo "ERROR: cannot open PR — current branch is the base ('\$BASE') or detached HEAD."
+          echo "       Create a feature branch first: 'branch <new-name>', commit, push, then pr-create."
+          exit 1
+        fi
+        # Ensure pushed first (else PR points to a non-existent remote branch)
+        if ! git -C "$CLONE_PATH" ls-remote --heads origin "\$CURRENT_BRANCH" 2>/dev/null | grep -q .; then
+          echo "Branch '\$CURRENT_BRANCH' not yet on remote — pushing first..."
+          _AP=\$(mktemp /tmp/aoc-gh-askpass-XXXXXX); TMPFILES+=("\$_AP")
+          printf '#!/bin/sh\\necho "$GH_TOKEN"\\n' > "\$_AP"; chmod 0700 "\$_AP"
+          GIT_ASKPASS="\$_AP" git -C "$CLONE_PATH" push -u origin "\$CURRENT_BRANCH" 2>&1
+        fi
+        REPO_URL=\$(git -C "$CLONE_PATH" remote get-url origin 2>/dev/null | sed -E 's|.*github.com[:/]([^/]+/[^/.]+)(\\.git)?$|\\1|')
+        gh pr create --repo "\$REPO_URL" --base "\$BASE" --head "\$CURRENT_BRANCH" --title "\$TITLE" --body "\$BODY" 2>&1
+        RC=\$?
+        if [ \$RC -ne 0 ]; then
+          echo ""
+          echo "Tip: if 'GraphQL: ... must have admin rights' — PAT scope insufficient. Need 'repo' (private) or 'public_repo' (public)."
+        fi
+        exit \$RC
+        ;;
+      remote)
+        git -C "$CLONE_PATH" remote -v 2>&1
+        ;;
+      *)
+        echo "ERROR: Unknown github cloned action '$ACTION'"
+        echo "Supported (cloned mode):"
+        echo "  info, status, log [n], branch [new-name], checkout <ref>"
+        echo "  diff [target], files [path]"
+        echo "  pull, sync                       — fetch + rebase (pull) / fetch only (sync)"
+        echo "  commit \\"<msg>\\"                   — git add -A then commit"
+        echo "  commit-files <f1>... \\"<msg>\\"      — stage specific files then commit"
+        echo "  push [branch]                    — push to origin (no --force allowed)"
+        echo "  rebase <upstream>                — rebase current onto upstream"
+        echo "  reset [--soft|--mixed]           — soft/mixed only; --hard refused"
+        echo "  cherry-pick <sha>                — bring commit onto current branch"
+        echo "  cherry-pick-continue [files...]  — resume after resolving conflicts"
+        echo "  cherry-pick-abort                — discard in-progress cherry-pick"
+        echo "  rebase-continue [files...]       — resume rebase after fixing conflicts"
+        echo "  rebase-abort                     — discard in-progress rebase"
+        echo "  conflicts                        — list unresolved conflict files"
+        echo "  stash [\\"msg\\"]                    — git stash push -u"
+        echo "  stash-pop, stash-list            — restore / list stashes"
+        echo "  pr-create \\"<title>\\" \\"<body>\\" [base]  — open PR via gh CLI (needs PAT 'repo' scope)"
+        exit 1
+        ;;
+    esac
+    exit 0
+  fi
 
   if [ "$GITHUB_MODE" = "local" ]; then
     # ── Local mode: git CLI on local filesystem ──────────────────────────
@@ -2140,6 +2423,42 @@ function _buildGithubSection(conn) {
   const branch = meta.branch || 'main';
   const name = conn.name;
   const lines = [];
+
+  // Hybrid mode: remote connection with local clone (post "Copy to Local").
+  // Full git ops via aoc-connect.sh, rebase-first policy enforced.
+  if (mode === 'remote' && meta.clonePath) {
+    const repo = `${meta.repoOwner || '?'}/${meta.repoName || '?'}`;
+    lines.push(`**"${name}"** — remote \`${repo}\` cloned to \`${meta.clonePath}\` (branch: \`${branch}\`)`);
+    lines.push('');
+    lines.push(`  Rebase-first workflow: \`pull.rebase=true\` is configured, so \`pull\` rebases instead of merging.`);
+    lines.push('');
+    lines.push(`  \`aoc-connect.sh "${name}" info\`                  — branch, recent commits, working tree`);
+    lines.push(`  \`aoc-connect.sh "${name}" status\`                — git status`);
+    lines.push(`  \`aoc-connect.sh "${name}" log [n]\`                — recent commits`);
+    lines.push(`  \`aoc-connect.sh "${name}" diff [target]\`          — diff vs target (default working tree)`);
+    lines.push(`  \`aoc-connect.sh "${name}" files [path]\`           — cat file or ls dir inside clone`);
+    lines.push(`  \`aoc-connect.sh "${name}" branch\`                 — list branches`);
+    lines.push(`  \`aoc-connect.sh "${name}" branch <name>\`          — create + checkout new branch`);
+    lines.push(`  \`aoc-connect.sh "${name}" checkout <ref>\`         — switch branch / commit`);
+    lines.push(`  \`aoc-connect.sh "${name}" sync\`                   — fetch + show divergence`);
+    lines.push(`  \`aoc-connect.sh "${name}" pull\`                   — fetch + rebase onto upstream`);
+    lines.push(`  \`aoc-connect.sh "${name}" commit "<msg>"\`         — add -A then commit`);
+    lines.push(`  \`aoc-connect.sh "${name}" commit-files <f1>... "<msg>"\` — stage specific files then commit`);
+    lines.push(`  \`aoc-connect.sh "${name}" push [branch]\`          — push to origin (no --force allowed)`);
+    lines.push(`  \`aoc-connect.sh "${name}" rebase <upstream>\`      — rebase current onto upstream branch`);
+    lines.push(`  \`aoc-connect.sh "${name}" cherry-pick <sha>\`      — bring a commit onto current branch`);
+    lines.push(`  \`aoc-connect.sh "${name}" rebase-continue [files...]\`  — resume rebase after resolving conflicts`);
+    lines.push(`  \`aoc-connect.sh "${name}" rebase-abort\`           — discard in-progress rebase`);
+    lines.push(`  \`aoc-connect.sh "${name}" cherry-pick-continue\` / \`cherry-pick-abort\``);
+    lines.push(`  \`aoc-connect.sh "${name}" conflicts\`              — list unresolved conflict files`);
+    lines.push(`  \`aoc-connect.sh "${name}" stash ["msg"]\` / \`stash-pop\` / \`stash-list\``);
+    lines.push(`  \`aoc-connect.sh "${name}" pr-create "<title>" "<body>" [base]\`  — open PR (needs PAT 'repo' scope)`);
+    lines.push('');
+    lines.push(`  **Rebase-first rule:** integrate other branches via \`rebase\` or \`cherry-pick\`, NOT \`merge\`. Avoid merge commits.`);
+    lines.push(`  **No force:** push --force / reset --hard are refused. Persistence after data loss is intentional.`);
+    lines.push(`  **Conflict workflow:** if rebase/cherry-pick reports conflict — run \`conflicts\` to see files, fix them, then \`<op>-continue <files...>\` or \`<op>-abort\`.`);
+    return lines;
+  }
 
   if (mode === 'local') {
     const lp = meta.localPath || '/path/to/repo';

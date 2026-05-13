@@ -126,16 +126,16 @@ odoo.sh <conn> record search account.analytic.line \
 **Reference:** turn 28-30.
 
 ### Pitfall: Multiple connections assigned, none match user intent
-**Gejala:** Agent memaksa query lewat connection generic (mis. "DKE V17 Production" admin) padahal user nanya timesheet pribadi — hasilnya kosong, atau hanya muncul "Time Off" / vacation entries dari instance lain.
+**Gejala:** Agent memaksa query lewat connection generic (mis. an admin-shared production Odoo) padahal user nanya timesheet pribadi — hasilnya kosong, atau hanya muncul "Time Off" / vacation entries dari instance lain.
 **Root cause:** Agent tidak memeriksa `description`/`name` connection sebelum memilih, atau hanya ada 1 connection yang scope-nya tidak sesuai intent.
 **Cara hindari:** dari `odoo-list.sh`, cocokkan `description` atau `name` dengan intent user. Untuk timesheet/task/project, prefer connection yang nama atau description-nya memuat kata "task", "timesheet", "project", atau employee-specific. Kalau **tidak ada** connection yang cocok, JANGAN brute-force pakai connection lain — STOP dan minta user assign connection yang sesuai. Contoh respon: "Saya hanya melihat connection 'X' (deskripsi: ...). Untuk timesheet pribadi, mohon assign connection yang lebih spesifik (mis. 'My Tasks and Timesheet') lewat AOC dashboard."
-**Reference:** session migi 2026-05-08 01:33 — Migi pakai DKE V17 Production untuk Rheyno's timesheet → cuma dapat Time Off entries.
+**Reference:** previously-observed incident — agent picked an admin shared production connection for a personal-timesheet question and only got Time Off entries from an unrelated tenant.
 
 ### Pitfall: "Last timesheet" returns future-dated Time Off entries
 **Gejala:** Query `record search account.analytic.line ... --order "date desc" --limit 1` mengembalikan entry tanggal masa depan (mis. 2026-05-27 padahal hari ini 2026-05-08), biasanya `name = "Time Off (X/Y)"`.
 **Root cause:** Odoo izinkan create timesheet entry untuk tanggal apa pun. "Time Off" / vacation entries sering di-pre-create/schedule di masa depan untuk planned leave.
 **Cara hindari:** untuk intent "last timesheet" / "timesheet terakhir", SELALU tambahkan `('date','<=','$TODAY')` ke domain. Untuk "kemarin" gunakan `('date','=','$YESTERDAY')`. Jika user ingin "actual work logged" (bukan cuti), tambah `('task_id.name','!=','Time Off')` atau exclude project bernama "Internal/Time Off" sesuai konvensi instance.
-**Reference:** session migi 2026-05-08 01:33-01:35 — Migi balikin 27 Mei 2026 lalu 1 Mei 2026 (semua Time Off entries di masa depan/lampau, bukan actual work).
+**Reference:** previously-observed incident — agent returned future-dated entries (e.g. 27 May while "today" was 8 May) and unrelated past Time Off entries, instead of the user's last actual work entry.
 
 ### Pitfall: Hallucinating helper script names
 **Gejala:** Agent panggil `odoo-timesheet.sh`, `odoo-tasks.sh`, atau script lain yang tidak ada → exit code 127 / "command not found".

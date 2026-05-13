@@ -12,14 +12,38 @@
 set -euo pipefail
 
 [ -f "${HOME}/.openclaw/.aoc_env" ] && source "${HOME}/.openclaw/.aoc_env" 2>/dev/null || true
-# PWD wins over OPENCLAW_WORKSPACE: a leaked OPENCLAW_WORKSPACE from a parent
-# shell pointing at a different agent's workspace would otherwise silently
-# overwrite this agent's AOC_AGENT_ID/AOC_TOKEN with another agent's identity.
-if [ -f "$PWD/.aoc_agent_env" ]; then
+# Agent identity resolution priority (highest first):
+#   1. $OPENCLAW_STATE_DIR/workspace/.aoc_agent_env — set explicitly per-user by
+#      the gateway orchestrator (most authoritative; survives `cd` into shared dirs)
+#   2. $PWD/.aoc_agent_env — when run from agent workspace directly
+#   3. Walk-up from $PWD looking for .aoc_agent_env (stay under $HOME)
+#   4. $OPENCLAW_WORKSPACE/.aoc_agent_env — last resort, may leak from parent env
+#      (e.g. AOC backend .env sets OPENCLAW_WORKSPACE=admin path which inherits
+#      into per-user gateway children); kept for backward-compat but flagged.
+__loaded_agent_env=""
+if [ -n "${OPENCLAW_STATE_DIR:-}" ] && [ -f "${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ]; then
+  source "${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" 2>/dev/null || true
+  __loaded_agent_env="${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
+elif [ -f "$PWD/.aoc_agent_env" ]; then
   source "$PWD/.aoc_agent_env" 2>/dev/null || true
-elif [ -n "${OPENCLAW_WORKSPACE:-}" ] && [ -f "${OPENCLAW_WORKSPACE}/.aoc_agent_env" ]; then
-  source "${OPENCLAW_WORKSPACE}/.aoc_agent_env" 2>/dev/null || true
+  __loaded_agent_env="$PWD/.aoc_agent_env"
+else
+  __walk="$PWD"
+  while [ -n "$__walk" ] && [ "$__walk" != "/" ] && [ "$__walk" != "$HOME" ]; do
+    if [ -f "$__walk/.aoc_agent_env" ]; then
+      source "$__walk/.aoc_agent_env" 2>/dev/null || true
+      __loaded_agent_env="$__walk/.aoc_agent_env"
+      break
+    fi
+    __walk="$(dirname "$__walk")"
+  done
+  if [ -z "$__loaded_agent_env" ] && [ -n "${OPENCLAW_WORKSPACE:-}" ] && [ -f "${OPENCLAW_WORKSPACE}/.aoc_agent_env" ]; then
+    source "${OPENCLAW_WORKSPACE}/.aoc_agent_env" 2>/dev/null || true
+    __loaded_agent_env="${OPENCLAW_WORKSPACE}/.aoc_agent_env"
+    echo "[odoo-list.sh] WARN: resolved agent identity via inherited OPENCLAW_WORKSPACE ($OPENCLAW_WORKSPACE). If this is a cross-tenant leak, set OPENCLAW_STATE_DIR or run from agent workspace." >&2
+  fi
 fi
+unset __walk
 
 AOC_URL_VAL="${AOC_URL:-http://localhost:18800}"
 TOKEN="${AOC_TOKEN:-}"
