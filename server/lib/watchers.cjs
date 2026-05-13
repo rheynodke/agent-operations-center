@@ -440,7 +440,11 @@ class LiveFeedWatcher {
   _buildClaudeCliKeyMap() {
     const LINK_WINDOW_MS = 5 * 60_000;
     const map = new Map(); // claudeCliUuid -> { sessionKey, gatewaySessionId, agentId }
-    const agentMap = buildAgentClaudeCliMap();
+    // Scope to this watcher's owner. Without userId, every per-user watcher
+    // iterates the SAME admin claude-cli workspace and forwards intermediate
+    // assistant text to Telegram once each — producing N duplicate sends
+    // (N = number of LiveFeedWatcher instances = number of users).
+    const agentMap = buildAgentClaudeCliMap(this.ownerUserId);
 
     for (const [agentId, info] of Object.entries(agentMap)) {
       if (!fs.existsSync(info.projectDir)) continue;
@@ -500,7 +504,10 @@ class LiveFeedWatcher {
       // silently dropped. Rebuild cost is ~ms for small agent counts.
       this._claudeCliKeyMap = this._buildClaudeCliKeyMap();
 
-      const agentMap = buildAgentClaudeCliMap();
+      // Scope to this watcher's owner — see _buildClaudeCliKeyMap comment.
+      // Without this, every per-user watcher polls admin's claude-cli workspace
+      // and forwards intermediate text to Telegram, duplicating N times.
+      const agentMap = buildAgentClaudeCliMap(this.ownerUserId);
       const now = Date.now();
 
       for (const [agentId, info] of Object.entries(agentMap)) {

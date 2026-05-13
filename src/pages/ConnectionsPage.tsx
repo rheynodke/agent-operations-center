@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import { Plus, Plug, CheckCircle2, XCircle, Loader2, Trash2, RefreshCw, Database, Server, Cloud, Globe, GitBranch, Box, FolderOpen, ChevronRight, ArrowUp, FolderGit2, FileText, Workflow, Eye, EyeOff, X, Share2, Users2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -212,6 +212,143 @@ function getTypeLabel(type: string) {
   return CONNECTION_TYPES.find(t => t.value === type)?.label || type
 }
 
+// ── GitHub Clone Panel ──────────────────────────────────────────────────────
+
+type CloneJob = {
+  state: string
+  phase: string
+  progress: number
+  error: string | null
+}
+
+function GithubClonePanel({ conn, onChanged }: { conn: Connection; onChanged: () => void }) {
+  const meta = (conn.metadata || {}) as Record<string, unknown>
+  const clonePath = (meta.clonePath as string) || null
+  const clonedAt = (meta.clonedAt as string) || null
+  const lastSyncAt = (meta.lastSyncAt as string) || null
+  const persistedJob = (meta.cloneJob as CloneJob | undefined) || null
+
+  const [job, setJob] = useState<CloneJob | null>(persistedJob)
+  const [busy, setBusy] = useState(false)
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Poll while a job is running
+  useEffect(() => {
+    if (!job || job.state === 'completed' || job.state === 'failed') return
+    const tick = async () => {
+      try {
+        const r = await api.getGithubCloneStatus(conn.id)
+        if (r.job) {
+          setJob(r.job)
+          if (r.job.state === 'completed' || r.job.state === 'failed') {
+            onChanged()
+            return
+          }
+        } else if (r.clonePath) {
+          setJob({ state: 'completed', phase: 'done', progress: 100, error: null })
+          onChanged()
+          return
+        }
+        pollTimer.current = setTimeout(tick, 1500)
+      } catch (e) {
+        console.warn('clone-status poll failed', e)
+        pollTimer.current = setTimeout(tick, 3000)
+      }
+    }
+    pollTimer.current = setTimeout(tick, 1000)
+    return () => { if (pollTimer.current) clearTimeout(pollTimer.current) }
+  }, [job, conn.id, onChanged])
+
+  const isRunning = job && (job.state === 'starting' || job.state === 'running')
+
+  const doClone = async () => {
+    setBusy(true)
+    try {
+      const r = await api.startGithubClone(conn.id)
+      setJob(r.job)
+    } catch (e) {
+      alertDialog({ title: 'Clone failed to start', description: (e as Error).message, tone: 'error' })
+    } finally { setBusy(false) }
+  }
+  const doSync = async () => {
+    setBusy(true)
+    try {
+      const r = await api.syncGithubClone(conn.id)
+      alertDialog({
+        title: 'Synced from remote',
+        description: `Branch: ${r.branch}\nBehind upstream: ${r.behind}, ahead: ${r.ahead}`,
+        tone: 'success',
+      })
+      onChanged()
+    } catch (e) {
+      alertDialog({ title: 'Sync failed', description: (e as Error).message, tone: 'error' })
+    } finally { setBusy(false) }
+  }
+  const doUnclone = async () => {
+    const confirmed = await confirmDialog({
+      title: 'Delete local clone?',
+      description: `This will remove the working directory at ${clonePath}. The remote connection itself stays. Continue?`,
+      confirmLabel: 'Delete clone',
+      destructive: true,
+    })
+    if (!confirmed) return
+    setBusy(true)
+    try {
+      await api.uncloneGithub(conn.id)
+      setJob(null)
+      onChanged()
+    } catch (e) {
+      alertDialog({ title: 'Unclone failed', description: (e as Error).message, tone: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  if (clonePath) {
+    return (
+      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground" onClick={e => e.stopPropagation()}>
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 font-mono">
+          ✓ cloned
+        </span>
+        <span className="font-mono truncate" title={`${clonePath} (cloned ${clonedAt || '?'}${lastSyncAt ? `, synced ${lastSyncAt}` : ''})`}>
+          {clonePath.split('/').slice(-2).join('/')}
+        </span>
+        <button onClick={doSync} disabled={busy} className="ml-auto px-1.5 py-0.5 rounded hover:bg-muted/30 disabled:opacity-50">sync</button>
+        <button onClick={doUnclone} disabled={busy} className="px-1.5 py-0.5 rounded hover:bg-red-500/10 hover:text-red-300 disabled:opacity-50">unclone</button>
+      </div>
+    )
+  }
+
+  if (isRunning) {
+    return (
+      <div className="mt-2 text-[11px] text-muted-foreground font-mono" onClick={e => e.stopPropagation()}>
+        <span className="inline-flex items-center gap-1">
+          <span className="animate-pulse">⏳</span> cloning… {job.phase} ({job.progress}%)
+        </span>
+      </div>
+    )
+  }
+
+  if (job && job.state === 'failed') {
+    return (
+      <div className="mt-2 text-[11px] font-mono" onClick={e => e.stopPropagation()}>
+        <div className="text-red-400">✗ clone failed: {job.error || 'unknown'}</div>
+        <button onClick={doClone} disabled={busy} className="mt-1 px-2 py-0.5 rounded bg-muted/30 hover:bg-muted/50">retry</button>
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={doClone}
+      disabled={busy || !(meta.repoOwner && meta.repoName)}
+      className="mt-1.5 text-[11px] px-2 py-0.5 rounded bg-muted/30 hover:bg-muted/50 text-muted-foreground hover:text-foreground disabled:opacity-50"
+      title="Clone repo into your workspace for full git ops (commit, push, rebase)"
+      onClickCapture={e => e.stopPropagation()}
+    >
+      Copy to Local
+    </button>
+  )
+}
+
 // ── Connection Card ──────────────────────────────────────────────────────────
 
 function ConnectionCard({
@@ -241,6 +378,8 @@ function ConnectionCard({
   } else if (conn.type === "github") {
     if (meta.githubMode === "local") {
       detail = `local: ${meta.localPath || "?"} · ${meta.branch || "main"}`
+    } else if (meta.clonePath) {
+      detail = `${meta.repoOwner || "?"}/${meta.repoName || "?"} · cloned · ${meta.branch || "main"}`
     } else {
       detail = `${meta.repoOwner || "?"}/${meta.repoName || "?"} · ${meta.branch || "main"}`
     }
@@ -316,6 +455,9 @@ function ConnectionCard({
           {detail && <p className="text-[11px] text-muted-foreground/60 font-mono mt-1 truncate">{detail}</p>}
           {meta.description && (
             <p className="text-[11px] text-muted-foreground/50 mt-1 line-clamp-2 leading-relaxed">{(meta.description as string)}</p>
+          )}
+          {conn.type === "github" && meta.githubMode !== "local" && canEdit && (
+            <GithubClonePanel conn={conn} onChanged={() => onTest(conn.id)} />
           )}
           {assignedAgents && assignedAgents.length > 0 && (
             <div className="flex items-center gap-1 mt-1.5 flex-wrap">

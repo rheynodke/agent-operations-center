@@ -41,6 +41,95 @@ function findGatewayPid(callback) {
 }
 
 let restartLock = false;
+
+// macOS launchd label used by the admin gateway installer. When this service
+// is loaded, launchd's KeepAlive=true will auto-respawn the gateway on exit —
+// so AOC must NOT spawn its own copy after SIGTERM, or we get duplicate
+// gateways (each running its own cron scheduler → duplicate Telegram sends
+// scaled to the number of zombies).
+const LAUNCHD_LABEL = process.env.OPENCLAW_LAUNCHD_LABEL || 'ai.openclaw.gateway';
+
+function isLaunchdManaged(cb) {
+  exec(`launchctl list ${LAUNCHD_LABEL}`, { timeout: 3000 }, (err, stdout) => {
+    cb(!err && /"PID"\s*=\s*\d+/.test(stdout));
+  });
+}
+
+function getLaunchdPid(cb) {
+  exec(`launchctl list ${LAUNCHD_LABEL}`, { timeout: 3000 }, (err, stdout) => {
+    const m = !err && stdout.match(/"PID"\s*=\s*(\d+)/);
+    cb(m ? Number(m[1]) : null);
+  });
+}
+
+/**
+ * Identify admin gateways by inspecting OPENCLAW_HOME env. Per-user gateways
+ * always have OPENCLAW_HOME=~/.openclaw/users/N/.openclaw; admin has
+ * OPENCLAW_HOME=~/.openclaw with no /users/ segment.
+ */
+function isAdminGatewayPid(pid, cb) {
+  exec(`ps eww -p ${pid} -o command=`, { timeout: 2000, maxBuffer: 256 * 1024 }, (err, stdout) => {
+    if (err || !stdout) return cb(false);
+    const m = stdout.match(/OPENCLAW_HOME=(\S+)/);
+    if (!m) return cb(false);
+    const home = m[1];
+    cb(!home.includes('/users/'));
+  });
+}
+
+/**
+ * One-time sweep at AOC startup: kill any admin-gateway zombies left over
+ * from previous AOC runs that used the legacy SIGTERM+spawn restart path.
+ *
+ * A "zombie" is an admin `openclaw-gateway` (identified by OPENCLAW_HOME with
+ * no `/users/` segment) that is not the PID launchd currently owns. Such
+ * processes were spawned by AOC's old restartGateway() and lost their port
+ * race with launchd's KeepAlive respawn, but they kept running with the
+ * telegram + cron plugins active, causing duplicate Telegram sends scaled
+ * to the zombie count.
+ */
+function sweepAdminGatewayZombies() {
+  getLaunchdPid((launchdPid) => {
+    exec("pgrep -f 'openclaw-gateway'", (err, stdout) => {
+      if (err) return;
+      const gwPids = stdout.trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n));
+      if (gwPids.length === 0) return;
+
+      let pending = gwPids.length;
+      const zombies = [];
+      gwPids.forEach((pid) => {
+        if (pid === launchdPid) {
+          if (--pending === 0) finalize();
+          return;
+        }
+        isAdminGatewayPid(pid, (isAdmin) => {
+          if (isAdmin) zombies.push(pid);
+          if (--pending === 0) finalize();
+        });
+      });
+
+      function finalize() {
+        if (zombies.length === 0) return;
+        console.warn(`[gateway] startup sweep: killing ${zombies.length} admin-gateway zombie(s) [${zombies.join(', ')}] (launchd owns pid=${launchdPid ?? 'unknown'})`);
+        for (const pid of zombies) {
+          try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+        }
+        setTimeout(() => {
+          for (const pid of zombies) {
+            try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch (_) {}
+          }
+        }, 2000);
+      }
+    });
+  });
+}
+
+// Run the sweep at module load (i.e. AOC startup). Delay 8s so that
+// orchestrator.cleanupOrphans has a chance to run its own user-gateway sweep
+// first AND any user gateways being spawned at startup have time to bind
+// their ports — keeps log output coherent and avoids racing.
+setTimeout(sweepAdminGatewayZombies, 8000);
+
 function restartGateway(reason) {
   if (restartLock) {
     console.log(`[gateway] Restart skipped (already in progress), reason: ${reason}`);
@@ -49,34 +138,49 @@ function restartGateway(reason) {
   restartLock = true;
   console.log(`[gateway] Restart triggered: ${reason}`);
 
-  findGatewayPid((pids) => {
-    for (const pid of pids) {
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch (e) {
-        console.error(`[gateway] Failed to kill PID ${pid}:`, e.message);
-      }
+  isLaunchdManaged((managed) => {
+    if (managed) {
+      // Atomic kill+respawn via launchd. The `-k` flag SIGTERMs the running
+      // job then immediately restarts it — no race window where AOC's own
+      // spawn could collide with launchd's KeepAlive respawn.
+      exec(`launchctl kickstart -k gui/$(id -u)/${LAUNCHD_LABEL}`, { timeout: 5000 }, (err) => {
+        if (err) console.error(`[gateway] launchctl kickstart failed: ${err.message}`);
+        else console.log(`[gateway] Restarted via launchctl kickstart (label=${LAUNCHD_LABEL})`);
+        restartLock = false;
+      });
+      return;
     }
 
-    setTimeout(() => {
-      const fs = require('fs');
-      const out = fs.openSync('/tmp/aoc_gw.log', 'a');
-      const err = fs.openSync('/tmp/aoc_gw.log', 'a');
-      const openclaw = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
+    // Fallback: no launchd service — manual kill+spawn (legacy path).
+    findGatewayPid((pids) => {
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGTERM');
+        } catch (e) {
+          console.error(`[gateway] Failed to kill PID ${pid}:`, e.message);
+        }
+      }
 
-      const childEnv = { ...process.env };
-      delete childEnv.OPENCLAW_HOME;
+      setTimeout(() => {
+        const fs = require('fs');
+        const out = fs.openSync('/tmp/aoc_gw.log', 'a');
+        const err = fs.openSync('/tmp/aoc_gw.log', 'a');
+        const openclaw = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
 
-      const child = spawn(openclaw, ['gateway'], {
-        detached: true,
-        stdio: ['ignore', out, err],
-        env: childEnv,
-      });
-      child.unref();
+        const childEnv = { ...process.env };
+        delete childEnv.OPENCLAW_HOME;
 
-      console.log(`[gateway] Restarted (killed PIDs: [${pids.join(', ')}], new process spawned)`);
-      restartLock = false;
-    }, 1500);
+        const child = spawn(openclaw, ['gateway'], {
+          detached: true,
+          stdio: ['ignore', out, err],
+          env: childEnv,
+        });
+        child.unref();
+
+        console.log(`[gateway] Restarted (killed PIDs: [${pids.join(', ')}], new process spawned)`);
+        restartLock = false;
+      }, 1500);
+    });
   });
 }
 

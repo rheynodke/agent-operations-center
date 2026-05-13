@@ -233,7 +233,9 @@ cmd_list() {
   printf '%0.s─' {1..100}; echo
   echo -e "${B}Total: $total${R}  ${GRN}running: $running${R}  ${D}stopped: $stopped${R}  ${YEL}stale: $stale${R}"
 
-  # Show untracked gateway processes
+  # Show untracked gateway processes (skip legit child workers whose PPID is
+  # a tracked launcher — openclaw-gateway forks an inner worker that holds
+  # the listen socket).
   local untracked=0
   while IFS=$'\t' read -r pid port; do
     [[ -z "$pid" ]] && continue
@@ -241,6 +243,11 @@ cmd_list() {
     db_match=$(sql "SELECT id FROM users WHERE gateway_pid = $pid LIMIT 1;")
     [[ -n "$db_match" ]] && continue
     [[ "$port" == "$ADMIN_GW_PORT" ]] && continue
+    local ppid
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    local ppid_tracked
+    ppid_tracked=$(sql "SELECT id FROM users WHERE gateway_pid = $ppid LIMIT 1;")
+    [[ -n "$ppid_tracked" ]] && continue   # legit child worker
     if [[ "$untracked" -eq 0 ]]; then
       echo; warn "Untracked gateway processes (not in DB):"
     fi
@@ -635,6 +642,17 @@ cmd_orphans() {
     done
     # Also skip if it's on the admin port
     [[ "$port" == "$ADMIN_GW_PORT" ]] && is_tracked=true
+
+    # Skip if PPID is a tracked launcher — openclaw-gateway forks an inner
+    # worker that owns the listen socket; the launcher is in DB, the worker
+    # is its child. Without this the worker shows up as a false orphan.
+    if [[ "$is_tracked" == "false" ]]; then
+      local ppid
+      ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      for tp in $tracked_pids; do
+        [[ "$tp" == "$ppid" ]] && is_tracked=true && break
+      done
+    fi
 
     if [[ "$is_tracked" == "false" ]]; then
       echo -e "  ${YEL}Orphan:${R} PID=${B}$pid${R}  port=$port"

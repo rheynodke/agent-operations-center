@@ -546,6 +546,27 @@ export const api = {
   getConnectionUsage: (id: string) =>
     request<{ usage: import('@/types').ConnectionUsageEntry[] }>(`/connections/${encodeURIComponent(id)}/usage`),
 
+  // GitHub clone-to-local lifecycle (remote-mode connections only)
+  startGithubClone: (id: string) =>
+    request<{ ok: boolean; job: { state: string; phase: string; progress: number; clonePath: string; branch: string; repo: string; error: string | null } }>(
+      `/connections/${encodeURIComponent(id)}/clone-to-local`,
+      { method: 'POST' },
+    ),
+  getGithubCloneStatus: (id: string) =>
+    request<{ ok: boolean; clonePath: string | null; clonedAt: string | null; lastSyncAt: string | null; job: { state: string; phase: string; progress: number; error: string | null } | null }>(
+      `/connections/${encodeURIComponent(id)}/clone-status`,
+    ),
+  syncGithubClone: (id: string) =>
+    request<{ ok: boolean; branch: string; behind: number; ahead: number }>(
+      `/connections/${encodeURIComponent(id)}/clone-sync`,
+      { method: 'POST' },
+    ),
+  uncloneGithub: (id: string) =>
+    request<{ ok: boolean; removed: boolean; clonePath?: string; reason?: string }>(
+      `/connections/${encodeURIComponent(id)}/unclone`,
+      { method: 'POST' },
+    ),
+
   // Google Workspace connection flows
   getConnectionFeatures: () =>
     request<{ features: ConnectionFeatureFlags; redirectUri: string | null }>('/connections/config/features'),
