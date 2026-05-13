@@ -45,6 +45,7 @@ import type { SkillFileNode } from "@/lib/api"
 import { AgentConnectionsTab } from "./agent-detail/AgentConnectionsTab"
 import { PairingRequestsPanel } from "./agent-detail/PairingRequestsPanel"
 import { DiscordGuildsSection } from "./agent-detail/DiscordGuildsSection"
+import { WhatsAppGroupsSection } from "./agent-detail/WhatsAppGroupsSection"
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  TYPES                                                              */
@@ -2576,6 +2577,7 @@ function WhatsAppChannelCard({
         />
       )}
       <ChannelAllowFromSection agentId={agentId} channel="whatsapp" accountId={ch.accountId} />
+      <WhatsAppGroupsSection agentId={agentId} />
     </div>
   )
 }

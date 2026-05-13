@@ -17,6 +17,8 @@ const locksLib   = require('./locks.cjs');
 const hooksLib   = require('./hooks.cjs');
 const pairingLib = require('./pairing.cjs');
 const discordGuildsLib = require('./discord-guilds.cjs');
+const whatsappGroupsLib = require('./whatsapp-groups.cjs');
+const whatsappSeenGroupsLib = require('./whatsapp-seen-groups.cjs');
 const browserHarnessInstaller = require('./browser-harness/installer.cjs');
 const browserHarnessLauncher = require('./browser-harness/launcher.cjs');
 const browserHarnessPool = require('./browser-harness/pool.cjs');
@@ -197,6 +199,14 @@ module.exports = {
   listAgentDiscordGuilds:   discordGuildsLib.listAgentDiscordGuilds,
   upsertAgentDiscordGuild:  discordGuildsLib.upsertAgentDiscordGuild,
   removeAgentDiscordGuild:  discordGuildsLib.removeAgentDiscordGuild,
+
+  // ── whatsapp groups ───────────────────────────────────────────────────────
+  listAgentWhatsAppGroups:    whatsappGroupsLib.listAgentWhatsAppGroups,
+  upsertAgentWhatsAppGroup:   whatsappGroupsLib.upsertAgentWhatsAppGroup,
+  removeAgentWhatsAppGroup:   whatsappGroupsLib.removeAgentWhatsAppGroup,
+  updateAgentWhatsAppSettings: whatsappGroupsLib.updateAgentWhatsAppSettings,
+  listSeenWhatsAppGroups:     whatsappSeenGroupsLib.listSeenWhatsAppGroups,
+  listSeenWhatsAppGroupsForAgent: whatsappSeenGroupsLib.listSeenWhatsAppGroupsForAgent,
 
   // ── browser-harness (Layer 1 core) ────────────────────────────────────────
   browserHarnessInstaller,

@@ -609,6 +609,91 @@ function resolveAgentAllowFromBindings(agentId) {
   }
 });
 
+// ─── WhatsApp group allowlist + activation management ────────────────────────
+
+  router.get('/agents/:id/whatsapp/groups', db.authMiddleware, (req, res) => {
+    try {
+      const result = parsers.listAgentWhatsAppGroups(req.params.id, parsers.getAgentChannels);
+      res.json(result);
+    } catch (err) {
+      console.error('[api/agents/whatsapp/groups/list]', err);
+      const code = err.message?.includes('no WhatsApp binding') ? 404 : 500;
+      res.status(code).json({ error: err.message });
+    }
+  });
+
+  // Body: { label?, requireMention? }
+  router.put('/agents/:id/whatsapp/groups/:jid', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+    try {
+      const { label, requireMention } = req.body || {};
+      const result = parsers.upsertAgentWhatsAppGroup(
+        req.params.id,
+        decodeURIComponent(req.params.jid),
+        { label, requireMention },
+        parsers.getAgentChannels,
+      );
+      res.json(result);
+    } catch (err) {
+      console.error('[api/agents/whatsapp/groups/upsert]', err);
+      const msg = err.message || '';
+      const code = /must be|is required|not configured|no WhatsApp binding/i.test(msg) ? 400 : 500;
+      res.status(code).json({ error: msg });
+    }
+  });
+
+  router.delete('/agents/:id/whatsapp/groups/:jid', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+    try {
+      const result = parsers.removeAgentWhatsAppGroup(
+        req.params.id,
+        decodeURIComponent(req.params.jid),
+        parsers.getAgentChannels,
+      );
+      if (!result.ok) return res.status(404).json(result);
+      res.json(result);
+    } catch (err) {
+      console.error('[api/agents/whatsapp/groups/remove]', err);
+      const code = err.message?.includes('no WhatsApp binding') ? 404 : 500;
+      res.status(code).json({ error: err.message });
+    }
+  });
+
+  // Body: { groupPolicy?, groupAllowFrom?, historyLimit?, mentionPatterns? }
+  router.put('/agents/:id/whatsapp/account', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
+    try {
+      const { groupPolicy, groupAllowFrom, historyLimit, mentionPatterns } = req.body || {};
+      const result = parsers.updateAgentWhatsAppSettings(
+        req.params.id,
+        { groupPolicy, groupAllowFrom, historyLimit, mentionPatterns },
+        parsers.getAgentChannels,
+      );
+      res.json(result);
+    } catch (err) {
+      console.error('[api/agents/whatsapp/account/update]', err);
+      const msg = err.message || '';
+      const code = /must be|is required|not configured|no WhatsApp binding|Invalid regex/i.test(msg) ? 400 : 500;
+      res.status(code).json({ error: msg });
+    }
+  });
+
+  // Passive group discovery: scans gateway.log for inbound group messages
+  // belonging to this account's bot E.164. Only shows groups that have sent
+  // at least one message to the bot.
+  router.get('/agents/:id/whatsapp/groups/seen', db.authMiddleware, (req, res) => {
+    try {
+      const channels = parsers.getAgentChannels(req.params.id);
+      const wa = channels.whatsapp || [];
+      if (wa.length === 0) {
+        return res.status(404).json({ error: `Agent "${req.params.id}" has no WhatsApp binding` });
+      }
+      const accountId = (wa.find(d => d.accountId === req.params.id) || wa[0]).accountId;
+      const groups = parsers.listSeenWhatsAppGroupsForAgent(req.params.id, accountId);
+      res.json({ accountId, groups });
+    } catch (err) {
+      console.error('[api/agents/whatsapp/groups/seen]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 
 
   return router;
