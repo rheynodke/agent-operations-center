@@ -113,6 +113,65 @@ test('injectSoulHardLimits: appends block + idempotent + re-apply on drift', () 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('injectSoulActiveMemoryReminder + injectSoulTimeAwareness: append + idempotent + drift recovery', () => {
+  const { injectSoulActiveMemoryReminder, injectSoulTimeAwareness } = require('../memory-bootstrap.cjs');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-newblocks-'));
+  fs.writeFileSync(path.join(tmp, 'SOUL.md'), '# SOUL\n\nbase\n');
+
+  assert.strictEqual(injectSoulActiveMemoryReminder(tmp), true);
+  assert.strictEqual(injectSoulTimeAwareness(tmp), true);
+  let soul = fs.readFileSync(path.join(tmp, 'SOUL.md'), 'utf-8');
+  assert.ok(soul.includes('<!-- aoc:active-memory-reminder:start -->'));
+  assert.ok(soul.includes('IMPORTANT REMINDER'));
+  assert.ok(soul.includes('If you do not write, you will not remember'));
+  assert.ok(soul.includes('<!-- aoc:time-awareness:start -->'));
+  assert.ok(soul.includes('Time awareness'));
+
+  // Idempotent
+  assert.strictEqual(injectSoulActiveMemoryReminder(tmp), false);
+  assert.strictEqual(injectSoulTimeAwareness(tmp), false);
+
+  // Drift recovery
+  fs.writeFileSync(path.join(tmp, 'SOUL.md'),
+    soul.replace('IMPORTANT REMINDER', 'IMPORTANT REMINDER (tampered)'));
+  assert.strictEqual(injectSoulActiveMemoryReminder(tmp), true);
+  soul = fs.readFileSync(path.join(tmp, 'SOUL.md'), 'utf-8');
+  assert.ok(!soul.includes('(tampered)'));
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('applyAllManagedSoulBlocks: 4 blocks injected at once on fresh SOUL', () => {
+  const { applyAllManagedSoulBlocks } = require('../memory-bootstrap.cjs');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-allblocks-'));
+  fs.writeFileSync(path.join(tmp, 'SOUL.md'), '# SOUL\n');
+
+  const r = applyAllManagedSoulBlocks(tmp);
+  assert.deepStrictEqual(r, {
+    memoryProtocol: true,
+    hardLimits: true,
+    activeMemoryReminder: true,
+    timeAwareness: true,
+  });
+
+  const soul = fs.readFileSync(path.join(tmp, 'SOUL.md'), 'utf-8');
+  for (const tag of ['memory-protocol', 'hard-limits', 'active-memory-reminder', 'time-awareness']) {
+    assert.ok(soul.includes(`<!-- aoc:${tag}:start -->`), `missing block ${tag}`);
+    assert.ok(soul.includes(`<!-- aoc:${tag}:end -->`), `missing block end ${tag}`);
+  }
+
+  // Second pass — all idempotent
+  const r2 = applyAllManagedSoulBlocks(tmp);
+  assert.deepStrictEqual(r2, {
+    memoryProtocol: false,
+    hardLimits: false,
+    activeMemoryReminder: false,
+    timeAwareness: false,
+  });
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('applyHardLimitsToAllWorkspaces: walks admin + per-user agents', () => {
   const { applyHardLimitsToAllWorkspaces } = require('../memory-bootstrap.cjs');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-hl-walk-'));
@@ -133,16 +192,22 @@ test('applyHardLimitsToAllWorkspaces: walks admin + per-user agents', () => {
 
   const r = applyHardLimitsToAllWorkspaces(tmp);
   assert.ok(r.scanned >= 2, `expected at least 2 workspaces, got ${r.scanned}`);
-  assert.ok(r.updated >= 2);
+  assert.ok(r.changed >= 2);
   assert.strictEqual(r.errors.length, 0);
+  // Each workspace should have all 4 managed blocks now (back-compat alias
+  // applies the full set, not just hard-limits).
+  assert.ok(r.perBlock.hardLimits >= 2);
+  assert.ok(r.perBlock.memoryProtocol >= 2);
+  assert.ok(r.perBlock.activeMemoryReminder >= 2);
+  assert.ok(r.perBlock.timeAwareness >= 2);
   const adminSoul = fs.readFileSync(path.join(tmp, 'workspace', 'SOUL.md'), 'utf-8');
   const userSoul = fs.readFileSync(path.join(userWs, 'SOUL.md'), 'utf-8');
   assert.ok(adminSoul.includes('<!-- aoc:hard-limits:start -->'));
-  assert.ok(userSoul.includes('<!-- aoc:hard-limits:start -->'));
+  assert.ok(userSoul.includes('<!-- aoc:active-memory-reminder:start -->'));
 
   // Second run: no-op
   const r2 = applyHardLimitsToAllWorkspaces(tmp);
-  assert.strictEqual(r2.updated, 0);
+  assert.strictEqual(r2.changed, 0);
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });

@@ -1159,11 +1159,22 @@ async function refreshTenantSandboxes(excludeUserId) {
     .filter(r => r.state === 'running' && r.pid != null)
     .map(r => Number(r.user_id ?? r.userId ?? r.id))
     .filter(uid => Number.isFinite(uid) && uid !== 1 && uid !== Number(excludeUserId));
-  for (const uid of targets) {
-    try { await restartGateway(uid); }
-    catch (e) { console.warn(`[orchestrator] refreshTenantSandboxes restart uid=${uid} failed: ${e.message}`); }
-  }
-  return { restarted: targets };
+  if (targets.length === 0) return { restarted: [] };
+
+  const startedAt = Date.now();
+  // Each restart runs under its own per-user lock (withUserLock inside
+  // restartGateway), so different uids restart in parallel safely. Total
+  // wall time ≈ slowest single restart, not sum.
+  const results = await Promise.allSettled(targets.map(uid => restartGateway(uid)));
+  const failed = [];
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      failed.push({ uid: targets[i], error: r.reason && r.reason.message });
+      console.warn(`[orchestrator] refreshTenantSandboxes restart uid=${targets[i]} failed: ${r.reason && r.reason.message}`);
+    }
+  });
+  console.log(`[orchestrator] refreshTenantSandboxes: restarted ${targets.length - failed.length}/${targets.length} peers in ${Date.now() - startedAt}ms`);
+  return { restarted: targets, failed };
 }
 
 /**
