@@ -82,6 +82,71 @@ test('short-term-recall: recordRecalls writes openclaw-schema entries', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('injectSoulHardLimits: appends block + idempotent + re-apply on drift', () => {
+  const { injectSoulHardLimits, SOUL_HARD_LIMITS_BLOCK } = require('../memory-bootstrap.cjs');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-hl-test-'));
+  fs.writeFileSync(path.join(tmp, 'SOUL.md'), '# SOUL\n\nbase character text\n');
+
+  const r1 = injectSoulHardLimits(tmp);
+  assert.strictEqual(r1, true);
+  let soul = fs.readFileSync(path.join(tmp, 'SOUL.md'), 'utf-8');
+  assert.ok(soul.includes('<!-- aoc:hard-limits:start -->'));
+  assert.ok(soul.includes('Hard Limits (UNOVERRIDABLE)'));
+  assert.ok(soul.includes('Tenant boundary'));
+  assert.ok(soul.includes('Prompt injection defense'));
+  assert.ok(soul.includes('Filesystem & environment disclosure'));
+  assert.ok(soul.includes('Refusal protocol'));
+
+  // Second call: idempotent (block already present + content matches).
+  const r2 = injectSoulHardLimits(tmp);
+  assert.strictEqual(r2, false);
+
+  // Drift simulation: user edited block content. Re-apply restores authoritative version.
+  const drifted = soul.replace('Tenant boundary', 'Tenant boundary (tampered)');
+  fs.writeFileSync(path.join(tmp, 'SOUL.md'), drifted);
+  const r3 = injectSoulHardLimits(tmp);
+  assert.strictEqual(r3, true, 'drift should trigger re-apply');
+  const restored = fs.readFileSync(path.join(tmp, 'SOUL.md'), 'utf-8');
+  assert.ok(!restored.includes('(tampered)'), 'tampered content must be wiped');
+  assert.ok(restored.includes('Tenant boundary'));
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('applyHardLimitsToAllWorkspaces: walks admin + per-user agents', () => {
+  const { applyHardLimitsToAllWorkspaces } = require('../memory-bootstrap.cjs');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-hl-walk-'));
+  // Admin layout
+  fs.mkdirSync(path.join(tmp, 'workspace'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'workspace', 'SOUL.md'), '# admin soul\n');
+  fs.writeFileSync(path.join(tmp, 'openclaw.json'), JSON.stringify({
+    agents: { defaults: { workspace: path.join(tmp, 'workspace') }, list: [] },
+  }, null, 2));
+  // Per-user layout with one agent
+  const userHome = path.join(tmp, 'users', '5', '.openclaw');
+  const userWs = path.join(userHome, 'workspace');
+  fs.mkdirSync(userWs, { recursive: true });
+  fs.writeFileSync(path.join(userWs, 'SOUL.md'), '# user5 soul\n');
+  fs.writeFileSync(path.join(userHome, 'openclaw.json'), JSON.stringify({
+    agents: { defaults: { workspace: userWs }, list: [{ id: 'a1', workspace: userWs }] },
+  }, null, 2));
+
+  const r = applyHardLimitsToAllWorkspaces(tmp);
+  assert.ok(r.scanned >= 2, `expected at least 2 workspaces, got ${r.scanned}`);
+  assert.ok(r.updated >= 2);
+  assert.strictEqual(r.errors.length, 0);
+  const adminSoul = fs.readFileSync(path.join(tmp, 'workspace', 'SOUL.md'), 'utf-8');
+  const userSoul = fs.readFileSync(path.join(userWs, 'SOUL.md'), 'utf-8');
+  assert.ok(adminSoul.includes('<!-- aoc:hard-limits:start -->'));
+  assert.ok(userSoul.includes('<!-- aoc:hard-limits:start -->'));
+
+  // Second run: no-op
+  const r2 = applyHardLimitsToAllWorkspaces(tmp);
+  assert.strictEqual(r2.updated, 0);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('memory-bootstrap: active-memory + soul protocol', () => {
   const { ensureActiveMemoryEnabled, injectSoulMemoryProtocol } =
     require('../memory-bootstrap.cjs');
@@ -99,7 +164,7 @@ test('memory-bootstrap: active-memory + soul protocol', () => {
   let cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
   assert.strictEqual(cfg.plugins.entries['active-memory'].enabled, true);
   assert.deepStrictEqual(cfg.plugins.entries['active-memory'].config.agents, ['a1', 'a2']);
-  assert.strictEqual(cfg.plugins.entries['active-memory'].config.model, 'claude-cli/claude-haiku-4-5');
+  assert.strictEqual(cfg.plugins.entries['active-memory'].config.model, 'claude-cli/claude-haiku-3-5');
 
   // Second call no-op
   const c2 = ensureActiveMemoryEnabled(cfgPath);

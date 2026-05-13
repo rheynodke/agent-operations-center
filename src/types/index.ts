@@ -169,6 +169,33 @@ export interface DiscordGuildsResult {
   guilds: DiscordGuildEntry[]
 }
 
+// ─── WhatsApp Group Allowlist & Activation ───────────────────────────────────
+
+export interface WhatsAppGroupEntry {
+  jid: string
+  label: string
+  requireMention: boolean
+}
+
+export interface WhatsAppGroupsResult {
+  accountId: string
+  groupPolicy: "allowlist" | "open" | "disabled"
+  groupAllowFrom: string[]
+  historyLimit: number | null
+  mentionPatterns: string[]
+  groups: WhatsAppGroupEntry[]
+}
+
+export interface WhatsAppSeenGroup {
+  jid: string
+  lastSeenAt: string
+}
+
+export interface WhatsAppSeenGroupsResult {
+  accountId: string
+  groups: WhatsAppSeenGroup[]
+}
+
 // ─── DM Pairing Types ──────────────────────────────────────────────────────
 
 export interface PairingRequest {

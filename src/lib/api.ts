@@ -996,6 +996,26 @@ export const api = {
       method: "DELETE",
     }),
 
+  // WhatsApp group allowlist + activation
+  getAgentWhatsAppGroups: (agentId: string) =>
+    request<import("@/types").WhatsAppGroupsResult>(`/agents/${agentId}/whatsapp/groups`),
+  upsertAgentWhatsAppGroup: (agentId: string, jid: string, opts: { label?: string; requireMention?: boolean }) =>
+    request<{ ok: boolean; accountId: string; jid: string; entry: { label?: string; requireMention: boolean }; error?: string }>(`/agents/${agentId}/whatsapp/groups/${encodeURIComponent(jid)}`, {
+      method: "PUT",
+      body: JSON.stringify(opts),
+    }),
+  removeAgentWhatsAppGroup: (agentId: string, jid: string) =>
+    request<{ ok: boolean; accountId?: string; jid?: string; error?: string }>(`/agents/${agentId}/whatsapp/groups/${encodeURIComponent(jid)}`, {
+      method: "DELETE",
+    }),
+  updateAgentWhatsAppSettings: (agentId: string, opts: { groupPolicy?: "open" | "allowlist" | "disabled"; groupAllowFrom?: string[]; historyLimit?: number | null; mentionPatterns?: string[] }) =>
+    request<import("@/types").WhatsAppGroupsResult>(`/agents/${agentId}/whatsapp/account`, {
+      method: "PUT",
+      body: JSON.stringify(opts),
+    }),
+  getAgentWhatsAppSeenGroups: (agentId: string) =>
+    request<import("@/types").WhatsAppSeenGroupsResult>(`/agents/${agentId}/whatsapp/groups/seen`),
+
   // Browser Harness — built-in CDP browser automation skill (Layer 1)
   getBrowserHarnessStatus: () =>
     request<import("@/types").BrowserHarnessStatus>("/browser-harness/status"),
