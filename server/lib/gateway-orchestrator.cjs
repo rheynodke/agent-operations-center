@@ -696,8 +696,14 @@ async function spawnGatewayLocked(userId) {
   child.on('exit', earlyExitListener);
 
   try {
+    // Boot budget includes node CLI startup (~10-15s) + plugin load (varies
+     // by plugin count, telegram+whatsapp combos are slowest at ~18-22s).
+     // 30s was tight: user gateways with both telegram and whatsapp plugins
+     // routinely hit ~30s exactly and timed out → SIGTERM → restart loop.
+     // Configurable via AOC_GATEWAY_READY_TIMEOUT_MS for ops tuning.
+    const readyTimeoutMs = Number(process.env.AOC_GATEWAY_READY_TIMEOUT_MS) || 90_000;
     await Promise.race([
-      waitGatewayReady(port, token, 30_000),
+      waitGatewayReady(port, token, readyTimeoutMs),
       new Promise((_, reject) => {
         const interval = setInterval(() => {
           if (earlyExit) {
