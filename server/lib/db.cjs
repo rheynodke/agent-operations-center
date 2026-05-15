@@ -866,7 +866,9 @@ async function initDatabase() {
   try { db.run(`CREATE INDEX IF NOT EXISTS idx_port_reservations_resv ON port_reservations(reservation_id)`); } catch (_) {}
   try { db.run(`CREATE INDEX IF NOT EXISTS idx_port_reservations_state ON port_reservations(state)`); } catch (_) {}
 
-  try { backfillProjectDefaultRooms(); } catch (err) { console.warn('[db] mission room backfill failed:', err.message); }
+  // NOTE: backfillProjectDefaultRooms() needs the _handle.cjs registration to
+  // be done first (it uses domain helpers via the shared handle). Moved below
+  // setHandle(); a stub remains here intentionally blank to preserve line refs.
 
   // === Multitenant ownership backfill (2026-05-04) ===
   try {
@@ -902,6 +904,10 @@ async function initDatabase() {
   } catch (e) {
     console.warn('[db] handle registration failed:', e.message);
   }
+
+  // Mission rooms backfill — must run AFTER setHandle() because the rooms
+  // domain module reads via _handle.getDb().
+  try { backfillProjectDefaultRooms(); } catch (err) { console.warn('[db] mission room backfill failed:', err.message); }
 
   // Run versioned migrations (forward-only, idempotent). Inline ALTER TABLEs
   // above remain as the implicit "baseline v0"; new migrations live in

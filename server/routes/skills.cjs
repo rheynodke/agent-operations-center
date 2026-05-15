@@ -591,21 +591,23 @@ const SKILLSMP_KEY = 'skillsmp_api_key';
  * linked (or IS a claude-cli session). Returns events sorted oldest→newest by timestamp.
  * `userId` (optional) scopes the gateway-events read to that tenant's filesystem.
  */
-function collectSessionEvents(sessionId, session, userId) {
-  const gatewayEvents = parsers.parseGatewaySessionEvents(sessionId, undefined, userId) || [];
+function collectSessionEvents(sessionId, session, userId, limit) {
+  const gatewayEvents = parsers.parseGatewaySessionEvents(sessionId, limit, userId) || [];
   let claudeCliEvents = [];
+
+  const cliOpts = { userId, ...(limit ? { limit } : {}) };
 
   // 1) Session has an explicit link → fetch by claude-cli UUID
   if (session?.claudeCliSessionId) {
-    claudeCliEvents = parsers.parseClaudeCliSessionEvents(session.claudeCliSessionId, { userId }) || [];
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(session.claudeCliSessionId, cliOpts) || [];
   }
   // 2) Session source is claude-cli (standalone) → the id IS a claude-cli UUID
   else if (session?.source === 'claude-cli') {
-    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId, { userId }) || [];
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId, cliOpts) || [];
   }
   // 3) No session match yet — try both; whichever finds the id wins
   else if (!session) {
-    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId, { userId }) || [];
+    claudeCliEvents = parsers.parseClaudeCliSessionEvents(sessionId, cliOpts) || [];
   }
 
   if (claudeCliEvents.length === 0) return gatewayEvents;
@@ -682,10 +684,14 @@ function collectSessionEvents(sessionId, session, userId) {
   try {
     const { parseScopeUserId } = require('../helpers/access-control.cjs');
     const targetUid = parseScopeUserId(req);
+    // Honor caller-supplied ?limit= for the detail modal (defaults to 5000 in
+    // parsers). Hard ceiling at 50000 to avoid pathological cases.
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 50_000) : undefined;
     const sessions = parsers.getAllSessions(targetUid);
     let session = sessions.find(s => s.id === req.params.id);
 
-    let events = collectSessionEvents(req.params.id, session, targetUid);
+    let events = collectSessionEvents(req.params.id, session, targetUid, limit);
 
     // If the session isn't in the list yet (race condition during active writing:
     // sessions.json may not be flushed yet, or the file read got partial data),
@@ -722,9 +728,11 @@ function collectSessionEvents(sessionId, session, userId) {
   try {
     const { parseScopeUserId } = require('../helpers/access-control.cjs');
     const targetUid = parseScopeUserId(req);
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 50_000) : undefined;
     const sessions = parsers.getAllSessions(targetUid);
     const session = sessions.find(s => s.id === req.params.sessionId);
-    let events = collectSessionEvents(req.params.sessionId, session, targetUid);
+    let events = collectSessionEvents(req.params.sessionId, session, targetUid, limit);
     if (events.length === 0) {
       const numericId = req.params.sessionId.match(/\d+/)?.[0];
       events = numericId ? parsers.parseOpenCodeEvents(numericId) : [];

@@ -3,7 +3,7 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe } = require('./config.cjs');
+const { OPENCLAW_HOME, OPENCLAW_WORKSPACE, readJsonSafe, getUserHome } = require('./config.cjs');
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || '/opt/homebrew/bin/claude';
 
@@ -22,11 +22,15 @@ const FILE_CONTEXTS = {
 
 // ── OS / Environment context ──────────────────────────────────────────────────
 
-let _osCtx = null;
+// Runtimes are machine-global → cache them across calls. The openclaw section
+// (agentCount/skillCount/home/workspace) is per-tenant → never cache that.
+// Previously a single static `_osCtx` cached EVERYTHING, so the first user to
+// hit /ai/context cached admin's agent/skill counts for every subsequent user
+// regardless of who they were — a persistent cross-tenant leak.
+let _runtimesCache = null;
 
-function getOsContext() {
-  if (_osCtx) return _osCtx;
-
+function detectRuntimes() {
+  if (_runtimesCache) return _runtimesCache;
   const RUNTIME_BINS = ['node', 'python3', 'python', 'bash', 'zsh', 'fish', 'ruby', 'lua', 'ts-node', 'deno', 'bun'];
   const runtimes = {};
   for (const bin of RUNTIME_BINS) {
@@ -38,26 +42,26 @@ function getOsContext() {
       runtimes[bin] = { path: which, version };
     } catch {}
   }
+  _runtimesCache = runtimes;
+  return runtimes;
+}
 
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+function getOsContext(userId = 1) {
+  const home = getUserHome(userId);
+  const workspace = Number(userId) === 1 ? OPENCLAW_WORKSPACE : path.join(home, 'workspace');
+  const config = readJsonSafe(path.join(home, 'openclaw.json')) || {};
   const agentCount = (config.agents?.list || []).length;
   const skillCount = Object.keys(config.skills?.entries || {}).length;
 
-  _osCtx = {
+  return {
     platform: os.platform(),
     arch: os.arch(),
     osRelease: os.release(),
     homeDir: os.homedir(),
     shell: process.env.SHELL || '/bin/sh',
-    runtimes,
-    openclaw: {
-      home: OPENCLAW_HOME,
-      workspace: OPENCLAW_WORKSPACE,
-      agentCount,
-      skillCount,
-    },
+    runtimes: detectRuntimes(),
+    openclaw: { home, workspace, agentCount, skillCount },
   };
-  return _osCtx;
 }
 
 function formatOsContext(ctx) {
@@ -89,9 +93,10 @@ function readFileSafe(filePath) {
  * Read filesystem context relevant to script/tool generation.
  * Returns a formatted string to inject into the prompt.
  */
-function getScriptFilesystemContext(agentId) {
+function getScriptFilesystemContext(agentId, userId = 1) {
   const lines = [];
-  const config = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json')) || {};
+  const home = getUserHome(userId);
+  const config = readJsonSafe(path.join(home, 'openclaw.json')) || {};
   const agentList = config.agents?.list || [];
   const agentConfig = agentList.find(a => a.id === agentId);
   const agentWorkspace = agentConfig?.workspace
@@ -99,6 +104,9 @@ function getScriptFilesystemContext(agentId) {
     : null;
 
   // ── Shared scripts (~/.openclaw/scripts/) ────────────────────────────────
+  // Admin's scripts dir IS shared by design (symlinked into each user's home
+  // by ensureUserHome) — agents can call them. So we keep reading OPENCLAW_HOME
+  // here intentionally, not the per-user home.
   const sharedScriptsDir = path.join(OPENCLAW_HOME, 'scripts');
   const sharedMeta = readJsonSafe(path.join(sharedScriptsDir, '.tools.json')) || {};
   const sharedScripts = [];
@@ -162,9 +170,9 @@ function getScriptFilesystemContext(agentId) {
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
-function buildPrompt({ prompt, currentContent, fileType, agentName, agentId, extraContext, includeOsContext }) {
+function buildPrompt({ prompt, currentContent, fileType, agentName, agentId, extraContext, includeOsContext, userId }) {
   const fileCtx = FILE_CONTEXTS[fileType] || `Configuration file of type: ${fileType}`;
-  const osCtx = includeOsContext !== false ? formatOsContext(getOsContext()) : '';
+  const osCtx = includeOsContext !== false ? formatOsContext(getOsContext(userId)) : '';
 
   const isScript = fileType === 'script' || ![
     'IDENTITY.md','SOUL.md','AGENTS.md','TOOLS.md','USER.md',
@@ -183,7 +191,7 @@ function buildPrompt({ prompt, currentContent, fileType, agentName, agentId, ext
   ].join('\n') : '';
 
   // Inject filesystem context for script generation
-  const fsCtx = isScript ? getScriptFilesystemContext(agentId) : '';
+  const fsCtx = isScript ? getScriptFilesystemContext(agentId, userId) : '';
 
   const skillHints = fileType === 'SKILL.md' ? [
     ``,

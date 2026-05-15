@@ -9,9 +9,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   FileText, FileCode, FileImage, FileSpreadsheet, File as FileIcon, Download,
   ExternalLink, RefreshCw, Loader2, AlertCircle, X, ChevronRight, Maximize2,
+  Folder, ChevronLeft,
 } from "lucide-react"
 import { chatApi, type ChatOutputFile } from "@/lib/chat-api"
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer"
+import { buildOutputTree, splitBreadcrumb } from "@/lib/output-tree"
 import { cn } from "@/lib/utils"
 
 interface Props {
@@ -102,6 +104,8 @@ export function OutputsTrail({ sessionKey, agentRunning = false, widthPx, classN
   }>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  // File-manager style nav: "" = root, otherwise path WITH trailing slash.
+  const [currentPath, setCurrentPath] = useState("")
 
   const refresh = useCallback(async () => {
     if (!sessionKey) { setFiles([]); return }
@@ -191,8 +195,20 @@ export function OutputsTrail({ sessionKey, agentRunning = false, widthPx, classN
     setExpanded(false)
   }
 
-  // ── Sort newest-first ────────────────────────────────────────────────────
-  const sorted = useMemo(() => [...files].sort((a, b) => b.mtimeMs - a.mtimeMs), [files])
+  // ── Folder navigation: compute visible folders + files at currentPath ───
+  // Restrict to files under `workspace/outputs/`. Backend also surfaces
+  // legacy/out-of-convention writes (e.g. workspace-root DREAMS.md) with
+  // `source='legacy'` so the warning banner can prompt the user to fix the
+  // agent's behavior — but those don't belong in the file-manager view.
+  const visibleFiles = useMemo(() => files.filter((f) => f.source === "outputs"), [files])
+  // Strip the leading "outputs/" so the user's root view shows the contents
+  // of that dir directly (e.g. "reports/", "summary.md"), not a single
+  // "outputs/" folder they need to drill into.
+  const tree = useMemo(() => buildOutputTree(visibleFiles, currentPath, "outputs/"), [visibleFiles, currentPath])
+  const breadcrumb = useMemo(() => splitBreadcrumb(currentPath), [currentPath])
+  // Reset to root when the session changes — different agent run usually has
+  // a completely different folder structure.
+  useEffect(() => { setCurrentPath("") }, [sessionKey])
 
   return (
     <div
@@ -230,7 +246,7 @@ export function OutputsTrail({ sessionKey, agentRunning = false, widthPx, classN
           </div>
         )}
 
-        {!loading && !error && sorted.length === 0 && (
+        {!loading && !error && visibleFiles.length === 0 && (
           <div className="px-4 py-12 text-center">
             <div className="text-3xl mb-2 opacity-50">📂</div>
             <p className="text-sm font-medium text-foreground/70">No outputs yet</p>
@@ -240,22 +256,76 @@ export function OutputsTrail({ sessionKey, agentRunning = false, widthPx, classN
           </div>
         )}
 
-        {sorted.length > 0 && (
-          <div className="p-1.5 space-y-0.5">
-            {sorted.map((f) => (
-              <FileRow
-                key={f.relPath}
-                file={f}
-                onPreview={() => void previewFile(f)}
-                onDownload={() => void downloadFile(f)}
-              />
-            ))}
-            {truncated && (
-              <p className="px-3 py-2 text-[11px] text-muted-foreground/60 italic">
-                More files exist — list truncated for performance.
-              </p>
+        {visibleFiles.length > 0 && (
+          <>
+            {/* Breadcrumb — only when below root */}
+            {breadcrumb.length > 0 && (
+              <div className="flex items-center gap-1 px-3 py-1.5 text-[11px] text-muted-foreground border-b border-border/40 bg-muted/15 sticky top-0 z-[1]">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPath(breadcrumb.length >= 2 ? breadcrumb[breadcrumb.length - 2].fullPath : "")}
+                  className="p-0.5 rounded hover:bg-muted/60 hover:text-foreground"
+                  title="Up one level"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPath("")}
+                  className="hover:text-foreground"
+                  title="Back to root"
+                >
+                  outputs
+                </button>
+                {breadcrumb.map((crumb, i) => (
+                  <span key={crumb.fullPath} className="flex items-center gap-1 min-w-0">
+                    <ChevronRight className="w-3 h-3 opacity-50 shrink-0" />
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPath(crumb.fullPath)}
+                      className={cn(
+                        "truncate hover:text-foreground",
+                        i === breadcrumb.length - 1 && "text-foreground font-medium"
+                      )}
+                      title={crumb.fullPath}
+                    >
+                      {crumb.name}
+                    </button>
+                  </span>
+                ))}
+              </div>
             )}
-          </div>
+
+            <div className="p-1.5 space-y-0.5">
+              {tree.folders.map((f) => (
+                <FolderRow
+                  key={f.fullPath}
+                  name={f.name}
+                  fileCount={f.fileCount}
+                  latestMtimeMs={f.latestMtimeMs}
+                  onOpen={() => setCurrentPath(f.fullPath)}
+                />
+              ))}
+              {tree.files.map((f) => (
+                <FileRow
+                  key={f.relPath}
+                  file={f}
+                  onPreview={() => void previewFile(f)}
+                  onDownload={() => void downloadFile(f)}
+                />
+              ))}
+              {tree.folders.length === 0 && tree.files.length === 0 && (
+                <p className="px-3 py-6 text-[11px] text-muted-foreground/60 italic text-center">
+                  Empty folder.
+                </p>
+              )}
+              {truncated && (
+                <p className="px-3 py-2 text-[11px] text-muted-foreground/60 italic">
+                  More files exist — list truncated for performance.
+                </p>
+              )}
+            </div>
+          </>
         )}
       </div>
 
@@ -285,6 +355,31 @@ export function OutputsTrail({ sessionKey, agentRunning = false, widthPx, classN
         />
       )}
     </div>
+  )
+}
+
+// ─── Folder row ───────────────────────────────────────────────────────────────
+
+function FolderRow({
+  name, fileCount, latestMtimeMs, onOpen,
+}: { name: string; fileCount: number; latestMtimeMs: number; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted/40 transition-colors text-left"
+    >
+      <Folder className="w-4 h-4 text-amber-500/80 shrink-0 fill-amber-500/15" />
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium text-foreground truncate">{name}/</div>
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+          <span>{fileCount} file{fileCount === 1 ? "" : "s"}</span>
+          <span>·</span>
+          <span>{relativeTime(latestMtimeMs)}</span>
+        </div>
+      </div>
+      <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/40 group-hover:text-foreground/70 shrink-0" />
+    </button>
   )
 }
 

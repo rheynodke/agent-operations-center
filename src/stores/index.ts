@@ -151,6 +151,10 @@ export const useSessionStore = create<SessionState>((set) => ({
 // without waiting for the next REST poll.
 interface ProcessingState {
   sessions: Record<string, { agentId?: string; startedAt: number; timerId?: ReturnType<typeof setTimeout> }>  // keyed by file path or sessionKey
+  // Sessions that recently finished — retained for the Recent Activity feed
+  // so users can audit/evaluate what just ran instead of having the row vanish
+  // the instant processing_end fires. Expires after RECENTLY_COMPLETED_TTL_MS.
+  recentlyCompleted: Record<string, { agentId?: string; startedAt: number; endedAt: number; timerId?: ReturnType<typeof setTimeout> }>
   agentCounts: Record<string, number>                                // how many active sessions per agentId
   isAgentProcessing: (agentId: string) => boolean
   isAgentProcessingInScope: (agentId: string, scope: { roomId?: string; taskId?: string }) => boolean
@@ -161,9 +165,11 @@ interface ProcessingState {
 }
 
 const PROCESSING_STALE_MS = 120_000 // 2 minutes auto-expiry
+const RECENTLY_COMPLETED_TTL_MS = 30 * 60_000 // 30 minutes — long enough for audit/eval, short enough to keep memory bounded
 
 export const useProcessingStore = create<ProcessingState>((set, get) => ({
   sessions: {},
+  recentlyCompleted: {},
   agentCounts: {},
   isAgentProcessing: (agentId) => (get().agentCounts[agentId] ?? 0) > 0,
   // Scoped processing check — true only if the agent has an active session
@@ -198,26 +204,56 @@ export const useProcessingStore = create<ProcessingState>((set, get) => ({
       return { sessions: nextSessions, agentCounts: nextCounts }
     })
   },
-  stop: (key) => set((s) => {
-    const entry = s.sessions[key]
-    if (!entry) return s
+  stop: (key) => {
+    const current = get()
+    const entry = current.sessions[key]
+    if (!entry) return
     if (entry.timerId) clearTimeout(entry.timerId)
-    const nextSessions = { ...s.sessions }
-    delete nextSessions[key]
-    const nextCounts = { ...s.agentCounts }
-    if (entry.agentId) {
-      const n = (nextCounts[entry.agentId] ?? 1) - 1
-      if (n <= 0) delete nextCounts[entry.agentId]
-      else nextCounts[entry.agentId] = n
-    }
-    return { sessions: nextSessions, agentCounts: nextCounts }
-  }),
+    // If the same key was previously completed (rare: re-runs of the same
+    // session) clear its TTL timer before overwriting — otherwise the stale
+    // timer would later delete the FRESH completion entry.
+    const prevCompleted = current.recentlyCompleted[key]
+    if (prevCompleted?.timerId) clearTimeout(prevCompleted.timerId)
+    // Move into recentlyCompleted so the Recent Activity list keeps showing
+    // the row (faded/dimmed) instead of having it disappear at processing_end.
+    // A fresh TTL timer schedules eventual removal from the audit cache.
+    const completionTimer = setTimeout(() => {
+      set((s) => {
+        const next = { ...s.recentlyCompleted }
+        delete next[key]
+        return { recentlyCompleted: next }
+      })
+    }, RECENTLY_COMPLETED_TTL_MS)
+    set((s) => {
+      const nextSessions = { ...s.sessions }
+      delete nextSessions[key]
+      const nextCounts = { ...s.agentCounts }
+      if (entry.agentId) {
+        const n = (nextCounts[entry.agentId] ?? 1) - 1
+        if (n <= 0) delete nextCounts[entry.agentId]
+        else nextCounts[entry.agentId] = n
+      }
+      const nextRecent = {
+        ...s.recentlyCompleted,
+        [key]: {
+          agentId: entry.agentId,
+          startedAt: entry.startedAt,
+          endedAt: Date.now(),
+          timerId: completionTimer,
+        },
+      }
+      return { sessions: nextSessions, agentCounts: nextCounts, recentlyCompleted: nextRecent }
+    })
+  },
   reset: () => set((s) => {
     // Clear all pending timers before resetting
     Object.values(s.sessions).forEach(entry => {
       if (entry.timerId) clearTimeout(entry.timerId)
     })
-    return { sessions: {}, agentCounts: {} }
+    Object.values(s.recentlyCompleted).forEach(entry => {
+      if (entry.timerId) clearTimeout(entry.timerId)
+    })
+    return { sessions: {}, agentCounts: {}, recentlyCompleted: {} }
   }),
 }))
 

@@ -487,9 +487,21 @@ module.exports = function connectionsRouter(deps) {
 
       // Sanitize profile name: alnum / dash / underscore only. odoocli reads
       // `[<profile>]` as the TOML section header, so anything else risks
-      // breaking the parser. Fall back to a stable id-based slug.
+      // breaking the parser.
+      //
+      // CRITICAL: profile name must be unique across ALL connections in this
+      // AOC instance, not just within one user. Reason: odoocli caches the
+      // authenticated session at ~/.odoocli-session.json keyed by profile
+      // name (odoocli/client.py: sessions[self.profile.name] = ...). Because
+      // every per-user gateway runs as the same OS user (itdke), Path.home()
+      // resolves to the same path and the session file is shared. Two users
+      // with a connection both named "production" would collide — the second
+      // request would reuse the first user's authenticated uid against the
+      // second user's Odoo instance, producing auth failures or cross-tenant
+      // calls. Appending a stable per-connection suffix isolates sessions.
+      const connSlug = String(connId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || 'x';
       const safeName = (raw.name || '').replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
-      const profileName = safeName || `aoc-${connId}`;
+      const profileName = safeName ? `${safeName}_${connSlug}` : `aoc-${connSlug}`;
 
       // Render TOML. Escape values: TOML basic-string requires backslash-
       // and double-quote-escaping. Newlines in a credential would break the

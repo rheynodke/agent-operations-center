@@ -648,9 +648,25 @@ function syncBuiltinsForAgent(agentId) {
 function syncBuiltinsForAllAgents() {
   try {
     parsers.stampBuiltinSharedMeta();
-    const agents = parsers.parseAgentRegistry();
-    for (const agent of agents) syncBuiltinsForAgent(agent.id);
-    console.log(`[builtins] reconciled built-in scripts for ${agents.length} agent(s)`);
+    // Iterate every tenant. parseAgentRegistry(userId) is tenant-scoped — when
+    // called without args it returns only admin-tenant agents, so we'd miss
+    // every user-tenant agent (users/<id>/.openclaw/agents/*). Enumerate all
+    // users from the DB and reconcile each tenant's agents.
+    const adminAgents = parsers.parseAgentRegistry();
+    let total = adminAgents.length;
+    for (const agent of adminAgents) syncBuiltinsForAgent(agent.id);
+    try {
+      const users = db.getAllUsers();
+      for (const u of users) {
+        if (u.id === 1) continue; // admin already covered above
+        const tenantAgents = parsers.parseAgentRegistry(u.id);
+        total += tenantAgents.length;
+        for (const agent of tenantAgents) syncBuiltinsForAgent(agent.id);
+      }
+    } catch (e) {
+      console.warn('[builtins] multi-tenant sync skipped:', e.message);
+    }
+    console.log(`[builtins] reconciled built-in scripts for ${total} agent(s) across all tenants`);
   } catch (err) {
     console.warn('[builtins] syncBuiltinsForAllAgents failed:', err.message);
   }
@@ -1027,3 +1043,29 @@ async function shutdown(signal) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT',  () => shutdown('SIGINT'));
+
+// Silent-crash visibility. Without these, V8 fatal errors and unhandled promise
+// rejections exit the worker with no trace in aoc-out.log / aoc-error.log —
+// pm2 just respawns the worker and the cause is unknowable post-mortem. Log
+// the full error to stderr (→ aoc-error.log) with a clear marker, then re-exit
+// so pm2 can do its normal supervised restart.
+process.on('uncaughtException', (err, origin) => {
+  try {
+    const ts = new Date().toISOString();
+    console.error(`[fatal] ${ts} uncaughtException origin=${origin}`);
+    console.error(`[fatal] ${err && err.stack ? err.stack : String(err)}`);
+    console.error(`[fatal] memoryUsage=${JSON.stringify(process.memoryUsage())}`);
+  } catch (_) { /* logging itself must not crash */ }
+  // Defer exit one tick so the writes flush.
+  setImmediate(() => process.exit(1));
+});
+process.on('unhandledRejection', (reason, promise) => {
+  try {
+    const ts = new Date().toISOString();
+    console.error(`[fatal] ${ts} unhandledRejection`);
+    console.error(`[fatal] reason=${reason && reason.stack ? reason.stack : String(reason)}`);
+  } catch (_) { /* logging itself must not crash */ }
+  // Node 15+ default is to crash on unhandled rejection. Match that explicitly
+  // so we get supervised respawn rather than a hung process.
+  setImmediate(() => process.exit(1));
+});

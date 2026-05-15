@@ -9,6 +9,7 @@
 
 const fs = require('node:fs');
 const { gatewayForReq } = require('../helpers/gateway-context.cjs');
+const { parseScopeUserId } = require('../helpers/access-control.cjs');
 const outputsLib = require('../lib/outputs.cjs');
 const memoryHooks = require('../lib/memory-hooks/index.cjs');
 
@@ -197,12 +198,18 @@ module.exports = function chatRouter(deps) {
     // parsed messages instead so the reload UI matches the live experience.
     const agentId = sessionKey.split(':')[1];
     if (agentId) {
-      const { OPENCLAW_HOME, readJsonSafe } = require('../lib/config.cjs');
-      const sessionsFile = path.join(OPENCLAW_HOME, 'agents', agentId, 'sessions', 'sessions.json');
+      // Per-tenant: route requesting user's claude-cli jsonl + gateway session
+      // metadata from THEIR home. Without this, every user's history request
+      // resolves against admin's filesystem — mtime heuristic can match a
+      // completely different tenant's session by accident.
+      const { getUserHome, readJsonSafe } = require('../lib/config.cjs');
+      const userId = parseScopeUserId(req);
+      const userHome = getUserHome(userId);
+      const sessionsFile = path.join(userHome, 'agents', agentId, 'sessions', 'sessions.json');
       const gwSessions = readJsonSafe(sessionsFile) || {};
       const meta = gwSessions[sessionKey];
       if (meta) {
-        const cli = parsers.findClaudeCliFileForGatewaySession(meta, agentId);
+        const cli = parsers.findClaudeCliFileForGatewaySession(meta, agentId, userId);
         if (cli?.fullPath) {
           const cliMessages = parsers.parseClaudeCliAsGatewayMessages(cli.fullPath);
           if (cliMessages.length > 0) {

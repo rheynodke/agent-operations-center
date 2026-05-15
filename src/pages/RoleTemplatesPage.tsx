@@ -2,12 +2,12 @@ import { useState, useEffect, useMemo, useCallback } from "react"
 import {
   Search, Loader2, RefreshCw, Package, Sparkles, Wrench,
   FileText, Tag, Hash, ChevronRight, ChevronDown, FolderOpen,
-  AlertCircle, Info, Plus, Edit3, Trash2, Copy, X,
+  AlertCircle, Info, Plus, Edit3, Trash2, Copy, X, Lock,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
 import type { SkillFileNode } from "@/lib/api"
-import { useRoleTemplateStore } from "@/stores"
+import { useRoleTemplateStore, useAuthStore } from "@/stores"
 import type { RoleTemplateSummary, RoleTemplateRecord } from "@/types"
 import { RoleTemplateFormModal, type FormMode } from "@/components/roles/RoleTemplateFormModal"
 import { ApplyToAgentModal } from "@/components/roles/ApplyToAgentModal"
@@ -1505,7 +1505,34 @@ function DetailPanel({ id, refreshTick, onRecordLoaded, onEdit, onFork, onDelete
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 
+function AdminOnlyGate() {
+  return (
+    <div className="flex h-full items-center justify-center px-6">
+      <div className="max-w-md text-center">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+          <Lock className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <h2 className="text-base font-semibold text-foreground mb-1">Admin only</h2>
+        <p className="text-sm text-muted-foreground">
+          Role Templates can be viewed and edited by administrators only.
+          Ask your workspace admin if you need access.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// Outer guard component. Pulls only the auth hook, then either short-circuits
+// to the admin-only gate OR mounts the full page (which has its own hook
+// chain). Splitting into two components avoids Rules-of-Hooks issues that
+// would arise from gating mid-function.
 export function RoleTemplatesPage() {
+  const role = useAuthStore((s) => s.user?.role)
+  if (role !== "admin") return <AdminOnlyGate />
+  return <RoleTemplatesPageInner />
+}
+
+function RoleTemplatesPageInner() {
   const { templates, loading, error, refresh } = useRoleTemplateStore()
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<string | null>(null)

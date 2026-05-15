@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils"
 import { confirmDialog } from "@/lib/dialogs"
 import { useAgentStore } from "@/stores"
 import { useCanEditAgent } from "@/lib/permissions"
+import { Input } from "@/components/ui/input"
 
 export function DiscordGuildsSection({ agentId }: { agentId: string }) {
   const [data, setData] = useState<import("@/types").DiscordGuildsResult | null>(null)

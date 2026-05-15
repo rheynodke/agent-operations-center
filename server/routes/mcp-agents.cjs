@@ -180,7 +180,7 @@ module.exports = function mcpAgentsRouter(deps) {
     } catch (_) { /* never let diagnostics break the response */ }
     const result = conns.map(c => {
       const meta = c.metadata || {};
-      const out = { name: c.name, type: c.type };
+      const out = { id: c.id, name: c.name, type: c.type };
 
       if (c.type === 'bigquery') {
         out.projectId = meta.projectId || null;

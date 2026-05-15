@@ -576,7 +576,22 @@ async function waitGatewayReady(port, token, timeoutMs) {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-async function spawnGateway(userId) {
+// Auto-spawn kill-switch. When AOC_DISABLE_AUTO_SPAWN=1, any non-explicit
+// spawn call (channel events, login, embed connect, crash respawn, startup
+// orphan recovery) is refused. Only callers that pass {explicit:true} (the
+// UI start button and gw.sh start) get through. Use this when host resources
+// can't support all configured gateways running simultaneously.
+function isAutoSpawnDisabled() {
+  return process.env.AOC_DISABLE_AUTO_SPAWN === '1';
+}
+
+async function spawnGateway(userId, opts = {}) {
+  if (isAutoSpawnDisabled() && !opts.explicit) {
+    const err = new Error(`Auto-spawn disabled (AOC_DISABLE_AUTO_SPAWN=1). Start gateway for user ${userId} manually via dashboard or gw.sh.`);
+    err.code = 'AUTO_SPAWN_DISABLED';
+    err.status = 503;
+    throw err;
+  }
   // Per-user serialization: spawn/stop/restart for the SAME user run one at a
   // time. Different users still spawn fully in parallel.
   return withUserLock(userId, () => spawnGatewayLocked(userId));
@@ -732,6 +747,30 @@ async function spawnGatewayLocked(userId) {
 
     if (!earlyExit) {
       try { process.kill(child.pid, 'SIGTERM'); } catch (_) {}
+    } else {
+      // earlyExit means the launcher (child) exited before readiness — but
+      // OpenClaw spawns the gateway daemon in a separate process group
+      // (detached:true), so the daemon often gets re-parented to init and
+      // keeps running, eating RAM as a zombie with no listen socket. Sweep
+      // orphans immediately for this user to prevent that.
+      try {
+        // Tiny delay so reparenting completes (otherwise the orphan is still
+        // child of the dying launcher and won't match the PPID=1 heuristic).
+        await new Promise(r => setTimeout(r, 250));
+        const orphans = findAocManagedOrphanPids({ userId: Number(userId) });
+        if (orphans.length) {
+          for (const pid of orphans) {
+            try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+          }
+          await new Promise(r => setTimeout(r, 500));
+          for (const pid of orphans) {
+            try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch (_) {}
+          }
+          console.warn(`[gw:user-${userId}] spawn failed → killed ${orphans.length} detached daemon(s) to prevent zombie: ${orphans.join(', ')}`);
+        }
+      } catch (sweepErr) {
+        console.warn(`[gw:user-${userId}] post-spawn-fail orphan sweep error: ${sweepErr.message}`);
+      }
     }
     // Reservation rolls back so the port can be reused immediately.
     try { db.releaseReservation(reservationId); } catch (_) {}
@@ -897,8 +936,12 @@ function findAocManagedOrphanPids({ userId = null, exceptPids = new Set() } = {}
       }
     } else {
       // No userId filter: kill any managed-range gateway not held by any tracked user.
+      // PID+port match is the strict case; port-only match is the resilient
+      // fallback for when DB tracks the launcher PID but the listener is the
+      // daemon child (wrapper/daemon mismatch — see cleanupOrphans adoption).
       const ownedByAny = Array.from(expectedByUser.values()).some(e => e.pid === pid && e.port === port);
-      if (!ownedByAny) matched.push(pid);
+      const portClaimedByTrackedUser = Array.from(expectedByUser.values()).some(e => e.port === port);
+      if (!ownedByAny && !portClaimedByTrackedUser) matched.push(pid);
     }
   }
 
@@ -982,19 +1025,30 @@ async function stopGatewayLocked(userId, opts = {}) {
   orchestratorEvents.emit('stopped', { userId: Number(userId) });
 }
 
-async function restartGateway(userId) {
+async function restartGateway(userId, opts = {}) {
   // Compose under one lock acquisition: stopGateway/spawnGateway each take
   // the lock individually, but withUserLock is reentrant by chain (a queued
   // call simply waits until the previous call's release before proceeding),
   // so this is safe under concurrent restartGateway calls — they serialize.
   await stopGateway(userId);
-  return spawnGateway(userId);
+  // restart is always an explicit operator action — propagate the bypass.
+  return spawnGateway(userId, { explicit: true, ...opts });
 }
 
 function onChildExit(userId, code, signal) {
   const entry = children.get(userId);
   if (!entry) return;
   console.warn(`[gw:user-${userId}] exit code=${code} signal=${signal} retry=${entry.retryCount}`);
+
+  // Honor the auto-spawn kill-switch — crashed gateway stays down until the
+  // operator explicitly restarts it via dashboard / gw.sh.
+  if (isAutoSpawnDisabled()) {
+    try { db.setGatewayState(userId, { port: null, pid: null, state: 'stopped', token: null }); } catch (_) {}
+    orchestratorEvents.emit('stopped', { userId: Number(userId), reason: 'auto-spawn-disabled' });
+    children.delete(userId);
+    console.log(`[gw:user-${userId}] AOC_DISABLE_AUTO_SPAWN=1 → not respawning`);
+    return;
+  }
 
   const schedule = getBackoffSchedule();
   if (entry.retryCount >= schedule.length) {
@@ -1105,6 +1159,22 @@ async function cleanupOrphans() {
   const reattached = [];
   const needsRestart = [];
 
+  // PRE-PASS: build port → live-daemon-pid map. The launcher process
+  // (`openclaw`) is short-lived — it forks the gateway daemon (`openclaw-gateway`)
+  // and exits. DB tracks the LAUNCHER pid, which is usually dead by the time
+  // we get here. Without this map, the alive-check below fails for every row,
+  // findAocManagedOrphanPids then sees no expected rows, and SIGTERMs every
+  // healthy daemon. Map by port so we can re-bind DB row → live daemon pid.
+  let portToDaemon = new Map();
+  try {
+    const { managed: pidPort } = _gatewayPidsByPort();
+    for (const [pidStr, port] of Object.entries(pidPort)) {
+      portToDaemon.set(Number(port), Number(pidStr));
+    }
+  } catch (e) {
+    console.warn(`[orchestrator] cleanupOrphans: port map probe failed: ${e.message}`);
+  }
+
   for (const { userId, port, pid, state } of rows) {
     if (pid == null) {
       if (state === 'running' || state === 'starting') needsRestart.push(userId);
@@ -1112,6 +1182,26 @@ async function cleanupOrphans() {
     }
     let alive = true;
     try { process.kill(pid, 0); } catch { alive = false; }
+    // ALWAYS prefer the live daemon listening on the user's port over whatever
+    // PID happens to be in the DB. Two reasons:
+    //   1. The wrapper "openclaw" launcher (which DB tracks) may still be alive
+    //      at this point but die seconds later when its stdio peer (the old AOC
+    //      parent) is gone — between now and findAocManagedOrphanPids the wrapper
+    //      reparents/dies and the daemon child's ppid becomes 1, defeating the
+    //      ppid-based skip. Adopting the daemon PID here means DB matches what
+    //      the orphan sweep will actually see listening on the port.
+    //   2. If the launcher is already dead, the daemon is the only thing left
+    //      to adopt anyway. Same code path.
+    let effectivePid = pid;
+    if (port != null) {
+      const daemonPid = portToDaemon.get(Number(port));
+      if (daemonPid && daemonPid !== pid) {
+        const launcherWas = alive ? 'alive' : 'dead';
+        effectivePid = daemonPid;
+        alive = true;
+        console.log(`[orchestrator] cleanupOrphans: user=${userId} adopting daemon pid=${daemonPid} (DB had launcher pid=${pid}, ${launcherWas}) on port ${port}`);
+      }
+    }
     if (alive) {
       // Re-attach: mark in-memory entry so stopGateway/restart can route to
       // this PID. We can't recover the original ChildProcess handle (it died
@@ -1120,18 +1210,18 @@ async function cleanupOrphans() {
       // won't because it was detached. Acceptable: gateway is independent.
       const token = db.getGatewayToken(userId);
       children.set(userId, {
-        child: { pid, removeListener() {}, on() {} }, // stub for stopGateway compat
+        child: { pid: effectivePid, removeListener() {}, on() {} }, // stub for stopGateway compat
         port: port ?? null,
         token: token || null,
         startedAt: Date.now(),
         retryCount: 0,
         reattached: true,
       });
-      reattached.push({ userId, pid, port });
+      reattached.push({ userId, pid: effectivePid, port });
 
-      // Correct the DB state if it was left in a different state but the process is alive
-      if (state !== 'running') {
-        db.setGatewayState(userId, { port, pid, state: 'running', token });
+      // Correct the DB state: persist the daemon pid (if we adopted) and mark running.
+      if (effectivePid !== pid || state !== 'running') {
+        db.setGatewayState(userId, { port, pid: effectivePid, state: 'running', token });
       }
     } else {
       // Stale DB row — gateway died while AOC was down.
@@ -1153,13 +1243,20 @@ async function cleanupOrphans() {
   }
 
   if (needsRestart.length) {
-    console.log(`[orchestrator] cleanupOrphans: auto-restarting ${needsRestart.length} dead gateway(s) [${needsRestart.join(', ')}]...`);
-    for (const uid of needsRestart) {
-      // Clear the stale row first so spawnGateway doesn't think it's running.
-      // Use 'starting' instead of 'stopped' so if AOC is interrupted during spawn,
-      // the next boot will still try to auto-restart it.
-      db.setGatewayState(uid, { port: null, pid: null, state: 'starting', token: null });
-      spawnGateway(uid).catch(e => console.error(`[orchestrator] auto-restart failed for user ${uid}: ${e.message}`));
+    if (isAutoSpawnDisabled()) {
+      console.log(`[orchestrator] cleanupOrphans: AOC_DISABLE_AUTO_SPAWN=1 → marking ${needsRestart.length} stale gateway(s) as stopped instead of respawning [${needsRestart.join(', ')}]`);
+      for (const uid of needsRestart) {
+        db.setGatewayState(uid, { port: null, pid: null, state: 'stopped', token: null });
+      }
+    } else {
+      console.log(`[orchestrator] cleanupOrphans: auto-restarting ${needsRestart.length} dead gateway(s) [${needsRestart.join(', ')}]...`);
+      for (const uid of needsRestart) {
+        // Clear the stale row first so spawnGateway doesn't think it's running.
+        // Use 'starting' instead of 'stopped' so if AOC is interrupted during spawn,
+        // the next boot will still try to auto-restart it.
+        db.setGatewayState(uid, { port: null, pid: null, state: 'starting', token: null });
+        spawnGateway(uid).catch(e => console.error(`[orchestrator] auto-restart failed for user ${uid}: ${e.message}`));
+      }
     }
   }
 
