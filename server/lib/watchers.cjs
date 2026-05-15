@@ -510,7 +510,22 @@ class LiveFeedWatcher {
       const agentMap = buildAgentClaudeCliMap(this.ownerUserId);
       const now = Date.now();
 
+      // Look up each agent's primary model — used to decide whether
+      // processing_start events should fire. Sub-agent / skill-driven
+      // `claude` subprocesses produce jsonl in this dir even when the
+      // *main* agent uses a different provider (kilocode, opencode, etc.).
+      // For those agents we still parse the jsonl (so the dashboard timeline
+      // and Telegram forwarder see tool use) but skip the
+      // "session is processing" lifecycle — otherwise migi (which runs on
+      // kilocode) appears to be perpetually processing whenever a sub-agent
+      // briefly invokes claude.
+      const agentConfig = readJsonSafe(path.join(this._home(), 'openclaw.json')) || {};
+      const agentModels = new Map(
+        (agentConfig.agents?.list || []).map(a => [a.id, String(a.model || '')])
+      );
+
       for (const [agentId, info] of Object.entries(agentMap)) {
+        const primaryUsesClaudeCli = (agentModels.get(agentId) || '').startsWith('claude-cli/');
         if (!fs.existsSync(info.projectDir)) continue;
         let files;
         try { files = fs.readdirSync(info.projectDir).filter(f => f.endsWith('.jsonl')); }
@@ -541,8 +556,11 @@ class LiveFeedWatcher {
             fileSizes.set(full, size);
             lastGrowth.set(full, now);
 
-            // First growth after idle → processing_start
-            if (!processing.has(full)) {
+            // First growth after idle → processing_start. Only fire the
+            // lifecycle event when the agent's PRIMARY model is claude-cli;
+            // otherwise the jsonl is from a transient sub-agent invocation
+            // and shouldn't surface as the agent "being in a session".
+            if (!processing.has(full) && primaryUsesClaudeCli) {
               processing.add(full);
               const link = this._claudeCliKeyMap?.get(uuid) || {};
               this.broadcast({
@@ -601,6 +619,11 @@ class LiveFeedWatcher {
               agentId,
               filePath: full,
               forwardedUuids: forwardedTextBlockUuids,
+              // Per-tenant: read THIS watcher's openclaw.json for bot creds.
+              // Without this, non-admin watchers fall back to admin's 'main'
+              // account → migi's intermediate text gets posted via Dex bot
+              // into admin's chat (cross-tenant leak).
+              userHome: getUserHome(this.ownerUserId),
             }).catch((err) => {
               console.error('[watchers] claude-cli→telegram forwarder:', err?.message || err);
             });
@@ -631,6 +654,7 @@ class LiveFeedWatcher {
                 filePath: full,
                 forwardedUuids: forwardedTextBlockUuids,
                 finalize: true,
+                userHome: getUserHome(this.ownerUserId),
               }).catch((err) => {
                 console.error('[watchers] claude-cli→telegram finalize:', err?.message || err);
               });

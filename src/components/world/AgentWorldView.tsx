@@ -9,6 +9,7 @@ import type * as React from "react"
 import { api } from "@/lib/api"
 import { computeAgentLevel } from "@/lib/agentLeveling"
 import { chatApi, type ChatOutputFile } from "@/lib/chat-api"
+import { buildOutputTree, splitBreadcrumb } from "@/lib/output-tree"
 import { useChatStore, gatewayMessagesToGroups, isSystemInjectedUserMessage, type ChatMessageGroup } from "@/stores/useChatStore"
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer"
 import { FeedbackThumbs } from "@/components/feedback/FeedbackThumbs"
@@ -973,6 +974,20 @@ export function AgentWorldView() {
   const [outputsLoading, setOutputsLoading] = useState(false)
   const [outputsError, setOutputsError] = useState<string | null>(null)
   const [outputsTruncated, setOutputsTruncated] = useState(false)
+  // File-manager navigation for the floating-chat outputs tab. "" = root.
+  // Reset whenever the chat session changes (different agent run = different
+  // folder shape).
+  const [outputsPath, setOutputsPath] = useState("")
+  useEffect(() => { setOutputsPath("") }, [chatSessionKey])
+  // Restrict to `workspace/outputs/` only. The backend also returns legacy
+  // out-of-convention writes (e.g. workspace-root DREAMS.md) tagged with
+  // `source='legacy'` so we can show a warning banner — but they shouldn't
+  // pollute the file-manager view.
+  const visibleOutputs = useMemo(() => outputs.filter((f) => f.source === "outputs"), [outputs])
+  // Strip the leading "outputs/" so root view = contents of outputs/, not a
+  // single "outputs/" folder card the user has to drill into.
+  const outputsTree = useMemo(() => buildOutputTree(visibleOutputs, outputsPath, "outputs/"), [visibleOutputs, outputsPath])
+  const outputsBreadcrumb = useMemo(() => splitBreadcrumb(outputsPath), [outputsPath])
 
   // Inline preview state. `preview.file` is the entry being previewed; the
   // content is fetched as text on demand (binary types never reach this
@@ -1893,13 +1908,73 @@ export function AgentWorldView() {
                 </div>
               )}
 
-              {/* File list. Each row has an icon-only Download button on the
-                  right; previewable rows also surface a Preview button. The
-                  bare row click does the natural thing per type: open inline
-                  preview for text (md/html/json/csv/txt/log), trigger
-                  download for binary (pdf/xlsx/docx/anything else). */}
+              {/* Breadcrumb — only when below root. Lets the user pop back up
+                  the folder tree without scrolling to find an ancestor. */}
+              {outputsBreadcrumb.length > 0 && (
+                <div
+                  className="flex items-center gap-1 mb-2 px-1 text-[10px]"
+                  style={{ color: "var(--muted-foreground)" }}
+                >
+                  <button
+                    onClick={() => setOutputsPath(outputsBreadcrumb.length >= 2 ? outputsBreadcrumb[outputsBreadcrumb.length - 2].fullPath : "")}
+                    className="px-1.5 py-0.5 rounded hover:bg-white/10"
+                    title="Up one level"
+                  >‹</button>
+                  <button
+                    onClick={() => setOutputsPath("")}
+                    className="hover:text-foreground"
+                    title="Back to root"
+                    style={{ color: "var(--foreground)", opacity: 0.7 }}
+                  >outputs</button>
+                  {outputsBreadcrumb.map((crumb, i) => {
+                    const isLast = i === outputsBreadcrumb.length - 1
+                    return (
+                      <span key={crumb.fullPath} className="flex items-center gap-1 min-w-0">
+                        <span className="opacity-50">›</span>
+                        <button
+                          onClick={() => setOutputsPath(crumb.fullPath)}
+                          className="truncate hover:text-foreground"
+                          title={crumb.fullPath}
+                          style={isLast ? { color: "var(--foreground)", fontWeight: 500 } : undefined}
+                        >{crumb.name}</button>
+                      </span>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Folders first — drill-in nav, file-manager style. Each folder
+                  shows total descendant count + latest activity, so the user
+                  can spot the active subtree without opening it. */}
               <div className="flex flex-col gap-1">
-                {outputs.map((f) => {
+                {outputsTree.folders.map((folder) => (
+                  <button
+                    key={folder.fullPath}
+                    onClick={() => setOutputsPath(folder.fullPath)}
+                    className="rounded-lg px-3 py-2 transition-colors text-left flex items-center gap-2 hover:opacity-90"
+                    style={{
+                      background: isLight ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.03)",
+                      border: `1px solid ${isLight ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.06)"}`,
+                    }}
+                  >
+                    <span className="text-[14px] shrink-0">📁</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12px] font-medium truncate" style={{ color: "var(--foreground)" }}>
+                        {folder.name}/
+                      </div>
+                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                        {folder.fileCount} file{folder.fileCount === 1 ? "" : "s"} · {new Date(folder.latestMtimeMs).toLocaleString()}
+                      </div>
+                    </div>
+                    <span className="text-[12px] opacity-50 shrink-0">›</span>
+                  </button>
+                ))}
+
+                {/* Files at the current depth. Each row has an icon-only
+                    Download button on the right; previewable rows also surface
+                    a Preview button. The bare row click does the natural thing
+                    per type: open inline preview for text, download for binary. */}
+                {outputsTree.files.map((f) => {
                   const kind = classifyForPreview(f.ext)
                   const previewable = kind != null
                   return (
@@ -1965,9 +2040,14 @@ export function AgentWorldView() {
                     </div>
                   )
                 })}
-                {!outputsLoading && outputs.length === 0 && !outputsError && (
+                {!outputsLoading && visibleOutputs.length === 0 && !outputsError && (
                   <div className="text-[11px] text-center py-6" style={{ color: "var(--muted-foreground)" }}>
                     Files the agent writes during this session show up here.
+                  </div>
+                )}
+                {!outputsLoading && visibleOutputs.length > 0 && outputsTree.folders.length === 0 && outputsTree.files.length === 0 && (
+                  <div className="text-[11px] text-center py-6 italic" style={{ color: "var(--muted-foreground)" }}>
+                    Empty folder.
                   </div>
                 )}
               </div>

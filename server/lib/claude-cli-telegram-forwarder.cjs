@@ -40,7 +40,7 @@
 
 const fs   = require('fs');
 const path = require('path');
-const { OPENCLAW_HOME, AGENTS_DIR, readJsonSafe } = require('./config.cjs');
+const { OPENCLAW_HOME, AGENTS_DIR, readJsonSafe, getUserHome } = require('./config.cjs');
 const { buildAgentClaudeCliMap } = require('./sessions/claude-cli.cjs');
 
 const LINK_WINDOW_MS   = 5 * 60_000;   // same as sessions linker — consistent UX
@@ -53,9 +53,16 @@ const FORWARD_MAX_CHARS = 3500;
 /**
  * Read Telegram config for an agent. Returns { botToken, defaultChatId } or null.
  * The account key is normally the agentId; falls back to "default" for the main agent.
+ *
+ * `userHome` selects which tenant's openclaw.json to read. Without it (legacy
+ * back-compat), reads admin's — but ALL multi-tenant callers (per-user
+ * watchers) MUST pass userHome to prevent cross-tenant leak: a per-user
+ * watcher iterating its own user's claude-cli workspace would otherwise
+ * fall back to admin's bot token + chat, leaking that user's intermediate
+ * assistant text into admin's Telegram chat under the admin bot's identity.
  */
-function readTelegramCredsForAgent(agentId) {
-  const cfg = readJsonSafe(path.join(OPENCLAW_HOME, 'openclaw.json'));
+function readTelegramCredsForAgent(agentId, userHome = OPENCLAW_HOME) {
+  const cfg = readJsonSafe(path.join(userHome, 'openclaw.json'));
   if (!cfg) return null;
   const accounts = cfg.channels?.telegram?.accounts || {};
   const keys = [agentId, agentId === 'main' ? 'default' : null, 'main', 'default'].filter(Boolean);
@@ -78,11 +85,11 @@ function readTelegramCredsForAgent(agentId) {
  *
  * Telegram `origin.to` looks like `telegram:577142951`; we strip the prefix.
  */
-function resolveTelegramChatFromLinkedSession(agentId, claudeCliFilePath) {
+function resolveTelegramChatFromLinkedSession(agentId, claudeCliFilePath, userHome = OPENCLAW_HOME) {
   let stat;
   try { stat = fs.statSync(claudeCliFilePath); } catch { return null; }
 
-  const sessionsFile = path.join(AGENTS_DIR, agentId, 'sessions', 'sessions.json');
+  const sessionsFile = path.join(userHome, 'agents', agentId, 'sessions', 'sessions.json');
   const data = readJsonSafe(sessionsFile);
   if (!data || typeof data !== 'object') return null;
 
@@ -277,7 +284,7 @@ async function sendTelegramMessage({ botToken, chatId, text }) {
  *
  * Returns the number of messages forwarded on this pass.
  */
-async function processClaudeCliFile({ agentId, filePath, forwardedUuids, finalize = false }) {
+async function processClaudeCliFile({ agentId, filePath, forwardedUuids, finalize = false, userHome = OPENCLAW_HOME }) {
   const entries = scanAssistantBlocks(filePath);
   if (entries.length === 0) return 0;
 
@@ -286,11 +293,11 @@ async function processClaudeCliFile({ agentId, filePath, forwardedUuids, finaliz
   });
   if (blocks.length === 0) return 0;
 
-  const creds = readTelegramCredsForAgent(agentId);
+  const creds = readTelegramCredsForAgent(agentId, userHome);
   if (!creds) return 0;  // agent has no telegram binding
 
   const chatId =
-    resolveTelegramChatFromLinkedSession(agentId, filePath) || creds.defaultChatId;
+    resolveTelegramChatFromLinkedSession(agentId, filePath, userHome) || creds.defaultChatId;
   if (!chatId) return 0;  // no chat to send to
 
   let sent = 0;

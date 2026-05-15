@@ -137,7 +137,9 @@ export function SessionDetailModal({ session, onClose }: Props) {
     loadingRef.current = true
     if (showLoader) setLoading(true)
     try {
-      const data = await api.getSession(session.id) as SessionDetail
+      // Detail modal shows the full transcript; pass a generous cap to bypass
+      // the parser default (5000 events) for very long sessions.
+      const data = await api.getSession(session.id, { limit: 20_000 }) as SessionDetail
       setDetail(data)
       setError(null) // clear error only on success
       retryCountRef.current = 0

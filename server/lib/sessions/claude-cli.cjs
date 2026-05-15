@@ -285,7 +285,10 @@ function parseSingleClaudeCliEntry(jsonLine, defaults = {}) {
  */
 function parseClaudeCliSessionEventsByFile(fullPath, opts = {}) {
   if (!fullPath || !fs.existsSync(fullPath)) return [];
-  const limit = opts.limit || 500;
+  // Default cap raised from 500 → 5000 so long agent runs (cron sync jobs,
+  // multi-step refactors) aren't silently truncated in the session detail
+  // modal. Callers that want a tighter cap pass `opts.limit` explicitly.
+  const limit = opts.limit || 5000;
   const defaultModel = opts.defaultModel || '';
 
   let content;

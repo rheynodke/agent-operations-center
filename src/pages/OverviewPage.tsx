@@ -505,22 +505,79 @@ export function OverviewPage() {
     return () => clearInterval(interval)
   }, [])
 
-  // Cast sessions to our internal SessionEntry format
+  // Realtime processing state driven by WS processing_start/end events.
+  // Subscribing ensures Overview flips the "active" badge instantly when the
+  // agent starts/stops, without waiting for the next REST poll.
+  const liveProcessingSessions = useProcessingStore((s) => s.sessions)
+  const recentlyCompleted = useProcessingStore((s) => s.recentlyCompleted)
+  const liveAgentCounts = useProcessingStore((s) => s.agentCounts)
+
+  // Cast sessions to our internal SessionEntry format AND merge in any
+  // live-processing sessions WS knows about that REST hasn't returned yet
+  // (e.g. a brand-new cron session that just started — the REST poll hasn't
+  // caught up so the user used to see only the "N Processing" badge with no
+  // row to click into).
+  //
+  // Also merge `recentlyCompleted` entries so a session that just finished
+  // doesn't vanish from the audit feed before REST has a chance to surface
+  // it — REST sometimes lags by tens of seconds on idle channels.
   const sessionEntries = useMemo(() => {
-    return (sessions as unknown as SessionEntry[])
-      .slice(0, 10)
+    const restList = sessions as unknown as SessionEntry[]
+    const knownKeys = new Set<string>()
+    for (const s of restList) {
+      knownKeys.add(s.id)
+      if (s.key) knownKeys.add(s.key)
+    }
+
+    // Helpers to derive id + entry shape from a processing-store key.
+    const synthesize = (
+      key: string,
+      entry: { agentId?: string; startedAt: number; endedAt?: number },
+      status: "active" | "completed",
+    ): SessionEntry => {
+      const isPath = key.startsWith("/") || key.includes(".jsonl")
+      const id = isPath
+        ? (key.split("/").pop() || key).replace(/\.jsonl$/, "")
+        : (key.split(":").pop() || key)
+      return {
+        id,
+        name: status === "active" ? "Live session" : "Recent session",
+        agent: entry.agentId || "unknown",
+        type: isPath ? "claude-cli" : "gateway",
+        status,
+        messageCount: 0,
+        lastMessage: status === "active" ? "Agent is processing…" : "Session finished",
+        updatedAt: entry.endedAt || entry.startedAt || Date.now(),
+        cost: 0,
+        key: isPath ? undefined : key,
+        source: isPath ? "claude-cli" : undefined,
+      }
+    }
+
+    const synthetic: SessionEntry[] = []
+    for (const [key, entry] of Object.entries(liveProcessingSessions)) {
+      const stub = synthesize(key, entry, "active")
+      if (knownKeys.has(stub.id) || (stub.key && knownKeys.has(stub.key))) continue
+      synthetic.push(stub)
+      knownKeys.add(stub.id)
+      if (stub.key) knownKeys.add(stub.key)
+    }
+    for (const [key, entry] of Object.entries(recentlyCompleted)) {
+      const stub = synthesize(key, entry, "completed")
+      if (knownKeys.has(stub.id) || (stub.key && knownKeys.has(stub.key))) continue
+      synthetic.push(stub)
+      knownKeys.add(stub.id)
+      if (stub.key) knownKeys.add(stub.key)
+    }
+
+    return [...restList, ...synthetic]
       .sort((a, b) => {
         const ta = typeof a.updatedAt === "number" ? a.updatedAt : new Date(a.updatedAt || 0).getTime()
         const tb = typeof b.updatedAt === "number" ? b.updatedAt : new Date(b.updatedAt || 0).getTime()
         return tb - ta
       })
-  }, [sessions])
-
-  // Realtime processing state driven by WS processing_start/end events.
-  // Subscribing ensures Overview flips the "active" badge instantly when the
-  // agent starts/stops, without waiting for the next REST poll.
-  const liveProcessingSessions = useProcessingStore((s) => s.sessions)
-  const liveAgentCounts = useProcessingStore((s) => s.agentCounts)
+      .slice(0, 10)
+  }, [sessions, liveProcessingSessions, recentlyCompleted])
 
   // Build a map of agent → active session count.
   // Primary source: WS-driven `liveAgentCounts`. Fallback: `session.status`

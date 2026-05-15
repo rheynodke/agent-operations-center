@@ -6,15 +6,31 @@
 # Works even when AOC server is down.
 #
 # Usage:
-#   ./scripts/gw.sh                          # list all gateway statuses
-#   ./scripts/gw.sh list                     # same
-#   ./scripts/gw.sh status  [userId]         # detailed status for one user
-#   ./scripts/gw.sh start   <userId|all>     # start gateway (uid=1: launchctl kickstart)
-#   ./scripts/gw.sh stop    <userId|all>     # stop gateway (uid=1: SIGTERM via launchctl;
-#                                            # launchd KeepAlive will respawn — use restart for clean cycle)
-#   ./scripts/gw.sh restart <userId|all>     # restart (uid=1: atomic launchctl kickstart -k)
-#   ./scripts/gw.sh logs    <userId>         # tail gateway log
-#   ./scripts/gw.sh orphans                  # find orphan gateway processes
+#   ./scripts/gw.sh                                  # list all gateway statuses
+#   ./scripts/gw.sh list                             # same
+#   ./scripts/gw.sh status  [userId]                 # detailed status for one user
+#   ./scripts/gw.sh watch   [--interval N] [--running] [--no-clear]
+#                                                    # live top-like view with RSS/CPU/uptime
+#   ./scripts/gw.sh start   <target> [--delay <s>]   # start gateway(s)
+#   ./scripts/gw.sh stop    <target> [--delay <s>]   # stop gateway(s)
+#   ./scripts/gw.sh restart <target> [--delay <s>]   # restart (atomic via AOC API)
+#   ./scripts/gw.sh sweep   [--kill]                 # audit zombies + duplicate
+#                                                    # listeners; --kill to clean up
+#   ./scripts/gw.sh logs    <userId>                 # tail gateway log
+#   ./scripts/gw.sh orphans                          # find orphan gateway processes
+#
+# <target> can be:
+#   all                  — every user (admin uid=1 included)
+#   running              — users currently running (DB state=running)
+#   stopped              — users stopped or never started
+#   stale                — DB says running but PID is dead (cleanup candidates)
+#   <uid>                — single numeric id, e.g. 5
+#   <username>           — by username, e.g. odooplm
+#   <uid>,<uid>,…        — comma-list, e.g. 3,5,8 (mix ids & usernames OK)
+#
+# For "all"/multi-target, --delay defaults to 8s between spawns to avoid
+# overwhelming AOC's HTTP spawn timeline (one spawn takes ~30-90s with
+# plugins). Override with --delay <n> or --delay=<n>.
 # =============================================================================
 set -euo pipefail
 
@@ -57,10 +73,16 @@ aoc_ops() {
   # POST /api/ops/gateway/<uid>/<action>.
   # Prints body (or "HTTP <code>: <body>" on error) and returns non-zero on non-2xx
   # — avoids `curl -f` swallowing the response body on HTTP errors.
+  #
+  # Timeout note: AOC's gateway spawn (with 10 plugins) takes 60-90s, governed
+  # by AOC_GATEWAY_READY_TIMEOUT_MS (default 90000ms). Use 120s here as
+  # ceiling so curl doesn't give up before AOC finishes — that triggers
+  # "curl error: 000" with the spawn still completing server-side, which
+  # creates phantom failures in `restart all` output.
   local uid="$1" action="$2"
   [[ -n "${DASHBOARD_TOKEN:-}" ]] || { echo "DASHBOARD_TOKEN not set in .env" >&2; return 78; }
   local body http_code
-  body=$(curl -s -m 30 -o /dev/stdout -w '\n%{http_code}' -X POST \
+  body=$(curl -s -m 120 -o /dev/stdout -w '\n%{http_code}' -X POST \
     -H "Authorization: Bearer $DASHBOARD_TOKEN" \
     "$AOC_HOST/api/ops/gateway/$uid/$action") || {
     echo "curl error: $body"
@@ -479,8 +501,20 @@ do_start() {
       echo -e "${GRN}OK${R} ${D}(via AOC API: $resp)${R}"
       return
     fi
-    warn "AOC API start failed ($resp), falling back to direct spawn"
+    # AOC API failed but AOC is alive — DO NOT fall back to direct spawn.
+    # The API call may have actually started the gateway and is just slow to
+    # respond; falling back would create a duplicate gateway. Surface the
+    # error and let the operator decide.
+    echo -e "${RED}FAILED${R} (AOC API error: $resp)"
+    echo -e "  ${D}AOC is reachable but rejected the start request. Possible causes:${R}"
+    echo -e "  ${D}- AOC_DISABLE_AUTO_SPAWN=1 set without explicit:true in caller${R}"
+    echo -e "  ${D}- spawn is in flight (API timed out before response) — re-check with: gw.sh list${R}"
+    echo -e "  ${D}- existing gateway already running (check pid alive)${R}"
+    return 1
   fi
+
+  # AOC dashboard is DOWN — only here do we fall back to direct spawn.
+  warn "AOC dashboard unreachable; falling back to direct spawn (no orchestrator tracking)"
 
   [[ -x "$OPENCLAW_BIN" ]] || die "OPENCLAW_BIN not executable: '$OPENCLAW_BIN' (set OPENCLAW_BIN env or install openclaw on PATH)"
 
@@ -549,70 +583,177 @@ do_start() {
 }
 
 # ── Resolve targets ───────────────────────────────────────────────────────────
+# Accepts:
+#   all                    — every user (including admin uid=1)
+#   running                — users whose gateway_state='running' in DB
+#   stopped                — users whose gateway_state='stopped' (or NULL) in DB
+#   stale                  — DB state='running' but PID not alive (= cleanup candidates)
+#   <uid>                  — single numeric id
+#   <username>             — single username (resolved via DB)
+#   <uid|user>,<uid|user>… — comma-list (mix of ids and usernames OK)
 resolve_uids() {
   local target="$1"
-  if [[ "$target" == "all" ]]; then
-    sql "SELECT id FROM users ORDER BY id;"
-  elif [[ "$target" =~ ^[0-9]+$ ]]; then
-    echo "$target"
-  else
-    local uid
-    uid=$(sql "SELECT id FROM users WHERE username = '$target' LIMIT 1;")
-    [[ -z "$uid" ]] && die "User '$target' not found"
-    echo "$uid"
-  fi
+  case "$target" in
+    all)
+      sql "SELECT id FROM users ORDER BY id;" ;;
+    running)
+      sql "SELECT id FROM users WHERE gateway_state='running' ORDER BY id;" ;;
+    stopped)
+      sql "SELECT id FROM users WHERE gateway_state IS NULL OR gateway_state='stopped' OR gateway_state='' ORDER BY id;" ;;
+    stale)
+      # Stale = DB says running but the recorded pid is dead. We check liveness
+      # in shell since SQLite can't kill -0.
+      while IFS=$'\t' read -r uid pid; do
+        [[ -z "$uid" ]] && continue
+        if [[ -z "$pid" ]] || ! pid_alive "$pid"; then echo "$uid"; fi
+      done < <(sql "SELECT id, gateway_pid FROM users WHERE gateway_state='running' ORDER BY id;")
+      ;;
+    *)
+      # Comma-list (or single). Resolve each part as uid → username → master_agent_id.
+      # Warnings go to STDERR so cmd_start/stop/restart's `while read` over
+      # this function's stdout doesn't capture the warning text as a "uid".
+      local IFS=','
+      for part in $target; do
+        part=$(echo "$part" | tr -d ' ')
+        [[ -z "$part" ]] && continue
+        if [[ "$part" =~ ^[0-9]+$ ]]; then
+          echo "$part"
+        else
+          local uid
+          uid=$(sql "SELECT id FROM users WHERE username = '$part' LIMIT 1;")
+          if [[ -z "$uid" ]]; then
+            # Fallback: try master_agent_id (agent name like "migi", "tecno").
+            # Operators often remember agent names over usernames.
+            uid=$(sql "SELECT id FROM users WHERE master_agent_id = '$part' LIMIT 1;")
+          fi
+          if [[ -z "$uid" ]]; then
+            echo -e "${YEL}⚠ '$part' not found (not a uid, username, or agent name), skipping${R}" >&2
+            continue
+          fi
+          echo "$uid"
+        fi
+      done
+      ;;
+  esac
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
+# Parse "--delay <seconds>" from args. Returns delay value (default 0 for
+# single uid, 8 for "all"/multi-resolution targets) and strips it from
+# remaining args via the global PARSED_TARGET variable.
+parse_delay_opt() {
+  PARSED_DELAY=""
+  PARSED_TARGET=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --delay)
+        [[ $# -lt 2 ]] && die "--delay requires a value (seconds)"
+        PARSED_DELAY="$2"
+        shift 2
+        ;;
+      --delay=*)
+        PARSED_DELAY="${1#--delay=}"
+        shift
+        ;;
+      *)
+        PARSED_TARGET="$1"
+        shift
+        ;;
+    esac
+  done
+}
+
 cmd_stop() {
-  local target="${1:-}"
-  [[ -z "$target" ]] && die "Usage: gw.sh stop <userId|username|all>"
-  info "Stopping gateway(s) for target='$target'"
+  parse_delay_opt "$@"
+  local target="$PARSED_TARGET"
+  local delay="${PARSED_DELAY:-0}"
+  [[ -z "$target" ]] && die "Usage: gw.sh stop <userId|username|all> [--delay <seconds>]"
+  info "Stopping gateway(s) for target='$target'${PARSED_DELAY:+ (delay=${delay}s)}"
+  local uids=()
   while IFS= read -r uid; do
-    [[ -n "$uid" ]] && do_stop "$uid"
+    [[ -n "$uid" ]] && uids+=("$uid")
   done < <(resolve_uids "$target")
+  local i=0 total=${#uids[@]}
+  for uid in "${uids[@]}"; do
+    do_stop "$uid"
+    i=$((i+1))
+    [[ $i -lt $total && "$delay" -gt 0 ]] && sleep "$delay"
+  done
   ok "Done"
 }
 
 cmd_start() {
-  local target="${1:-}"
-  [[ -z "$target" ]] && die "Usage: gw.sh start <userId|username|all>"
-  info "Starting gateway(s) for target='$target'"
+  parse_delay_opt "$@"
+  local target="$PARSED_TARGET"
+  local delay="${PARSED_DELAY:-}"
+  [[ -z "$target" ]] && die "Usage: gw.sh start <userId|username|all> [--delay <seconds>]"
+  info "Starting gateway(s) for target='$target'${delay:+ (delay=${delay}s)}"
+  local uids=()
   while IFS= read -r uid; do
-    [[ -n "$uid" ]] && do_start "$uid"
+    [[ -n "$uid" ]] && uids+=("$uid")
   done < <(resolve_uids "$target")
+  # Default delay: 8s when expanding multiple uids, 0 when single.
+  if [[ -z "$delay" ]]; then
+    delay=$([[ ${#uids[@]} -gt 1 ]] && echo 8 || echo 0)
+  fi
+  local i=0
+  for uid in "${uids[@]}"; do
+    do_start "$uid"
+    i=$((i+1))
+    if [[ $i -lt ${#uids[@]} && "$delay" -gt 0 ]]; then
+      sleep "$delay"
+    fi
+  done
   ok "Done"
 }
 
 cmd_restart() {
-  local target="${1:-}"
-  [[ -z "$target" ]] && die "Usage: gw.sh restart <userId|username|all>"
-  info "Restarting gateway(s) for target='$target'"
+  parse_delay_opt "$@"
+  local target="$PARSED_TARGET"
+  local delay="${PARSED_DELAY:-}"
+  [[ -z "$target" ]] && die "Usage: gw.sh restart <userId|username|all> [--delay <seconds>]"
+  info "Restarting gateway(s) for target='$target'${delay:+ (delay=${delay}s)}"
+  local uids=()
   while IFS= read -r uid; do
-    if [[ -n "$uid" ]]; then
-      if [[ "$uid" -eq 1 ]]; then
-        # Admin gateway: atomic kickstart -k via launchd (single-call restart).
-        do_admin_restart || true
-      elif aoc_alive; then
-        # Atomic restart via AOC API — orchestrator's restartGateway holds the
-        # per-user lock across stop+spawn, so no other caller can interleave.
-        local row resp
-        row=$(sql "SELECT username FROM users WHERE id = $uid;")
-        local username="${row:-uid=$uid}"
-        echo -n "  [uid=$uid] $username: restarting … "
-        if resp=$(aoc_ops "$uid" "restart" 2>&1); then
-          echo -e "${GRN}OK${R} ${D}(via AOC API: $resp)${R}"
-        else
-          warn "AOC API restart failed ($resp), falling back to stop+start"
-          do_stop "$uid"
-          do_start "$uid"
-        fi
-      else
-        do_stop "$uid"
-        do_start "$uid"
-      fi
-    fi
+    [[ -n "$uid" ]] && uids+=("$uid")
   done < <(resolve_uids "$target")
+  # Default delay: 8s for multi-uid (so AOC can finish one spawn before the
+  # next; without delay, AOC serializes per-user but parallel uid spawns
+  # can starve each other for CPU during plugin init). 0 for single uid.
+  if [[ -z "$delay" ]]; then
+    delay=$([[ ${#uids[@]} -gt 1 ]] && echo 8 || echo 0)
+  fi
+  local i=0
+  local total=${#uids[@]}
+  for uid in "${uids[@]}"; do
+    if [[ "$uid" -eq 1 ]]; then
+      # Admin gateway: atomic kickstart -k via launchd (single-call restart).
+      do_admin_restart || true
+    elif aoc_alive; then
+      # Atomic restart via AOC API — orchestrator's restartGateway holds the
+      # per-user lock across stop+spawn, so no other caller can interleave.
+      local row resp
+      row=$(sql "SELECT username FROM users WHERE id = $uid;")
+      local username="${row:-uid=$uid}"
+      echo -n "  [uid=$uid] $username: restarting … "
+      if resp=$(aoc_ops "$uid" "restart" 2>&1); then
+        echo -e "${GRN}OK${R} ${D}(via AOC API: $resp)${R}"
+      else
+        # AOC alive but API rejected. Do NOT fall back to stop+start — the
+        # API call may be in-flight and a fallback would race with it,
+        # producing duplicate gateways. Surface and stop.
+        echo -e "${RED}FAILED${R} (AOC API error: $resp)"
+        echo -e "  ${D}Re-check with: gw.sh list${R}"
+      fi
+    else
+      do_stop "$uid"
+      do_start "$uid"
+    fi
+    i=$((i+1))
+    if [[ $i -lt $total && "$delay" -gt 0 ]]; then
+      sleep "$delay"
+    fi
+  done
   ok "Done"
 }
 
@@ -625,6 +766,101 @@ cmd_logs() {
   [[ -f "$log_file" ]] || die "No log file at $log_file"
   info "Tailing $log_file (Ctrl+C to stop)"
   tail -f "$log_file"
+}
+
+# ── Sweep — audit + kill zombies and duplicates ───────────────────────────────
+# Designed to be safe to run on a cron (every 5 min). Detects:
+#   - openclaw-gateway daemons with PPID=1 and NO listening port (true zombies)
+#   - multiple processes listening on the same managed port (duplicate spawn)
+#   - launchers whose daemon child has already died (half-dead trees)
+# By default reports without killing. Use --kill to SIGTERM detected zombies.
+cmd_sweep() {
+  local do_kill=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --kill)  do_kill=1; shift ;;
+      --dry-run) do_kill=0; shift ;;
+      -h|--help)
+        echo "Usage: gw.sh sweep [--kill]"; return 0 ;;
+      *) warn "Unknown flag: $1"; shift ;;
+    esac
+  done
+
+  # CRITICAL: lsof lives in /usr/sbin on macOS but cron's default PATH is
+  # /usr/bin:/bin. Without an absolute path, lsof not found → port_count=0
+  # for EVERY process → all daemons misidentified as zombies → mass kill.
+  # Find a real lsof or refuse to run.
+  local LSOF
+  LSOF=$(command -v lsof || true)
+  [[ -z "$LSOF" ]] && [[ -x /usr/sbin/lsof ]] && LSOF=/usr/sbin/lsof
+  [[ -z "$LSOF" ]] && [[ -x /usr/bin/lsof ]] && LSOF=/usr/bin/lsof
+  if [[ -z "$LSOF" ]]; then
+    die "lsof not found in PATH ($PATH) — sweep cannot verify which processes are listening. Refusing to run."
+  fi
+
+  info "Sweeping for zombie + duplicate gateway processes…"
+  echo
+
+  # ── Zombies: PPID=1 daemons not listening on any port ──────────────────────
+  local zombie_count=0 zombie_pids=()
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    # Count listening sockets. lsof exits non-zero when nothing matches; with
+    # `set -o pipefail` that aborts the script. Wrap with `|| true` to absorb.
+    # awk always emits a number (n+0), so even on empty input we get "0".
+    local port_count
+    port_count=$( { "$LSOF" -aPnp "$pid" -iTCP -sTCP:LISTEN 2>/dev/null || true; } | awk '/LISTEN/{n++} END{print n+0}')
+    if [[ "$port_count" -eq 0 ]]; then
+      local rss etime
+      rss=$(ps -p "$pid" -o rss= 2>/dev/null | tr -d ' ')
+      etime=$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')
+      [[ -z "$rss" ]] && continue
+      echo -e "  ${YEL}⚠ zombie${R} pid=$pid  rss=$(awk -v r=$rss 'BEGIN{printf "%dMB", r/1024}')  etime=$etime"
+      zombie_pids+=("$pid")
+      zombie_count=$((zombie_count + 1))
+    fi
+  done < <(ps -axo pid,ppid,comm | awk '$2==1 && $3=="openclaw-gateway"{print $1}')
+  [[ $zombie_count -eq 0 ]] && echo -e "  ${GRN}✓ no zombies${R}"
+
+  # ── Duplicates: more than one process LISTEN on the same managed port ──────
+  echo
+  local dup_count=0
+  while IFS= read -r line; do
+    local count="${line%% *}"
+    local port="${line##* }"
+    if [[ "$count" -gt 1 ]]; then
+      echo -e "  ${RED}✗ duplicate${R} port=$port held by ${count} processes"
+      "$LSOF" -iTCP:"$port" -sTCP:LISTEN -P 2>/dev/null | awk 'NR>1{print "      pid="$2}'
+      dup_count=$((dup_count + 1))
+    fi
+  done < <("$LSOF" -iTCP -sTCP:LISTEN -P 2>/dev/null | awk '/openclaw-gateway/ {match($9, /:19[0-9][0-9][0-9]$/); if (RSTART > 0) print substr($9, RSTART+1)}' | sort | uniq -c | awk '{print $1" "$2}')
+  [[ $dup_count -eq 0 ]] && echo -e "  ${GRN}✓ no duplicate listeners${R}"
+
+  # ── Kill phase ─────────────────────────────────────────────────────────────
+  if [[ $do_kill -eq 1 && $zombie_count -gt 0 ]]; then
+    echo
+    info "Killing ${zombie_count} zombie(s)…"
+    for pid in "${zombie_pids[@]}"; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    for pid in "${zombie_pids[@]}"; do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    local still=0
+    for pid in "${zombie_pids[@]}"; do
+      kill -0 "$pid" 2>/dev/null && still=$((still+1))
+    done
+    if [[ $still -eq 0 ]]; then ok "all zombies killed"; else warn "$still still alive after SIGKILL"; fi
+  elif [[ $zombie_count -gt 0 ]]; then
+    echo
+    echo -e "  ${D}(dry run — add ${B}--kill${R}${D} to clean up zombies)${R}"
+  fi
+
+  # Summary line for cron parsing
+  echo
+  echo "summary: zombies=$zombie_count duplicates=$dup_count"
 }
 
 cmd_orphans() {
@@ -687,6 +923,197 @@ usage() {
   echo
 }
 
+# ── Watch (live refresh) ──────────────────────────────────────────────────────
+# Renders a top-like live view of gateway state with per-process RSS, CPU, etime.
+# Refreshes every N seconds (default 3). Ctrl+C to exit.
+#
+# Usage:
+#   gw.sh watch                          # default 3s, all users
+#   gw.sh watch --interval 5             # custom refresh
+#   gw.sh watch --running                # only show running
+#   gw.sh watch --no-clear               # append instead of clearing (good for tee/log)
+cmd_watch() {
+  local interval=3
+  local filter="all"
+  local clear_screen=1
+  local once=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --interval|-n) interval="$2"; shift 2 ;;
+      --interval=*)  interval="${1#--interval=}"; shift ;;
+      --running)     filter="running"; shift ;;
+      --no-clear)    clear_screen=0; shift ;;
+      --once)        once=1; clear_screen=0; shift ;;
+      -h|--help)
+        echo "Usage: gw.sh watch [--interval N] [--running] [--no-clear] [--once]"; return 0 ;;
+      *)
+        warn "Unknown watch flag: $1"; shift ;;
+    esac
+  done
+  [[ "$interval" =~ ^[0-9]+$ ]] || die "--interval must be a positive integer"
+
+  trap 'echo; ok "watch stopped"; exit 0' INT TERM
+
+  while true; do
+    [[ $clear_screen -eq 1 ]] && tput clear
+
+    # Header — system + memory breakdown
+    local total_gb used_gb free_gb wired_gb active_gb inactive_gb pct_used
+    read -r total_gb used_gb free_gb wired_gb active_gb inactive_gb pct_used < <(
+      vm_stat | awk '
+        /page size/{ps=$8}
+        /free/{f=$3}
+        /active/{a=$3}
+        /inactive/{i=$3}
+        /wired/{w=$4}
+        END {
+          total=(f+a+i+w)*ps/1024/1024/1024
+          free=f*ps/1024/1024/1024
+          used=total-free
+          wired=w*ps/1024/1024/1024
+          active=a*ps/1024/1024/1024
+          inactive=i*ps/1024/1024/1024
+          pct=used/total*100
+          printf "%.1f %.1f %.1f %.1f %.1f %.1f %.0f\n", total, used, free, wired, active, inactive, pct
+        }'
+    )
+    local load_avg now
+    load_avg=$(uptime | sed -E 's/.*load averages?: //; s/[, ]+/ /g' | awk '{print $1" "$2" "$3}')
+    now=$(date +"%H:%M:%S")
+
+    # Color-code free RAM for at-a-glance health check
+    local free_color="$GRN"
+    awk -v f="$free_gb" 'BEGIN{exit (f<3)?0:1}' && free_color="$RED"
+    awk -v f="$free_gb" 'BEGIN{exit (f>=3 && f<6)?0:1}' && free_color="$YEL"
+
+    printf "${B}OpenClaw Gateway Watch${R}  ${D}%s  refresh=%ss  filter=%s${R}\n" "$now" "$interval" "$filter"
+    printf "  Memory: ${free_color}%.1f GB free${R}${D}  ·${R}  %.1f / %.1f GB used (%s%%)  ${D}wired %.1f · active %.1f · inactive %.1f${R}\n" \
+      "$free_gb" "$used_gb" "$total_gb" "$pct_used" "$wired_gb" "$active_gb" "$inactive_gb"
+    printf "  Load:   %s ${D}(1m 5m 15m)${R}\n" "$load_avg"
+    echo
+
+    # Build live process map: pid → "rss(MB) cpu% etime args-fragment"
+    # ps fields: pid ppid rss(kb) %cpu etime command
+    local proc_tmp
+    proc_tmp=$(mktemp /tmp/gw_watch.XXXXXX)
+    ps -axo pid,ppid,rss,%cpu,etime,comm | awk '$6=="openclaw"||$6=="openclaw-gateway"{print $1"\t"$2"\t"$3"\t"$4"\t"$5"\t"$6}' > "$proc_tmp"
+
+    # Helpers
+    _proc_field() { awk -F'\t' -v p="$1" -v c="$2" '$1==p{print $c; exit}' "$proc_tmp"; }
+    _daemon_pid_for_launcher() {
+      # daemon = openclaw-gateway whose ppid matches the launcher pid
+      awk -F'\t' -v p="$1" '$2==p && $6=="openclaw-gateway"{print $1; exit}' "$proc_tmp"
+    }
+
+    # Header row
+    printf "${B}%-4s  %-22s  %-9s  %-7s  %-8s  %-5s  %-7s  %-6s  %s${R}\n" \
+      "UID" "USERNAME" "STATE" "PORT" "DAEMON" "RSS" "CPU%" "UPTIME" "MASTER"
+    printf '%0.s─' {1..96}; echo
+
+    # Iterate users. NOTE: use `|` separator (not tab) because bash treats tab
+    # as IFS whitespace and collapses consecutive empty fields — that breaks
+    # parsing of rows with NULL gateway_port + NULL gateway_pid (stopped users).
+    local total_rss=0 total_cpu_x10=0 count=0
+    local where=""
+    [[ "$filter" == "running" ]] && where="WHERE gateway_state='running' OR id=1"
+    local rows
+    rows=$(sqlite3 -separator '|' "$DB_PATH" "SELECT id, username, gateway_port, gateway_pid, gateway_state, master_agent_id FROM users $where ORDER BY id;")
+
+    while IFS='|' read -r uid username db_port db_pid db_state master_id; do
+      [[ -z "$uid" ]] && continue
+      [[ -z "$master_id" ]] && master_id="-"
+
+      local state_str port_str daemon_str rss_str cpu_str etime_str
+      local effective_pid="$db_pid"
+      local rss_kb=0 cpu="0.0"
+
+      if [[ "$uid" -eq 1 ]]; then
+        # admin gateway — fixed port
+        if port_open "$ADMIN_GW_PORT"; then
+          state_str="${GRN}● admin${R}"
+          # discover admin gateway pid (process listening on admin port)
+          local admin_pid
+          admin_pid=$(awk -F'\t' '$6=="openclaw-gateway"{print $1; exit}' "$proc_tmp")
+          effective_pid="$admin_pid"
+          port_str="$ADMIN_GW_PORT"
+        else
+          state_str="${RED}✗ down${R}"
+          port_str="$ADMIN_GW_PORT"
+          effective_pid="-"
+        fi
+      else
+        if [[ -z "$db_pid" || "$db_pid" == "-" ]]; then
+          state_str="${D}○ stopped${R}"
+          effective_pid="-"
+          port_str="-"
+        elif pid_alive "$db_pid" && port_open "$db_port"; then
+          state_str="${GRN}● running${R}"
+          # Try to find daemon pid (child of launcher); fall back to launcher.
+          local daemon
+          daemon=$(_daemon_pid_for_launcher "$db_pid")
+          [[ -n "$daemon" ]] && effective_pid="$daemon"
+          port_str="$db_port"
+        elif [[ "$db_state" == "starting" ]]; then
+          state_str="${YEL}▲ start${R}"
+          port_str="${db_port:--}"
+        else
+          state_str="${RED}✗ stale${R}"
+          port_str="${db_port:--}"
+          effective_pid="${db_pid:--}"
+        fi
+      fi
+
+      # Per-process metrics (RSS in kB, CPU %)
+      if [[ "$effective_pid" != "-" ]]; then
+        rss_kb=$(_proc_field "$effective_pid" 3)
+        cpu=$(_proc_field "$effective_pid" 4)
+        etime_str=$(_proc_field "$effective_pid" 5)
+        [[ -z "$rss_kb" ]] && rss_kb=0
+        [[ -z "$cpu" ]] && cpu="0.0"
+        [[ -z "$etime_str" ]] && etime_str="-"
+      else
+        etime_str="-"
+      fi
+
+      if [[ "$rss_kb" -gt 0 ]]; then
+        rss_str=$(awk -v k="$rss_kb" 'BEGIN{printf "%dMB", k/1024}')
+      else
+        rss_str="-"
+      fi
+      cpu_str="${cpu}%"
+
+      printf "%-4s  %-22s  %-19s  %-7s  %-8s  %-5s  %-7s  %-6s  %s\n" \
+        "$uid" "${username:0:22}" "$state_str" "$port_str" "$effective_pid" \
+        "$rss_str" "$cpu_str" "${etime_str:0:6}" "$master_id"
+
+      if [[ "$rss_kb" -gt 0 ]]; then
+        total_rss=$((total_rss + rss_kb))
+        # bash can't do float; multiply cpu by 10 and sum
+        local cpu_x10
+        cpu_x10=$(awk -v c="$cpu" 'BEGIN{printf "%d", c*10}')
+        total_cpu_x10=$((total_cpu_x10 + cpu_x10))
+        count=$((count + 1))
+      fi
+    done <<< "$rows"
+
+    printf '%0.s─' {1..96}; echo
+    if [[ $count -gt 0 ]]; then
+      local total_rss_mb=$((total_rss / 1024))
+      local total_cpu
+      total_cpu=$(awk -v t="$total_cpu_x10" 'BEGIN{printf "%.1f", t/10}')
+      printf "${B}Total: %d alive gateway(s)  RSS=%dMB (%.1fGB)  CPU=%s%%${R}\n" \
+        "$count" "$total_rss_mb" "$(awk -v m=$total_rss_mb 'BEGIN{printf "%.1f", m/1024}')" "$total_cpu"
+    fi
+    echo
+    echo -e "${D}Ctrl+C to exit • refresh in ${interval}s${R}"
+
+    rm -f "$proc_tmp"
+
+    [[ $once -eq 1 ]] && break
+    sleep "$interval"
+  done
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
   local cmd="${1:-list}"
@@ -694,9 +1121,11 @@ main() {
     -h|--help|help) usage; exit 0 ;;
     list|"")        cmd_list ;;
     status)         cmd_status "${2:-}" ;;
-    start)          cmd_start  "${2:-}" ;;
-    stop)           cmd_stop   "${2:-}" ;;
-    restart)        cmd_restart "${2:-}" ;;
+    start)          shift; cmd_start  "$@" ;;
+    stop)           shift; cmd_stop   "$@" ;;
+    restart)        shift; cmd_restart "$@" ;;
+    watch|top)      shift; cmd_watch "$@" ;;
+    sweep)          shift; cmd_sweep "$@" ;;
     logs)           cmd_logs   "${2:-}" ;;
     orphans)        cmd_orphans ;;
     *)              warn "Unknown command: $cmd"; usage; exit 1 ;;

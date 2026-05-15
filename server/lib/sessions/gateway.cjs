@@ -253,7 +253,10 @@ function parseGatewaySessions(userId) {
   return allSessions;
 }
 
-function parseGatewaySessionEvents(sessionId, limit = 500, userId) {
+// Default cap chosen to cover real-world long sessions (cron jobs with many
+// tool calls easily exceed 500 events). The Detail modal passes ?limit=10000
+// explicitly; sidebar/preview callers can still rely on this default.
+function parseGatewaySessionEvents(sessionId, limit = 5000, userId) {
   const agentsDir = agentsDirFor(userId);
   if (!fs.existsSync(agentsDir)) return [];
 

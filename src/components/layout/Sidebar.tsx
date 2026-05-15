@@ -21,6 +21,7 @@ import {
   Users,
   FolderGit2,
   Megaphone,
+  Lock,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -61,7 +62,7 @@ const navGroups = [
     label: "Library",
     items: [
       { to: "/skills", label: "Skills & Tools", icon: BookOpen },
-      { to: "/roles", label: "Role Templates", icon: IdCard },
+      { to: "/roles", label: "Role Templates", icon: IdCard, adminOnly: true },
       { to: "/connections", label: "Connections", icon: Plug },
     ],
   },
@@ -140,9 +141,38 @@ export function Sidebar() {
               {gi > 0 && sidebarCollapsed && (
                 <div className="mx-auto w-4 border-t border-sidebar-border mb-1" />
               )}
-              {group.items.map(({ to, label, icon: Icon }) => {
+              {group.items.map((item) => {
+                const { to, label, icon: Icon } = item
+                const adminOnly = (item as { adminOnly?: boolean }).adminOnly === true
+                const locked = adminOnly && !isAdmin
                 const isActive =
                   to === "/" ? location.pathname === "/" : location.pathname.startsWith(to)
+                if (locked) {
+                  // Muted, non-clickable. Tooltip explains why.
+                  return (
+                    <div
+                      key={to}
+                      title={sidebarCollapsed ? `${label} — admin only` : "Admin only"}
+                      aria-disabled="true"
+                      className={cn(
+                        "group relative flex items-center gap-2.5 py-2 rounded-lg text-sm cursor-not-allowed select-none",
+                        sidebarCollapsed ? "md:justify-center md:px-0 px-2.5" : "px-2.5",
+                        "text-muted-foreground/40"
+                      )}
+                    >
+                      <Icon className="h-4 w-4 shrink-0 text-muted-foreground/40" />
+                      {!sidebarCollapsed && (
+                        <>
+                          <span className="flex-1">{label}</span>
+                          <Lock className="h-3 w-3 text-muted-foreground/40" />
+                        </>
+                      )}
+                      {sidebarCollapsed && (
+                        <Lock className="absolute top-1 right-1 h-2.5 w-2.5 text-muted-foreground/40" />
+                      )}
+                    </div>
+                  )
+                }
                 return (
                   <NavLink
                     key={to}

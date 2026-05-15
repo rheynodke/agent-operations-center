@@ -237,7 +237,8 @@ module.exports = function gatewayRouter(deps) {
   // GET /ai/context
   router.get('/ai/context', db.authMiddleware, (req, res) => {
     try {
-      res.json(aiLib.getOsContext());
+      const userId = parseScopeUserId(req);
+      res.json(aiLib.getOsContext(userId));
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -245,6 +246,7 @@ module.exports = function gatewayRouter(deps) {
 
   // POST /ai/generate — SSE streaming AI content generation via Claude Code CLI
   router.post('/ai/generate', db.authMiddleware, async (req, res) => {
+    const userId = parseScopeUserId(req);
     const { prompt, currentContent, fileType, agentName, agentId, extraContext } = req.body;
     if (!prompt?.trim()) return res.status(400).json({ error: 'prompt is required' });
 
@@ -261,7 +263,7 @@ module.exports = function gatewayRouter(deps) {
     req.socket?.on('close', onSocketClose);
 
     try {
-      for await (const chunk of aiLib.generateStream({ prompt, currentContent, fileType, agentName, agentId, extraContext }, ac.signal)) {
+      for await (const chunk of aiLib.generateStream({ prompt, currentContent, fileType, agentName, agentId, extraContext, userId }, ac.signal)) {
         if (ac.signal.aborted) break;
         send({ text: chunk });
       }
@@ -284,7 +286,9 @@ module.exports = function gatewayRouter(deps) {
       return res.status(400).json({ error: 'Admin gateway is external — use /api/gateway/restart instead' });
     }
     try {
-      const out = await orchestrator.spawnGateway(userId);
+      // explicit:true bypasses AOC_DISABLE_AUTO_SPAWN — this endpoint is the
+      // operator's explicit start action via dashboard or gw.sh.
+      const out = await orchestrator.spawnGateway(userId, { explicit: true });
       res.json({ ok: true, port: out.port, pid: out.pid });
     } catch (err) {
       console.error(`[gateway/start uid=${userId}]`, err.message);
@@ -392,7 +396,8 @@ module.exports = function gatewayRouter(deps) {
       return res.status(400).json({ error: 'Admin gateway is external' });
     }
     try {
-      const out = await orchestrator.spawnGateway(targetId);
+      // explicit:true — admin ops endpoint is always considered explicit.
+      const out = await orchestrator.spawnGateway(targetId, { explicit: true });
       res.json({ ok: true, port: out.port, pid: out.pid });
     } catch (err) {
       console.error(`[ops/gateway/${targetId}/start]`, err.message);

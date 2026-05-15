@@ -12,16 +12,41 @@ const SCOPE_ALIASES = {
   'presentations': GOOGLE_BASE + 'presentations',
   'gmail.send': GOOGLE_BASE + 'gmail.send',
   'gmail.readonly': GOOGLE_BASE + 'gmail.readonly',
+  'gmail.modify': GOOGLE_BASE + 'gmail.modify',
+  'gmail.labels': GOOGLE_BASE + 'gmail.labels',
+  'gmail.compose': GOOGLE_BASE + 'gmail.compose',
+  'gmail.metadata': GOOGLE_BASE + 'gmail.metadata',
   'calendar': GOOGLE_BASE + 'calendar',
+  'calendar.readonly': GOOGLE_BASE + 'calendar.readonly',
+  'forms.body': GOOGLE_BASE + 'forms.body',
+  'forms.body.readonly': GOOGLE_BASE + 'forms.body.readonly',
+  'forms.responses.readonly': GOOGLE_BASE + 'forms.responses.readonly',
+  'tasks': GOOGLE_BASE + 'tasks',
+  'tasks.readonly': GOOGLE_BASE + 'tasks.readonly',
+  'keep': GOOGLE_BASE + 'keep',
+  'keep.readonly': GOOGLE_BASE + 'keep.readonly',
+  'meetings.space.created': GOOGLE_BASE + 'meetings.space.created',
+  'meetings.space.readonly': GOOGLE_BASE + 'meetings.space.readonly',
+  'meetings.space.settings': GOOGLE_BASE + 'meetings.space.settings',
 };
 
 const ALWAYS_INCLUDED = ['openid', 'email']; // for linkedEmail extraction
 
+// NOTE on `keep` scopes: Google Keep API does NOT support 3-legged user OAuth
+// regardless of account type. Per Google's docs, Keep is admin-tier and
+// requires service account + domain-wide delegation in a Workspace org. The
+// scope aliases below are kept for advanced (service-account based) skills,
+// but DO NOT include them in any user-OAuth preset — Google's authorization
+// server returns `invalid_scope` and the entire reconnect flow fails.
 const SCOPE_PRESETS = {
   'prd-writer':      ['drive.file', 'docs'],
   'sheets-analyst':  ['drive.file', 'spreadsheets'],
-  'full-workspace':  ['drive.file', 'docs', 'spreadsheets', 'presentations'],
-  'custom':          [], // filled by caller
+  'full-workspace':  ['drive', 'docs', 'spreadsheets', 'presentations',
+                      'calendar', 'forms.body', 'forms.responses.readonly',
+                      'tasks',
+                      'meetings.space.created',
+                      'gmail.modify'],
+  'custom':          [], // filled by caller (Keep scopes excluded — see note above)
 };
 
 function expandScope(shortName) {

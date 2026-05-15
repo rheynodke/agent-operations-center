@@ -10,7 +10,7 @@ type: built-in
 
 ## How it works in AOC
 
-You are assigned **odoocli-typed connections** by the user. Credentials never live on disk in your home — `odoo.sh` fetches them from the AOC backend per-invocation, writes a temporary `--config` file (mode 0600) under `$TMPDIR`, runs `odoocli`, then deletes the temp file on exit. The connection's display name (e.g. `dke-prod`) is the **profile name** you pass to `odoocli`.
+You are assigned **odoocli-typed connections** by the user. Credentials never live on disk in your home — `odoo.sh` fetches them from the AOC backend per-invocation, writes a temporary `--config` file (mode 0600) under `$TMPDIR`, runs `odoocli`, then deletes the temp file on exit. You always pass the **connection's display name** (e.g. `dke-prod`) to `odoo.sh`; AOC renders a backend-generated profile name (`<display>_<short-conn-id>`, e.g. `dke-prod_a1b2c3d4`) so `odoocli`'s shared session cache at `~/.odoocli-session.json` never collides when multiple tenants reuse the same display name.
 
 ### Preflight — ALWAYS check assignment first
 

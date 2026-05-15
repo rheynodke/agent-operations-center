@@ -368,7 +368,10 @@ export const api = {
     const qs = params ? "?" + new URLSearchParams(params).toString() : ""
     return request(withScope(`/sessions${qs}`))
   },
-  getSession: (id: string) => request(withScope(`/sessions/${id}`)),
+  getSession: (id: string, opts?: { limit?: number }) => {
+    const qs = opts?.limit ? `?limit=${opts.limit}` : ""
+    return request(withScope(`/sessions/${id}${qs}`))
+  },
   getSessionMessages: (agentId: string, sessionId: string) =>
     request(withScope(`/sessions/${agentId}/${sessionId}/messages`)),
 

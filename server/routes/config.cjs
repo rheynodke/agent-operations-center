@@ -126,17 +126,22 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
   }
 });
 
-// GET /api/config — returns full openclaw.json
+// GET /api/config — returns the caller's own openclaw.json
+// (admin sees admin's; user N sees ~/.openclaw/users/N/.openclaw/openclaw.json)
 
   router.get('/config', db.authMiddleware, (req, res) => {
-  const { readJsonSafe } = require('../lib/config.cjs');
-  const configPath = path.join(parsers.OPENCLAW_HOME, 'openclaw.json');
+  const { readJsonSafe, getUserHome } = require('../lib/config.cjs');
+  const { parseScopeUserId } = require('../helpers/access-control.cjs');
+  const userId = parseScopeUserId(req);
+  const configPath = path.join(getUserHome(userId), 'openclaw.json');
   const config = readJsonSafe(configPath);
   if (!config) return res.status(404).json({ error: 'openclaw.json not found' });
   res.json({ config, path: configPath });
 });
 
-// PATCH /api/config/:section — update a single top-level section and write back
+// PATCH /api/config/:section — update a single top-level section of the
+// caller's own openclaw.json. Each tenant edits their own file; cross-tenant
+// PATCH is impossible because the path is derived from req.user.
   router.patch('/config/:section', db.authMiddleware, (req, res) => {
   const { section } = req.params;
   const { value } = req.body;
@@ -146,14 +151,17 @@ const EDITABLE_CONFIG_SECTIONS = new Set([
   }
   if (value === undefined) return res.status(400).json({ error: 'value is required' });
 
-  const configPath = path.join(parsers.OPENCLAW_HOME, 'openclaw.json');
+  const { getUserHome } = require('../lib/config.cjs');
+  const { parseScopeUserId } = require('../helpers/access-control.cjs');
+  const userId = parseScopeUserId(req);
+  const configPath = path.join(getUserHome(userId), 'openclaw.json');
   try {
     const raw = fs.readFileSync(configPath, 'utf-8');
     const config = JSON.parse(raw);
     config[section] = value;
     if (config.meta) config.meta.lastTouchedAt = new Date().toISOString();
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    console.log(`[api/config] Section "${section}" updated by ${req.user.username}`);
+    console.log(`[api/config] uid=${userId} section="${section}" updated by ${req.user.username}`);
     res.json({ ok: true, section });
   } catch (err) {
     console.error('[api/config/patch]', err);

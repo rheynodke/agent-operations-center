@@ -850,9 +850,11 @@ SAFE_KEYS = {'name','type','hint','projectId','datasets','host','port','database
 for c in conns:
     t = c.get('type', '?').upper()
     name = c.get('name', '?')
+    cid = c.get('id', '?')
     github_mode = c.get('githubMode', 'remote') if c.get('type') == 'github' else None
     mode_tag = f' [{github_mode}]' if github_mode else ''
     print(f'[{t}{mode_tag}] {name}')
+    print(f'  id: {cid}')
     for k, v in c.items():
         if k not in SAFE_KEYS or k in ('name', 'type', 'hint', 'githubMode'):
             continue
@@ -863,7 +865,8 @@ for c in conns:
     if hint:
         print(f'  hint: {hint}')
     if c.get('type') == 'google_workspace':
-        print(f'  >>> To use: gws-call.sh "{name}" <service> <method> \\'<json-body>\\'')
+        print(f'  >>> To use: gws-call.sh {cid} <service> <method> \\'<json-body>\\'')
+        print(f'  >>> (name "{name}" also works — script resolves name→id)')
         print(f'  >>> Services: drive, docs, sheets, slides, gmail, calendar')
     elif c.get('type') == 'mcp':
         tools = c.get('tools', []) or []
@@ -900,26 +903,119 @@ const GWS_CALL_SCRIPT_CONTENT = `#!/usr/bin/env bash
 # Methods:  <resource>.list | .get | .create | .update | .patch | .delete | .batchUpdate
 #           spreadsheets.values.get | .append | .update (sheets only)
 
-set -euo pipefail
+set -uo pipefail   # NOTE: no -e — we handle curl/command exit codes explicitly so
+                   # transient failures never abort with empty stdout/stderr.
 
-source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env"
-[ -f "$PWD/.aoc_agent_env" ] && source "$PWD/.aoc_agent_env"
-[ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env"
-[ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env"
+# Source env files defensively — admin .aoc_env may be EPERM for tenant agents,
+# and tenant glob lines can \`nomatch\` in strict shells. Never let that kill us.
+source "\${OPENCLAW_HOME:-$HOME/.openclaw}/.aoc_env" 2>/dev/null || true
+[ -f "$PWD/.aoc_agent_env" ] && { source "$PWD/.aoc_agent_env" 2>/dev/null || true; }
+[ -n "\${OPENCLAW_WORKSPACE:-}" ] && [ -f "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" ] && \\
+  { source "\${OPENCLAW_WORKSPACE}/.aoc_agent_env" 2>/dev/null || true; }
+[ -n "\${OPENCLAW_STATE_DIR:-}" ] && [ -f "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" ] && \\
+  { source "\${OPENCLAW_STATE_DIR}/workspace/.aoc_agent_env" 2>/dev/null || true; }
 
-[ -z "\${AOC_TOKEN:-}" ] && { echo "ERROR: AOC_TOKEN not configured" >&2; exit 1; }
-[ $# -lt 2 ] && { echo "Usage: gws-call.sh <connection-id> <service> <method> [json-body]" >&2; exit 1; }
+# Preflight — fail LOUD with named missing vars so callers (and self-healing
+# agents) know exactly what's wrong instead of seeing exit code 3 silently.
+_missing=()
+[ -z "\${AOC_URL:-}" ]      && _missing+=("AOC_URL")
+[ -z "\${AOC_TOKEN:-}" ]    && _missing+=("AOC_TOKEN")
+[ -z "\${AOC_AGENT_ID:-}" ] && _missing+=("AOC_AGENT_ID")
+if [ \${#_missing[@]} -gt 0 ]; then
+  echo "ERROR: gws-call: missing env: \${_missing[*]}" >&2
+  echo "  hint: source workspace/.aoc_agent_env, then \\$HOME/.openclaw/.aoc_env" >&2
+  echo "  diag: aoc-doctor.sh" >&2
+  exit 11
+fi
 
-CONN_ID="$1"; shift
+[ $# -lt 2 ] && { echo "Usage: gws-call.sh <connection-name-or-id> <service> <method> [json-body]" >&2; exit 1; }
+
+CONN_ARG="$1"; shift
+
+# Resolve name -> UUID if needed. Server matches \`:id\` to the UUID column only,
+# so passing a human-friendly name (e.g. "Google Rheyno") returns 404. We list
+# the agent's connections once and find a google_workspace row whose \`name\` or
+# \`id\` matches case-insensitively.
+_UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+if [[ ! "$CONN_ARG" =~ $_UUID_RE ]]; then
+  # NOTE: use /api/connections (full owner-scoped list) — it returns the UUID
+  # in the \`id\` field. The agent-scoped /api/agent/connections endpoint
+  # deliberately strips \`id\` (see server/routes/mcp-agents.cjs), which makes
+  # name→id resolution impossible against it.
+  _LIST=$(mktemp /tmp/aoc-gws-list-XXXXXX.json)
+  _LIST_HTTP=$(curl -s -o "$_LIST" -w "%{http_code}" \\
+    -H "Authorization: Bearer $AOC_TOKEN" \\
+    -H "X-AOC-Agent-Id: $AOC_AGENT_ID" \\
+    "$AOC_URL/api/connections")
+  if [ "$_LIST_HTTP" != "200" ]; then
+    echo "ERROR: gws-call: cannot list connections (HTTP $_LIST_HTTP)" >&2
+    cat "$_LIST" >&2; echo >&2
+    rm -f "$_LIST"
+    exit 12
+  fi
+  CONN_ID=$(CONN_ARG="$CONN_ARG" python3 - "$_LIST" <<'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+target = os.environ["CONN_ARG"].strip().lower()
+try:
+    with open(path) as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError) as e:
+    sys.stderr.write(f"ERROR: gws-call: cannot parse connections response: {e}\\n")
+    sys.exit(16)
+matches = []
+for c in data.get("connections", []):
+    if c.get("type") != "google_workspace":
+        continue
+    if not c.get("id"):
+        # Endpoint stripped the id field. Caller picked the wrong URL.
+        sys.stderr.write("ERROR: gws-call: connections list missing 'id' field — endpoint returns sanitized payload.\\n")
+        sys.stderr.write("  fix: this script must call /api/connections (not /api/agent/connections), or server must include id in response.\\n")
+        sys.exit(17)
+    name = (c.get("name") or "").strip().lower()
+    cid  = (c.get("id")   or "").strip().lower()
+    if name == target or cid == target:
+        matches.append(c)
+if not matches:
+    sys.stderr.write(f"ERROR: gws-call: no google_workspace connection matches '{os.environ['CONN_ARG']}'\\n")
+    sys.stderr.write("  run: check_connections.sh google_workspace\\n")
+    sys.exit(13)
+if len(matches) > 1:
+    sys.stderr.write(f"ERROR: gws-call: name '{os.environ['CONN_ARG']}' is ambiguous, use UUID:\\n")
+    for m in matches:
+        sys.stderr.write(f"  {m.get('id')}  {m.get('name')}  ({(m.get('metadata') or {}).get('linkedEmail','?')})\\n")
+    sys.exit(14)
+print(matches[0]["id"])
+PYEOF
+)
+  _RESOLVE_RC=$?
+  rm -f "$_LIST"
+  if [ $_RESOLVE_RC -ne 0 ]; then
+    exit $_RESOLVE_RC
+  fi
+else
+  CONN_ID="$CONN_ARG"
+fi
 
 TMPTOK=$(mktemp /tmp/aoc-gws-tok-XXXXXX.json); trap 'rm -f "$TMPTOK"' EXIT
+
+# Capture HTTP code AND curl exit code separately. Without this, an empty
+# AOC_URL gives \`curl: (3) URL rejected: No host part in the URL\` which would
+# bubble up under \`set -e\` as a silent script abort.
 HTTP_CODE=$(curl -s -o "$TMPTOK" -w "%{http_code}" \\
   -H "Authorization: Bearer $AOC_TOKEN" \\
-  -H "X-AOC-Agent-Id: \${AOC_AGENT_ID:-}" \\
+  -H "X-AOC-Agent-Id: $AOC_AGENT_ID" \\
   "$AOC_URL/api/connections/$CONN_ID/google-access-token")
+_CURL_RC=$?
+
+if [ $_CURL_RC -ne 0 ] || [ -z "$HTTP_CODE" ]; then
+  echo "ERROR: gws-call: curl failed (rc=$_CURL_RC) — cannot reach $AOC_URL" >&2
+  echo "  diag: curl -v \\"$AOC_URL/\\"   and   aoc-doctor.sh" >&2
+  exit 15
+fi
 
 if [ "$HTTP_CODE" != "200" ]; then
-  echo "ERROR: failed to obtain token (HTTP $HTTP_CODE)" >&2
+  echo "ERROR: gws-call: token endpoint HTTP $HTTP_CODE for connection '$CONN_ARG' (id=$CONN_ID)" >&2
   cat "$TMPTOK" >&2; echo >&2
   exit 2
 fi
@@ -938,8 +1034,50 @@ if [ "$1" = "--raw" ]; then
 fi
 
 SERVICE="$1"; shift
-METHOD_STR="$1"; shift
+# Optional second positional: full method (e.g. "spreadsheets.values.update").
+# When agents collapse service+method into one arg (which is what Google's
+# REST docs literally show — "spreadsheets.values.update"), there's no
+# METHOD_STR positional. The resource-alias resolver below fixes this up.
+METHOD_STR="\${1:-}"; [ $# -gt 0 ] && shift
 BODY="\${1:-}"
+
+# Resource-alias resolver: agents frequently use Google's REST-style endpoint
+# names directly (e.g. "spreadsheets.values.update") instead of the script's
+# <service> <method> two-arg form. Detect a known resource token at the start
+# of SERVICE and re-map to the correct service.
+_resource="\${SERVICE%%.*}"
+_resolved_service=""
+case "$_resource" in
+  spreadsheets|values)                                            _resolved_service="sheets"   ;;
+  documents)                                                      _resolved_service="docs"     ;;
+  presentations)                                                  _resolved_service="slides"   ;;
+  files|about|permissions|drives|revisions|changes)               _resolved_service="drive"    ;;
+  events|calendarList|calendars|freeBusy|settings|colors|acl)     _resolved_service="calendar" ;;
+  tasklists)                                                      _resolved_service="tasks"    ;;
+  forms)                                                          _resolved_service="forms"    ;;
+  notes)                                                          _resolved_service="keep"     ;;
+  spaces|conferenceRecords)                                       _resolved_service="meet"     ;;
+  messages|threads|labels|drafts|history)                         _resolved_service="gmail"    ;;
+  tasks)
+    # "tasks" can be both the service name AND a resource. Only re-alias if
+    # SERVICE has a dot ("tasks.list" → service=tasks, method=tasks.list).
+    [ "$SERVICE" != "tasks" ] && _resolved_service="tasks"
+    ;;
+esac
+if [ -n "$_resolved_service" ]; then
+  # The arg the caller put as SERVICE is actually the method. Promote
+  # METHOD_STR to BODY if it looks like JSON (collapsed form), else combine.
+  if [ -z "$METHOD_STR" ] || [ "\${METHOD_STR:0:1}" = "{" ] || [ "\${METHOD_STR:0:1}" = "[" ]; then
+    BODY="$METHOD_STR"
+    METHOD_STR="$SERVICE"
+  else
+    case "$METHOD_STR" in
+      "$SERVICE".*) ;;
+      *) METHOD_STR="$SERVICE\${METHOD_STR:+.$METHOD_STR}" ;;
+    esac
+  fi
+  SERVICE="$_resolved_service"
+fi
 
 case "$SERVICE" in
   drive)     BASE="https://www.googleapis.com/drive/v3"     ; ID_FIELD="fileId"        ;;
@@ -948,6 +1086,10 @@ case "$SERVICE" in
   slides)    BASE="https://slides.googleapis.com/v1"        ; ID_FIELD="presentationId";;
   gmail)     BASE="https://gmail.googleapis.com/gmail/v1/users/me"; ID_FIELD="id"      ;;
   calendar)  BASE="https://www.googleapis.com/calendar/v3"  ; ID_FIELD="eventId"       ;;
+  forms)     BASE="https://forms.googleapis.com/v1"         ; ID_FIELD="formId"        ;;
+  tasks)     BASE="https://tasks.googleapis.com/tasks/v1"   ; ID_FIELD="task"          ;;
+  keep)      BASE="https://keep.googleapis.com/v1"          ; ID_FIELD="noteId"        ;;
+  meet)      BASE="https://meet.googleapis.com/v2"          ; ID_FIELD="name"          ;;
   *) echo "ERROR: unsupported service: $SERVICE" >&2; exit 1 ;;
 esac
 
@@ -967,6 +1109,29 @@ body = None
 if body_raw.strip():
     body = json.loads(body_raw)
 
+# Normalize SDK-style "body" wrapper. Agents trained on Google's REST API SDKs
+# (google-api-python-client etc.) replicate the method-signature shape, which
+# nests the actual request payload under a "body" subkey:
+#   {"spreadsheetId": "X", "range": "Y", "valueInputOption": "RAW",
+#    "body": {"values": [[...]]}}
+# Sheets/Docs/Slides APIs expect the payload at top level, so we flatten:
+# pop the "body" subkey and merge its contents (without overwriting top-level
+# keys agents already specified).
+if isinstance(body, dict) and "body" in body and isinstance(body["body"], dict):
+    inner = body.pop("body")
+    for k, v in inner.items():
+        body.setdefault(k, v)
+# Same with "requestBody" (alternate SDK convention).
+if isinstance(body, dict) and "requestBody" in body and isinstance(body["requestBody"], dict):
+    inner = body.pop("requestBody")
+    for k, v in inner.items():
+        body.setdefault(k, v)
+# And "resource" (yet another Google API client naming).
+if isinstance(body, dict) and "resource" in body and isinstance(body["resource"], dict):
+    inner = body.pop("resource")
+    for k, v in inner.items():
+        body.setdefault(k, v)
+
 parts = method.split(".")
 if len(parts) < 2:
     sys.stderr.write(f"ERROR: method must be <resource>.<action>: {method}\\n"); sys.exit(1)
@@ -974,6 +1139,9 @@ if len(parts) < 2:
 if service == "sheets" and len(parts) == 3 and parts[1] == "values":
     resource = parts[0]
     action   = "values." + parts[2]
+elif service == "forms" and len(parts) == 3 and parts[1] == "responses":
+    resource = parts[0]
+    action   = "responses." + parts[2]
 else:
     resource = parts[0]
     action   = ".".join(parts[1:])
@@ -985,7 +1153,92 @@ def req_id():
     return v
 
 path = None; http = None
-if action == "list":                path, http = f"/{resource}", "GET"
+
+def _need(field):
+    v = body.pop(field, None)
+    if not v:
+        sys.stderr.write(f"ERROR: body must contain '{field}' for {service}.{resource}.{action}\\n")
+        sys.exit(1)
+    return v
+
+# ── Calendar API has unusual URL structure (nested under /users/me/ or
+# /calendars/{calendarId}/) so the generic /{resource}/{id} builder produces
+# 404. Route Calendar requests through explicit per-resource templates.
+if service == "calendar":
+    if resource == "calendarList":
+        if action == "list":         path, http = "/users/me/calendarList", "GET"
+        elif action == "get":        path, http = f"/users/me/calendarList/{urllib.parse.quote(_need('calendarId'))}", "GET"
+        elif action in ("insert", "create"): path, http = "/users/me/calendarList", "POST"
+        elif action == "patch":      path, http = f"/users/me/calendarList/{urllib.parse.quote(_need('calendarId'))}", "PATCH"
+        elif action == "update":     path, http = f"/users/me/calendarList/{urllib.parse.quote(_need('calendarId'))}", "PUT"
+        elif action == "delete":     path, http = f"/users/me/calendarList/{urllib.parse.quote(_need('calendarId'))}", "DELETE"
+    elif resource == "events":
+        cid = urllib.parse.quote(_need("calendarId"))
+        if action == "list":         path, http = f"/calendars/{cid}/events", "GET"
+        elif action == "get":        path, http = f"/calendars/{cid}/events/{urllib.parse.quote(_need('eventId'))}", "GET"
+        elif action in ("create", "insert"): path, http = f"/calendars/{cid}/events", "POST"
+        elif action == "update":     path, http = f"/calendars/{cid}/events/{urllib.parse.quote(_need('eventId'))}", "PUT"
+        elif action == "patch":      path, http = f"/calendars/{cid}/events/{urllib.parse.quote(_need('eventId'))}", "PATCH"
+        elif action == "delete":     path, http = f"/calendars/{cid}/events/{urllib.parse.quote(_need('eventId'))}", "DELETE"
+        elif action == "quickAdd":   path, http = f"/calendars/{cid}/events/quickAdd", "POST"
+        elif action == "move":       path, http = f"/calendars/{cid}/events/{urllib.parse.quote(_need('eventId'))}/move", "POST"
+        elif action == "instances":  path, http = f"/calendars/{cid}/events/{urllib.parse.quote(_need('eventId'))}/instances", "GET"
+    elif resource == "calendars":
+        if action == "list":
+            sys.stderr.write("ERROR: 'calendars.list' doesn't exist in Calendar API — use 'calendarList.list' instead.\\n"); sys.exit(1)
+        cid = urllib.parse.quote(_need("calendarId"))
+        if action == "get":          path, http = f"/calendars/{cid}", "GET"
+        elif action == "patch":      path, http = f"/calendars/{cid}", "PATCH"
+        elif action == "update":     path, http = f"/calendars/{cid}", "PUT"
+        elif action == "delete":     path, http = f"/calendars/{cid}", "DELETE"
+        elif action == "clear":      path, http = f"/calendars/{cid}/clear", "POST"
+        elif action in ("create", "insert"): path, http = "/calendars", "POST"
+    elif resource == "settings":
+        if action == "list":         path, http = "/users/me/settings", "GET"
+        elif action == "get":        path, http = f"/users/me/settings/{urllib.parse.quote(_need('setting'))}", "GET"
+    elif resource == "freeBusy":
+        if action == "query":        path, http = "/freeBusy", "POST"
+    elif resource == "colors":
+        if action == "get":          path, http = "/colors", "GET"
+    if path is None:
+        sys.stderr.write(f"ERROR: unsupported calendar action: {resource}.{action}. Use --raw for advanced endpoints.\\n")
+        sys.exit(1)
+elif service == "tasks":
+    # Tasks API — tasklists live under /users/@me/lists, tasks under /lists/{tasklist}/tasks.
+    if resource == "tasklists":
+        if action == "list":             path, http = "/users/@me/lists", "GET"
+        elif action == "get":            path, http = f"/users/@me/lists/{urllib.parse.quote(_need('tasklist'))}", "GET"
+        elif action in ("insert","create"): path, http = "/users/@me/lists", "POST"
+        elif action == "patch":          path, http = f"/users/@me/lists/{urllib.parse.quote(_need('tasklist'))}", "PATCH"
+        elif action == "update":         path, http = f"/users/@me/lists/{urllib.parse.quote(_need('tasklist'))}", "PUT"
+        elif action == "delete":         path, http = f"/users/@me/lists/{urllib.parse.quote(_need('tasklist'))}", "DELETE"
+    elif resource == "tasks":
+        tl = urllib.parse.quote(_need("tasklist"))
+        if action == "list":             path, http = f"/lists/{tl}/tasks", "GET"
+        elif action == "get":            path, http = f"/lists/{tl}/tasks/{urllib.parse.quote(_need('task'))}", "GET"
+        elif action in ("insert","create"): path, http = f"/lists/{tl}/tasks", "POST"
+        elif action == "patch":          path, http = f"/lists/{tl}/tasks/{urllib.parse.quote(_need('task'))}", "PATCH"
+        elif action == "update":         path, http = f"/lists/{tl}/tasks/{urllib.parse.quote(_need('task'))}", "PUT"
+        elif action == "delete":         path, http = f"/lists/{tl}/tasks/{urllib.parse.quote(_need('task'))}", "DELETE"
+        elif action == "clear":          path, http = f"/lists/{tl}/clear", "POST"
+        elif action == "move":           path, http = f"/lists/{tl}/tasks/{urllib.parse.quote(_need('task'))}/move", "POST"
+    if path is None:
+        sys.stderr.write(f"ERROR: unsupported tasks action: {resource}.{action}. Use --raw for advanced endpoints.\\n")
+        sys.exit(1)
+elif service == "meet":
+    # Google Meet API v2 — spaces are meeting rooms, conferenceRecords are past meetings.
+    if resource == "spaces":
+        if action in ("create","insert"): path, http = "/spaces", "POST"
+        elif action == "get":            path, http = f"/spaces/{urllib.parse.quote(_need('name'))}", "GET"
+        elif action == "patch":          path, http = f"/spaces/{urllib.parse.quote(_need('name'))}", "PATCH"
+        elif action == "endActiveConference": path, http = f"/spaces/{urllib.parse.quote(_need('name'))}:endActiveConference", "POST"
+    elif resource == "conferenceRecords":
+        if action == "list":             path, http = "/conferenceRecords", "GET"
+        elif action == "get":            path, http = f"/conferenceRecords/{urllib.parse.quote(_need('name'))}", "GET"
+    if path is None:
+        sys.stderr.write(f"ERROR: unsupported meet action: {resource}.{action}. Use --raw for advanced endpoints.\\n")
+        sys.exit(1)
+elif action == "list":              path, http = f"/{resource}", "GET"
 elif action == "get":               path, http = f"/{resource}/{req_id()}", "GET"
 elif action == "create":            path, http = f"/{resource}", "POST"
 elif action == "update":            path, http = f"/{resource}/{req_id()}", "PUT"
@@ -1006,13 +1259,64 @@ elif action == "values.update":
     rng = body.pop("range", "")
     vio = body.pop("valueInputOption", "USER_ENTERED")
     path, http = f"/spreadsheets/{sid}/values/{urllib.parse.quote(rng)}?valueInputOption={vio}", "PUT"
+elif action == "responses.list":
+    # forms.responses.list — list all responses for a form
+    fid = req_id()  # uses formId from body
+    path, http = f"/forms/{fid}/responses", "GET"
+elif action == "responses.get":
+    # forms.responses.get — fetch a specific response
+    fid = req_id()  # formId
+    rid = body.pop("responseId", None)
+    if not rid:
+        sys.stderr.write("ERROR: body must contain 'responseId' for forms.responses.get\\n"); sys.exit(1)
+    path, http = f"/forms/{fid}/responses/{rid}", "GET"
 else:
     sys.stderr.write(f"ERROR: unsupported action: {action}. Use --raw for advanced endpoints.\\n"); sys.exit(1)
 
 url = base + path
+
+def _qv(v):
+    if isinstance(v, bool): return "true" if v else "false"
+    if isinstance(v, (dict, list)): return json.dumps(v)
+    return str(v)
+
+def _append_qs(_url, params):
+    if not params: return _url
+    qs = urllib.parse.urlencode({k: _qv(v) for k, v in params.items() if v is not None})
+    if not qs: return _url
+    return _url + ("&" if "?" in _url else "?") + qs
+
+# Explicit query-param escape hatch: caller can put params into "_queryParams"
+# in the body to force them onto the URL regardless of HTTP method.
+_explicit_qp = body.pop("_queryParams", None) if isinstance(body, dict) else None
+if _explicit_qp:
+    url = _append_qs(url, _explicit_qp)
+
+# Calendar events action params that Google expects as QUERY string, not body:
+# - sendUpdates / sendNotifications: trigger invite emails ('all' = send to everyone)
+# - conferenceDataVersion: required (=1) when creating events with Meet links
+# - supportsAttachments, maxAttendees, alwaysIncludeEmail: standard flags
+# - destination: required for events.move
+# Auto-pop these from body so the agent can pass them naturally alongside the
+# event resource.
+if service == "calendar" and resource == "events" and isinstance(body, dict):
+    for k in ("sendUpdates","sendNotifications","conferenceDataVersion",
+             "supportsAttachments","maxAttendees","alwaysIncludeEmail","destination"):
+        v = body.pop(k, None)
+        if v is not None:
+            url = _append_qs(url, {k: v})
+
+# For GET/DELETE, leftover body fields become URL query params (Google APIs
+# expect pageSize, fields, q, etc. in the query string — NOT as a JSON body).
+# Sending a body with GET makes Google reject the HTTP/2 stream with
+# INTERNAL_ERROR (curl exit 92).
+if http in ("GET", "DELETE") and body:
+    url = _append_qs(url, body)
+    body = None
+
 args = ["curl", "-sf", "-X", http, "-H", f"Authorization: Bearer {token}"]
-if http in ("POST", "PUT", "PATCH") or body:
-    args += ["-H", "Content-Type: application/json", "--data-raw", json.dumps(body or {})]
+if http in ("POST", "PUT", "PATCH") and body is not None:
+    args += ["-H", "Content-Type: application/json", "--data-raw", json.dumps(body)]
 args.append(url)
 
 r = subprocess.run(args)

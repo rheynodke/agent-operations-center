@@ -503,23 +503,26 @@ function ConnectionCard({
           })()}
           {conn.type === 'google_workspace' && (() => {
             const gmeta = (conn.metadata || {}) as Partial<GoogleWorkspaceMetadata>
+            const isConnected = gmeta.authState === 'connected'
+            const reauthLabel = isConnected ? 'Reconnect' : 'Re-authenticate'
+            const reauthTitle = isConnected
+              ? 'Re-run OAuth to refresh scopes (e.g. after preset update)'
+              : 'Re-authenticate this connection at Google'
             return (
               <>
-                {(gmeta.authState === 'expired' || gmeta.authState === 'disconnected') && (
-                  <Button size="sm" variant="outline" className="h-7 text-[11px] px-2" onClick={async (e) => {
-                    e.stopPropagation()
-                    try {
-                      const { authUrl } = await api.reauthGoogleConnection(conn.id)
-                      if (onGoogleOauth) {
-                        const result = await onGoogleOauth(authUrl)
-                        if (result) onTest(conn.id)
-                      }
-                    } catch (err) {
-                      alertDialog({ title: "Re-authenticate failed", description: (err as Error).message, tone: "error" })
+                <Button size="sm" variant="outline" className="h-7 text-[11px] px-2" title={reauthTitle} onClick={async (e) => {
+                  e.stopPropagation()
+                  try {
+                    const { authUrl } = await api.reauthGoogleConnection(conn.id)
+                    if (onGoogleOauth) {
+                      const result = await onGoogleOauth(authUrl)
+                      if (result) onTest(conn.id)
                     }
-                  }}>Re-authenticate</Button>
-                )}
-                {gmeta.authState === 'connected' && (
+                  } catch (err) {
+                    alertDialog({ title: `${reauthLabel} failed`, description: (err as Error).message, tone: "error" })
+                  }
+                }}>{reauthLabel}</Button>
+                {isConnected && (
                   <Button size="sm" variant="ghost" className="h-7 text-[11px] px-2" onClick={async (e) => {
                     e.stopPropagation()
                     if (!await confirmDialog({
@@ -1652,7 +1655,7 @@ function ConnectionDialog({
                   <SelectContent>
                     <SelectItem value="prd-writer">PRD Writer (Docs + Drive.file)</SelectItem>
                     <SelectItem value="sheets-analyst">Sheets Analyst (Sheets + Drive.file)</SelectItem>
-                    <SelectItem value="full-workspace">Full Workspace (Docs + Sheets + Slides + Drive.file)</SelectItem>
+                    <SelectItem value="full-workspace">Full Workspace (Docs + Sheets + Slides + Calendar + Forms + Tasks + Meet)</SelectItem>
                     <SelectItem value="custom">Custom</SelectItem>
                   </SelectContent>
                 </Select>
