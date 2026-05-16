@@ -588,3 +588,155 @@ test('orchestrator emits "stopped" event on stopGateway', async () => {
   delete process.env.OPENCLAW_HOME;
   delete process.env.OPENCLAW_BIN;
 });
+
+test('listGatewaysRich: returns user info + process probe + activity probe', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
+  orchestrator = freshOrchestrator(tmp);
+  const db = require('./db.cjs');
+  await db.initDatabase();
+
+  const realList = db.listGatewayStates;
+  const realAll = db.getAllUsers;
+  db.listGatewayStates = () => [
+    { userId: 99, port: 19090, pid: process.pid, state: 'running' },
+    { userId: 100, port: 19091, pid: 1, state: 'running' },
+  ];
+  db.getAllUsers = () => [
+    { id: 99, username: 'u99', display_name: null, role: 'user', master_agent_id: 'main' },
+    { id: 100, username: 'u100', display_name: null, role: 'user', master_agent_id: 'main' },
+    { id: 1, username: 'admin', display_name: null, role: 'admin', master_agent_id: 'main' },
+  ];
+
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-home-'));
+  fs.mkdirSync(path.join(tmpHome, 'agents', 'main', 'sessions'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpHome, 'agents', 'main', 'sessions', 'sessions.json'),
+    JSON.stringify({
+      'agent:main:telegram:direct:1': { sessionId: 'a', updatedAt: Date.now() - 60_000 },
+    }),
+  );
+
+  const out = await orchestrator.listGatewaysRich({
+    homeResolver: () => tmpHome,
+    agentResolver: () => 'main',
+    now: Date.now(),
+  });
+
+  db.listGatewayStates = realList;
+  db.getAllUsers = realAll;
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+
+  assert.equal(Array.isArray(out), true);
+  // 2 non-admin tenants returned; admin (uid=1) filtered out
+  assert.equal(out.length, 2);
+
+  const row = out.find((r) => r.userId === 99);
+  assert.equal(row.state, 'running');
+  assert.equal(row.username, 'u99');
+  assert.equal(typeof row.uptimeSeconds, 'number');
+  assert.equal(typeof row.rssMb, 'number');
+  assert.ok(row.activity);
+  assert.equal(row.activity.messagesLast1h, 1);
+});
+
+test('listGatewaysRich: dead pid → state=stale, null metrics', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
+  orchestrator = freshOrchestrator(tmp);
+  const db = require('./db.cjs');
+  await db.initDatabase();
+
+  const realList = db.listGatewayStates;
+  const realAll = db.getAllUsers;
+  db.listGatewayStates = () => [
+    { userId: 99, port: 19090, pid: 999999, state: 'running' },
+  ];
+  db.getAllUsers = () => [
+    { id: 99, username: 'u99', display_name: null, role: 'user', master_agent_id: 'main' },
+  ];
+
+  const out = await orchestrator.listGatewaysRich({
+    homeResolver: () => '/nonexistent',
+    agentResolver: () => 'main',
+    now: Date.now(),
+  });
+
+  db.listGatewayStates = realList;
+  db.getAllUsers = realAll;
+
+  assert.equal(out[0].state, 'stale');
+  assert.equal(out[0].uptimeSeconds, null);
+  assert.equal(out[0].rssMb, null);
+  assert.equal(out[0].cpuPercent, null);
+  assert.equal(out[0].activity, null);
+});
+
+test('listGatewaysRich: includes users with no gateway row as stopped', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
+  orchestrator = freshOrchestrator(tmp);
+  const db = require('./db.cjs');
+  await db.initDatabase();
+
+  const realList = db.listGatewayStates;
+  const realAll = db.getAllUsers;
+  // No state rows at all → every tenant must still appear, all stopped
+  db.listGatewayStates = () => [];
+  db.getAllUsers = () => [
+    { id: 50, username: 'never-started-1', display_name: null, role: 'user', master_agent_id: 'main' },
+    { id: 51, username: 'never-started-2', display_name: 'Alice', role: 'user', master_agent_id: 'main' },
+    { id: 1,  username: 'admin', display_name: null, role: 'admin', master_agent_id: 'main' },
+  ];
+
+  const out = await orchestrator.listGatewaysRich({
+    homeResolver: () => '/nonexistent',
+    agentResolver: () => 'main',
+    now: Date.now(),
+  });
+
+  db.listGatewayStates = realList;
+  db.getAllUsers = realAll;
+
+  assert.equal(out.length, 2, 'admin must be filtered, both tenants must appear');
+  assert.equal(out[0].state, 'stopped');
+  assert.equal(out[0].port, null);
+  assert.equal(out[0].pid, null);
+  assert.equal(out[1].displayName, 'Alice');
+});
+
+test('runBulkGatewayAction: serialises calls, returns per-user results, continues on failure', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
+  orchestrator = freshOrchestrator(tmp);
+  const calls = [];
+  const stubOrchestrator = {
+    spawnGateway: async (uid) => {
+      calls.push(['spawn', uid]);
+      if (uid === 5) throw new Error('spawn boom');
+      return { port: 19000 + uid, pid: 1000 + uid };
+    },
+    stopGateway: async (uid) => { calls.push(['stop', uid]); },
+    restartGateway: async (uid) => {
+      calls.push(['restart', uid]);
+      return { port: 19000 + uid, pid: 2000 + uid };
+    },
+  };
+
+  const r = await orchestrator.runBulkGatewayAction(
+    { action: 'start', userIds: [3, 5, 8], delaySeconds: 0 },
+    { lifecycle: stubOrchestrator },
+  );
+
+  assert.deepEqual(calls.map((c) => c[0]), ['spawn', 'spawn', 'spawn']);
+  assert.equal(r.results.length, 3);
+  assert.equal(r.results[0].ok, true);
+  assert.equal(r.results[1].ok, false);
+  assert.match(r.results[1].error, /spawn boom/);
+  assert.equal(r.results[2].ok, true);
+});
+
+test('runBulkGatewayAction: rejects unknown action', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aocgw-'));
+  orchestrator = freshOrchestrator(tmp);
+  await assert.rejects(
+    orchestrator.runBulkGatewayAction({ action: 'nuke', userIds: [1] }),
+    /unknown action/i,
+  );
+});

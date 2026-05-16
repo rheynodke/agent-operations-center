@@ -6,6 +6,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog"
 import { PasswordResetDialog } from "@/components/ui/PasswordResetDialog"
 import type { Invitation, ManagedUser } from "@/types"
 import { confirmDialog, alertDialog } from "@/lib/dialogs"
+import { GatewaysTab } from "@/components/admin/GatewaysTab"
 
 type Confirm =
   | { kind: "revoke-invite"; id: number }
@@ -21,7 +22,7 @@ function formatDate(s?: string | null) {
 
 export function UserManagementPage() {
   const currentUser = useAuthStore((s) => s.user)
-  const [tab, setTab] = useState<"users" | "invitations">("users")
+  const [tab, setTab] = useState<"users" | "invitations" | "gateways">("users")
   const [users, setUsers] = useState<ManagedUser[]>([])
   const [invitations, setInvitations] = useState<Invitation[]>([])
   const [loading, setLoading] = useState(true)
@@ -150,7 +151,7 @@ export function UserManagementPage() {
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-border">
-        {(["users", "invitations"] as const).map((t) => (
+        {(["users", "invitations", "gateways"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -158,7 +159,7 @@ export function UserManagementPage() {
               tab === t ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            {t} ({t === "users" ? users.length : invitations.length})
+            {t === "users" ? `users (${users.length})` : t === "invitations" ? `invitations (${invitations.length})` : "gateways"}
           </button>
         ))}
       </div>
@@ -297,6 +298,8 @@ export function UserManagementPage() {
             </tbody>
           </table>
         </div>
+      ) : tab === "gateways" ? (
+        <GatewaysTab />
       ) : (
         <div>
           <div className="flex justify-end mb-3">

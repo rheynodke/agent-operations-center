@@ -108,6 +108,36 @@ export const api = {
       body: JSON.stringify({ password }),
     }),
 
+  // Admin: Gateway monitor
+  listGateways: () =>
+    request<{ gateways: import("@/types").GatewayStatus[]; probedAt: string }>(
+      "/admin/gateways",
+    ),
+  getGatewayLogs: (userId: number, lines = 200) =>
+    request<{ logFile: string; lines: string[]; notFound: boolean }>(
+      `/admin/gateways/${userId}/logs?lines=${lines}`,
+    ),
+  adminStartGateway: (userId: number) =>
+    request<{ ok: true; port: number; pid: number }>(
+      `/admin/users/${userId}/gateway/start`,
+      { method: "POST" },
+    ),
+  adminStopGateway: (userId: number) =>
+    request<{ ok: true }>(`/admin/users/${userId}/gateway/stop`, { method: "POST" }),
+  adminRestartGateway: (userId: number) =>
+    request<{ ok: true; port: number; pid: number }>(
+      `/admin/users/${userId}/gateway/restart`,
+      { method: "POST" },
+    ),
+  bulkGatewayAction: (
+    action: import("@/types").GatewayBulkAction,
+    userIds: number[],
+  ) =>
+    request<{ results: import("@/types").BulkGatewayResult[] }>(
+      "/admin/gateways/bulk",
+      { method: "POST", body: JSON.stringify({ action, userIds }) },
+    ),
+
   // Overview
   getOverview: () => request(withScope("/overview")),
   getActivity: () => request(withScope("/activity")),
@@ -124,9 +154,9 @@ export const api = {
     if (id) params.set("id", id)
     return request<{ available: boolean; slug?: string; reason?: string }>(`/agent-availability?${params.toString()}`)
   },
-  getAgentDetail: (id: string) => request(`/agents/${id}/detail`),
+  getAgentDetail: (id: string) => request(withScope(`/agents/${id}/detail`)),
   updateAgent: (id: string, updates: Record<string, unknown>) =>
-    request(`/agents/${id}`, { method: "PATCH", body: JSON.stringify(updates) }),
+    request(withScope(`/agents/${id}`), { method: "PATCH", body: JSON.stringify(updates) }),
   getAgentSessions: (id: string) => request(withScope(`/agents/${id}/sessions`)),
   provisionAgent: (opts: ProvisionAgentOpts) =>
     request<ProvisionResult>("/agents", { method: "POST", body: JSON.stringify(opts) }),

@@ -44,12 +44,30 @@ function getAgentOwner(agentId, ownerHint) {
  * agents — admin can only act on agents where provisioned_by = admin's userId.
  * Service tokens (role=agent) keep the bypass since they run inside a user
  * gateway and operate on behalf of agents in that scope.
+ *
+ * Admin impersonation: when an admin request carries `?owner=<N>` (the same
+ * query param the frontend's `withScope` helper appends during View-As-User),
+ * we grant access if user N owns the agent. This is the dashboard's only
+ * cross-tenant access path — admin must explicitly opt in via the query
+ * param; default un-scoped admin requests still see only their own agents.
  */
+function _adminImpersonationOwnerId(req) {
+  if (req?.user?.role !== 'admin') return null;
+  const raw = req?.query?.owner;
+  if (raw == null || raw === '' || raw === 'me' || raw === 'all') return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 function userOwnsAgent(req, agentId) {
   if (!req?.user) return false;
   if (req.user.role === 'agent') {
     if (req.user.agentId) return req.user.agentId === agentId;
     return true; // legacy DASHBOARD_TOKEN bypass
+  }
+  const impersonateId = _adminImpersonationOwnerId(req);
+  if (impersonateId != null) {
+    return getAgentProfile(agentId, impersonateId) != null;
   }
   return getAgentProfile(agentId, req.user.userId) != null;
 }
@@ -62,12 +80,14 @@ function requireAgentOwnership(req, res, next) {
     return res.status(403).json({ error: 'You do not have permission to modify this agent' });
   }
   // Establish owner context so downstream parsers (which resolve filesystem
-  // paths via getAgentOwner) pick THIS user's home even when the slug is
-  // ambiguous across tenants. Service tokens skip this — they don't carry a
-  // userId and parsers rely on header/query agentId routing.
+  // paths via getAgentOwner) pick the EFFECTIVE owner's home — the impersonated
+  // user when admin sends ?owner=<N>, else the requester's own userId. Service
+  // tokens skip this — they don't carry a userId and parsers rely on
+  // header/query agentId routing.
   if (req.user.role !== 'agent' && req.user.userId) {
+    const effectiveOwner = _adminImpersonationOwnerId(req) ?? req.user.userId;
     const { withOwnerContext } = require('../agents/detail.cjs');
-    return withOwnerContext(req.user.userId, () => next());
+    return withOwnerContext(effectiveOwner, () => next());
   }
   next();
 }

@@ -1047,6 +1047,25 @@ function getUserById(id) {
   return raw;
 }
 
+function getUsersByIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return [];
+  if (!db) return [];
+  const validIds = ids
+    .map((v) => Number(v))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (validIds.length === 0) return [];
+  const placeholders = validIds.map(() => '?').join(',');
+  const res = db.exec(
+    `SELECT id, username, display_name FROM users WHERE id IN (${placeholders})`,
+    validIds,
+  );
+  return (res[0]?.values || []).map(([id, username, displayName]) => ({
+    id: Number(id),
+    username: String(username),
+    displayName: displayName == null ? null : String(displayName),
+  }));
+}
+
 function setUserDlpEncryptionKey(userId, sealedKey) {
   if (!db) throw new Error('Database not initialized');
   const stmt = db.prepare('UPDATE users SET dlp_encryption_key = ? WHERE id = ?');
@@ -1386,6 +1405,7 @@ module.exports = {
   createGoogleUser,
   getUserByUsername,
   getUserById,
+  getUsersByIds,
   setUserDlpEncryptionKey,
   getUserByGoogleSub,
   getUserByEmail,
