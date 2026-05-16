@@ -331,6 +331,7 @@ app.use('/api', require('./routes/config.cjs')({ db, parsers, versioning, vSave 
 app.use('/api', require('./routes/chat.cjs')({ db, parsers, gatewayProxy, loadAllJSONLMessagesForTask }));
 app.use('/api', require('./routes/role-templates.cjs')({ db, parsers }));
 app.use('/api', require('./routes/announcements.cjs')({ db }));
+app.use('/api/admin/gateway-metrics', require('./routes/gateway-metrics.cjs')({ db }));
 
 // ─── Routes: Satisfaction feedback (Phase 1 self-learning) ─────────────────
 const feedbackRouter = require('./routes/feedback.cjs');
