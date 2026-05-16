@@ -206,3 +206,79 @@ test('aggregate throws RangeError for unknown range key', () => {
   const q = setupTempDb();
   assert.throws(() => q.aggregate('99d'), { name: 'RangeError' });
 });
+
+// --- leaderboard() tests ---
+
+test('leaderboard returns users ordered by metric descending', () => {
+  const q = setupTempDb();
+  const now = Date.now();
+  q.insertSample({ ts: now - 1000, user_id: 1, state: 'running', rss_mb: 100, cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  q.insertSample({ ts: now - 1000, user_id: 2, state: 'running', rss_mb: 300, cpu_percent: 3, messages_1h: 0, messages_24h: 0 });
+  q.insertSample({ ts: now - 1000, user_id: 3, state: 'running', rss_mb: 200, cpu_percent: 2, messages_1h: 0, messages_24h: 0 });
+  const result = q.leaderboard('1h', 'rss', 10);
+  assert.strictEqual(result.length, 3);
+  assert.deepStrictEqual(result.map((r) => r.userId), [2, 3, 1]);
+  assert.strictEqual(result[0].value, 300);
+});
+
+test('leaderboard computes deltaPercent vs previous window', () => {
+  const q = setupTempDb();
+  const now = Date.now();
+  // user 1 cur=200, prev=100 → +100%
+  q.insertSample({ ts: now - 1_000,     user_id: 1, state: 'running', rss_mb: 200, cpu_percent: 0, messages_1h: 0, messages_24h: 0 });
+  q.insertSample({ ts: now - 5_000_000, user_id: 1, state: 'running', rss_mb: 100, cpu_percent: 0, messages_1h: 0, messages_24h: 0 });
+  // user 2 cur=400, prev=0 (no prev data) → null
+  q.insertSample({ ts: now - 1_000, user_id: 2, state: 'running', rss_mb: 400, cpu_percent: 0, messages_1h: 0, messages_24h: 0 });
+  const result = q.leaderboard('1h', 'rss', 10);
+  const u1 = result.find((r) => r.userId === 1);
+  const u2 = result.find((r) => r.userId === 2);
+  assert.strictEqual(u1.deltaPercent, 100);
+  assert.strictEqual(u1.avgPrev, 100);
+  assert.strictEqual(u2.deltaPercent, null);
+});
+
+test('leaderboard supports cpu and messages_1h metrics', () => {
+  const q = setupTempDb();
+  const now = Date.now();
+  q.insertSample({ ts: now - 1000, user_id: 1, state: 'running', rss_mb: 100, cpu_percent: 5, messages_1h: 20, messages_24h: 0 });
+  q.insertSample({ ts: now - 1000, user_id: 2, state: 'running', rss_mb: 200, cpu_percent: 1, messages_1h: 50, messages_24h: 0 });
+  const cpuResult = q.leaderboard('1h', 'cpu', 10);
+  assert.strictEqual(cpuResult[0].userId, 1);
+  const msgResult = q.leaderboard('1h', 'messages_1h', 10);
+  assert.strictEqual(msgResult[0].userId, 2);
+});
+
+test('leaderboard respects limit', () => {
+  const q = setupTempDb();
+  const now = Date.now();
+  for (let i = 1; i <= 5; i += 1) {
+    q.insertSample({ ts: now - 1000, user_id: i, state: 'running', rss_mb: i * 10, cpu_percent: 0, messages_1h: 0, messages_24h: 0 });
+  }
+  const result = q.leaderboard('1h', 'rss', 3);
+  assert.strictEqual(result.length, 3);
+});
+
+test('leaderboard returns empty array when no data', () => {
+  const q = setupTempDb();
+  assert.deepStrictEqual(q.leaderboard('1h', 'rss', 10), []);
+});
+
+test('leaderboard throws RangeError for unknown metric', () => {
+  const q = setupTempDb();
+  assert.throws(() => q.leaderboard('1h', 'foo', 10), { name: 'RangeError' });
+});
+
+test('leaderboard throws RangeError for unknown range', () => {
+  const q = setupTempDb();
+  assert.throws(() => q.leaderboard('99d', 'rss', 10), { name: 'RangeError' });
+});
+
+test('leaderboard excludes users with all-null metric values in window', () => {
+  const q = setupTempDb();
+  const now = Date.now();
+  q.insertSample({ ts: now - 1000, user_id: 1, state: 'stopped', rss_mb: null, cpu_percent: null, messages_1h: null, messages_24h: 0 });
+  q.insertSample({ ts: now - 1000, user_id: 2, state: 'running', rss_mb: 100,  cpu_percent: 1,    messages_1h: 0,    messages_24h: 0 });
+  const result = q.leaderboard('1h', 'rss', 10);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].userId, 2);
+});

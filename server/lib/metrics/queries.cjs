@@ -213,6 +213,59 @@ function aggregate(rangeKey) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// leaderboard(rangeKey, metric, limit) — top-N users by metric + delta
+// ---------------------------------------------------------------------------
+
+const LEADERBOARD_METRIC_COLUMN = Object.freeze({
+  rss: 'rss_mb',
+  cpu: 'cpu_percent',
+  messages_1h: 'messages_1h',
+});
+
+function leaderboard(rangeKey, metric, limit) {
+  const { rangeMs, fromTs, toTs } = resolveRange(rangeKey);
+  const column = LEADERBOARD_METRIC_COLUMN[metric];
+  if (!column) {
+    const err = new RangeError(`Unknown metric "${metric}". Expected one of: ${Object.keys(LEADERBOARD_METRIC_COLUMN).join(', ')}`);
+    err.code = 'BAD_METRIC';
+    throw err;
+  }
+  const clampedLimit = Math.max(1, Math.min(50, Number(limit) || 10));
+  const prevFromTs = fromTs - rangeMs;
+  const db = getDb();
+
+  const rows = db.prepare(`
+    WITH cur AS (
+      SELECT user_id, AVG(${column}) AS v
+        FROM gateway_samples
+       WHERE ts >= @from AND ts < @to
+       GROUP BY user_id
+    ),
+    prev AS (
+      SELECT user_id, AVG(${column}) AS v
+        FROM gateway_samples
+       WHERE ts >= @prevFrom AND ts < @from
+       GROUP BY user_id
+    )
+    SELECT cur.user_id AS userId,
+           cur.v        AS value,
+           prev.v       AS avgPrev
+      FROM cur LEFT JOIN prev USING (user_id)
+     WHERE cur.v IS NOT NULL
+     ORDER BY cur.v DESC
+     LIMIT @limit
+  `).all({ from: fromTs, to: toTs, prevFrom: prevFromTs, limit: clampedLimit });
+
+  return rows.map((r) => {
+    const avgPrev = r.avgPrev == null ? 0 : r.avgPrev;
+    const deltaPercent = (r.avgPrev != null && r.avgPrev !== 0)
+      ? ((r.value - r.avgPrev) / r.avgPrev) * 100
+      : null;
+    return { userId: r.userId, value: r.value, avgPrev, deltaPercent };
+  });
+}
+
 module.exports = {
   insertSample,
   insertSamplesBatch,
@@ -222,4 +275,5 @@ module.exports = {
   resolveRange,
   timeseries,
   aggregate,
+  leaderboard,
 };
