@@ -137,3 +137,72 @@ test('timeseries bucketMs scales with range', () => {
   assert.strictEqual(q.timeseries('7d').bucketMs, 1_800_000);
   assert.strictEqual(q.timeseries('30d').bucketMs, 7_200_000);
 });
+
+// --- aggregate() tests ---
+
+test('aggregate returns zeroed envelope on empty DB', () => {
+  const q = setupTempDb();
+  const result = q.aggregate('1h');
+  assert.strictEqual(result.totalRssMb, 0);
+  assert.strictEqual(result.avgCpuPercent, 0);
+  assert.strictEqual(result.runningCount, 0);
+  assert.strictEqual(result.totalCount, 0);
+  assert.strictEqual(result.totalMessages24h, 0);
+  assert.strictEqual(result.deltaRssPercent, null);
+  assert.strictEqual(result.deltaCpuPercent, null);
+});
+
+test('aggregate snapshots use latest sample per user in the current window', () => {
+  const q = setupTempDb();
+  const now = Date.now();
+  // user 1: two samples in window, latest is rss=200
+  q.insertSample({ ts: now - 30_000, user_id: 1, state: 'running', rss_mb: 100, cpu_percent: 2, messages_1h: 5,  messages_24h: 100 });
+  q.insertSample({ ts: now - 5_000,  user_id: 1, state: 'running', rss_mb: 200, cpu_percent: 4, messages_1h: 10, messages_24h: 250 });
+  // user 2: one sample, stopped
+  q.insertSample({ ts: now - 10_000, user_id: 2, state: 'stopped', rss_mb: null, cpu_percent: null, messages_1h: null, messages_24h: 50 });
+  const result = q.aggregate('1h');
+  assert.strictEqual(result.totalCount, 2);
+  assert.strictEqual(result.runningCount, 1);
+  assert.strictEqual(result.totalRssMb, 200); // only running user 1's latest
+  assert.strictEqual(result.avgCpuPercent, 4); // only user 1's latest cpu (user 2 cpu is null)
+  assert.strictEqual(result.totalMessages24h, 300); // 250 + 50
+});
+
+test('aggregate computes deltaRssPercent vs previous window', () => {
+  const q = setupTempDb();
+  const now = Date.now();
+  // current window (1h = 3_600_000ms): two samples avg 200
+  q.insertSample({ ts: now - 10_000,    user_id: 1, state: 'running', rss_mb: 150, cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  q.insertSample({ ts: now - 1_000_000, user_id: 1, state: 'running', rss_mb: 250, cpu_percent: 3, messages_1h: 0, messages_24h: 0 });
+  // previous window [now-7_200_000, now-3_600_000): two samples avg 100
+  q.insertSample({ ts: now - 4_000_000, user_id: 1, state: 'running', rss_mb: 80,  cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  q.insertSample({ ts: now - 6_000_000, user_id: 1, state: 'running', rss_mb: 120, cpu_percent: 2, messages_1h: 0, messages_24h: 0 });
+  const result = q.aggregate('1h');
+  // delta = (200 - 100) / 100 * 100 = 100%
+  assert.strictEqual(result.deltaRssPercent, 100);
+  // cpu delta: cur avg = 2, prev avg = 1.5, delta = (2-1.5)/1.5*100 ≈ 33.33%
+  assert.ok(Math.abs(result.deltaCpuPercent - 33.333333333333336) < 0.001);
+});
+
+test('aggregate deltaRssPercent is null when previous window is empty', () => {
+  const q = setupTempDb();
+  q.insertSample({ ts: Date.now() - 10_000, user_id: 1, state: 'running', rss_mb: 200, cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  const result = q.aggregate('1h');
+  assert.strictEqual(result.deltaRssPercent, null);
+  assert.strictEqual(result.deltaCpuPercent, null);
+});
+
+test('aggregate handles null rss/cpu without crashing (all stopped)', () => {
+  const q = setupTempDb();
+  q.insertSample({ ts: Date.now() - 10_000, user_id: 1, state: 'stopped', rss_mb: null, cpu_percent: null, messages_1h: null, messages_24h: 0 });
+  const result = q.aggregate('1h');
+  assert.strictEqual(result.totalCount, 1);
+  assert.strictEqual(result.runningCount, 0);
+  assert.strictEqual(result.totalRssMb, 0);
+  assert.strictEqual(result.avgCpuPercent, 0);
+});
+
+test('aggregate throws RangeError for unknown range key', () => {
+  const q = setupTempDb();
+  assert.throws(() => q.aggregate('99d'), { name: 'RangeError' });
+});
