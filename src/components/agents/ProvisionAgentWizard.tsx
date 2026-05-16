@@ -674,18 +674,33 @@ export function ProvisionAgentWizard({ onClose, template }: Props) {
     return () => clearTimeout(t)
   }, [form.name, form.id])
 
-  // Load models from first agent detail (has availableModels)
+  // Load models from the user's first owned agent (has availableModels).
+  // Non-admin users may not own an agent named "main" (their master can be
+  // dreamer/sadmiral/etc), so we discover an accessible agent first instead
+  // of hardcoding "main" — otherwise /agents/main/detail 403s and the model
+  // list stays empty for them.
   useEffect(() => {
-    api.getAgentDetail("main").then(d => {
-      const ms = (d as any).availableModels || []
-      setModels(ms.map((m: any) => ({
-        id: m.id || m.value || m.modelId || String(m),
-        name: m.name || m.label || m.id || m.value || m.modelId || String(m),
-      })))
-      const primary = (d as any).config?.model || ""
-      setDefaultModel(primary)
-      setForm(f => ({ ...f, model: f.model || primary }))
-    }).catch(() => {})
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { agents } = (await api.getAgents({ owner: "me" })) as { agents: { id: string }[] }
+        const first = agents?.[0]
+        if (!first) return  // user has no agent yet (first-time setup); leave defaults
+        const d = await api.getAgentDetail(first.id)
+        if (cancelled) return
+        const ms = (d as any).availableModels || []
+        setModels(ms.map((m: any) => ({
+          id: m.id || m.value || m.modelId || String(m),
+          name: m.name || m.label || m.id || m.value || m.modelId || String(m),
+        })))
+        const primary = (d as any).config?.model || ""
+        setDefaultModel(primary)
+        setForm(f => ({ ...f, model: f.model || primary }))
+      } catch {
+        /* swallow — wizard still works with empty models */
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   // Pre-fill form from ADLC role template (role config only — name/id left for user)

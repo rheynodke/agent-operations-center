@@ -10,6 +10,8 @@ const net = require('net');
 const { exec, spawn } = require('child_process');
 const orchestrator = require('../lib/gateway-orchestrator.cjs');
 const { parseScopeUserId } = require('../helpers/access-control.cjs');
+const { getUserHome: _defaultGetUserHome } = require('../lib/config.cjs');
+const { tailFile, clampLines } = require('../lib/gateway-log-tail.cjs');
 
 // ─── Gateway helpers (module-scoped state) ─────────────────────────────────────
 
@@ -187,11 +189,12 @@ function restartGateway(reason) {
 // ─── Router factory ────────────────────────────────────────────────────────────
 
 /**
- * @param {{ db, parsers, aiLib, metrics }} deps
+ * @param {{ db, parsers, aiLib, metrics, homeResolver? }} deps
  * @returns {import('express').Router}
  */
 module.exports = function gatewayRouter(deps) {
   const { db, parsers, aiLib, metrics } = deps;
+  const homeResolver = deps.homeResolver || _defaultGetUserHome;
   const router = require('express').Router();
 
   // GET /gateway/status
@@ -338,6 +341,44 @@ module.exports = function gatewayRouter(deps) {
   });
 
   // ─── Admin cross-user controls ──────────────────────────────────────────────
+  router.get('/admin/gateways', db.authMiddleware, db.requireAdmin, async (_req, res) => {
+    try {
+      const gateways = await orchestrator.listGatewaysRich();
+      res.json({ gateways, probedAt: new Date().toISOString() });
+    } catch (err) {
+      console.error('[admin/gateways]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/admin/gateways/bulk', db.authMiddleware, db.requireAdmin, async (req, res) => {
+    const { action, userIds, delaySeconds } = req.body || {};
+    if (!['start', 'stop', 'restart'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action — expected start|stop|restart' });
+    }
+    if (!Array.isArray(userIds)) {
+      return res.status(400).json({ error: 'userIds must be an array' });
+    }
+    try {
+      // Pass lifecycle deps so that tests stubbing orchestrator.{spawn,stop,restart}Gateway
+      // on the module exports are observed by the bulk runner (which would otherwise
+      // bind to the module-internal function references at load time).
+      const lifecycle = {
+        spawnGateway: orchestrator.spawnGateway,
+        stopGateway: orchestrator.stopGateway,
+        restartGateway: orchestrator.restartGateway,
+      };
+      const out = await orchestrator.runBulkGatewayAction(
+        { action, userIds, delaySeconds },
+        { lifecycle },
+      );
+      res.json(out);
+    } catch (err) {
+      console.error('[admin/gateways/bulk]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   router.post('/admin/users/:id/gateway/restart', db.authMiddleware, db.requireAdmin, async (req, res) => {
     const targetId = Number(req.params.id);
     if (!Number.isInteger(targetId) || targetId <= 0) {
@@ -351,6 +392,39 @@ module.exports = function gatewayRouter(deps) {
       res.json({ ok: true, port: out.port, pid: out.pid });
     } catch (err) {
       console.error(`[admin/users/${targetId}/restart]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/admin/users/:id/gateway/start', db.authMiddleware, db.requireAdmin, async (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    if (targetId === 1) {
+      return res.status(400).json({ error: 'Admin gateway is external — use /api/gateway/start for self' });
+    }
+    try {
+      const out = await orchestrator.spawnGateway(targetId, { explicit: true });
+      res.json({ ok: true, port: out.port, pid: out.pid });
+    } catch (err) {
+      console.error(`[admin/users/${targetId}/start]`, err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/admin/gateways/:userId/logs', db.authMiddleware, db.requireAdmin, async (req, res) => {
+    const uid = Number(req.params.userId);
+    if (!Number.isInteger(uid) || uid <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    const lines = clampLines(req.query.lines);
+    const file = path.join(homeResolver(uid), 'logs', 'gateway.log');
+    try {
+      const out = await tailFile({ file, lines });
+      res.json(out);
+    } catch (err) {
+      console.error(`[admin/gateways/${uid}/logs]`, err.message);
       res.status(500).json({ error: err.message });
     }
   });

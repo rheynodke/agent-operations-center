@@ -529,8 +529,13 @@ module.exports = function roomsRouter(deps) {
 // Agent detail (full profile with workspace files, soul, tools, etc.)
   router.get('/agents/:id/detail', db.authMiddleware, db.requireAgentOwnership, (req, res) => {
   try {
-    // requireAgentOwnership already verified the caller owns this slug → scope by userId.
-    const targetUid = Number(req.user.userId);
+    // requireAgentOwnership already verified ownership (incl. admin impersonation
+    // via ?owner=<N>). Scope by the EFFECTIVE owner — parseScopeUserId returns
+    // the impersonated uid for admin, else the requester's own uid. Using
+    // req.user.userId directly would override admin impersonation and 404 every
+    // cross-tenant lookup.
+    const { parseScopeUserId } = require('../helpers/access-control.cjs');
+    const targetUid = parseScopeUserId(req);
     const detail = parsers.getAgentDetail(req.params.id, targetUid);
     if (!detail) return res.status(404).json({ error: 'Agent not found' });
     // Enrich with SQLite profile (avatar preset, color, role, master flag)

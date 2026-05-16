@@ -1735,3 +1735,45 @@ export interface BrowserHarnessOdooStatus {
   files: BrowserHarnessOdooFile[]
   moduleCount: number
 }
+
+// ─── Admin gateway monitor ─────────────────────────────────────────────────
+export type GatewayState = "running" | "stopped" | "stale"
+
+export type GatewayActivity = {
+  messagesLast1h: number
+  messagesLast24h: number
+  lastActivityAt: string | null
+  idleHeartbeatOnly: boolean
+}
+
+export type GatewayStatus = {
+  userId: number
+  username: string
+  displayName: string | null
+  agentId: string | null
+  port: number | null
+  pid: number | null
+  state: GatewayState
+  uptimeSeconds: number | null
+  rssMb: number | null
+  cpuPercent: number | null
+  startedAt: string | null
+  logFile: string | null
+  activity: GatewayActivity | null
+}
+
+export type GatewaySortKey =
+  | "username"
+  | "state"
+  | "uptimeSeconds"
+  | "rssMb"
+  | "cpuPercent"
+  | "messagesLast1h"
+  | "messagesLast24h"
+  | "lastActivityAt"
+
+export type GatewayBulkAction = "start" | "stop" | "restart"
+
+export type BulkGatewayResult =
+  | { userId: number; ok: true; port?: number; pid?: number }
+  | { userId: number; ok: false; error: string }

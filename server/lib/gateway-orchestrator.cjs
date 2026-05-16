@@ -9,6 +9,8 @@ const { EventEmitter } = require('events');
 const db = require('./db.cjs');
 const { getUserHome, SHARED_SKILLS, SHARED_SCRIPTS, SHARED_PROVIDERS, OPENCLAW_BASE } = require('./config.cjs');
 const { withUserLock } = require('./locks.cjs');
+const { psProbe } = require('./gateway-process-probe.cjs');
+const { probeActivity } = require('./gateway-activity-probe.cjs');
 
 // Shared QMD model cache. Each agent's `<qmd-home>/xdg-cache/qmd/models/` is
 // a symlink to this dir, so all tenants share the ~2GB GGUF download instead
@@ -1119,6 +1121,95 @@ function listGateways() {
   return db.listGatewayStates();
 }
 
+function _defaultHomeResolverRich(userId) {
+  return getUserHome(userId);
+}
+
+function _defaultAgentResolverRich(userId) {
+  try {
+    const file = path.join(getUserHome(userId), 'openclaw.json');
+    const raw = fs.readFileSync(file, 'utf-8');
+    const json = JSON.parse(raw);
+    return json?.agents?.list?.[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Combine DB gateway rows with live process info (ps) and channel activity
+ * (sessions.json scan). Stale = DB says running but PID is dead. Returns
+ * one row per tracked user gateway.
+ *
+ * Injectables (for tests): homeResolver, agentResolver, now.
+ *
+ * @returns {Promise<Array>}
+ */
+async function listGatewaysRich({ homeResolver, agentResolver, now } = {}) {
+  const homeFn = homeResolver || _defaultHomeResolverRich;
+  const nowMs = typeof now === 'number' ? now : Date.now();
+
+  // Source = every non-admin user, not just rows with a non-stopped gateway
+  // state. The admin dashboard's gateway monitor renders one row per tenant
+  // regardless of whether the tenant gateway is currently running, so a
+  // stopped tenant must still appear (operator needs the "Start" button).
+  // Admin (uid=1, role='admin') runs an external launchd-managed gateway —
+  // out of scope for this view.
+  const allUsers = (db.getAllUsers ? db.getAllUsers() : []) || [];
+  const tenants = allUsers.filter((u) => u.role !== 'admin');
+
+  const stateRows = db.listGatewayStates() || [];
+  const stateMap = new Map(stateRows.map((r) => [Number(r.userId), r]));
+
+  const pids = stateRows
+    .map((r) => r.pid)
+    .filter((p) => Number.isInteger(p) && p > 0);
+  const probeMap = await psProbe(pids);
+
+  return tenants.map((u) => {
+    const userId = Number(u.id);
+    const row = stateMap.get(userId) || {};
+    const proc = row.pid ? probeMap.get(row.pid) : null;
+    const dbState = row.state || 'stopped';
+    const state =
+      dbState === 'running'
+        ? proc ? 'running' : 'stale'
+        : 'stopped';
+
+    const agentId = agentResolver
+      ? agentResolver(userId)
+      : (u.master_agent_id || _defaultAgentResolverRich(userId));
+
+    const home = homeFn(userId);
+    const sessionsFile = agentId
+      ? path.join(home, 'agents', agentId, 'sessions', 'sessions.json')
+      : null;
+    const activity = sessionsFile ? probeActivity({ sessionsFile, now: nowMs }) : null;
+
+    const logFile = path.join(home, 'logs', 'gateway.log');
+    const startedAt =
+      proc && proc.uptimeSeconds != null
+        ? new Date(nowMs - proc.uptimeSeconds * 1000).toISOString()
+        : null;
+
+    return {
+      userId,
+      username: u.username,
+      displayName: u.display_name ?? null,
+      agentId: agentId || null,
+      port: state === 'running' ? row.port ?? null : null,
+      pid: state === 'running' ? row.pid ?? null : null,
+      state,
+      uptimeSeconds: proc?.uptimeSeconds ?? null,
+      rssMb: proc?.rssMb ?? null,
+      cpuPercent: proc?.cpuPercent ?? null,
+      startedAt,
+      logFile,
+      activity,
+    };
+  });
+}
+
 /**
  * Reconcile DB-tracked gateways with what's actually running on the machine
  * after AOC starts up. Behavior is RE-ATTACH, not kill:
@@ -1321,12 +1412,68 @@ async function gracefulShutdown() {
   children.clear();
 }
 
+const BULK_DEFAULT_DELAY_SECONDS = 8;
+const _sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+/**
+ * Run start/stop/restart across a list of user ids serially. Per-user
+ * failures are captured in the result array — the loop never aborts on
+ * one user's failure. Spawn-style actions are spaced by `delaySeconds`
+ * (default 8s, matches gw.sh convention) to avoid overwhelming AOC's
+ * spawn pipeline. `stop` action skips the spacing because it is cheap.
+ *
+ * @param {{action: 'start'|'stop'|'restart', userIds: number[], delaySeconds?: number}} params
+ * @param {{lifecycle?: {spawnGateway:Function, stopGateway:Function, restartGateway:Function}}} [deps]
+ * @returns {Promise<{results: Array<{userId:number, ok:boolean, port?:number, pid?:number, error?:string}>}>}
+ */
+async function runBulkGatewayAction(
+  { action, userIds, delaySeconds } = {},
+  deps = {},
+) {
+  if (!['start', 'stop', 'restart'].includes(action)) {
+    throw new Error(`unknown action: ${action}`);
+  }
+  if (!Array.isArray(userIds) || userIds.length === 0) {
+    return { results: [] };
+  }
+  const lifecycle = deps.lifecycle || { spawnGateway, stopGateway, restartGateway };
+  const delayMs = (delaySeconds ?? BULK_DEFAULT_DELAY_SECONDS) * 1000;
+
+  const results = [];
+  for (let i = 0; i < userIds.length; i += 1) {
+    const uid = Number(userIds[i]);
+    try {
+      let info;
+      if (action === 'start') {
+        info = await lifecycle.spawnGateway(uid, { explicit: true });
+      } else if (action === 'stop') {
+        await lifecycle.stopGateway(uid);
+        info = {};
+      } else {
+        info = await lifecycle.restartGateway(uid);
+      }
+      const entry = { userId: uid, ok: true };
+      if (info && Number.isInteger(info.port)) entry.port = info.port;
+      if (info && Number.isInteger(info.pid)) entry.pid = info.pid;
+      results.push(entry);
+    } catch (err) {
+      results.push({ userId: uid, ok: false, error: err.message || String(err) });
+    }
+    if (i < userIds.length - 1 && action !== 'stop' && delayMs > 0) {
+      await _sleep(delayMs);
+    }
+  }
+  return { results };
+}
+
 module.exports = {
   linkSharedQmdModelsForAgent,
   linkSharedQmdModelsForUser,
   spawnGateway, stopGateway, restartGateway,
   refreshTenantSandboxes,
-  getGatewayState, listGateways, getRunningToken,
+  runBulkGatewayAction,
+  BULK_DEFAULT_DELAY_SECONDS,
+  getGatewayState, listGateways, listGatewaysRich, getRunningToken,
   cleanupOrphans, gracefulShutdown, findAocManagedOrphanPids,
   ensureSharedProviders,
   propagateProvidersToAllUsers,

@@ -185,11 +185,14 @@ function parseOwnerParam(req) {
  */
 function filterAgentsByOwner(allAgents, user, scope, getOwnerFn) {
   const isAdmin = user?.role === 'admin';
+  // When admin impersonates a specific user (scope is numeric), the ownership
+  // lookup must use THAT scope as the disambiguation hint — not admin's own
+  // userId — otherwise composite-PK `WHERE agent_id = ? AND provisioned_by = ?`
+  // returns null and every impersonated agent is filtered out.
+  const lookupHint = isAdmin && typeof scope === 'number' ? scope : user?.userId;
   return allAgents.filter((agent) => {
     // 'main' is admin-private (owner = userId 1) — strict per-user, not a shared agent.
-    // Pass user.userId as the owner hint so cross-tenant slug collisions resolve
-    // to THIS user's agent_profiles row (composite-PK schema).
-    const ownerId = agent.id === 'main' ? 1 : getOwnerFn(agent.id, user?.userId);
+    const ownerId = agent.id === 'main' ? 1 : getOwnerFn(agent.id, lookupHint);
     if (isAdmin) {
       // Admin defaults to own scope — cross-tenant monitoring will be a separate feature.
       if (scope === 'all') return true;
