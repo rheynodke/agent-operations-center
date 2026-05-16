@@ -3,6 +3,7 @@ dist/
 .env
 *.log
 .playwright-mcp/
+.worktrees/
 scripts/*
 !scripts/migrate-multitenant.cjs
 !scripts/migrate-multitenant.test.cjs
