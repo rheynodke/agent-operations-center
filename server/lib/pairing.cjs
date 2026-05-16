@@ -80,9 +80,28 @@ function listAllPairingRequests(agentId, userId) {
 }
 
 /**
- * Approve a pairing code via the OpenClaw CLI.
- * Uses the CLI to ensure proper file locking + notification to the user.
- * @returns Promise<{ ok: boolean, error?: string }>
+ * Approve a pairing code: allow the requester immediately in-process and
+ * defer the side-channel notification to a detached CLI subprocess.
+ *
+ * Why not just call the OpenClaw CLI synchronously? Its `pairing approve`
+ * command loads the full plugin tree (channels, providers, MCP) on every
+ * invocation, costing ~30s of bootstrap before any work runs. AOC's
+ * execFile timeout kept tripping at 15s and the dashboard surfaced a
+ * generic "Command failed" with no hint at the real problem.
+ *
+ * Split of responsibilities:
+ *   - In-process (this function): add the requester to the channel's
+ *     allowFrom list (atomic temp+rename, mirroring `rejectPairingCode`).
+ *     This is the only step the operator needs to be sure of when the
+ *     dashboard returns success — once it's in allowFrom, the bot will
+ *     accept the sender on their next message.
+ *   - Detached CLI (background): consume the still-pending entry, send
+ *     the "you're approved" DM via the channel adapter, and clear the
+ *     pending file. We don't await it; if it fails the pending entry
+ *     just lingers until TTL or operator retry (which is idempotent —
+ *     allowFrom already contains the id, the CLI move is a no-op).
+ *
+ * @returns Promise<{ ok: boolean, error?: string, addedEntry?: string }>
  */
 function approvePairingCode(channel, code, accountId, userId) {
   return new Promise((resolve, reject) => {
@@ -93,64 +112,59 @@ function approvePairingCode(channel, code, accountId, userId) {
       return reject(new Error('Pairing code is required'));
     }
 
-    const args = ['pairing', 'approve', channel, code.toUpperCase()];
-    if (accountId) {
-      args.push('--account', accountId);
-    }
-    args.push('--notify');
+    const upperCode = code.toUpperCase();
+    const normalizedAccount = accountId ? String(accountId).toLowerCase() : null;
 
-    // CRITICAL: openclaw CLI interprets OPENCLAW_HOME as the *user home dir*
-    // (then appends `.openclaw` for state dir). AOC uses OPENCLAW_HOME to mean
-    // the state dir directly. Passing AOC's value through to the subprocess
-    // makes the CLI read/write `~/.openclaw/.openclaw/credentials/…` instead
-    // of `~/.openclaw/credentials/…`, so approves silently land in a parallel
-    // tree and the actual pending request is never matched.
-    //
-    // For non-admin tenants, point OPENCLAW_STATE_DIR at the user's home so
-    // the CLI reads/writes their per-user credentials. Drop OPENCLAW_HOME so
-    // the appended-".openclaw" issue never triggers.
-    const subprocessEnv = { ...process.env };
-    delete subprocessEnv.OPENCLAW_HOME;
-    if (userId != null && Number(userId) !== 1) {
-      subprocessEnv.OPENCLAW_STATE_DIR = getUserHome(userId);
+    const pairingPath = resolvePairingPath(channel, userId);
+    const data = readJsonSafe(pairingPath);
+    if (!data || !Array.isArray(data.requests)) {
+      return resolve({ ok: false, error: `No pending pairing request found for code: ${code}` });
     }
 
-    execFile(OPENCLAW_BIN, args, { timeout: 15000, env: subprocessEnv }, (err, stdout, stderr) => {
-      // Strip ANSI escape codes so success-marker matching is robust.
-      // eslint-disable-next-line no-control-regex
-      const out = (stdout || '').toString().replace(/\x1b\[[0-9;]*m/g, '');
-      // eslint-disable-next-line no-control-regex
-      const errOut = (stderr || '').toString().replace(/\x1b\[[0-9;]*m/g, '');
-
-      // The CLI may exit with a non-zero code even after a successful approve
-      // (e.g., the post-approve `--notify` step fails because the requester's
-      // DMs are closed → "Invalid Recipient(s)"). Detect approval success from
-      // stdout instead of relying solely on exit code.
-      const approved = /Approved\s+\S+\s+sender/i.test(out);
-
-      if (approved) {
-        const notifyFailed = /Failed to notify requester/i.test(out);
-        return resolve({
-          ok: true,
-          stdout: out.trim(),
-          ...(notifyFailed ? { warning: 'Approved, but failed to notify the requester' } : {}),
-        });
+    const matched = data.requests.find(r => {
+      if (!r) return false;
+      if (String(r.code || '').toUpperCase() !== upperCode) return false;
+      if (normalizedAccount) {
+        const rAccount = String(r.meta?.accountId || 'default').toLowerCase();
+        if (rAccount !== normalizedAccount) return false;
       }
-
-      if (err) {
-        // Genuine failure — surface a useful message. CLI throws "No pending
-        // pairing request found for code: ..." when the entry is already gone
-        // (often because a previous approve already succeeded).
-        const stackMsg = /Error:\s*([^\n]+)/.exec(errOut + '\n' + out);
-        const errMsg =
-          (stackMsg && stackMsg[1].trim()) ||
-          errOut.trim() ||
-          err.message ||
-          'Approval failed';
-        return resolve({ ok: false, error: errMsg });
-      }
-      resolve({ ok: true, stdout: out.trim() });
+      return true;
     });
+
+    if (!matched) {
+      return resolve({ ok: false, error: `No pending pairing request found for code: ${code}` });
+    }
+    const requesterId = String(matched.id || '').trim();
+    if (!requesterId) {
+      return resolve({ ok: false, error: 'Pending entry has no requester id; refusing to approve' });
+    }
+
+    try {
+      addAllowFromEntry(channel, accountId, requesterId, userId);
+    } catch (err) {
+      return resolve({ ok: false, error: `Failed to persist approval: ${err.message}` });
+    }
+
+    // Detached CLI run: it will re-read the (still-intact) pending entry,
+    // move it to allowFrom (no-op since we wrote it), and send the DM. We
+    // don't await; unref so AOC shutdown isn't blocked by a 30s CLI boot.
+    try {
+      const notifyEnv = { ...process.env };
+      delete notifyEnv.OPENCLAW_HOME;
+      if (userId != null && Number(userId) !== 1) {
+        notifyEnv.OPENCLAW_STATE_DIR = getUserHome(userId);
+      }
+      const notifyArgs = ['pairing', 'approve', channel, upperCode];
+      if (accountId) notifyArgs.push('--account', accountId);
+      notifyArgs.push('--notify');
+      const child = execFile(OPENCLAW_BIN, notifyArgs, {
+        timeout: 90000,
+        env: notifyEnv,
+      }, () => { /* best effort — pending entry will TTL out if this fails */ });
+      child.unref?.();
+    } catch (_) { /* notify + pending-clear are best-effort */ }
+
+    resolve({ ok: true, addedEntry: requesterId });
   });
 }
 
