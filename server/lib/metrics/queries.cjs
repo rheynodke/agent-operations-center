@@ -266,6 +266,39 @@ function leaderboard(rangeKey, metric, limit) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// stateTimeline(rangeKey) — stacked counts of users in each state per bucket
+// ---------------------------------------------------------------------------
+
+function stateTimeline(rangeKey) {
+  const { bucketMs, fromTs, toTs } = resolveRange(rangeKey);
+  const db = getDb();
+
+  const rows = db.prepare(`
+    WITH bucketed AS (
+      SELECT user_id,
+             (ts - (ts % @bucket)) AS bucket_ts,
+             state,
+             ROW_NUMBER() OVER (
+               PARTITION BY user_id, (ts - (ts % @bucket))
+               ORDER BY ts DESC
+             ) AS rn
+        FROM gateway_samples
+       WHERE ts >= @from AND ts < @to
+    )
+    SELECT bucket_ts AS ts,
+           SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN state = 'stale'   THEN 1 ELSE 0 END) AS stale,
+           SUM(CASE WHEN state = 'stopped' THEN 1 ELSE 0 END) AS stopped
+      FROM bucketed
+     WHERE rn = 1
+     GROUP BY bucket_ts
+     ORDER BY bucket_ts
+  `).all({ bucket: bucketMs, from: fromTs, to: toTs });
+
+  return { range: rangeKey, bucketMs, points: rows };
+}
+
 module.exports = {
   insertSample,
   insertSamplesBatch,
@@ -276,4 +309,5 @@ module.exports = {
   timeseries,
   aggregate,
   leaderboard,
+  stateTimeline,
 };

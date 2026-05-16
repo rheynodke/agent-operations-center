@@ -282,3 +282,56 @@ test('leaderboard excludes users with all-null metric values in window', () => {
   assert.strictEqual(result.length, 1);
   assert.strictEqual(result[0].userId, 2);
 });
+
+// --- stateTimeline() tests ---
+
+test('stateTimeline returns envelope with empty points on no data', () => {
+  const q = setupTempDb();
+  const result = q.stateTimeline('1h');
+  assert.strictEqual(result.range, '1h');
+  assert.strictEqual(result.bucketMs, 30_000);
+  assert.deepStrictEqual(result.points, []);
+});
+
+test('stateTimeline counts users by state per bucket (latest per user wins)', () => {
+  const q = setupTempDb();
+  const BUCKET_MS = 30_000;
+  const bucketStart = Math.floor((Date.now() - 60_000) / BUCKET_MS) * BUCKET_MS;
+  // user 1: running early, stale later — latest=stale should win
+  q.insertSample({ ts: bucketStart + 1_000,  user_id: 1, state: 'running', rss_mb: 100, cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  q.insertSample({ ts: bucketStart + 20_000, user_id: 1, state: 'stale',   rss_mb: 100, cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  // user 2: running only
+  q.insertSample({ ts: bucketStart + 5_000,  user_id: 2, state: 'running', rss_mb: 200, cpu_percent: 2, messages_1h: 0, messages_24h: 0 });
+  // user 3: stopped only
+  q.insertSample({ ts: bucketStart + 10_000, user_id: 3, state: 'stopped', rss_mb: null, cpu_percent: null, messages_1h: null, messages_24h: 0 });
+
+  const result = q.stateTimeline('1h');
+  const point = result.points.find((p) => p.ts === bucketStart);
+  assert.ok(point, `expected point at bucket ${bucketStart}`);
+  assert.strictEqual(point.running, 1);
+  assert.strictEqual(point.stale, 1);
+  assert.strictEqual(point.stopped, 1);
+});
+
+test('stateTimeline separates buckets correctly', () => {
+  const q = setupTempDb();
+  const BUCKET_MS = 30_000;
+  const now = Date.now();
+  const bucketA = Math.floor((now - 120_000) / BUCKET_MS) * BUCKET_MS;
+  const bucketB = bucketA + BUCKET_MS;
+  // bucketA: 2 running users
+  q.insertSample({ ts: bucketA + 1_000, user_id: 1, state: 'running', rss_mb: 100, cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  q.insertSample({ ts: bucketA + 2_000, user_id: 2, state: 'running', rss_mb: 100, cpu_percent: 1, messages_1h: 0, messages_24h: 0 });
+  // bucketB: 1 stopped user
+  q.insertSample({ ts: bucketB + 1_000, user_id: 3, state: 'stopped', rss_mb: null, cpu_percent: null, messages_1h: null, messages_24h: 0 });
+  const result = q.stateTimeline('1h');
+  const pA = result.points.find((p) => p.ts === bucketA);
+  const pB = result.points.find((p) => p.ts === bucketB);
+  assert.deepStrictEqual({ running: pA.running, stale: pA.stale, stopped: pA.stopped }, { running: 2, stale: 0, stopped: 0 });
+  assert.deepStrictEqual({ running: pB.running, stale: pB.stale, stopped: pB.stopped }, { running: 0, stale: 0, stopped: 1 });
+});
+
+test('stateTimeline throws RangeError for unknown range', () => {
+  const q = setupTempDb();
+  assert.throws(() => q.stateTimeline('99d'), { name: 'RangeError' });
+});
