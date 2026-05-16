@@ -26,6 +26,7 @@ import ProjectsPage from "@/pages/ProjectsPage"
 import ProjectDetailPage from "@/pages/ProjectDetailPage"
 import MetricsPage from "@/pages/MetricsPage"
 import AgentMetricsPage from "@/pages/AgentMetricsPage"
+import GatewayMetricsPage from "@/pages/GatewayMetricsPage"
 import { CronPage } from "@/pages/CronPage"
 import { HooksPage } from "@/pages/HooksPage"
 import { RoutingPage } from "@/pages/RoutingPage"
@@ -109,6 +110,7 @@ function DashboardShell() {
             <Route path="/board" element={<Navigate to="/projects/general" replace />} />
             <Route path="/metrics" element={<Navigate to="/projects" replace />} />
             <Route path="/metrics/agents/:agentId" element={<AgentMetricsPage />} />
+            <Route path="/gateway-metrics" element={<AdminOnly><GatewayMetricsPage /></AdminOnly>} />
             <Route path="/cron" element={<CronPage />} />
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/routing" element={<RoutingPage />} />

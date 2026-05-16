@@ -66,6 +66,12 @@ const navGroups = [
       { to: "/connections", label: "Connections", icon: Plug },
     ],
   },
+  {
+    label: "Operations",
+    items: [
+      { to: "/gateway-metrics", label: "Gateway Metrics", icon: BarChart3, adminOnly: true },
+    ],
+  },
 ]
 
 export function Sidebar() {
