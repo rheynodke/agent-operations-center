@@ -22,7 +22,7 @@ let vacuumTimer = null;
 
 function runPrune({ retentionDays, now } = {}) {
   const days = retentionDays || DEFAULT_RETENTION_DAYS;
-  const cutoff = (now || Date.now()) - days * DAY_MS;
+  const cutoff = (now ?? Date.now()) - days * DAY_MS;
   const removed = queries.pruneBefore(cutoff);
   if (removed > 0) {
     console.log(`[metrics-retention] pruned ${removed} samples older than ${days}d`);
@@ -45,7 +45,8 @@ function start({ pruneIntervalMs, vacuumIntervalMs } = {}) {
   const vacuumEvery = vacuumIntervalMs || 7 * DAY_MS;
 
   // Fire once shortly after boot, then on interval
-  setTimeout(() => runPrune({}), 5 * 60_000);
+  const warmup = setTimeout(() => runPrune({}), 5 * 60_000);
+  if (warmup.unref) warmup.unref();
 
   pruneTimer = setInterval(() => runPrune({}), pruneEvery);
   vacuumTimer = setInterval(runVacuum, vacuumEvery);
