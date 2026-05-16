@@ -7,6 +7,7 @@ export { useProjectStore } from './useProjectStore'
 export { useRoomStore } from './useRoomStore'
 export { useFeedbackStore } from './useFeedbackStore'
 export { useEmbedStore } from './useEmbedStore'
+export { useGatewayMetricsStore } from './useGatewayMetricsStore'
 
 // ─── Auth Store ───────────────────────────────────────────────────────────────
 interface AuthState {
