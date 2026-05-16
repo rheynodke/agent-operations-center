@@ -1777,3 +1777,46 @@ export type GatewayBulkAction = "start" | "stop" | "restart"
 export type BulkGatewayResult =
   | { userId: number; ok: true; port?: number; pid?: number }
   | { userId: number; ok: false; error: string }
+
+// ─── Admin Gateway Metrics Dashboard (spec §8.4) ──────────────────────────────
+
+export type GatewayMetricsRange = '1h' | '6h' | '24h' | '7d' | '30d'
+
+export type GatewayMetricsMetric = 'rss' | 'cpu' | 'messages_1h'
+
+export interface GatewayTimeseriesPoint {
+  ts: number
+  rssMb: number | null
+  cpuPercent: number | null
+  messages1h: number | null
+}
+
+export interface GatewayTimeseries {
+  range: GatewayMetricsRange
+  bucketMs: number
+  users: Array<{ userId: number; username: string | null; points: GatewayTimeseriesPoint[] }>
+}
+
+export interface GatewayStateTimeline {
+  range: GatewayMetricsRange
+  bucketMs: number
+  points: Array<{ ts: number; running: number; stale: number; stopped: number }>
+}
+
+export interface GatewayAggregate {
+  totalRssMb: number
+  avgCpuPercent: number
+  runningCount: number
+  totalCount: number
+  totalMessages24h: number
+  deltaRssPercent: number | null
+  deltaCpuPercent: number | null
+}
+
+export interface GatewayLeaderboardEntry {
+  userId: number
+  username: string | null
+  value: number
+  avgPrev: number
+  deltaPercent: number | null
+}

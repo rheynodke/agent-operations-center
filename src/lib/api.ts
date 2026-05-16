@@ -525,6 +525,28 @@ export const api = {
     return request<import('@/types').MetricsAgentTasks>(withScope(`/metrics/agents/${encodeURIComponent(agentId)}/tasks?${params.toString()}`));
   },
 
+  // Admin gateway metrics dashboard (spec §6.5) — admin-only, no scope shim.
+  getAdminGatewayMetricsTimeseries: (
+    range: import('@/types').GatewayMetricsRange,
+    opts: { userId?: number } = {},
+  ) => {
+    const params = new URLSearchParams({ range });
+    if (opts.userId != null) params.set('userId', String(opts.userId));
+    return request<import('@/types').GatewayTimeseries>(`/admin/gateway-metrics/timeseries?${params.toString()}`);
+  },
+  getAdminGatewayMetricsStateTimeline: (range: import('@/types').GatewayMetricsRange) =>
+    request<import('@/types').GatewayStateTimeline>(`/admin/gateway-metrics/state-timeline?range=${encodeURIComponent(range)}`),
+  getAdminGatewayMetricsAggregate: (range: import('@/types').GatewayMetricsRange) =>
+    request<import('@/types').GatewayAggregate>(`/admin/gateway-metrics/aggregate?range=${encodeURIComponent(range)}`),
+  getAdminGatewayMetricsLeaderboard: (
+    range: import('@/types').GatewayMetricsRange,
+    metric: import('@/types').GatewayMetricsMetric,
+    limit: number = 10,
+  ) => {
+    const params = new URLSearchParams({ range, metric, limit: String(limit) });
+    return request<import('@/types').GatewayLeaderboardEntry[]>(`/admin/gateway-metrics/leaderboard?${params.toString()}`);
+  },
+
   // Task comments — user ↔ agent discussion thread
   getTaskComments: (taskId: string) =>
     request<{ comments: import('@/types').TaskComment[] }>(`/tasks/${encodeURIComponent(taskId)}/comments`),
