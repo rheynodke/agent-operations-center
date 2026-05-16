@@ -152,6 +152,67 @@ function timeseries(rangeKey, opts = {}) {
   return { range: rangeKey, bucketMs, users: Array.from(byUser.values()) };
 }
 
+// ---------------------------------------------------------------------------
+// aggregate(rangeKey) — cluster KPIs + delta vs equivalent previous window
+// ---------------------------------------------------------------------------
+
+function aggregate(rangeKey) {
+  const { rangeMs, fromTs, toTs } = resolveRange(rangeKey);
+  const prevFromTs = fromTs - rangeMs;
+  const db = getDb();
+
+  // Latest sample per user in current window
+  const snapshotRows = db.prepare(`
+    WITH latest AS (
+      SELECT user_id, MAX(ts) AS max_ts
+        FROM gateway_samples
+       WHERE ts >= @from AND ts < @to
+       GROUP BY user_id
+    )
+    SELECT s.user_id, s.state, s.rss_mb, s.cpu_percent, s.messages_24h
+      FROM gateway_samples s
+      JOIN latest l ON s.user_id = l.user_id AND s.ts = l.max_ts
+  `).all({ from: fromTs, to: toTs });
+
+  let totalRssMb = 0;
+  let cpuSum = 0;
+  let cpuCount = 0;
+  let runningCount = 0;
+  let totalMessages24h = 0;
+  for (const r of snapshotRows) {
+    if (r.state === 'running') runningCount += 1;
+    if (r.rss_mb != null) totalRssMb += r.rss_mb;
+    if (r.cpu_percent != null) { cpuSum += r.cpu_percent; cpuCount += 1; }
+    if (r.messages_24h != null) totalMessages24h += r.messages_24h;
+  }
+  const totalCount = snapshotRows.length;
+  const avgCpuPercent = cpuCount > 0 ? cpuSum / cpuCount : 0;
+
+  // Window averages for delta math
+  const avgStmt = db.prepare(`
+    SELECT AVG(rss_mb) AS avg_rss, AVG(cpu_percent) AS avg_cpu
+      FROM gateway_samples
+     WHERE ts >= @from AND ts < @to
+  `);
+  const cur = avgStmt.get({ from: fromTs,     to: toTs });
+  const prev = avgStmt.get({ from: prevFromTs, to: fromTs });
+
+  function pctDelta(curVal, prevVal) {
+    if (curVal == null || prevVal == null || prevVal === 0) return null;
+    return ((curVal - prevVal) / prevVal) * 100;
+  }
+
+  return {
+    totalRssMb,
+    avgCpuPercent,
+    runningCount,
+    totalCount,
+    totalMessages24h,
+    deltaRssPercent: pctDelta(cur.avg_rss, prev.avg_rss),
+    deltaCpuPercent: pctDelta(cur.avg_cpu, prev.avg_cpu),
+  };
+}
+
 module.exports = {
   insertSample,
   insertSamplesBatch,
@@ -160,4 +221,5 @@ module.exports = {
   RANGE_DEFS,
   resolveRange,
   timeseries,
+  aggregate,
 };
