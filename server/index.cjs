@@ -955,6 +955,14 @@ async function start() {
     console.warn(`[backup] start failed: ${e.message}`);
   }
 
+  // Gateway metrics: 30s poller + retention janitor. See server/lib/metrics/.
+  try {
+    require('./lib/metrics/poller.cjs').start();
+    require('./lib/metrics/retention.cjs').start();
+  } catch (e) {
+    console.warn(`[metrics] start failed: ${e.message}`);
+  }
+
   // ── EADDRINUSE retry logic for `node --watch` restarts ──────────────────
   // When node --watch restarts the server, the old process may not have fully
   // released port 18800 yet. Retry with backoff instead of crashing.
@@ -1025,6 +1033,14 @@ async function shutdown(signal) {
   console.log(`[server] ${signal} received — graceful shutdown`);
   feedWatcher.stop();
   watcherPool.stopAll();
+  // Gateway metrics shutdown
+  try {
+    require('./lib/metrics/poller.cjs').stop();
+    require('./lib/metrics/retention.cjs').stop();
+    require('./lib/metrics/db.cjs').close();
+  } catch (e) {
+    console.warn(`[metrics] shutdown failed: ${e.message}`);
+  }
   server.close();
   // Embed rate-limit: flush in-memory state before exit so counters survive restart.
   try {
