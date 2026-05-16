@@ -83,4 +83,81 @@ function pruneBefore(cutoffMs) {
   return result.changes;
 }
 
-module.exports = { insertSample, insertSamplesBatch, countSamples, pruneBefore };
+// ---------------------------------------------------------------------------
+// Range definitions for adaptive downsampling (spec §6.6)
+// ---------------------------------------------------------------------------
+
+const RANGE_DEFS = Object.freeze({
+  '1h':  { rangeMs: 3_600_000,     bucketMs: 30_000 },
+  '6h':  { rangeMs: 21_600_000,    bucketMs: 60_000 },
+  '24h': { rangeMs: 86_400_000,    bucketMs: 300_000 },
+  '7d':  { rangeMs: 604_800_000,   bucketMs: 1_800_000 },
+  '30d': { rangeMs: 2_592_000_000, bucketMs: 7_200_000 },
+});
+
+function resolveRange(rangeKey) {
+  const def = RANGE_DEFS[rangeKey];
+  if (!def) {
+    const err = new RangeError(`Unknown range "${rangeKey}". Expected one of: ${Object.keys(RANGE_DEFS).join(', ')}`);
+    err.code = 'BAD_RANGE';
+    throw err;
+  }
+  const toTs = Date.now();
+  return { rangeMs: def.rangeMs, bucketMs: def.bucketMs, fromTs: toTs - def.rangeMs, toTs };
+}
+
+function timeseries(rangeKey, opts = {}) {
+  const { rangeMs, bucketMs, fromTs, toTs } = resolveRange(rangeKey);
+  const db = getDb();
+
+  const params = { bucket: bucketMs, from: fromTs, to: toTs };
+  let whereExtra = '';
+  if (opts.userId != null) {
+    whereExtra = ' AND user_id = @userId';
+    params.userId = opts.userId;
+  }
+
+  // NOTE: SQLite's `/` promotes to REAL when a bound JS number is treated as
+  // REAL, so `(ts/@bucket)*@bucket` can round-trip back to `ts`. Use modulo
+  // subtraction to floor reliably regardless of operand types.
+  const sql = `
+    SELECT user_id,
+           (ts - (ts % @bucket)) AS bucket_ts,
+           AVG(rss_mb)      AS rss_mb,
+           AVG(cpu_percent) AS cpu_percent,
+           AVG(messages_1h) AS messages_1h
+      FROM gateway_samples
+     WHERE ts >= @from AND ts < @to${whereExtra}
+     GROUP BY user_id, bucket_ts
+     ORDER BY user_id, bucket_ts
+  `;
+
+  const rows = db.prepare(sql).all(params);
+
+  const byUser = new Map();
+  for (const r of rows) {
+    let bucket = byUser.get(r.user_id);
+    if (!bucket) {
+      bucket = { userId: r.user_id, points: [] };
+      byUser.set(r.user_id, bucket);
+    }
+    bucket.points.push({
+      ts: r.bucket_ts,
+      rssMb: r.rss_mb,
+      cpuPercent: r.cpu_percent,
+      messages1h: r.messages_1h,
+    });
+  }
+
+  return { range: rangeKey, bucketMs, users: Array.from(byUser.values()) };
+}
+
+module.exports = {
+  insertSample,
+  insertSamplesBatch,
+  countSamples,
+  pruneBefore,
+  RANGE_DEFS,
+  resolveRange,
+  timeseries,
+};
