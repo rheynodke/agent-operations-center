@@ -6,6 +6,7 @@ import {
   DollarSign,
   Clock,
   Wifi,
+  WifiOff,
   Zap,
   Search,
   Terminal,
@@ -563,7 +564,12 @@ export function OverviewPage() {
     const ovGateway = ov?.gateway as Record<string, string> | undefined
 
     return {
-      gatewayStatus: ovGateway?.status || (wsStatus === "connected" ? "running" : "offline"),
+      // When AOC WebSocket is disconnected, cached overview data is stale —
+      // force gateway card to "offline" so it stays consistent with GatewayControlCard
+      // (which polls live and shows OFFLINE on API failure).
+      gatewayStatus: wsStatus !== "connected"
+        ? "offline"
+        : (ovGateway?.status || "offline"),
       gatewayPort: ovGateway?.port || 18789,
       totalSessions: ovSessions?.total ?? sessions.length,
       activeSessions: ovSessions?.active ?? sessions.filter((s: any) => s.status === "active").length,
@@ -641,14 +647,14 @@ export function OverviewPage() {
         </div>
         <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <StatCard
-            icon={Wifi}
+            icon={stats.gatewayStatus === "running" ? Wifi : WifiOff}
             label="Gateway"
             value={stats.gatewayStatus === "running" ? "Running" : "Offline"}
             pulseDot={stats.gatewayStatus === "running"}
             sub={stats.gatewayStatus === "running" ? `PORT ${stats.gatewayPort}` : "Reconnecting…"}
             subColor={stats.gatewayStatus === "running" ? undefined : "text-[var(--status-paused-text)]"}
             chartData={gatewayData}
-            chartColor="#10b981"
+            chartColor={stats.gatewayStatus === "running" ? "#10b981" : "#6b7280"}
           />
           <StatCard
             icon={MessageSquare}
